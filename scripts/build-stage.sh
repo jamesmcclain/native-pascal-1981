@@ -63,12 +63,14 @@ run_frontend() {
   fi
 }
 
+CLANG="${CLANG:-${CC:-clang}}"
+
 (
   cd "$src_dir"
   if [ -n "$native_jsonutil" ]; then
     jsonutil_ll="$work_dir/jsonutil.ll"
     run_frontend jsonutil.pas | "$native_jsonutil" > "$jsonutil_ll"
-    clang $STAGE_OPT -c "$jsonutil_ll" -o "$jsonutil_obj"
+    "$CLANG" $STAGE_OPT -c "$jsonutil_ll" -o "$jsonutil_obj"
   else
     pascal1981 --dialect extended -c jsonutil.pas -o "$jsonutil_obj"
   fi
@@ -80,7 +82,7 @@ run_frontend() {
 )
 
 mkdir -p "$(dirname "$out_bin")"
-clang $STAGE_OPT "$stage_ll" "$jsonutil_obj" -lcjson \
+"$CLANG" $STAGE_OPT "$stage_ll" "$jsonutil_obj" -lcjson \
   "${extra_args[@]}" \
   "$runtime_lib" \
   -o "$out_bin"

@@ -1,7 +1,13 @@
 # Top-level Makefile for native-pascal-1981 toolchain
 
-CC      := clang
-CFLAGS  := -O2 -Wall -Wextra
+ifeq ($(origin CC),default)
+CC          := clang
+else
+CC          ?= clang
+endif
+CFLAGS      := -O2 -Wall -Wextra
+LLVM_CONFIG ?= $(shell which llvm-config 2>/dev/null || which llvm-config-20 2>/dev/null || echo llvm-config)
+export CC LLVM_CONFIG
 
 BIN_DIR := bin
 DRIVER_BIN := $(BIN_DIR)/pascal1981-native
@@ -9,7 +15,7 @@ DRIVER_ALIAS := $(BIN_DIR)/pascal1981
 
 .PHONY: all runtime driver bootstrap beautify clean tidy test
 
-all: runtime driver
+all: runtime driver bootstrap
 
 runtime:
 	$(MAKE) -C runtime
@@ -37,3 +43,4 @@ clean:
 
 test: $(DRIVER_BIN)
 	./tests/run.sh
+	PYTHONPATH=. pytest tests/parity/

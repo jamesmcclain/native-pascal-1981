@@ -25,25 +25,29 @@ Install these packages before you build the toolchain (for example, on Debian or
 - `scripts/`: Build scripts (`build-stage.sh`), bootstrap scripts (`bootstrap.sh`), formatting scripts (`beautify.sh`), and git hooks.
 - `tests/`: Test suites (golden files, unit tests, integration tests, dialect fixtures).
 
-## Building and Bootstrapping
+## Building
 
-### 1. Build the Runtime and Driver
+To build the runtime, driver, and bootstrap all compiler stages:
 ```bash
 make
 ```
 
-### 2. Bootstrap the Toolchain
-To build and verify the compiler stages, run:
+By default, the build uses `llvm-config` (or `llvm-config-20` if `llvm-config` is not in PATH) to dynamically determine LLVM linker flags and libraries. You can explicitly override this by setting `LLVM_CONFIG`:
 ```bash
-make bootstrap
+LLVM_CONFIG=llvm-config-20 make
 ```
+You can also override the C compiler/linker (default `clang`) with `CC`:
+```bash
+CC=clang-20 make
+```
+
 The bootstrap script executes four steps:
 1. **Generation 1 (Hybrid)**: Builds the native compiler stages with the Python reference compiler (`pascal1981`).
 2. **Generation 2 (Self-hosted)**: Recompiles all native compiler stages with the Generation 1 binaries.
 3. **Generation 3 (Self-hosted)**: Recompiles all native compiler stages with the Generation 2 binaries.
 4. **Generation 4 (Fixed Point)**: Recompiles all native compiler stages with the Generation 3 binaries, verifies binary identity (`cmp`), and installs the binaries to `bin/`.
 
-### 3. Compile a Program
+### Compiling a Program
 To compile a Pascal program with the native compiler, run:
 ```bash
 bin/pascal1981-native hello.pas -o hello
@@ -60,18 +64,9 @@ Supported options:
 
 ## Running Tests
 
-### 1. Run the Golden Test Suite
-To run the fast golden-file tests with the native compiler driver, run:
+To run all automated test suites (golden-file tests and parity test suite):
 ```bash
 make test
 ```
-To run tests in parallel, run:
-```bash
-./tests/run.sh -j 4
-```
 
-### 2. Run the Parity Test Suite
-To run deep parity checks against the reference compiler, run:
-```bash
-PYTHONPATH=. pytest tests/parity/
-```
+See [tests/README.md](tests/README.md) for detailed descriptions of test suites and running options.

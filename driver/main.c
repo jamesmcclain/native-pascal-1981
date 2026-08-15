@@ -364,12 +364,18 @@ int main(int argc, char **argv)
         return 0;
     }
     // Run Clang for assembling / linking
+    const char *cc_env = getenv("PASCAL1981_CC");
+    if (!cc_env || cc_env[0] == '\0') {
+        cc_env = getenv("CC");
+    }
+    const char *cc_bin = (cc_env && cc_env[0] != '\0') ? cc_env : "clang";
+
     char cmd[16384];
     size_t offset = 0;
     if (compile_only) {
-        offset += snprintf(cmd + offset, sizeof(cmd) - offset, "clang %s -c \"%s\" -o \"%s\"", opt_level, temp_ll, output_file);
+        offset += snprintf(cmd + offset, sizeof(cmd) - offset, "%s %s -c \"%s\" -o \"%s\"", cc_bin, opt_level, temp_ll, output_file);
     } else {
-        offset += snprintf(cmd + offset, sizeof(cmd) - offset, "clang %s \"%s\" \"%s\" -lcjson", opt_level, temp_ll, runtime_lib);
+        offset += snprintf(cmd + offset, sizeof(cmd) - offset, "%s %s \"%s\" \"%s\" -lcjson", cc_bin, opt_level, temp_ll, runtime_lib);
         for (int i = 0; i < extra_clang_argc; ++i) {
             offset += snprintf(cmd + offset, sizeof(cmd) - offset, " %s", extra_clang_args[i]);
         }

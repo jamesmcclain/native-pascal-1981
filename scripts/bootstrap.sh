@@ -6,8 +6,26 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-LLVM_LIB_DIR="${LLVM_LIB_DIR:-/usr/lib/llvm-20/lib}"
-LLVM_LINK_FLAGS=("-L${LLVM_LIB_DIR}" "-lLLVM-20")
+LLVM_CONFIG="${LLVM_CONFIG:-$(command -v llvm-config 2>/dev/null || command -v llvm-config-20 2>/dev/null || echo "llvm-config")}"
+
+if ! command -v "$LLVM_CONFIG" >/dev/null 2>&1; then
+  echo "error: llvm-config tool '$LLVM_CONFIG' not found on PATH." >&2
+  echo "Please install LLVM development packages or specify LLVM_CONFIG (e.g. LLVM_CONFIG=llvm-config-20)." >&2
+  exit 1
+fi
+
+if [ -z "${LLVM_LINK_FLAGS:-}" ]; then
+  # Split all output (including across newlines) into array
+  read -r -d "" -a LLVM_LINK_FLAGS < <($LLVM_CONFIG --ldflags --libs) || true
+else
+  # User supplied LLVM_LINK_FLAGS as a space-separated string or array
+  if [[ ! "$(declare -p LLVM_LINK_FLAGS 2>/dev/null)" =~ "declare -a" ]]; then
+    read -r -d "" -a LLVM_LINK_FLAGS <<< "$LLVM_LINK_FLAGS" || true
+  fi
+fi
+
+echo "=== Using LLVM_CONFIG: $LLVM_CONFIG ==="
+echo "=== LLVM Link Flags: ${LLVM_LINK_FLAGS[*]} ==="
 
 echo "=== Building C runtime library ==="
 make -C runtime
