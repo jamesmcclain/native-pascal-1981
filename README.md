@@ -57,3 +57,21 @@ Supported options:
 - `-O0`, `-O1`, `-O2`, `-O3`: Set optimization level
 - `--emit-ptx`: Emit NVPTX assembly for device kernels
 - `-v`: Print pipeline commands
+
+## Running Tests
+
+### 1. Run the Golden Test Suite
+To run the fast golden-file tests with the native compiler driver, run:
+```bash
+make test
+```
+To run tests in parallel, run:
+```bash
+./tests/run.sh -j 4
+```
+
+### 2. Run the Parity Test Suite
+To run deep parity checks against the reference compiler, run:
+```bash
+PYTHONPATH=. pytest tests/parity/
+```
