@@ -467,6 +467,10 @@ VAR
   readonly_kind_id, nocapture_kind_id, noalias_kind_id: CINT;
   deref_kind_id: CINT; { and the kernel-entry parameter facts (readonly,
     nocapture, noalias, dereferenceable), resolved the same way. }
+  captures_kind_id: CINT; { LLVM >= 20 replaced the bare `nocapture` enum
+    attribute with `captures(CaptureInfo)`; captures(none) is the same
+    zero-valued enum attribute encoding nocapture used, just under the new
+    name, so this is the fallback when nocapture_kind_id resolves to 0. }
   noalias_kernel_params: BOOLEAN; { the LAUNCH contract's
     distinct-buffers-don't-overlap fact. Off unless PASCAL_NOALIAS_KERNEL_PARAMS
     is set in the environment: it is a policy assertion about the caller, not
@@ -5560,6 +5564,11 @@ BEGIN
         BEGIN
           attr := LLVMCreateEnumAttribute(ctx, nocapture_kind_id, 0);
           LLVMAddAttributeAtIndex(fn, i, attr);
+        END
+        ELSE IF captures_kind_id <> 0 THEN
+        BEGIN
+          attr := LLVMCreateEnumAttribute(ctx, captures_kind_id, 0); { captures(none) }
+          LLVMAddAttributeAtIndex(fn, i, attr);
         END;
       END;
       IF noalias_kernel_params AND (noalias_kind_id <> 0) THEN
@@ -6066,6 +6075,7 @@ BEGIN
   align_kind_id := LLVMGetEnumAttributeKindForName(MakeCStr('align'), 5);
   readonly_kind_id := LLVMGetEnumAttributeKindForName(MakeCStr('readonly'), 8);
   nocapture_kind_id := LLVMGetEnumAttributeKindForName(MakeCStr('nocapture'), 9);
+  captures_kind_id := LLVMGetEnumAttributeKindForName(MakeCStr('captures'), 8);
   noalias_kind_id := LLVMGetEnumAttributeKindForName(MakeCStr('noalias'), 7);
   deref_kind_id := LLVMGetEnumAttributeKindForName(MakeCStr('dereferenceable'), 15);
 
