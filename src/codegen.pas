@@ -2790,38 +2790,80 @@ BEGIN
   CodegenSimpleBuiltin := res;
 END;
 
+FUNCTION CodegenHostDeviceIndex(nm: Str255): ADRMEM;
+{ Read one thread/block index on the CPU-device (host-triple) path: a load
+  from the CPU shim's external thread-local i32 (cpu_device_shim.c), which
+  pas_dev_launch sets per shim-driven call before invoking the kernel
+  thunk. Mirrors the Python reference's exprs.py CPU fallback branch. }
+VAR
+  gv_name: Str255;
+  gv: ADRMEM;
+BEGIN
+  IF nm = 'THREADIDX_X' THEN gv_name := '__pas_tid_x'
+  ELSE IF nm = 'THREADIDX_Y' THEN gv_name := '__pas_tid_y'
+  ELSE IF nm = 'THREADIDX_Z' THEN gv_name := '__pas_tid_z'
+  ELSE IF nm = 'BLOCKIDX_X' THEN gv_name := '__pas_ctaid_x'
+  ELSE IF nm = 'BLOCKIDX_Y' THEN gv_name := '__pas_ctaid_y'
+  ELSE IF nm = 'BLOCKIDX_Z' THEN gv_name := '__pas_ctaid_z'
+  ELSE IF nm = 'BLOCKDIM_X' THEN gv_name := '__pas_ntid_x'
+  ELSE IF nm = 'BLOCKDIM_Y' THEN gv_name := '__pas_ntid_y'
+  ELSE IF nm = 'BLOCKDIM_Z' THEN gv_name := '__pas_ntid_z'
+  ELSE IF nm = 'GRIDDIM_X' THEN gv_name := '__pas_nctaid_x'
+  ELSE IF nm = 'GRIDDIM_Y' THEN gv_name := '__pas_nctaid_y'
+  ELSE IF nm = 'GRIDDIM_Z' THEN gv_name := '__pas_nctaid_z'
+  ELSE AbortWith2('codegen: unknown device index builtin: ', nm);
+  gv := LLVMGetNamedGlobal(modl, MakeCStr(gv_name));
+  IF gv = NIL THEN
+  BEGIN
+    gv := LLVMAddGlobal(modl, i32ty, MakeCStr(gv_name));
+    LLVMSetLinkage(gv, 0); { LLVMExternalLinkage: defined in cpu_device_shim.c,
+                             linked in via libpascalrt.a, not this module. }
+    LLVMSetThreadLocal(gv, 1);
+  END;
+  CodegenHostDeviceIndex := LLVMBuildLoad2(builder, i32ty, gv, MakeCStr(''));
+  last_val_tk := TK_INTEGER32;
+END;
+
 FUNCTION CodegenDeviceIndex(nm: Str255): ADRMEM;
-{ Read one CUDA thread/block special register in an NVPTX DEVICE compiland.
-  The NVVM intrinsic names are lowered by llc to the corresponding PTX
-  special registers; CPU-device launch emulation is deliberately separate. }
+{ Read one CUDA thread/block special register in a DEVICE compiland. NVPTX
+  targets lower to the NVVM special-register intrinsic (resolved by llc to
+  the PTX special register); any other DEVICE target (the CPU-device
+  stand-in) reads the CPU shim's thread-local index registers instead. }
 VAR
   intrinsic_name: Str255;
   fnty, fn: ADRMEM;
 BEGIN
   IF NOT is_nvptx_device THEN
-    AbortWith2('codegen: device index builtin requires NVPTX target: ', nm);
-  IF nm = 'THREADIDX_X' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.tid.x'
-  ELSE IF nm = 'THREADIDX_Y' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.tid.y'
-  ELSE IF nm = 'THREADIDX_Z' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.tid.z'
-  ELSE IF nm = 'BLOCKIDX_X' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ctaid.x'
-  ELSE IF nm = 'BLOCKIDX_Y' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ctaid.y'
-  ELSE IF nm = 'BLOCKIDX_Z' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ctaid.z'
-  ELSE IF nm = 'BLOCKDIM_X' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ntid.x'
-  ELSE IF nm = 'BLOCKDIM_Y' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ntid.y'
-  ELSE IF nm = 'BLOCKDIM_Z' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ntid.z'
-  ELSE IF nm = 'GRIDDIM_X' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.nctaid.x'
-  ELSE IF nm = 'GRIDDIM_Y' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.nctaid.y'
-  ELSE IF nm = 'GRIDDIM_Z' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.nctaid.z'
-  ELSE AbortWith2('codegen: unknown device index builtin: ', nm);
-  fnty := LLVMFunctionType(i32ty, NIL, 0, 0);
-  { LLVMAddFunction renames a second declaration to .1.  That is fatal for
-    LLVM intrinsics, whose spelling encodes their signature.  An interface
-    declaration can make the implementation body encounter the same special
-    register more than once, so reuse the canonical intrinsic declaration. }
-  fn := LLVMGetNamedFunction(modl, MakeCStr(intrinsic_name));
-  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr(intrinsic_name), fnty);
-  CodegenDeviceIndex := LLVMBuildCall2(builder, fnty, fn, NIL, 0, MakeCStr(''));
-  last_val_tk := TK_INTEGER32;
+  BEGIN
+    IF NOT is_device_compiland THEN
+      AbortWith2('codegen: device index builtin requires DEVICE code: ', nm);
+    CodegenDeviceIndex := CodegenHostDeviceIndex(nm);
+  END
+  ELSE
+  BEGIN
+    IF nm = 'THREADIDX_X' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.tid.x'
+    ELSE IF nm = 'THREADIDX_Y' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.tid.y'
+    ELSE IF nm = 'THREADIDX_Z' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.tid.z'
+    ELSE IF nm = 'BLOCKIDX_X' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ctaid.x'
+    ELSE IF nm = 'BLOCKIDX_Y' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ctaid.y'
+    ELSE IF nm = 'BLOCKIDX_Z' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ctaid.z'
+    ELSE IF nm = 'BLOCKDIM_X' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ntid.x'
+    ELSE IF nm = 'BLOCKDIM_Y' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ntid.y'
+    ELSE IF nm = 'BLOCKDIM_Z' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ntid.z'
+    ELSE IF nm = 'GRIDDIM_X' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.nctaid.x'
+    ELSE IF nm = 'GRIDDIM_Y' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.nctaid.y'
+    ELSE IF nm = 'GRIDDIM_Z' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.nctaid.z'
+    ELSE AbortWith2('codegen: unknown device index builtin: ', nm);
+    fnty := LLVMFunctionType(i32ty, NIL, 0, 0);
+    { LLVMAddFunction renames a second declaration to .1.  That is fatal for
+      LLVM intrinsics, whose spelling encodes their signature.  An interface
+      declaration can make the implementation body encounter the same special
+      register more than once, so reuse the canonical intrinsic declaration. }
+    fn := LLVMGetNamedFunction(modl, MakeCStr(intrinsic_name));
+    IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr(intrinsic_name), fnty);
+    CodegenDeviceIndex := LLVMBuildCall2(builder, fnty, fn, NIL, 0, MakeCStr(''));
+    last_val_tk := TK_INTEGER32;
+  END;
 END;
 
 FUNCTION CodegenExpr(node: ADRMEM): ADRMEM;
