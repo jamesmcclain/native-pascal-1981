@@ -182,6 +182,12 @@ FUNCTION LLVMConstBitCast(val: ADRMEM; ty: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION LLVMConstPointerNull(ty: ADRMEM): ADRMEM [C]; EXTERN;
 PROCEDURE LLVMSetGlobalConstant(gvar: ADRMEM; is_constant: CINT) [C]; EXTERN;
 PROCEDURE LLVMSetLinkage(v: ADRMEM; linkage: CINT) [C]; EXTERN;
+FUNCTION LLVMGetNamedGlobal(m: ADRMEM; name: ADRMEM): ADRMEM [C]; EXTERN;
+PROCEDURE LLVMSetThreadLocal(gvar: ADRMEM; is_tl: CINT) [C]; EXTERN;
+  { get-or-create + external-linkage + thread-local, used to reference the
+    CPU device shim's TLS index registers (__pas_tid_x etc., cpu_device_shim.c)
+    from a host-triple compiland, rather than defining a fresh module-local
+    copy of them. }
 FUNCTION LLVMBuildLoad2(b: ADRMEM; ty: ADRMEM; ptr: ADRMEM; name: ADRMEM): ADRMEM [C]; EXTERN;
 PROCEDURE LLVMBuildStore(b: ADRMEM; val: ADRMEM; ptr: ADRMEM) [C]; EXTERN;
 FUNCTION LLVMBuildAdd(b: ADRMEM; lhs: ADRMEM; rhs: ADRMEM; name: ADRMEM): ADRMEM [C]; EXTERN;
