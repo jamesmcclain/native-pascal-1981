@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Format sources, then re-stage the files this commit already touched.
+#
+# Enable this hook once per clone (core.hooksPath is local config, never
+# cloned, so a fresh checkout runs no hooks until you do this):
+#
+#     git config core.hooksPath scripts/hooks
+#
+# scripts/beautify.sh rewrites the *whole* tree in place, so a blanket
+# `git add -u` here would sweep unrelated working-tree edits into the commit.
+# Instead we snapshot the staged paths first and re-add only those the
+# formatter actually modified.
+#
+# Limitation: a file that is only *partially* staged (staged hunks plus
+# unstaged hunks) is not re-staged, because `git add` takes the whole worktree
+# file and would silently pull the unstaged hunks in too. Such files are
+# reported, and their staged content may go in unformatted -- rerun the
+# formatter and commit again to tidy them.
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+# Paths staged for this commit. Deletions (D) are excluded: nothing to format.
+mapfile -t -d '' staged < <(git diff --cached --name-only --diff-filter=ACMR -z)
+
+if [ ${#staged[@]} -eq 0 ]; then
+    exec "$root/scripts/beautify.sh"
+fi
+
+# Paths that also carry unstaged changes -- unsafe to re-add (see above).
+# Must be sampled before the formatter runs, since it dirties the worktree.
+mapfile -t -d '' unstaged < <(git diff --name-only -z)
+
+# Content hashes before formatting, so we can tell what the formatter touched.
+declare -A before=()
+for f in "${staged[@]}"; do
+    [ -f "$f" ] && before["$f"]=$(git hash-object -- "$f")
+done
+
+"$root/scripts/beautify.sh"
+
+skipped=()
+restage=()
+for f in "${staged[@]}"; do
+    [ -f "$f" ] || continue
+    [ "$(git hash-object -- "$f")" = "${before["$f"]-}" ] && continue
+
+    # The formatter changed it. Safe to re-add only if it was fully staged.
+    conflict=0
+    for u in ${unstaged[@]+"${unstaged[@]}"}; do
+        [ "$u" = "$f" ] && conflict=1 && break
+    done
+    if [ "$conflict" -eq 1 ]; then
+        skipped+=("$f")
+    else
+        restage+=("$f")
+    fi
+done
+
+if [ ${#restage[@]} -gt 0 ]; then
+    git add -- "${restage[@]}"
+    echo "pre-commit: re-staged ${#restage[@]} reformatted file(s):"
+    printf '  %s\n' "${restage[@]}"
+fi
+
+if [ ${#skipped[@]} -gt 0 ]; then
+    echo >&2
+    echo "pre-commit: WARNING -- these files are only partially staged, so the" >&2
+    echo "formatter's changes were NOT added to this commit:" >&2
+    printf '  %s\n' "${skipped[@]}" >&2
+    echo "Their staged content may be unformatted. Stage them fully and commit" >&2
+    echo "again to tidy them." >&2
+fi

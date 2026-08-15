@@ -1,0 +1,22 @@
+# Build outputs and intermediate files
+*.o
+*.a
+*.so
+*.ll
+*.s
+build/
+runtime/build/
+bin/*
+!bin/.gitkeep
+
+# Python / test caches
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# Editor / OS files
+.DS_Store
+*.swp
+*~

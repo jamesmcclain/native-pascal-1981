@@ -1,0 +1,5 @@
+PROGRAM P;
+VAR r: REAL;
+BEGIN
+  FOR r := 1.0 TO 10.0 DO WRITELN(r)
+END.
