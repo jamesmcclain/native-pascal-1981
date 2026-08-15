@@ -5140,10 +5140,9 @@ END;
 CONST
   SYSV_CLASS_MEMORY = 1;
   SYSV_CLASS_UNIMPLEMENTED = 2; { <=16-byte register-class aggregates: the
-    full eightbyte INTEGER/SSE classifier is future SysV work, not this
-    self-hosting subset -- see the checklist. None of the five self-hosting
-    sources hit this today, so it aborts loudly rather than emitting
-    something silently wrong. }
+    full eightbyte INTEGER/SSE classifier is planned future SysV work. None of
+    the five self-hosting sources hit this today, so it aborts loudly rather
+    than emitting something silently wrong. }
 
 FUNCTION SysVAggClass(tk: INTEGER): INTEGER;
 { Single landing point for the (currently MEMORY-only) SysV AMD64 aggregate

@@ -1,4 +1,4 @@
-/* CPU-device orchestration shim (Milestone D, cuda-kernel-prescription.md §7).
+/* CPU-device orchestration shim.
  *
  * The "device" is the host CPU: device memory is ordinary heap memory, the
  * host->device and device->host copies are plain memcpy, and a kernel launch
@@ -7,7 +7,7 @@
  * copy-back surface with zero GPU, as the fast correctness loop. Swapping these
  * four functions for CUDA Driver API wrappers (cuMemAlloc / cuMemcpyHtoD /
  * cuMemcpyDtoH / cuMemFree) turns the same Pascal program into a real GPU run
- * without touching the Pascal side (Strategy 1, §5.2).
+ * without touching the Pascal side.
  *
  * The Pascal builtins lower to these symbols:
  *   DEVALLOC(n)            -> pas_dev_alloc(n)

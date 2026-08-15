@@ -1,12 +1,10 @@
-/* Real-GPU device orchestration shim (Milestone D, cuda-kernel-prescription.md
- * §5.2 Strategy 1).
+/* Real-GPU device orchestration shim.
  *
  * This is the CUDA Driver API counterpart to cpu_device_shim.c: it defines the
- * EXACT same six `pas_dev_*` symbols the compiler already emits, so swapping
- * this file in for cpu_device_shim.c turns the *same* Pascal program into a real
- * GPU run with no Pascal-side change.  The two shims define the same symbols and
- * therefore cannot coexist in one archive (the Makefile's DEVICE_SHIM switch
- * selects exactly one).
+ * exact same six `pas_dev_*` symbols the compiler emits, so linking this archive
+ * instead of cpu_device_shim turns the same Pascal program into a real GPU run
+ * with no Pascal-side change. The two shims define the same symbols and are
+ * built into separate static archives (libpascalrt_cpu.a and libpascalrt_cuda.a).
  *
  * The Pascal builtins lower to these symbols:
  *   DEVALLOC(n)            -> pas_dev_alloc(n)            (cuMemAlloc)

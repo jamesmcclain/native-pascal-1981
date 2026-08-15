@@ -1,23 +1,17 @@
 # Makefile for the Pascal-1981 C runtime static library.
 #
 # Usage:
-#   make            Build the CPU-shim archive (libpascalrt_cpu.a) + the
-#                   back-compat alias libpascalrt.a, in build/.  No GPU/CUDA
-#                   headers required.
-#   make cuda       Also build the CUDA-shim archive (libpascalrt_cuda.a).
+#   make            Build the CPU-shim archive (libpascalrt_cpu.a) and
+#                   the canonical alias libpascalrt.a, in build/.
+#   make cuda       Build the CUDA-shim archive (libpascalrt_cuda.a).
 #                   Requires the CUDA toolkit headers ($CUDA_HOME/include).
 #   make both       Build both archives.
-#   make clean      Remove build artifacts
+#   make clean      Remove build artifacts.
 #
-# The cpu and cuda device shims define the SAME pas_dev_* symbols, so they
-# cannot coexist in one archive.  Rather than rebuild-on-switch (the old
-# DEVICE_SHIM clean-rebuild dance), we compile the shared core once and emit one
-# archive per shim.  Consumers pick the archive at link time; the core objects
-# are never recompiled to switch devices.  A consumer linking libpascalrt_cuda.a
-# must add -lcuda on its final link line.
-#
-# DEVICE_SHIM is still accepted for backward compatibility: `make
-# DEVICE_SHIM=cuda` builds the cuda archive as libpascalrt.a, as before.
+# The CPU and CUDA device shims define the same pas_dev_* symbols, so they
+# cannot coexist in one archive. We compile the shared core once and emit one
+# archive per shim. Consumers pick the archive at link time. A consumer linking
+# libpascalrt_cuda.a must add -lcuda on its final link line.
 
 CC      := clang
 CFLAGS  := -c -O2 -Wall -Wextra
@@ -42,16 +36,8 @@ ALIAS_LIB := $(BUILDDIR)/libpascalrt.a
 
 .PHONY: all cuda both clean cleaner
 
-# ---- Backward-compatible DEVICE_SHIM override ------------------------------
-# `make DEVICE_SHIM=cuda` builds the cuda archive as the legacy libpascalrt.a.
-ifeq ($(DEVICE_SHIM),cuda)
-all: $(CUDA_LIB)
-	cp $(CUDA_LIB) $(ALIAS_LIB)
-else
-# Default: CPU archive + the back-compat alias name (libpascalrt.a == cpu).
 all: $(CPU_LIB)
 	cp $(CPU_LIB) $(ALIAS_LIB)
-endif
 
 cuda: $(CUDA_LIB)
 both: $(CPU_LIB) $(CUDA_LIB)
