@@ -5,9 +5,10 @@ CC          := clang
 else
 CC          ?= clang
 endif
+PYTHON      ?= python3
 CFLAGS      := -O2 -Wall -Wextra
 LLVM_CONFIG ?= $(shell which llvm-config 2>/dev/null || which llvm-config-20 2>/dev/null || echo llvm-config)
-export CC LLVM_CONFIG
+export CC LLVM_CONFIG PYTHON
 
 BIN_DIR := bin
 DRIVER_BIN := $(BIN_DIR)/pascal1981-native
@@ -43,4 +44,4 @@ clean:
 
 test: $(DRIVER_BIN)
 	./tests/run.sh
-	PYTHONPATH=. pytest tests/parity/
+	PYTHONPATH=. $(PYTHON) -m pytest tests/parity/
