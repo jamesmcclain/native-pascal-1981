@@ -2938,6 +2938,25 @@ BEGIN
     res := LLVMConstNull(i8ptrty);
     last_val_tk := TK_ADRMEM;
   END
+  ELSE IF nt = 'AdrExpr' THEN
+  BEGIN
+    { ADR <var>: the variable's own storage address -- symbols[symi].llvm_val
+      already *is* that address (an alloca/global pointer), matching the
+      Python reference's `return symbol.llvm_value` (codegen/exprs.py) --
+      unlike a plain Identifier reference, this must NOT load through it.
+      Typed as ADRMEM (opaque i8*, this file's existing tag for any
+      general-purpose pointer-shaped FFI/interop value) rather than a
+      registered ^T tid: assignment/argument compatibility already treats
+      ADRMEM and any POINTER tid as mutually coercible (see
+      TypesCompatibleForAssign's TK_ADRMEM cases), so this is sufficient for
+      every caller in this self-hosting subset without adding a new
+      per-declaration pointer registration path. }
+    symi := LookupSym(GetStr(node, 'name'));
+    IF symi = 0 THEN
+      AbortWith2('codegen: undefined variable: ', GetStr(node, 'name'));
+    res := LLVMBuildBitCast(builder, symbols[symi].llvm_val, i8ptrty, MakeCStr(''));
+    last_val_tk := TK_ADRMEM;
+  END
   ELSE IF nt = 'Identifier' THEN
   BEGIN
     nm := GetStr(node, 'name');
