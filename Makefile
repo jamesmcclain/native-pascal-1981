@@ -35,6 +35,5 @@ clean:
 	./scripts/tidy.sh
 	rm -rf build
 
-test:
-	@echo "Test suites will be executed via tests/run.sh"
-	@if [ -f tests/run.sh ]; then ./tests/run.sh; fi
+test: $(DRIVER_BIN)
+	./tests/run.sh

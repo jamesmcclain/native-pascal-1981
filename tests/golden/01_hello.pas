@@ -1,0 +1,4 @@
+PROGRAM Hello(OUTPUT);
+BEGIN
+  WRITELN('Hello, Pascal 1981!');
+END.

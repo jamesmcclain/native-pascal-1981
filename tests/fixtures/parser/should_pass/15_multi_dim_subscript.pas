@@ -1,0 +1,5 @@
+PROGRAM P;
+VAR a: ARRAY[1..3] OF ARRAY[1..4] OF INTEGER; i, j: INTEGER;
+BEGIN
+  a[i,j] := 1
+END.

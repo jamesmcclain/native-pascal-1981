@@ -1,0 +1,4 @@
+PROGRAM P;
+BEGIN
+  WRITELN(x)
+END.

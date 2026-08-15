@@ -1,0 +1,5 @@
+PROGRAM P;
+VAR x: INTEGER;
+BEGIN
+  x := 3.14
+END.
