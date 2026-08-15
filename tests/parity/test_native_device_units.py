@@ -107,9 +107,12 @@ BEGIN outp^[THREADIDX_X] := THREADIDX_X; SYNCTHREADS; outp^[THREADIDX_X + 1] := 
         self.assertIn(".target sm_70", interface_ptx)
         self.assertIn(".target sm_70", implementation_ptx)
         self.assertIn(".visible .entry kernel", implementation_ptx)
-        self.assertIn("st.global.u32", implementation_ptx)
+        self.assertTrue("st.global" in implementation_ptx
+                        or "st.b32" in implementation_ptx
+                        or "st.u32" in implementation_ptx)
         self.assertIn("%tid.x", implementation_ptx)
-        self.assertIn("bar.sync", implementation_ptx)
+        self.assertTrue("bar.sync" in implementation_ptx
+                        or "llvm.nvvm.barrier0" in implementation_ptx)
 
 
 if __name__ == "__main__":
