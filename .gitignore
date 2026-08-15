@@ -6,6 +6,8 @@
 *.s
 build/
 runtime/build/
+bin/*
+!bin/.gitkeep
 
 # Python / test caches
 __pycache__/
