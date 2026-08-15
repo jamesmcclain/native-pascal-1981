@@ -5535,25 +5535,34 @@ BEGIN
       { Natural alignment of the pointee: without it the NVPTX backend
         annotates every pointer parameter `.ptr .global .align 1`, though the
         element type is known and genuinely better aligned than that. }
-      attr := LLVMCreateEnumAttribute(ctx, align_kind_id, TypeAlignBytes(pointee));
-      LLVMAddAttributeAtIndex(fn, i, attr);
+      IF align_kind_id <> 0 THEN
+      BEGIN
+        attr := LLVMCreateEnumAttribute(ctx, align_kind_id, TypeAlignBytes(pointee));
+        LLVMAddAttributeAtIndex(fn, i, attr);
+      END;
       { dereferenceable(bytes): only for a statically sized pointee. A SUPER
         ARRAY has no static extent, and nothing ties such a buffer to
         whichever sibling parameter might carry its length, so no size is
         claimed for one. }
-      IF (TypeKind(pointee) = TK_ARRAY) AND (NOT types[pointee].is_super) THEN
+      IF (TypeKind(pointee) = TK_ARRAY) AND (NOT types[pointee].is_super) AND (deref_kind_id <> 0) THEN
       BEGIN
         attr := LLVMCreateEnumAttribute(ctx, deref_kind_id, TypeSizeBytes(pointee));
         LLVMAddAttributeAtIndex(fn, i, attr);
       END;
       IF ro[i] THEN
       BEGIN
-        attr := LLVMCreateEnumAttribute(ctx, readonly_kind_id, 0);
-        LLVMAddAttributeAtIndex(fn, i, attr);
-        attr := LLVMCreateEnumAttribute(ctx, nocapture_kind_id, 0);
-        LLVMAddAttributeAtIndex(fn, i, attr);
+        IF readonly_kind_id <> 0 THEN
+        BEGIN
+          attr := LLVMCreateEnumAttribute(ctx, readonly_kind_id, 0);
+          LLVMAddAttributeAtIndex(fn, i, attr);
+        END;
+        IF nocapture_kind_id <> 0 THEN
+        BEGIN
+          attr := LLVMCreateEnumAttribute(ctx, nocapture_kind_id, 0);
+          LLVMAddAttributeAtIndex(fn, i, attr);
+        END;
       END;
-      IF noalias_kernel_params THEN
+      IF noalias_kernel_params AND (noalias_kind_id <> 0) THEN
       BEGIN
         attr := LLVMCreateEnumAttribute(ctx, noalias_kind_id, 0);
         LLVMAddAttributeAtIndex(fn, i, attr);

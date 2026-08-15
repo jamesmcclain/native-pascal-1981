@@ -102,7 +102,8 @@ BEGIN outp^[THREADIDX_X] := THREADIDX_X; SYNCTHREADS; outp^[THREADIDX_X + 1] := 
 
         self.assertIn(".target sm_70", module_ptx)
         self.assertIn("%tid.x", module_ptx)
-        self.assertIn("bar.sync", module_ptx)
+        self.assertTrue("bar.sync" in module_ptx
+                        or "llvm.nvvm.barrier0" in module_ptx)
         self.assertIn(".target sm_70", interface_ptx)
         self.assertIn(".target sm_70", implementation_ptx)
         self.assertIn(".visible .entry kernel", implementation_ptx)
