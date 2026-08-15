@@ -14,7 +14,7 @@ BIN_DIR := bin
 DRIVER_BIN := $(BIN_DIR)/pascal1981-native
 DRIVER_ALIAS := $(BIN_DIR)/pascal1981
 
-.PHONY: all runtime driver bootstrap beautify clean tidy test
+.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test
 
 all: runtime driver bootstrap
 
@@ -41,6 +41,13 @@ tidy: clean
 clean:
 	./scripts/tidy.sh
 	rm -rf build
+
+cleaner: clean
+	rm -rf bin/lexer bin/parser bin/typechecker bin/codegen bin/pascal1981-native bin/pascal1981
+	$(MAKE) -C runtime cleaner
+
+cleanest: cleaner
+	rm -rf .pytest_cache
 
 test: $(DRIVER_BIN)
 	./tests/run.sh
