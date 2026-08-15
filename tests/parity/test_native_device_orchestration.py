@@ -5,12 +5,6 @@ kernel reading THREADIDX_X/BLOCKIDX_X/BLOCKDIM_X/GRIDDIM_X on a host triple.
 Set NATIVE_CODEGEN to a native codegen.pas executable. The Python front end
 supplies the normal typed-AST JSON protocol; this test isolates native
 lowering, mirroring test_native_host_uses_device.py's structure.
-
-Host buffers are heap SUPER ARRAY pointers (NEW/DISPOSE), not ADR of a
-stack array: native codegen has no AdrExpr support at all yet (a separate,
-pre-existing gap, unrelated to device orchestration), and NEW's own SUPER
-ARRAY layout already gives a raw flat-element address suitable for the
-DEVCOPYTO/DEVCOPYFROM shim calls without it.
 """
 
 import json
@@ -60,36 +54,30 @@ PROGRAM host(output);
 USES vaddu (add);
 CONST n = 8;
 VAR
-  ha, hb, hc: ^BUFFER;
+  ha, hb, hc: ARRAY [0..7] OF INTEGER32;
   da, db, dc: ADRMEM;
   i: INTEGER;
   bytes: INTEGER;
 BEGIN
   bytes := n * 4;
-  NEW(ha, n - 1);
-  NEW(hb, n - 1);
-  NEW(hc, n - 1);
   FOR i := 0 TO n - 1 DO
   BEGIN
-    ha^[i] := i;
-    hb^[i] := i + i;
-    hc^[i] := 0
+    ha[i] := i;
+    hb[i] := i + i;
+    hc[i] := 0
   END;
   da := DEVALLOC(bytes);
   db := DEVALLOC(bytes);
   dc := DEVALLOC(bytes);
-  DEVCOPYTO(da, ha, bytes);
-  DEVCOPYTO(db, hb, bytes);
+  DEVCOPYTO(da, ADR ha, bytes);
+  DEVCOPYTO(db, ADR hb, bytes);
   LAUNCH(add, 1, n, da, db, dc, n);
-  DEVCOPYFROM(hc, dc, bytes);
+  DEVCOPYFROM(ADR hc, dc, bytes);
   FOR i := 0 TO n - 1 DO
-    WRITELN(hc^[i]);
+    WRITELN(hc[i]);
   DEVFREE(da);
   DEVFREE(db);
-  DEVFREE(dc);
-  DISPOSE(ha);
-  DISPOSE(hb);
-  DISPOSE(hc)
+  DEVFREE(dc)
 END.
 """
 
