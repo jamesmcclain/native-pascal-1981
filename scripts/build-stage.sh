@@ -52,23 +52,27 @@ stage_ll="$work_dir/$(basename "$stage_src" .pas).ll"
 native_codegen="${NATIVE_CODEGEN:-}"
 native_jsonutil="${NATIVE_JSONUTIL:-$native_codegen}"
 
+PYTHON="${PYTHON:-python3}"
+
 run_frontend() {
   local src_file="$1"
   if [ -n "${NATIVE_LEXER:-}" ] && [ -n "${NATIVE_PARSER:-}" ] && [ -n "${NATIVE_TYPECHECKER:-}" ]; then
     "$NATIVE_LEXER" < "$src_file" | "$NATIVE_PARSER" | "$NATIVE_TYPECHECKER"
   else
-    python3 -m pascal1981.cli_lex "$src_file" | \
-      python3 -m pascal1981.cli_parse --source-file "$src_file" --dialect extended | \
-      python3 -m pascal1981.cli_typecheck --source-file "$src_file" --dialect extended
+    "$PYTHON" -m pascal1981.cli_lex "$src_file" | \
+      "$PYTHON" -m pascal1981.cli_parse --source-file "$src_file" --dialect extended | \
+      "$PYTHON" -m pascal1981.cli_typecheck --source-file "$src_file" --dialect extended
   fi
 }
+
+CLANG="${CLANG:-${CC:-clang}}"
 
 (
   cd "$src_dir"
   if [ -n "$native_jsonutil" ]; then
     jsonutil_ll="$work_dir/jsonutil.ll"
     run_frontend jsonutil.pas | "$native_jsonutil" > "$jsonutil_ll"
-    clang $STAGE_OPT -c "$jsonutil_ll" -o "$jsonutil_obj"
+    "$CLANG" $STAGE_OPT -c "$jsonutil_ll" -o "$jsonutil_obj"
   else
     pascal1981 --dialect extended -c jsonutil.pas -o "$jsonutil_obj"
   fi
@@ -80,7 +84,7 @@ run_frontend() {
 )
 
 mkdir -p "$(dirname "$out_bin")"
-clang $STAGE_OPT "$stage_ll" "$jsonutil_obj" -lcjson \
+"$CLANG" $STAGE_OPT "$stage_ll" "$jsonutil_obj" -lcjson \
   "${extra_args[@]}" \
   "$runtime_lib" \
   -o "$out_bin"

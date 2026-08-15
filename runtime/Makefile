@@ -13,7 +13,7 @@
 # archive per shim. Consumers pick the archive at link time. A consumer linking
 # libpascalrt_cuda.a must add -lcuda on its final link line.
 
-CC      := clang
+CC      ?= clang
 CFLAGS  := -c -O2 -Wall -Wextra
 AR      := ar
 ARFLAGS := rcs

@@ -157,7 +157,8 @@ class NativeKernelParamAttrTests(unittest.TestCase):
         ir = self._emit()
         signature = self._signature(ir, "scale")
         inp, outp = signature.split("%0")[0], signature.split("%0")[1]
-        self.assertIn("nocapture readonly", inp)
+        self.assertTrue(("nocapture readonly" in inp)
+                        or ("readonly" in inp and "captures(none)" in inp))
         self.assertNotIn("readonly", outp)
 
     def test_buffer_forwarded_to_a_readonly_helper_stays_readonly(self):
