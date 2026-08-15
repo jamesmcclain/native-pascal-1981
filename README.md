@@ -11,6 +11,10 @@ To build, bootstrap, and run the native compiler toolchain, the following packag
 - `libllvm-20-dev` / `llvm-20` (LLVM 20 C API library and headers)
 - `libcjson-dev` (cJSON AST transport library and headers)
 - `indent` (GNU indent for C code formatting)
+- `python3` / `pip3` with the Python reference compiler installed (required for the initial Generation 1 bootstrap):
+  ```bash
+  pip3 install https://github.com/jamesmcclain/pascal-1981/archive/c911ca7dbac51ce10799873979420c8edbe10c6a.zip
+  ```
 
 ## Repository Layout
 
