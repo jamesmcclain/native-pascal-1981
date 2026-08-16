@@ -43,7 +43,7 @@ You can also override the C compiler/linker (default `clang`) with `CC`:
 CC=clang-20 make
 ```
 
-The bootstrap script executes four steps:
+The bootstrap process is composed of four steps:
 1. **Generation 1 (Hybrid)**: Builds the native compiler stages with the Python reference compiler (`pascal1981`).
 2. **Generation 2 (Self-hosted)**: Recompiles all native compiler stages with the Generation 1 binaries.
 3. **Generation 3 (Self-hosted)**: Recompiles all native compiler stages with the Generation 2 binaries.
