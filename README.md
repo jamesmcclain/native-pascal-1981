@@ -1,6 +1,8 @@
-# Native Pascal 1981 Compiler (`native-pascal-1981`)
+# Native Pascal 1981 Compiler
 
 This repository contains a native compiler for the 1981 IBM Pascal dialect. It targets LLVM IR, the System V AMD64 ABI, and NVIDIA NVPTX.
+
+<img width="1536" height="864" alt="image" src="https://github.com/user-attachments/assets/f59a2d0f-468b-41b2-838c-b76729f15975" />
 
 ## System Prerequisites
 
@@ -41,7 +43,7 @@ You can also override the C compiler/linker (default `clang`) with `CC`:
 CC=clang-20 make
 ```
 
-The bootstrap script executes four steps:
+The bootstrap process is composed of four steps:
 1. **Generation 1 (Hybrid)**: Builds the native compiler stages with the Python reference compiler (`pascal1981`).
 2. **Generation 2 (Self-hosted)**: Recompiles all native compiler stages with the Generation 1 binaries.
 3. **Generation 3 (Self-hosted)**: Recompiles all native compiler stages with the Generation 2 binaries.
