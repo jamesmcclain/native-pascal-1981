@@ -2,6 +2,8 @@
 
 This repository contains a native compiler for the 1981 IBM Pascal dialect. It targets LLVM IR, the System V AMD64 ABI, and NVIDIA NVPTX.
 
+<img width="1536" height="864" alt="image" src="https://github.com/user-attachments/assets/f59a2d0f-468b-41b2-838c-b76729f15975" />
+
 ## System Prerequisites
 
 Install these packages before you build the toolchain (for example, on Debian or Ubuntu Linux x86_64):
