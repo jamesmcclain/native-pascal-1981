@@ -1,4 +1,4 @@
-# Native Pascal 1981 Compiler (`native-pascal-1981`)
+# Native Pascal 1981 Compiler
 
 This repository contains a native compiler for the 1981 IBM Pascal dialect. It targets LLVM IR, the System V AMD64 ABI, and NVIDIA NVPTX.
 
