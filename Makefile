@@ -7,18 +7,31 @@ CC          ?= clang
 endif
 PYTHON      ?= python3
 CFLAGS      := -O2 -Wall -Wextra
-LLVM_CONFIG ?= $(shell which llvm-config 2>/dev/null || which llvm-config-20 2>/dev/null || echo llvm-config)
+LLVM_CONFIG ?= $(shell command -v llvm-config 2>/dev/null || command -v llvm-config-20 2>/dev/null || echo llvm-config)
+LLVM_LINK_FLAGS ?= $(shell $(LLVM_CONFIG) --ldflags --libs)
 export CC LLVM_CONFIG PYTHON
 
 BIN_DIR := bin
+BUILD_DIR := build
 DRIVER_BIN := $(BIN_DIR)/pascal1981-native
 DRIVER_ALIAS := $(BIN_DIR)/pascal1981
+RUNTIME_LIB := runtime/build/libpascalrt.a
+RUNTIME_SRCS := $(wildcard runtime/*.c runtime/*.h) runtime/Makefile
+STAGES := lexer parser typechecker codegen
+GEN1_BINS := $(addprefix $(BUILD_DIR)/gen1/,$(STAGES))
+GEN2_BINS := $(addprefix $(BUILD_DIR)/gen2/,$(STAGES))
+GEN3_BINS := $(addprefix $(BUILD_DIR)/gen3/,$(STAGES))
+GEN4_BINS := $(addprefix $(BUILD_DIR)/gen4/,$(STAGES))
+BOOTSTRAP_BINS := $(addprefix $(BIN_DIR)/,$(STAGES))
+FIXED_POINT := $(BUILD_DIR)/.fixed-point-verified
 
 .PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test
 
 all: runtime driver bootstrap
 
-runtime:
+runtime: $(RUNTIME_LIB)
+
+$(RUNTIME_LIB): $(RUNTIME_SRCS)
 	$(MAKE) -C runtime
 
 driver: $(DRIVER_BIN)
@@ -30,8 +43,32 @@ $(DRIVER_BIN): driver/main.c | $(BIN_DIR)
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
 
-bootstrap: runtime
-	./scripts/bootstrap.sh
+bootstrap: $(BOOTSTRAP_BINS)
+
+$(BUILD_DIR)/gen1/%: src/%.pas src/jsonutil.pas scripts/build-stage.sh $(RUNTIME_LIB) | $(BUILD_DIR)/gen1
+	./scripts/build-stage.sh $< $@ $(if $(filter codegen,$*),$(LLVM_LINK_FLAGS))
+
+$(BUILD_DIR)/gen2/%: src/%.pas src/jsonutil.pas scripts/build-stage.sh $(GEN1_BINS) $(RUNTIME_LIB) | $(BUILD_DIR)/gen2
+	NATIVE_LEXER="$(abspath $(BUILD_DIR)/gen1/lexer)" NATIVE_PARSER="$(abspath $(BUILD_DIR)/gen1/parser)" NATIVE_TYPECHECKER="$(abspath $(BUILD_DIR)/gen1/typechecker)" NATIVE_CODEGEN="$(abspath $(BUILD_DIR)/gen1/codegen)" ./scripts/build-stage.sh $< $@ $(if $(filter codegen,$*),$(LLVM_LINK_FLAGS))
+
+$(BUILD_DIR)/gen3/%: src/%.pas src/jsonutil.pas scripts/build-stage.sh $(GEN2_BINS) $(RUNTIME_LIB) | $(BUILD_DIR)/gen3
+	NATIVE_LEXER="$(abspath $(BUILD_DIR)/gen2/lexer)" NATIVE_PARSER="$(abspath $(BUILD_DIR)/gen2/parser)" NATIVE_TYPECHECKER="$(abspath $(BUILD_DIR)/gen2/typechecker)" NATIVE_CODEGEN="$(abspath $(BUILD_DIR)/gen2/codegen)" ./scripts/build-stage.sh $< $@ $(if $(filter codegen,$*),$(LLVM_LINK_FLAGS))
+
+$(BUILD_DIR)/gen4/%: src/%.pas src/jsonutil.pas scripts/build-stage.sh $(GEN3_BINS) $(RUNTIME_LIB) | $(BUILD_DIR)/gen4
+	NATIVE_LEXER="$(abspath $(BUILD_DIR)/gen3/lexer)" NATIVE_PARSER="$(abspath $(BUILD_DIR)/gen3/parser)" NATIVE_TYPECHECKER="$(abspath $(BUILD_DIR)/gen3/typechecker)" NATIVE_CODEGEN="$(abspath $(BUILD_DIR)/gen3/codegen)" ./scripts/build-stage.sh $< $@ $(if $(filter codegen,$*),$(LLVM_LINK_FLAGS))
+
+$(BUILD_DIR) $(BUILD_DIR)/gen1 $(BUILD_DIR)/gen2 $(BUILD_DIR)/gen3 $(BUILD_DIR)/gen4:
+	mkdir -p $@
+
+$(FIXED_POINT): $(GEN3_BINS) $(GEN4_BINS) | $(BUILD_DIR)
+	cmp $(BUILD_DIR)/gen3/lexer $(BUILD_DIR)/gen4/lexer
+	cmp $(BUILD_DIR)/gen3/parser $(BUILD_DIR)/gen4/parser
+	cmp $(BUILD_DIR)/gen3/typechecker $(BUILD_DIR)/gen4/typechecker
+	cmp $(BUILD_DIR)/gen3/codegen $(BUILD_DIR)/gen4/codegen
+	touch $@
+
+$(BIN_DIR)/%: $(BUILD_DIR)/gen4/% $(FIXED_POINT) | $(BIN_DIR)
+	cp $< $@
 
 beautify:
 	./scripts/beautify.sh
