@@ -1071,6 +1071,20 @@ BEGIN
     AddNullField(node, 'type_name');
     ParseFactor := node;
   END
+  ELSE IF CurKind = 'ADR' THEN
+  BEGIN
+    { ADR <variable-identifier>: address-of a bare variable name. Unlike the
+      ADR-as-type-flavor production in ParseType (`VAR p: ADR OF T`), this
+      is the value-producing expression form -- the grammar takes only a
+      bare identifier, no selector chain (matches the Python reference's
+      AdrExpr AST node, which likewise carries just a name). }
+    pos := pos + 1;
+    name := CurLex;
+    Expect('IDENTIFIER');
+    node := CreateNode('AdrExpr');
+    AddStringField(node, 'name', name);
+    ParseFactor := node;
+  END
   ELSE IF CurKind = 'SIZEOF' THEN
   BEGIN
     pos := pos + 1;

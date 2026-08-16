@@ -182,6 +182,12 @@ FUNCTION LLVMConstBitCast(val: ADRMEM; ty: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION LLVMConstPointerNull(ty: ADRMEM): ADRMEM [C]; EXTERN;
 PROCEDURE LLVMSetGlobalConstant(gvar: ADRMEM; is_constant: CINT) [C]; EXTERN;
 PROCEDURE LLVMSetLinkage(v: ADRMEM; linkage: CINT) [C]; EXTERN;
+FUNCTION LLVMGetNamedGlobal(m: ADRMEM; name: ADRMEM): ADRMEM [C]; EXTERN;
+PROCEDURE LLVMSetThreadLocal(gvar: ADRMEM; is_tl: CINT) [C]; EXTERN;
+  { get-or-create + external-linkage + thread-local, used to reference the
+    CPU device shim's TLS index registers (__pas_tid_x etc., cpu_device_shim.c)
+    from a host-triple compiland, rather than defining a fresh module-local
+    copy of them. }
 FUNCTION LLVMBuildLoad2(b: ADRMEM; ty: ADRMEM; ptr: ADRMEM; name: ADRMEM): ADRMEM [C]; EXTERN;
 PROCEDURE LLVMBuildStore(b: ADRMEM; val: ADRMEM; ptr: ADRMEM) [C]; EXTERN;
 FUNCTION LLVMBuildAdd(b: ADRMEM; lhs: ADRMEM; rhs: ADRMEM; name: ADRMEM): ADRMEM [C]; EXTERN;
@@ -319,7 +325,7 @@ CONST
   MAX_SYMBOLS = 500;
   MAX_SCOPES = 64;
   MAX_PARAMS = 16;
-  MAX_ROUTINES = 256;
+  MAX_ROUTINES = 384;
   MAX_TYPES = 200;
   MAX_FIELDS = 500;
   MAX_RECORD_FIELDS = 32;
@@ -460,6 +466,14 @@ VAR
   memmove_fnty, memmove_fn: ADRMEM;
   launch_fnty, launch_fn: ADRMEM; { CPU-device launch shim: entry, six
                                   i64 geometry values, and void** argv. }
+  dev_alloc_fnty, dev_alloc_fn: ADRMEM;
+  dev_copy_to_fnty, dev_copy_to_fn: ADRMEM;
+  dev_copy_from_fnty, dev_copy_from_fn: ADRMEM;
+  dev_free_fnty, dev_free_fn: ADRMEM; { host-only device-memory orchestration:
+    DEVALLOC/DEVCOPYTO/DEVCOPYFROM/DEVFREE, declared+called against
+    pas_dev_alloc/copy_to/copy_from/free exactly like malloc/free above --
+    the CPU shim's stand-ins (malloc/memcpy/free) today, the real CUDA
+    driver path when linked against cuda_launch.c instead. }
   byval_kind_id, align_kind_id: CINT; { LLVM enum attribute kind ids for the
     [C] FOREIGN MEMORY-class byval call marshalling below, resolved once at
     init time (see byval_align_kinds_init) rather than re-resolving by name
@@ -1559,6 +1573,7 @@ END;
 { ============================== expressions =============================== }
 
 FUNCTION CodegenExpr(node: ADRMEM): ADRMEM; FORWARD;
+FUNCTION LaunchI64(v: ADRMEM; tk: INTEGER): ADRMEM; FORWARD;
 FUNCTION ComputeDesignatorAddress(node: ADRMEM): ADRMEM; FORWARD;
 FUNCTION CodegenPositn(args: ADRMEM): ADRMEM; FORWARD;
 FUNCTION CodegenScan(stop_on_equal: INTEGER; args: ADRMEM): ADRMEM; FORWARD;
@@ -2784,38 +2799,96 @@ BEGIN
   CodegenSimpleBuiltin := res;
 END;
 
+FUNCTION CodegenHostDeviceIndex(nm: Str255): ADRMEM;
+{ Read one thread/block index on the CPU-device (host-triple) path: a load
+  from the CPU shim's external thread-local i32 (cpu_device_shim.c), which
+  pas_dev_launch sets per shim-driven call before invoking the kernel
+  thunk. Mirrors the Python reference's exprs.py CPU fallback branch. }
+VAR
+  gv_name: Str255;
+  gv: ADRMEM;
+BEGIN
+  IF nm = 'THREADIDX_X' THEN gv_name := '__pas_tid_x'
+  ELSE IF nm = 'THREADIDX_Y' THEN gv_name := '__pas_tid_y'
+  ELSE IF nm = 'THREADIDX_Z' THEN gv_name := '__pas_tid_z'
+  ELSE IF nm = 'BLOCKIDX_X' THEN gv_name := '__pas_ctaid_x'
+  ELSE IF nm = 'BLOCKIDX_Y' THEN gv_name := '__pas_ctaid_y'
+  ELSE IF nm = 'BLOCKIDX_Z' THEN gv_name := '__pas_ctaid_z'
+  ELSE IF nm = 'BLOCKDIM_X' THEN gv_name := '__pas_ntid_x'
+  ELSE IF nm = 'BLOCKDIM_Y' THEN gv_name := '__pas_ntid_y'
+  ELSE IF nm = 'BLOCKDIM_Z' THEN gv_name := '__pas_ntid_z'
+  ELSE IF nm = 'GRIDDIM_X' THEN gv_name := '__pas_nctaid_x'
+  ELSE IF nm = 'GRIDDIM_Y' THEN gv_name := '__pas_nctaid_y'
+  ELSE IF nm = 'GRIDDIM_Z' THEN gv_name := '__pas_nctaid_z'
+  ELSE AbortWith2('codegen: unknown device index builtin: ', nm);
+  gv := LLVMGetNamedGlobal(modl, MakeCStr(gv_name));
+  IF gv = NIL THEN
+  BEGIN
+    gv := LLVMAddGlobal(modl, i32ty, MakeCStr(gv_name));
+    LLVMSetLinkage(gv, 0); { LLVMExternalLinkage: defined in cpu_device_shim.c,
+                             linked in via libpascalrt.a, not this module. }
+    LLVMSetThreadLocal(gv, 1);
+  END;
+  CodegenHostDeviceIndex := LLVMBuildLoad2(builder, i32ty, gv, MakeCStr(''));
+  last_val_tk := TK_INTEGER32;
+END;
+
 FUNCTION CodegenDeviceIndex(nm: Str255): ADRMEM;
-{ Read one CUDA thread/block special register in an NVPTX DEVICE compiland.
-  The NVVM intrinsic names are lowered by llc to the corresponding PTX
-  special registers; CPU-device launch emulation is deliberately separate. }
+{ Read one CUDA thread/block special register in a DEVICE compiland. NVPTX
+  targets lower to the NVVM special-register intrinsic (resolved by llc to
+  the PTX special register); any other DEVICE target (the CPU-device
+  stand-in) reads the CPU shim's thread-local index registers instead. }
 VAR
   intrinsic_name: Str255;
   fnty, fn: ADRMEM;
 BEGIN
   IF NOT is_nvptx_device THEN
-    AbortWith2('codegen: device index builtin requires NVPTX target: ', nm);
-  IF nm = 'THREADIDX_X' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.tid.x'
-  ELSE IF nm = 'THREADIDX_Y' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.tid.y'
-  ELSE IF nm = 'THREADIDX_Z' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.tid.z'
-  ELSE IF nm = 'BLOCKIDX_X' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ctaid.x'
-  ELSE IF nm = 'BLOCKIDX_Y' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ctaid.y'
-  ELSE IF nm = 'BLOCKIDX_Z' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ctaid.z'
-  ELSE IF nm = 'BLOCKDIM_X' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ntid.x'
-  ELSE IF nm = 'BLOCKDIM_Y' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ntid.y'
-  ELSE IF nm = 'BLOCKDIM_Z' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ntid.z'
-  ELSE IF nm = 'GRIDDIM_X' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.nctaid.x'
-  ELSE IF nm = 'GRIDDIM_Y' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.nctaid.y'
-  ELSE IF nm = 'GRIDDIM_Z' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.nctaid.z'
-  ELSE AbortWith2('codegen: unknown device index builtin: ', nm);
-  fnty := LLVMFunctionType(i32ty, NIL, 0, 0);
-  { LLVMAddFunction renames a second declaration to .1.  That is fatal for
-    LLVM intrinsics, whose spelling encodes their signature.  An interface
-    declaration can make the implementation body encounter the same special
-    register more than once, so reuse the canonical intrinsic declaration. }
-  fn := LLVMGetNamedFunction(modl, MakeCStr(intrinsic_name));
-  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr(intrinsic_name), fnty);
-  CodegenDeviceIndex := LLVMBuildCall2(builder, fnty, fn, NIL, 0, MakeCStr(''));
-  last_val_tk := TK_INTEGER32;
+  BEGIN
+    IF NOT is_device_compiland THEN
+      AbortWith2('codegen: device index builtin requires DEVICE code: ', nm);
+    CodegenDeviceIndex := CodegenHostDeviceIndex(nm);
+  END
+  ELSE
+  BEGIN
+    IF nm = 'THREADIDX_X' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.tid.x'
+    ELSE IF nm = 'THREADIDX_Y' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.tid.y'
+    ELSE IF nm = 'THREADIDX_Z' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.tid.z'
+    ELSE IF nm = 'BLOCKIDX_X' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ctaid.x'
+    ELSE IF nm = 'BLOCKIDX_Y' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ctaid.y'
+    ELSE IF nm = 'BLOCKIDX_Z' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ctaid.z'
+    ELSE IF nm = 'BLOCKDIM_X' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ntid.x'
+    ELSE IF nm = 'BLOCKDIM_Y' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ntid.y'
+    ELSE IF nm = 'BLOCKDIM_Z' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ntid.z'
+    ELSE IF nm = 'GRIDDIM_X' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.nctaid.x'
+    ELSE IF nm = 'GRIDDIM_Y' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.nctaid.y'
+    ELSE IF nm = 'GRIDDIM_Z' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.nctaid.z'
+    ELSE AbortWith2('codegen: unknown device index builtin: ', nm);
+    fnty := LLVMFunctionType(i32ty, NIL, 0, 0);
+    { LLVMAddFunction renames a second declaration to .1.  That is fatal for
+      LLVM intrinsics, whose spelling encodes their signature.  An interface
+      declaration can make the implementation body encounter the same special
+      register more than once, so reuse the canonical intrinsic declaration. }
+    fn := LLVMGetNamedFunction(modl, MakeCStr(intrinsic_name));
+    IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr(intrinsic_name), fnty);
+    CodegenDeviceIndex := LLVMBuildCall2(builder, fnty, fn, NIL, 0, MakeCStr(''));
+    last_val_tk := TK_INTEGER32;
+  END;
+END;
+
+FUNCTION CodegenDevAlloc(args: ADRMEM): ADRMEM;
+{ DEVALLOC(n): host-only device-memory allocation (Milestone D). Returns the
+  opaque ADRMEM handle DEVCOPYTO/DEVCOPYFROM/DEVFREE/LAUNCH consume. On the
+  CPU-device shim this is malloc; mirrors the Python reference's exprs.py. }
+VAR
+  nbytes: ADRMEM;
+BEGIN
+  IF is_device_compiland THEN
+    AbortWith('codegen: DEVALLOC is host-only and cannot appear in DEVICE code');
+  IF ArrSize(args) <> 1 THEN AbortWith('codegen: DEVALLOC expects 1 argument (byte count)');
+  nbytes := CodegenExpr(ArrItem(args, 0));
+  nbytes := LaunchI64(nbytes, last_val_tk);
+  CodegenDevAlloc := LLVMBuildCall2(builder, dev_alloc_fnty, dev_alloc_fn, MakeArgs1(nbytes), 1, MakeCStr(''));
+  last_val_tk := TK_ADRMEM;
 END;
 
 FUNCTION CodegenExpr(node: ADRMEM): ADRMEM;
@@ -2863,6 +2936,25 @@ BEGIN
       typechecker.pas) declare their own opaque handles as ADRMEM and
       compare them against NIL. }
     res := LLVMConstNull(i8ptrty);
+    last_val_tk := TK_ADRMEM;
+  END
+  ELSE IF nt = 'AdrExpr' THEN
+  BEGIN
+    { ADR <var>: the variable's own storage address -- symbols[symi].llvm_val
+      already *is* that address (an alloca/global pointer), matching the
+      Python reference's `return symbol.llvm_value` (codegen/exprs.py) --
+      unlike a plain Identifier reference, this must NOT load through it.
+      Typed as ADRMEM (opaque i8*, this file's existing tag for any
+      general-purpose pointer-shaped FFI/interop value) rather than a
+      registered ^T tid: assignment/argument compatibility already treats
+      ADRMEM and any POINTER tid as mutually coercible (see
+      TypesCompatibleForAssign's TK_ADRMEM cases), so this is sufficient for
+      every caller in this self-hosting subset without adding a new
+      per-declaration pointer registration path. }
+    symi := LookupSym(GetStr(node, 'name'));
+    IF symi = 0 THEN
+      AbortWith2('codegen: undefined variable: ', GetStr(node, 'name'));
+    res := LLVMBuildBitCast(builder, symbols[symi].llvm_val, i8ptrty, MakeCStr(''));
     last_val_tk := TK_ADRMEM;
   END
   ELSE IF nt = 'Identifier' THEN
@@ -3105,6 +3197,8 @@ BEGIN
       OR (nm = 'LN') OR (nm = 'EXP') OR (nm = 'ARCTAN') OR (nm = 'TRUNC') OR (nm = 'ROUND')
       OR (nm = 'FLOAT') OR (nm = 'HIBYTE') OR (nm = 'LOBYTE') OR (nm = 'WRD') OR (nm = 'WRD8') OR (nm = 'BYWORD') THEN
       res := CodegenSimpleBuiltin(nm, GetObj(node, 'args'))
+    ELSE IF nm = 'DEVALLOC' THEN
+      res := CodegenDevAlloc(GetObj(node, 'args'))
     ELSE
     BEGIN
       symi := LookupRoutine(nm);
@@ -4807,6 +4901,54 @@ BEGIN
   END;
 END;
 
+FUNCTION CoerceToI8Ptr(v: ADRMEM; tk: INTEGER): ADRMEM;
+{ A device orchestration address argument may already be the opaque i8*
+  representation (ADRMEM, e.g. DEVALLOC's own result) or a typed ^T POINTER
+  value; either way the shim's C signature wants a flat i8*. }
+BEGIN
+  IF tk = TK_ADRMEM THEN CoerceToI8Ptr := v
+  ELSE CoerceToI8Ptr := LLVMBuildBitCast(builder, v, i8ptrty, MakeCStr(''));
+END;
+
+PROCEDURE CodegenDeviceOrchestration(name: Str255; args: ADRMEM);
+{ Lower DEVCOPYTO/DEVCOPYFROM/DEVFREE (Milestone D, host-only) to the
+  orchestration shim externs. Mirrors the Python reference's
+  _codegen_device_orchestration (stmts.py). DEVALLOC is the expression-form
+  sibling, handled in CodegenExpr's FuncCall dispatch. }
+VAR
+  a0, a1, nbytes, call_args: ADRMEM;
+  tk0, tk1: INTEGER;
+  discard: ADRMEM;
+BEGIN
+  IF is_device_compiland THEN
+    AbortWith2('codegen: host-only and cannot appear in DEVICE code: ', name);
+  IF (name = 'DEVCOPYTO') OR (name = 'DEVCOPYFROM') THEN
+  BEGIN
+    IF ArrSize(args) <> 3 THEN AbortWith2('codegen: expects 3 arguments: ', name);
+    a0 := CodegenExpr(ArrItem(args, 0)); tk0 := last_val_tk;
+    a1 := CodegenExpr(ArrItem(args, 1)); tk1 := last_val_tk;
+    nbytes := CodegenExpr(ArrItem(args, 2)); nbytes := LaunchI64(nbytes, last_val_tk);
+    call_args := AllocPtrArray(3);
+    SetPtrArrayElem(call_args, 0, CoerceToI8Ptr(a0, tk0));
+    SetPtrArrayElem(call_args, 1, CoerceToI8Ptr(a1, tk1));
+    SetPtrArrayElem(call_args, 2, nbytes);
+    IF name = 'DEVCOPYTO' THEN
+      discard := LLVMBuildCall2(builder, dev_copy_to_fnty, dev_copy_to_fn, call_args, 3, MakeCStr(''))
+    ELSE
+      discard := LLVMBuildCall2(builder, dev_copy_from_fnty, dev_copy_from_fn, call_args, 3, MakeCStr(''));
+  END
+  ELSE IF name = 'DEVFREE' THEN
+  BEGIN
+    IF ArrSize(args) <> 1 THEN AbortWith2('codegen: expects 1 argument: ', name);
+    a0 := CodegenExpr(ArrItem(args, 0)); tk0 := last_val_tk;
+    call_args := AllocPtrArray(1);
+    SetPtrArrayElem(call_args, 0, CoerceToI8Ptr(a0, tk0));
+    discard := LLVMBuildCall2(builder, dev_free_fnty, dev_free_fn, call_args, 1, MakeCStr(''));
+  END
+  ELSE
+    AbortWith2('codegen: unknown device orchestration builtin: ', name);
+END;
+
 PROCEDURE CodegenProcCallStmt(stmt: ADRMEM);
 VAR
   name: Str255;
@@ -4822,6 +4964,8 @@ BEGIN
     CodegenLaunch(GetObj(stmt, 'args'))
   ELSE IF is_device_compiland AND (name = 'SYNCTHREADS') THEN
     CodegenDeviceSync(name)
+  ELSE IF (name = 'DEVCOPYTO') OR (name = 'DEVCOPYFROM') OR (name = 'DEVFREE') THEN
+    CodegenDeviceOrchestration(name, GetObj(stmt, 'args'))
   ELSE IF name = 'WRITELN' THEN
     CodegenWriteArgs(GetObj(stmt, 'args'), TRUE)
   ELSE IF name = 'WRITE' THEN
@@ -6070,6 +6214,30 @@ BEGIN
   SetPtrArrayElem(param_arr, 1, i8ptrty);
   module_getfn_fnty := LLVMFunctionType(i8ptrty, param_arr, 2, 0);
   module_getfn_fn := LLVMAddFunction(modl, MakeCStr('pas_dev_module_get_function'), module_getfn_fnty);
+
+  param_arr := AllocPtrArray(1);
+  SetPtrArrayElem(param_arr, 0, i64ty);
+  dev_alloc_fnty := LLVMFunctionType(i8ptrty, param_arr, 1, 0);
+  dev_alloc_fn := LLVMAddFunction(modl, MakeCStr('pas_dev_alloc'), dev_alloc_fnty);
+
+  param_arr := AllocPtrArray(3);
+  SetPtrArrayElem(param_arr, 0, i8ptrty);
+  SetPtrArrayElem(param_arr, 1, i8ptrty);
+  SetPtrArrayElem(param_arr, 2, i64ty);
+  dev_copy_to_fnty := LLVMFunctionType(voidty, param_arr, 3, 0);
+  dev_copy_to_fn := LLVMAddFunction(modl, MakeCStr('pas_dev_copy_to'), dev_copy_to_fnty);
+
+  param_arr := AllocPtrArray(3);
+  SetPtrArrayElem(param_arr, 0, i8ptrty);
+  SetPtrArrayElem(param_arr, 1, i8ptrty);
+  SetPtrArrayElem(param_arr, 2, i64ty);
+  dev_copy_from_fnty := LLVMFunctionType(voidty, param_arr, 3, 0);
+  dev_copy_from_fn := LLVMAddFunction(modl, MakeCStr('pas_dev_copy_from'), dev_copy_from_fnty);
+
+  param_arr := AllocPtrArray(1);
+  SetPtrArrayElem(param_arr, 0, i8ptrty);
+  dev_free_fnty := LLVMFunctionType(voidty, param_arr, 1, 0);
+  dev_free_fn := LLVMAddFunction(modl, MakeCStr('pas_dev_free'), dev_free_fnty);
 
   byval_kind_id := LLVMGetEnumAttributeKindForName(MakeCStr('byval'), 5);
   align_kind_id := LLVMGetEnumAttributeKindForName(MakeCStr('align'), 5);

@@ -728,6 +728,21 @@ BEGIN
   ELSE IF nt = 'StringLiteral' THEN CheckExpr := TK_STRING
   ELSE IF nt = 'NilLiteral' THEN CheckExpr := TK_POINTER
   ELSE IF nt = 'SizeofExpr' THEN CheckExpr := TK_INTEGER
+  ELSE IF nt = 'AdrExpr' THEN
+  BEGIN
+    { ADR <var>: address-of a bare variable. This stage's type model has no
+      distinct ADRMEM tag or per-declaration pointer flavor/space (unlike
+      codegen.pas's own richer table) -- TK_POINTER is the same coarse tag
+      NilLiteral above already uses for every other pointer-shaped result. }
+    si := LookupSymbol(GetStr(node, 'name'));
+    IF si = 0 THEN
+    BEGIN
+      AddError('Undefined identifier');
+      CheckExpr := TK_UNKNOWN;
+    END
+    ELSE
+      CheckExpr := TK_POINTER;
+  END
   ELSE IF nt = 'Identifier' THEN
   BEGIN
     name := GetStr(node, 'name');
