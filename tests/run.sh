@@ -44,11 +44,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ ${#TEST_FILES[@]} -eq 0 ]; then
-  mapfile -t TEST_FILES < <(find tests/golden -name '*.pas' | sort)
+  FIXTURE_DIRS=()
+  for d in tests/golden tests/integration tests/dialect; do
+    [ -d "$d" ] && FIXTURE_DIRS+=("$d")
+  done
+  mapfile -t TEST_FILES < <(find "${FIXTURE_DIRS[@]}" -name '*.pas' | sort)
 fi
 
 if [ ${#TEST_FILES[@]} -eq 0 ]; then
-  echo "No tests found in tests/golden/."
+  echo "No tests found in tests/golden/, tests/integration/, or tests/dialect/."
   exit 0
 fi
 
@@ -79,8 +83,22 @@ run_single_test() {
   local actual_out="$work_dir/$base_name.actual.out"
   local actual_err="$work_dir/$base_name.actual.err"
 
+  # A sibling <base>.build.sh, if present, replaces the plain single-file
+  # driver invocation. It's invoked as `build.sh <abs-driver> <abs-test-bin>`
+  # from the fixture's own directory, and must produce an executable at
+  # <abs-test-bin>. This exists for fixtures needing more than one
+  # compilation unit (e.g. a UNIT's IMPLEMENTATION linked into a host
+  # PROGRAM), which the driver alone doesn't support in one invocation.
+  local build_script="$test_dir/$base_name.build.sh"
   local compile_code=0
-  "$DRIVER" "$test_src" -o "$test_bin" > "$work_dir/compile.out" 2> "$work_dir/compile.err" || compile_code=$?
+  if [ -f "$build_script" ]; then
+    local abs_driver
+    abs_driver="$(realpath "$DRIVER")"
+    (cd "$test_dir" && bash "$(basename "$build_script")" "$abs_driver" "$test_bin") \
+      > "$work_dir/compile.out" 2> "$work_dir/compile.err" || compile_code=$?
+  else
+    "$DRIVER" "$test_src" -o "$test_bin" > "$work_dir/compile.out" 2> "$work_dir/compile.err" || compile_code=$?
+  fi
 
   # Negative compilation test
   if [ "$exp_code" -ne 0 ] && [ ! -f "$expected_out" ]; then
@@ -104,8 +122,18 @@ run_single_test() {
     return 1
   fi
 
+  local stdin_file="$test_dir/$base_name.stdin"
+  local args_file="$test_dir/$base_name.args"
+  local run_args=()
+  if [ -f "$args_file" ]; then
+    mapfile -t run_args < "$args_file"
+  fi
   local run_code=0
-  "$test_bin" > "$actual_out" 2> "$actual_err" || run_code=$?
+  if [ -f "$stdin_file" ]; then
+    "$test_bin" "${run_args[@]}" < "$stdin_file" > "$actual_out" 2> "$actual_err" || run_code=$?
+  else
+    "$test_bin" "${run_args[@]}" > "$actual_out" 2> "$actual_err" || run_code=$?
+  fi
 
   if [ "$run_code" -ne "$exp_code" ]; then
     echo "FAIL: $test_src (expected exit code $exp_code, got $run_code)" >&2

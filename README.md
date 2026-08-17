@@ -24,7 +24,7 @@ Install these packages before you build the toolchain (for example, on Debian or
 - `runtime/`: C runtime static library and headers (`libpascalrt.a`, `pascalrt.h`).
 - `driver/`: Native compiler driver in C (`main.c`).
 - `bin/`: Compiler driver (`pascal1981-native`, alias `pascal1981`) and stage binaries (`lexer`, `parser`, `typechecker`, `codegen`).
-- `scripts/`: Build scripts (`build-stage.sh`), bootstrap scripts (`bootstrap.sh`), formatting scripts (`beautify.sh`), and git hooks.
+- `scripts/`: Build scripts (`build-stage.sh`), formatting scripts (`beautify.sh`), and git hooks (run `git config core.hooksPath scripts/hooks` once per clone to enable the pre-commit formatting hook — it's local config, so a fresh checkout won't run it until you do). The multi-generation bootstrap itself is driven by the root `Makefile`'s `bootstrap` target, not a standalone script.
 - `tests/`: Test suites (golden files, unit tests, integration tests, dialect fixtures).
 
 ## Building

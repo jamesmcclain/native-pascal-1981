@@ -1,0 +1,15 @@
+(*$INCLUDE:'units_basic.mathutil.inc'*)
+IMPLEMENTATION OF mathutil;
+
+FUNCTION Square(x: INTEGER): INTEGER;
+BEGIN
+  Square := x * x;
+END;
+
+FUNCTION Cube(x: INTEGER): INTEGER;
+BEGIN
+  Cube := x * x * x;
+END;
+
+BEGIN
+END.
