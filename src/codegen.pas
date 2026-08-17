@@ -3241,20 +3241,167 @@ BEGIN
   EvalPrintfIntArg := v;
 END;
 
+PROCEDURE EmitStringWriteArg(addr: ADRMEM; tid: INTEGER; have_width: BOOLEAN; width_val: ADRMEM;
+  VAR fmt: Str255; vals: ADRMEM; VAR vi: INTEGER32);
+{ Appends a %.*s (or %*.*s with a width) format spec plus its (len, chars)
+  value pair for an LSTRING/STRING value already resolved to an address --
+  shared by the bare-Identifier and Designator (array/field selector) WRITE
+  argument paths, which differ only in how they got that address. }
+VAR
+  gep_idx, len_ptr, len_val, chars_ptr: ADRMEM;
+BEGIN
+  IF TypeKind(tid) = TK_LSTRING THEN
+  BEGIN
+    gep_idx := AllocPtrArray(2);
+    SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+    SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
+    len_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(tid), addr, gep_idx, 2, MakeCStr(''));
+    len_val := LLVMBuildLoad2(builder, i8ty, len_ptr, MakeCStr(''));
+    len_val := LLVMBuildZExt(builder, len_val, i32ty, MakeCStr(''));
+    gep_idx := AllocPtrArray(2);
+    SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+    SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 1, 0));
+    chars_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(tid), addr, gep_idx, 2, MakeCStr(''));
+  END
+  ELSE
+  BEGIN
+    len_val := LLVMConstInt(i32ty, types[tid].hi, 0);
+    gep_idx := AllocPtrArray(2);
+    SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+    SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
+    chars_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(tid), addr, gep_idx, 2, MakeCStr(''));
+  END;
+  IF have_width THEN
+  BEGIN
+    CONCAT(fmt, '%*.*s');
+    SetPtrArrayElem(vals, vi, width_val);
+    vi := vi + 1;
+  END
+  ELSE
+    CONCAT(fmt, '%.*s');
+  SetPtrArrayElem(vals, vi, len_val);
+  vi := vi + 1;
+  SetPtrArrayElem(vals, vi, chars_ptr);
+  vi := vi + 1;
+END;
+
+PROCEDURE EmitScalarWriteArg(in_v: ADRMEM; tid: INTEGER; have_width, have_prec: BOOLEAN;
+  width_val, prec_val: ADRMEM; VAR fmt: Str255; vals: ADRMEM; VAR vi: INTEGER32);
+{ The generic INTEGER/WORD/REAL/CHAR/BOOLEAN WRITE-argument formatter,
+  shared by every WRITE argument shape that isn't itself string-typed
+  (non-string Identifier, Designator, and any other expression kind).
+  Value parameters can't be reassigned in this dialect (mirrors the
+  reference's own codegen_assign_stmt restriction), hence out_v as a
+  separate local rather than reusing in_v. }
+VAR
+  out_v: ADRMEM;
+  handled_own_args: BOOLEAN;
+  is_true, bool_str: ADRMEM;
+BEGIN
+  out_v := in_v;
+  handled_own_args := FALSE;
+  IF tid = TK_INTEGER THEN
+  BEGIN
+    out_v := LLVMBuildSExt(builder, in_v, i32ty, MakeCStr(''));
+    IF have_width THEN CONCAT(fmt, '%*d') ELSE CONCAT(fmt, '%d');
+  END
+  ELSE IF tid = TK_WORD THEN
+  BEGIN
+    out_v := LLVMBuildZExt(builder, in_v, i32ty, MakeCStr(''));
+    IF have_width THEN CONCAT(fmt, '%*u') ELSE CONCAT(fmt, '%u');
+  END
+  ELSE IF tid = TK_INTEGER8 THEN
+  BEGIN
+    out_v := LLVMBuildSExt(builder, in_v, i32ty, MakeCStr(''));
+    IF have_width THEN CONCAT(fmt, '%*d') ELSE CONCAT(fmt, '%d');
+  END
+  ELSE IF tid = TK_WORD8 THEN
+  BEGIN
+    out_v := LLVMBuildZExt(builder, in_v, i32ty, MakeCStr(''));
+    IF have_width THEN CONCAT(fmt, '%*u') ELSE CONCAT(fmt, '%u');
+  END
+  ELSE IF tid = TK_INTEGER32 THEN
+  BEGIN
+    IF have_width THEN CONCAT(fmt, '%*d') ELSE CONCAT(fmt, '%d');
+  END
+  ELSE IF tid = TK_WORD32 THEN
+  BEGIN
+    IF have_width THEN CONCAT(fmt, '%*u') ELSE CONCAT(fmt, '%u');
+  END
+  ELSE IF tid = TK_INTEGER64 THEN
+  BEGIN
+    IF have_width THEN CONCAT(fmt, '%*lld') ELSE CONCAT(fmt, '%lld');
+  END
+  ELSE IF tid = TK_WORD64 THEN
+  BEGIN
+    IF have_width THEN CONCAT(fmt, '%*llu') ELSE CONCAT(fmt, '%llu');
+  END
+  ELSE IF (tid = TK_REAL) OR (tid = TK_REAL32) THEN
+  BEGIN
+    IF tid = TK_REAL32 THEN out_v := LLVMBuildFPExt(builder, in_v, dblty, MakeCStr(''));
+    IF have_prec THEN
+    BEGIN
+      CONCAT(fmt, '%*.*f');
+      IF have_width THEN SetPtrArrayElem(vals, vi, width_val)
+      ELSE SetPtrArrayElem(vals, vi, LLVMConstInt(i32ty, 14, 0));
+      vi := vi + 1;
+      SetPtrArrayElem(vals, vi, prec_val);
+      vi := vi + 1;
+    END
+    ELSE IF have_width THEN
+    BEGIN
+      CONCAT(fmt, '%*E');
+      SetPtrArrayElem(vals, vi, width_val);
+      vi := vi + 1;
+    END
+    ELSE
+      CONCAT(fmt, '%14.7E');
+    SetPtrArrayElem(vals, vi, out_v);
+    vi := vi + 1;
+    handled_own_args := TRUE;
+  END
+  ELSE IF tid = TK_CHAR THEN
+  BEGIN
+    IF have_width THEN CONCAT(fmt, '%*c') ELSE CONCAT(fmt, '%c');
+  END
+  ELSE IF tid = TK_BOOLEAN THEN
+  BEGIN
+    is_true := LLVMBuildICmp(builder, LLVMIntNE, in_v, LLVMConstInt(i1ty, 0, 0), MakeCStr(''));
+    bool_str := LLVMBuildSelect(builder, is_true,
+      LLVMBuildGlobalStringPtr(builder, MakeCStr('TRUE'), MakeCStr('booltrue')),
+      LLVMBuildGlobalStringPtr(builder, MakeCStr('FALSE'), MakeCStr('boolfalse')),
+      MakeCStr(''));
+    out_v := bool_str;
+    IF have_width THEN CONCAT(fmt, '%*s') ELSE CONCAT(fmt, '%s');
+  END
+  ELSE
+    AbortWith('codegen: unsupported WRITE argument type');
+  IF NOT handled_own_args THEN
+  BEGIN
+    IF have_width THEN
+    BEGIN
+      SetPtrArrayElem(vals, vi, width_val);
+      vi := vi + 1;
+    END;
+    SetPtrArrayElem(vals, vi, out_v);
+    vi := vi + 1;
+  END;
+END;
+
 PROCEDURE CodegenWriteArgs(args: ADRMEM; newline: BOOLEAN);
 VAR
   nargs, i: INTEGER32;
   fmt: Str255;
   arg_node, expr, width_node, prec_node: ADRMEM;
   vals: ADRMEM;
-  v, width_val, prec_val, is_true, bool_str: ADRMEM;
+  v, width_val, prec_val: ADRMEM;
   strval: Str255;
   call_ret: ADRMEM;
   vi: INTEGER32;
-  addr, len_ptr, chars_ptr, gep_idx, len_val: ADRMEM;
+  addr: ADRMEM;
   lstr_tid: INTEGER;
   symi: INTEGER32;
-  is_lstring, is_string, have_width, have_prec, handled_own_args: BOOLEAN;
+  is_lstring, is_string, have_width, have_prec: BOOLEAN;
 BEGIN
   nargs := ArrSize(args);
   fmt := '';
@@ -3311,243 +3458,34 @@ BEGIN
           lstr_tid := symbols[symi].tk;
         END;
       END;
-      IF is_lstring THEN
-      BEGIN
-        gep_idx := AllocPtrArray(2);
-        SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-        SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
-        len_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(lstr_tid), addr, gep_idx, 2, MakeCStr(''));
-        len_val := LLVMBuildLoad2(builder, i8ty, len_ptr, MakeCStr(''));
-        len_val := LLVMBuildZExt(builder, len_val, i32ty, MakeCStr(''));
-        gep_idx := AllocPtrArray(2);
-        SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-        SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 1, 0));
-        chars_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(lstr_tid), addr, gep_idx, 2, MakeCStr(''));
-        IF have_width THEN
-        BEGIN
-          CONCAT(fmt, '%*.*s');
-          SetPtrArrayElem(vals, vi, width_val);
-          vi := vi + 1;
-        END
-        ELSE
-          CONCAT(fmt, '%.*s');
-        SetPtrArrayElem(vals, vi, len_val);
-        vi := vi + 1;
-        SetPtrArrayElem(vals, vi, chars_ptr);
-        vi := vi + 1;
-      END
-      ELSE IF is_string THEN
-      BEGIN
-        len_val := LLVMConstInt(i32ty, types[lstr_tid].hi, 0);
-        gep_idx := AllocPtrArray(2);
-        SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-        SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
-        chars_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(lstr_tid), addr, gep_idx, 2, MakeCStr(''));
-        IF have_width THEN
-        BEGIN
-          CONCAT(fmt, '%*.*s');
-          SetPtrArrayElem(vals, vi, width_val);
-          vi := vi + 1;
-        END
-        ELSE
-          CONCAT(fmt, '%.*s');
-        SetPtrArrayElem(vals, vi, len_val);
-        vi := vi + 1;
-        SetPtrArrayElem(vals, vi, chars_ptr);
-        vi := vi + 1;
-      END
+      IF is_lstring OR is_string THEN
+        EmitStringWriteArg(addr, lstr_tid, have_width, width_val, fmt, vals, vi)
       ELSE
       BEGIN
         v := CodegenExpr(expr);
-        handled_own_args := FALSE;
-        IF last_val_tk = TK_INTEGER THEN
-        BEGIN
-          v := LLVMBuildSExt(builder, v, i32ty, MakeCStr(''));
-          IF have_width THEN CONCAT(fmt, '%*d') ELSE CONCAT(fmt, '%d');
-        END
-        ELSE IF last_val_tk = TK_WORD THEN
-        BEGIN
-          { WORD prints unsigned, zero-extended, matching the Python
-            reference's io_write_read.py i16 branch (pas_ty is WORD/WORD16
-            -> conv='u', zext to i32). }
-          v := LLVMBuildZExt(builder, v, i32ty, MakeCStr(''));
-          IF have_width THEN CONCAT(fmt, '%*u') ELSE CONCAT(fmt, '%u');
-        END
-        ELSE IF last_val_tk = TK_INTEGER8 THEN
-        BEGIN
-          v := LLVMBuildSExt(builder, v, i32ty, MakeCStr(''));
-          IF have_width THEN CONCAT(fmt, '%*d') ELSE CONCAT(fmt, '%d');
-        END
-        ELSE IF last_val_tk = TK_WORD8 THEN
-        BEGIN
-          v := LLVMBuildZExt(builder, v, i32ty, MakeCStr(''));
-          IF have_width THEN CONCAT(fmt, '%*u') ELSE CONCAT(fmt, '%u');
-        END
-        ELSE IF last_val_tk = TK_INTEGER32 THEN
-        BEGIN
-          IF have_width THEN CONCAT(fmt, '%*d') ELSE CONCAT(fmt, '%d');
-        END
-        ELSE IF last_val_tk = TK_WORD32 THEN
-        BEGIN
-          IF have_width THEN CONCAT(fmt, '%*u') ELSE CONCAT(fmt, '%u');
-        END
-        ELSE IF last_val_tk = TK_INTEGER64 THEN
-        BEGIN
-          IF have_width THEN CONCAT(fmt, '%*lld') ELSE CONCAT(fmt, '%lld');
-        END
-        ELSE IF last_val_tk = TK_WORD64 THEN
-        BEGIN
-          IF have_width THEN CONCAT(fmt, '%*llu') ELSE CONCAT(fmt, '%llu');
-        END
-        ELSE IF (last_val_tk = TK_REAL) OR (last_val_tk = TK_REAL32) THEN
-        BEGIN
-          { REAL/REAL32 is the only WRITE argument kind that ever consults
-            precision, matching the reference: width:precision together ->
-            %*.*f (width defaults to 14, precision to 0, when either is
-            omitted); width alone -> %*E; neither -> the faithful-1981
-            default %14.7E. Builds its own vals entries directly (up to two
-            leading ints, not the shared tail's at-most-one) and sets
-            handled_own_args so the shared tail below skips it. }
-          IF last_val_tk = TK_REAL32 THEN v := LLVMBuildFPExt(builder, v, dblty, MakeCStr(''));
-          IF have_prec THEN
-          BEGIN
-            CONCAT(fmt, '%*.*f');
-            IF have_width THEN SetPtrArrayElem(vals, vi, width_val)
-            ELSE SetPtrArrayElem(vals, vi, LLVMConstInt(i32ty, 14, 0));
-            vi := vi + 1;
-            SetPtrArrayElem(vals, vi, prec_val);
-            vi := vi + 1;
-          END
-          ELSE IF have_width THEN
-          BEGIN
-            CONCAT(fmt, '%*E');
-            SetPtrArrayElem(vals, vi, width_val);
-            vi := vi + 1;
-          END
-          ELSE
-            CONCAT(fmt, '%14.7E');
-          SetPtrArrayElem(vals, vi, v);
-          vi := vi + 1;
-          handled_own_args := TRUE;
-        END
-        ELSE IF last_val_tk = TK_CHAR THEN
-        BEGIN
-          IF have_width THEN CONCAT(fmt, '%*c') ELSE CONCAT(fmt, '%c');
-        END
-        ELSE IF last_val_tk = TK_BOOLEAN THEN
-        BEGIN
-          is_true := LLVMBuildICmp(builder, LLVMIntNE, v, LLVMConstInt(i1ty, 0, 0), MakeCStr(''));
-          bool_str := LLVMBuildSelect(builder, is_true,
-            LLVMBuildGlobalStringPtr(builder, MakeCStr('TRUE'), MakeCStr('booltrue')),
-            LLVMBuildGlobalStringPtr(builder, MakeCStr('FALSE'), MakeCStr('boolfalse')),
-            MakeCStr(''));
-          v := bool_str;
-          IF have_width THEN CONCAT(fmt, '%*s') ELSE CONCAT(fmt, '%s');
-        END
-        ELSE
-          AbortWith('codegen: unsupported WRITE argument type');
-        IF NOT handled_own_args THEN
-        BEGIN
-          IF have_width THEN
-          BEGIN
-            SetPtrArrayElem(vals, vi, width_val);
-            vi := vi + 1;
-          END;
-          SetPtrArrayElem(vals, vi, v);
-          vi := vi + 1;
-        END;
+        EmitScalarWriteArg(v, last_val_tk, have_width, have_prec, width_val, prec_val, fmt, vals, vi);
+      END;
+    END
+    ELSE IF NodeType(expr) = 'Designator' THEN
+    BEGIN
+      { A single ComputeDesignatorAddress call -- reused for both the
+        string and scalar cases below -- so an array-index/field-selector
+        chain with a side-effecting sub-expression is only ever evaluated
+        once. }
+      addr := ComputeDesignatorAddress(expr);
+      lstr_tid := last_val_tk;
+      IF (TypeKind(lstr_tid) = TK_LSTRING) OR (TypeKind(lstr_tid) = TK_STRING) THEN
+        EmitStringWriteArg(addr, lstr_tid, have_width, width_val, fmt, vals, vi)
+      ELSE
+      BEGIN
+        v := LLVMBuildLoad2(builder, LLVMTypeForTk(lstr_tid), addr, MakeCStr(''));
+        EmitScalarWriteArg(v, lstr_tid, have_width, have_prec, width_val, prec_val, fmt, vals, vi);
       END;
     END
     ELSE
     BEGIN
       v := CodegenExpr(expr);
-      handled_own_args := FALSE;
-      IF last_val_tk = TK_INTEGER THEN
-      BEGIN
-        v := LLVMBuildSExt(builder, v, i32ty, MakeCStr(''));
-        IF have_width THEN CONCAT(fmt, '%*d') ELSE CONCAT(fmt, '%d');
-      END
-      ELSE IF last_val_tk = TK_WORD THEN
-      BEGIN
-        v := LLVMBuildZExt(builder, v, i32ty, MakeCStr(''));
-        IF have_width THEN CONCAT(fmt, '%*u') ELSE CONCAT(fmt, '%u');
-      END
-      ELSE IF last_val_tk = TK_INTEGER8 THEN
-      BEGIN
-        v := LLVMBuildSExt(builder, v, i32ty, MakeCStr(''));
-        IF have_width THEN CONCAT(fmt, '%*d') ELSE CONCAT(fmt, '%d');
-      END
-      ELSE IF last_val_tk = TK_WORD8 THEN
-      BEGIN
-        v := LLVMBuildZExt(builder, v, i32ty, MakeCStr(''));
-        IF have_width THEN CONCAT(fmt, '%*u') ELSE CONCAT(fmt, '%u');
-      END
-      ELSE IF last_val_tk = TK_INTEGER32 THEN
-      BEGIN
-        IF have_width THEN CONCAT(fmt, '%*d') ELSE CONCAT(fmt, '%d');
-      END
-      ELSE IF last_val_tk = TK_WORD32 THEN
-      BEGIN
-        IF have_width THEN CONCAT(fmt, '%*u') ELSE CONCAT(fmt, '%u');
-      END
-      ELSE IF last_val_tk = TK_INTEGER64 THEN
-      BEGIN
-        IF have_width THEN CONCAT(fmt, '%*lld') ELSE CONCAT(fmt, '%lld');
-      END
-      ELSE IF last_val_tk = TK_WORD64 THEN
-      BEGIN
-        IF have_width THEN CONCAT(fmt, '%*llu') ELSE CONCAT(fmt, '%llu');
-      END
-      ELSE IF (last_val_tk = TK_REAL) OR (last_val_tk = TK_REAL32) THEN
-      BEGIN
-        IF last_val_tk = TK_REAL32 THEN v := LLVMBuildFPExt(builder, v, dblty, MakeCStr(''));
-        IF have_prec THEN
-        BEGIN
-          CONCAT(fmt, '%*.*f');
-          IF have_width THEN SetPtrArrayElem(vals, vi, width_val)
-          ELSE SetPtrArrayElem(vals, vi, LLVMConstInt(i32ty, 14, 0));
-          vi := vi + 1;
-          SetPtrArrayElem(vals, vi, prec_val);
-          vi := vi + 1;
-        END
-        ELSE IF have_width THEN
-        BEGIN
-          CONCAT(fmt, '%*E');
-          SetPtrArrayElem(vals, vi, width_val);
-          vi := vi + 1;
-        END
-        ELSE
-          CONCAT(fmt, '%14.7E');
-        SetPtrArrayElem(vals, vi, v);
-        vi := vi + 1;
-        handled_own_args := TRUE;
-      END
-      ELSE IF last_val_tk = TK_CHAR THEN
-      BEGIN
-        IF have_width THEN CONCAT(fmt, '%*c') ELSE CONCAT(fmt, '%c');
-      END
-      ELSE IF last_val_tk = TK_BOOLEAN THEN
-      BEGIN
-        is_true := LLVMBuildICmp(builder, LLVMIntNE, v, LLVMConstInt(i1ty, 0, 0), MakeCStr(''));
-        bool_str := LLVMBuildSelect(builder, is_true,
-          LLVMBuildGlobalStringPtr(builder, MakeCStr('TRUE'), MakeCStr('booltrue')),
-          LLVMBuildGlobalStringPtr(builder, MakeCStr('FALSE'), MakeCStr('boolfalse')),
-          MakeCStr(''));
-        v := bool_str;
-        IF have_width THEN CONCAT(fmt, '%*s') ELSE CONCAT(fmt, '%s');
-      END
-      ELSE
-        AbortWith('codegen: unsupported WRITE argument type');
-      IF NOT handled_own_args THEN
-      BEGIN
-        IF have_width THEN
-        BEGIN
-          SetPtrArrayElem(vals, vi, width_val);
-          vi := vi + 1;
-        END;
-        SetPtrArrayElem(vals, vi, v);
-        vi := vi + 1;
-      END;
+      EmitScalarWriteArg(v, last_val_tk, have_width, have_prec, width_val, prec_val, fmt, vals, vi);
     END;
   END;
   IF newline THEN AppendChar(fmt, CHR(10));

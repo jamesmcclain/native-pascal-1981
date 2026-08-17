@@ -3,7 +3,7 @@ TYPE
   Name = LSTRING(16);
 VAR
   names: ARRAY [1..3] OF Name;
-  a, b, c, tmp: Name;
+  a, b, c: Name;
 BEGIN
   names[1] := 'alpha';
   names[2] := 'beta';
@@ -23,7 +23,7 @@ BEGIN
   ELSE
     WRITELN('a differs from c');
 
-  tmp := names[1]; WRITELN(tmp);
-  tmp := names[2]; WRITELN(tmp);
-  tmp := names[3]; WRITELN(tmp);
+  WRITELN(names[1]);
+  WRITELN(names[2]);
+  WRITELN(names[3]);
 END.
