@@ -321,6 +321,13 @@ CONST
   TK_POINTER = 17;
   TK_STRING  = 18;
   TK_SET     = 19;
+  TK_FILE    = 20; { elem_tid holds the element type (CHAR for TEXT); .hi
+    repurposed as the structure flag, 0 = BINARY (FILE OF T) / 1 = ASCII
+    (the predeclared TEXT type) -- mirrors the reference's FCB `structure`
+    field and typechecker.pas's own aux2 repurposing for the same fact.
+    The variable's own storage (llvm_ty) is always a bare i8* pointing at a
+    separately entry-alloca'd FCB + inline buffer, matching the reference's
+    _init_file_storage: the handle the rest of codegen sees is opaque. }
 
   MAX_SYMBOLS = 500;
   MAX_SCOPES = 64;
@@ -474,6 +481,37 @@ VAR
     pas_dev_alloc/copy_to/copy_from/free exactly like malloc/free above --
     the CPU shim's stand-ins (malloc/memcpy/free) today, the real CUDA
     driver path when linked against cuda_launch.c instead. }
+  filefcbty: ADRMEM; { the file-control-block layout, matching the reference's
+    file_fcb_type and runtime/pascalrt.h's struct pas_file_fcb exactly:
+    i32 elem_size, i32 structure, i32 touched, i32 mode, i8* buffer,
+    i8* handle, i8* name, i32 filemode, i8 trap, i32 errs -- ten fields,
+    in that order. }
+  file_reset_fnty, file_reset_fn: ADRMEM;
+  file_rewrite_fnty, file_rewrite_fn: ADRMEM;
+  file_get_fnty, file_get_fn: ADRMEM;
+  file_put_fnty, file_put_fn: ADRMEM;
+  file_close_fnty, file_close_fn: ADRMEM;
+  file_discard_fnty, file_discard_fn: ADRMEM;
+  file_assign_fnty, file_assign_fn: ADRMEM;
+  file_eof_fnty, file_eof_fn: ADRMEM;
+  file_eoln_fnty, file_eoln_fn: ADRMEM;
+  write_fmt_fnty, write_fmt_fn: ADRMEM; { pas_write_fmt(fcb*, fmt, ...) --
+    the file-targeted counterpart of printf_fn above, same varargs shape. }
+  fread_int_fnty, fread_int_fn: ADRMEM;
+  fread_word_fnty, fread_word_fn: ADRMEM;
+  fread_real_fnty, fread_real_fn: ADRMEM;
+  fread_char_fnty, fread_char_fn: ADRMEM;
+  fread_lstring_fnty, fread_lstring_fn: ADRMEM;
+  fread_string_fnty, fread_string_fn: ADRMEM;
+  freadln_skip_fnty, freadln_skip_fn: ADRMEM;
+  read_int_fnty, read_int_fn: ADRMEM; { stdin counterparts (readq.c), used by
+    a bare READ/READLN with no leading file argument. }
+  read_word_fnty, read_word_fn: ADRMEM;
+  read_real_fnty, read_real_fn: ADRMEM;
+  read_char_fnty, read_char_fn: ADRMEM;
+  read_lstring_fnty, read_lstring_fn: ADRMEM;
+  read_string_fnty, read_string_fn: ADRMEM;
+  readln_skip_fnty, readln_skip_fn: ADRMEM;
   byval_kind_id, align_kind_id: CINT; { LLVM enum attribute kind ids for the
     [C] FOREIGN MEMORY-class byval call marshalling below, resolved once at
     init time (see byval_align_kinds_init) rather than re-resolving by name
@@ -1333,6 +1371,8 @@ BEGIN
     ELSE IF nm = 'CINT' THEN tid := TK_INTEGER32
     ELSE IF (nm = 'CLONG') OR (nm = 'CSIZE_T') THEN tid := TK_INTEGER64
     ELSE IF nm = 'CDOUBLE' THEN tid := TK_REAL
+    ELSE IF nm = 'TEXT' THEN
+      tid := RegisterType(TK_FILE, TK_CHAR, 0, 1, i8ptrty)
     ELSE IF nm = 'STRING' THEN
     BEGIN
       IF GetObjOrNil(te, 'param') = NIL THEN hi := 256
@@ -1457,6 +1497,12 @@ BEGIN
     tid := RegisterType(TK_POINTER, elem_tid, 0, 0, arr_ty);
     types[tid].ptr_space := space_code;
   END
+  ELSE IF nt = 'FileType' THEN
+  BEGIN
+    elem_tid := ResolveTypeExpr(GetObj(te, 'element_type'));
+    IF GetStr(te, 'structure') = 'ASCII' THEN hi := 1 ELSE hi := 0;
+    tid := RegisterType(TK_FILE, elem_tid, 0, hi, i8ptrty);
+  END
   ELSE IF nt = 'SetType' THEN
   BEGIN
     { Every SET type shares the same physical [4 x i64] 256-bit-bitvector
@@ -1532,7 +1578,8 @@ BEGIN
     gvar := LLVMAddGlobal(modl, LLVMTypeForTk(tk), MakeCStr(name));
     IF (TypeKind(tk) = TK_ARRAY) OR (TypeKind(tk) = TK_RECORD) OR
        (TypeKind(tk) = TK_LSTRING) OR (TypeKind(tk) = TK_POINTER) OR
-       (TypeKind(tk) = TK_STRING) OR (TypeKind(tk) = TK_SET) OR (tk = TK_ADRMEM) THEN
+       (TypeKind(tk) = TK_STRING) OR (TypeKind(tk) = TK_SET) OR
+       (TypeKind(tk) = TK_FILE) OR (tk = TK_ADRMEM) THEN
       zero := LLVMConstNull(LLVMTypeForTk(tk))
     ELSE IF (tk = TK_REAL) OR (tk = TK_REAL32) THEN zero := LLVMConstReal(LLVMTypeForTk(tk), 0.0)
     ELSE zero := LLVMConstInt(LLVMTypeForTk(tk), 0, 0);
@@ -1800,6 +1847,7 @@ BEGIN
 END;
 
 PROCEDURE ResolveStringExprCharsLen(expr: ADRMEM; VAR chars_ptr: ADRMEM; VAR len_val: ADRMEM); FORWARD;
+FUNCTION LoadFileFcbPtr(name: Str255): ADRMEM; FORWARD;
 
 FUNCTION IsStringShapedExpr(node: ADRMEM): BOOLEAN;
 { Mirrors the reference's codegen_binop._is_str_expr: a StringLiteral is
@@ -2903,6 +2951,7 @@ VAR
   result_tid: INTEGER;
   target_item, target_str, sizeof_synth: ADRMEM;
   sizeof_bytes: INTEGER32;
+  call_args: ADRMEM;
 BEGIN
   EnterExprLevel;
   nt := NodeType(node);
@@ -3199,6 +3248,17 @@ BEGIN
       res := CodegenSimpleBuiltin(nm, GetObj(node, 'args'))
     ELSE IF nm = 'DEVALLOC' THEN
       res := CodegenDevAlloc(GetObj(node, 'args'))
+    ELSE IF (nm = 'EOF') OR (nm = 'EOLN') THEN
+    BEGIN
+      call_args := AllocPtrArray(1);
+      SetPtrArrayElem(call_args, 0, LoadFileFcbPtr(GetStr(ArrItem(GetObj(node, 'args'), 0), 'name')));
+      IF nm = 'EOF' THEN
+        res := LLVMBuildCall2(builder, file_eof_fnty, file_eof_fn, call_args, 1, MakeCStr(''))
+      ELSE
+        res := LLVMBuildCall2(builder, file_eoln_fnty, file_eoln_fn, call_args, 1, MakeCStr(''));
+      res := LLVMBuildICmp(builder, LLVMIntNE, res, LLVMConstInt(i32ty, 0, 0), MakeCStr(''));
+      last_val_tk := TK_BOOLEAN;
+    END
     ELSE
     BEGIN
       symi := LookupRoutine(nm);
@@ -3388,9 +3448,25 @@ BEGIN
   END;
 END;
 
+FUNCTION LoadFileFcbPtr(name: Str255): ADRMEM;
+{ Loads a FILE variable's opaque i8* handle and bitcasts it to filefcbty* --
+  every RESET/REWRITE/GET/PUT/CLOSE/DISCARD/ASSIGN/EOF/EOLN call site's
+  first step. }
+VAR
+  symi: INTEGER32;
+  handle: ADRMEM;
+BEGIN
+  symi := LookupSym(name);
+  IF symi = 0 THEN AbortWith2('codegen: undefined variable: ', name);
+  IF TypeKind(symbols[symi].tk) <> TK_FILE THEN
+    AbortWith2('codegen: not a FILE variable: ', name);
+  handle := LLVMBuildLoad2(builder, i8ptrty, symbols[symi].llvm_val, MakeCStr(''));
+  LoadFileFcbPtr := LLVMBuildBitCast(builder, handle, LLVMPointerType(filefcbty, 0), MakeCStr(''));
+END;
+
 PROCEDURE CodegenWriteArgs(args: ADRMEM; newline: BOOLEAN);
 VAR
-  nargs, i: INTEGER32;
+  nargs, i, start_idx: INTEGER32;
   fmt: Str255;
   arg_node, expr, width_node, prec_node: ADRMEM;
   vals: ADRMEM;
@@ -3398,16 +3474,39 @@ VAR
   strval: Str255;
   call_ret: ADRMEM;
   vi: INTEGER32;
-  addr: ADRMEM;
+  addr, fcb_ptr, fmt_ptr: ADRMEM;
   lstr_tid: INTEGER;
   symi: INTEGER32;
-  is_lstring, is_string, have_width, have_prec: BOOLEAN;
+  is_lstring, is_string, have_width, have_prec, using_file: BOOLEAN;
 BEGIN
   nargs := ArrSize(args);
   fmt := '';
-  vals := AllocPtrArray(nargs * 3 + 1);
-  vi := 1;
-  FOR i := 0 TO nargs - 1 DO
+  vals := AllocPtrArray(nargs * 3 + 2);
+  { A leading WriteArg naming a TEXT file variable selects the destination
+    instead of being a data argument -- WRITE(F, ...) per the manual --
+    routing the whole call through pas_write_fmt against that file's FCB
+    instead of printf to stdout. When present, vals[0]/[1] hold the fcb
+    pointer and format string (pas_write_fmt's own leading params); data
+    arguments start one slot later than the file-less case to make room. }
+  start_idx := 0;
+  using_file := FALSE;
+  IF nargs > 0 THEN
+  BEGIN
+    arg_node := ArrItem(args, 0);
+    expr := GetObj(arg_node, 'expr');
+    IF NodeType(expr) = 'Identifier' THEN
+    BEGIN
+      symi := LookupSym(GetStr(expr, 'name'));
+      IF (symi <> 0) AND (TypeKind(symbols[symi].tk) = TK_FILE) THEN
+      BEGIN
+        fcb_ptr := LoadFileFcbPtr(GetStr(expr, 'name'));
+        using_file := TRUE;
+        start_idx := 1;
+      END;
+    END;
+  END;
+  IF using_file THEN vi := 2 ELSE vi := 1;
+  FOR i := start_idx TO nargs - 1 DO
   BEGIN
     arg_node := ArrItem(args, i);
     IF NodeType(arg_node) <> 'WriteArg' THEN
@@ -3489,8 +3588,200 @@ BEGIN
     END;
   END;
   IF newline THEN AppendChar(fmt, CHR(10));
-  SetPtrArrayElem(vals, 0, LLVMBuildGlobalStringPtr(builder, MakeCStr(fmt), MakeCStr('fmt')));
-  call_ret := LLVMBuildCall2(builder, printf_fnty, printf_fn, vals, vi, MakeCStr('callprintf'));
+  fmt_ptr := LLVMBuildGlobalStringPtr(builder, MakeCStr(fmt), MakeCStr('fmt'));
+  IF using_file THEN
+  BEGIN
+    SetPtrArrayElem(vals, 0, fcb_ptr);
+    SetPtrArrayElem(vals, 1, fmt_ptr);
+    call_ret := LLVMBuildCall2(builder, write_fmt_fnty, write_fmt_fn, vals, vi, MakeCStr('callwritefmt'));
+  END
+  ELSE
+  BEGIN
+    SetPtrArrayElem(vals, 0, fmt_ptr);
+    call_ret := LLVMBuildCall2(builder, printf_fnty, printf_fn, vals, vi, MakeCStr('callprintf'));
+  END;
+END;
+
+PROCEDURE CodegenReadArgs(args: ADRMEM; is_readln: BOOLEAN);
+{ READ/READLN, both the bare-stdin form and the leading-TEXT-file-argument
+  form (READ(F, ...)). Mirrors the reference's read-family codegen: each
+  destination argument dispatches on its own resolved type to the matching
+  pas_read_*/pas_fread_* runtime entry point (see runtime/pascalrt.h),
+  which differ only in whether an FCB* leads the argument list. INTEGER is
+  the one type needing a scratch conversion -- native INTEGER is 16-bit but
+  every read runtime function fills a 32-bit int, matching the reference's
+  own INTEGER32-based READ machinery. }
+VAR
+  nargs, i, symi: INTEGER32;
+  start_idx: INTEGER32;
+  arg0, argnode, addr, fcb_ptr, tmp32, loaded, call_args, buf_i8, cap: ADRMEM;
+  tid: INTEGER;
+  using_file: BOOLEAN;
+BEGIN
+  nargs := ArrSize(args);
+  start_idx := 0;
+  using_file := FALSE;
+  fcb_ptr := NIL;
+  IF nargs > 0 THEN
+  BEGIN
+    arg0 := ArrItem(args, 0);
+    IF NodeType(arg0) = 'Identifier' THEN
+    BEGIN
+      symi := LookupSym(GetStr(arg0, 'name'));
+      IF (symi <> 0) AND (TypeKind(symbols[symi].tk) = TK_FILE) THEN
+      BEGIN
+        fcb_ptr := LoadFileFcbPtr(GetStr(arg0, 'name'));
+        using_file := TRUE;
+        start_idx := 1;
+      END;
+    END;
+  END;
+
+  FOR i := start_idx TO nargs - 1 DO
+  BEGIN
+    argnode := ArrItem(args, i);
+    IF NodeType(argnode) = 'Identifier' THEN
+    BEGIN
+      symi := LookupSym(GetStr(argnode, 'name'));
+      IF symi = 0 THEN AbortWith2('codegen: undefined variable: ', GetStr(argnode, 'name'));
+      tid := symbols[symi].tk;
+      addr := symbols[symi].llvm_val;
+    END
+    ELSE IF NodeType(argnode) = 'Designator' THEN
+    BEGIN
+      addr := ComputeDesignatorAddress(argnode);
+      tid := last_val_tk;
+    END
+    ELSE
+    BEGIN
+      AbortWith('codegen: READ argument must be a designator');
+      addr := NIL;
+      tid := TK_UNKNOWN;
+    END;
+
+    IF TypeKind(tid) = TK_INTEGER THEN
+    BEGIN
+      tmp32 := EntryAlloca(i32ty, '');
+      IF using_file THEN
+      BEGIN
+        call_args := AllocPtrArray(2);
+        SetPtrArrayElem(call_args, 0, fcb_ptr);
+        SetPtrArrayElem(call_args, 1, tmp32);
+        loaded := LLVMBuildCall2(builder, fread_int_fnty, fread_int_fn, call_args, 2, MakeCStr(''));
+      END
+      ELSE
+      BEGIN
+        call_args := AllocPtrArray(1);
+        SetPtrArrayElem(call_args, 0, tmp32);
+        loaded := LLVMBuildCall2(builder, read_int_fnty, read_int_fn, call_args, 1, MakeCStr(''));
+      END;
+      loaded := LLVMBuildLoad2(builder, i32ty, tmp32, MakeCStr(''));
+      loaded := LLVMBuildTrunc(builder, loaded, i16ty, MakeCStr(''));
+      LLVMBuildStore(builder, loaded, addr);
+    END
+    ELSE IF TypeKind(tid) = TK_WORD THEN
+    BEGIN
+      IF using_file THEN
+      BEGIN
+        call_args := AllocPtrArray(2);
+        SetPtrArrayElem(call_args, 0, fcb_ptr);
+        SetPtrArrayElem(call_args, 1, addr);
+        loaded := LLVMBuildCall2(builder, fread_word_fnty, fread_word_fn, call_args, 2, MakeCStr(''));
+      END
+      ELSE
+      BEGIN
+        call_args := AllocPtrArray(1);
+        SetPtrArrayElem(call_args, 0, addr);
+        loaded := LLVMBuildCall2(builder, read_word_fnty, read_word_fn, call_args, 1, MakeCStr(''));
+      END;
+    END
+    ELSE IF TypeKind(tid) = TK_REAL THEN
+    BEGIN
+      IF using_file THEN
+      BEGIN
+        call_args := AllocPtrArray(2);
+        SetPtrArrayElem(call_args, 0, fcb_ptr);
+        SetPtrArrayElem(call_args, 1, addr);
+        loaded := LLVMBuildCall2(builder, fread_real_fnty, fread_real_fn, call_args, 2, MakeCStr(''));
+      END
+      ELSE
+      BEGIN
+        call_args := AllocPtrArray(1);
+        SetPtrArrayElem(call_args, 0, addr);
+        loaded := LLVMBuildCall2(builder, read_real_fnty, read_real_fn, call_args, 1, MakeCStr(''));
+      END;
+    END
+    ELSE IF TypeKind(tid) = TK_CHAR THEN
+    BEGIN
+      IF using_file THEN
+      BEGIN
+        call_args := AllocPtrArray(2);
+        SetPtrArrayElem(call_args, 0, fcb_ptr);
+        SetPtrArrayElem(call_args, 1, addr);
+        loaded := LLVMBuildCall2(builder, fread_char_fnty, fread_char_fn, call_args, 2, MakeCStr(''));
+      END
+      ELSE
+      BEGIN
+        call_args := AllocPtrArray(1);
+        SetPtrArrayElem(call_args, 0, addr);
+        loaded := LLVMBuildCall2(builder, read_char_fnty, read_char_fn, call_args, 1, MakeCStr(''));
+      END;
+    END
+    ELSE IF TypeKind(tid) = TK_LSTRING THEN
+    BEGIN
+      buf_i8 := LLVMBuildBitCast(builder, addr, i8ptrty, MakeCStr(''));
+      cap := LLVMConstInt(i32ty, types[tid].hi, 0);
+      IF using_file THEN
+      BEGIN
+        call_args := AllocPtrArray(3);
+        SetPtrArrayElem(call_args, 0, fcb_ptr);
+        SetPtrArrayElem(call_args, 1, buf_i8);
+        SetPtrArrayElem(call_args, 2, cap);
+        loaded := LLVMBuildCall2(builder, fread_lstring_fnty, fread_lstring_fn, call_args, 3, MakeCStr(''));
+      END
+      ELSE
+      BEGIN
+        call_args := AllocPtrArray(2);
+        SetPtrArrayElem(call_args, 0, buf_i8);
+        SetPtrArrayElem(call_args, 1, cap);
+        loaded := LLVMBuildCall2(builder, read_lstring_fnty, read_lstring_fn, call_args, 2, MakeCStr(''));
+      END;
+    END
+    ELSE IF TypeKind(tid) = TK_STRING THEN
+    BEGIN
+      buf_i8 := LLVMBuildBitCast(builder, addr, i8ptrty, MakeCStr(''));
+      cap := LLVMConstInt(i32ty, types[tid].hi, 0);
+      IF using_file THEN
+      BEGIN
+        call_args := AllocPtrArray(3);
+        SetPtrArrayElem(call_args, 0, fcb_ptr);
+        SetPtrArrayElem(call_args, 1, buf_i8);
+        SetPtrArrayElem(call_args, 2, cap);
+        loaded := LLVMBuildCall2(builder, fread_string_fnty, fread_string_fn, call_args, 3, MakeCStr(''));
+      END
+      ELSE
+      BEGIN
+        call_args := AllocPtrArray(2);
+        SetPtrArrayElem(call_args, 0, buf_i8);
+        SetPtrArrayElem(call_args, 1, cap);
+        loaded := LLVMBuildCall2(builder, read_string_fnty, read_string_fn, call_args, 2, MakeCStr(''));
+      END;
+    END
+    ELSE
+      AbortWith('codegen: unsupported READ argument type');
+  END;
+
+  IF is_readln THEN
+  BEGIN
+    IF using_file THEN
+    BEGIN
+      call_args := AllocPtrArray(1);
+      SetPtrArrayElem(call_args, 0, fcb_ptr);
+      loaded := LLVMBuildCall2(builder, freadln_skip_fnty, freadln_skip_fn, call_args, 1, MakeCStr(''));
+    END
+    ELSE
+      loaded := LLVMBuildCall2(builder, readln_skip_fnty, readln_skip_fn, NIL, 0, MakeCStr(''));
+  END;
 END;
 
 { ============================== statements ================================ }
@@ -4896,6 +5187,7 @@ VAR
   ptr_tid, pointee_tid: INTEGER;
   raw, casted, call_args, bound, bytes, header: ADRMEM;
   narg: INTEGER32;
+  fcb_ptr, assign_chars, assign_len: ADRMEM;
 BEGIN
   name := GetStr(stmt, 'name');
   IF name = 'LAUNCH' THEN
@@ -4908,6 +5200,43 @@ BEGIN
     CodegenWriteArgs(GetObj(stmt, 'args'), TRUE)
   ELSE IF name = 'WRITE' THEN
     CodegenWriteArgs(GetObj(stmt, 'args'), FALSE)
+  ELSE IF (name = 'READLN') THEN
+    CodegenReadArgs(GetObj(stmt, 'args'), TRUE)
+  ELSE IF (name = 'READ') THEN
+    CodegenReadArgs(GetObj(stmt, 'args'), FALSE)
+  ELSE IF (name = 'RESET') OR (name = 'REWRITE') OR (name = 'GET') OR
+          (name = 'PUT') OR (name = 'CLOSE') OR (name = 'DISCARD') THEN
+  BEGIN
+    args := GetObj(stmt, 'args');
+    arg0 := ArrItem(args, 0);
+    fcb_ptr := LoadFileFcbPtr(GetStr(arg0, 'name'));
+    call_args := AllocPtrArray(1);
+    SetPtrArrayElem(call_args, 0, fcb_ptr);
+    IF name = 'RESET' THEN
+      discard := LLVMBuildCall2(builder, file_reset_fnty, file_reset_fn, call_args, 1, MakeCStr(''))
+    ELSE IF name = 'REWRITE' THEN
+      discard := LLVMBuildCall2(builder, file_rewrite_fnty, file_rewrite_fn, call_args, 1, MakeCStr(''))
+    ELSE IF name = 'GET' THEN
+      discard := LLVMBuildCall2(builder, file_get_fnty, file_get_fn, call_args, 1, MakeCStr(''))
+    ELSE IF name = 'PUT' THEN
+      discard := LLVMBuildCall2(builder, file_put_fnty, file_put_fn, call_args, 1, MakeCStr(''))
+    ELSE IF name = 'CLOSE' THEN
+      discard := LLVMBuildCall2(builder, file_close_fnty, file_close_fn, call_args, 1, MakeCStr(''))
+    ELSE
+      discard := LLVMBuildCall2(builder, file_discard_fnty, file_discard_fn, call_args, 1, MakeCStr(''));
+  END
+  ELSE IF name = 'ASSIGN' THEN
+  BEGIN
+    args := GetObj(stmt, 'args');
+    arg0 := ArrItem(args, 0);
+    fcb_ptr := LoadFileFcbPtr(GetStr(arg0, 'name'));
+    ResolveStringExprCharsLen(ArrItem(args, 1), assign_chars, assign_len);
+    call_args := AllocPtrArray(3);
+    SetPtrArrayElem(call_args, 0, fcb_ptr);
+    SetPtrArrayElem(call_args, 1, assign_chars);
+    SetPtrArrayElem(call_args, 2, assign_len);
+    discard := LLVMBuildCall2(builder, file_assign_fnty, file_assign_fn, call_args, 3, MakeCStr(''));
+  END
   ELSE IF name = 'CONCAT' THEN
     CodegenConcat(GetObj(stmt, 'args'))
   ELSE IF name = 'COPYLST' THEN
@@ -5126,17 +5455,124 @@ BEGIN
   END;
 END;
 
+FUNCTION UpperStr(s: Str255): Str255;
+VAR
+  i, len: INTEGER;
+  res: Str255;
+  ch: CHAR;
+BEGIN
+  len := ORD(s[0]);
+  res[0] := CHR(len);
+  FOR i := 1 TO len DO
+  BEGIN
+    ch := s[i];
+    IF (ch >= 'a') AND (ch <= 'z') THEN
+      res[i] := CHR(ORD(ch) - 32)
+    ELSE
+      res[i] := ch;
+  END;
+  UpperStr := res;
+END;
+
+PROCEDURE InitFileStorage(slot: ADRMEM; elem_tid, structure: INTEGER; var_name: Str255);
+{ Allocates the FCB + inline element buffer at the file variable's own
+  storage site and stores an opaque i8* to the FCB into `slot` -- mirrors
+  the reference's _init_file_storage field for field (see filefcbty's own
+  comment for the field layout/order). INPUT/OUTPUT start pre-opened
+  (mode 1); every other file starts unopened (mode 0) until RESET/REWRITE. }
+VAR
+  fcb, buf, gep_idx, field_ptr, zero: ADRMEM;
+  elem_size, default_mode: INTEGER32;
+  uname: Str255;
+BEGIN
+  elem_size := TypeSizeBytes(elem_tid);
+  IF elem_size < 1 THEN elem_size := 1;
+  fcb := EntryAlloca(filefcbty, 'file_fcb');
+  buf := EntryAlloca(LLVMArrayType(i8ty, elem_size), 'file_buf');
+  zero := LLVMConstInt(i32ty, 0, 0);
+
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, zero);
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
+  field_ptr := LLVMBuildGEP2(builder, filefcbty, fcb, gep_idx, 2, MakeCStr(''));
+  LLVMBuildStore(builder, LLVMConstInt(i32ty, elem_size, 0), field_ptr);
+
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, zero);
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 1, 0));
+  field_ptr := LLVMBuildGEP2(builder, filefcbty, fcb, gep_idx, 2, MakeCStr(''));
+  LLVMBuildStore(builder, LLVMConstInt(i32ty, structure, 0), field_ptr);
+
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, zero);
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 2, 0));
+  field_ptr := LLVMBuildGEP2(builder, filefcbty, fcb, gep_idx, 2, MakeCStr(''));
+  LLVMBuildStore(builder, LLVMConstInt(i32ty, 0, 0), field_ptr);
+
+  uname := UpperStr(var_name);
+  IF (uname = 'INPUT') OR (uname = 'OUTPUT') THEN default_mode := 1 ELSE default_mode := 0;
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, zero);
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 3, 0));
+  field_ptr := LLVMBuildGEP2(builder, filefcbty, fcb, gep_idx, 2, MakeCStr(''));
+  LLVMBuildStore(builder, LLVMConstInt(i32ty, default_mode, 0), field_ptr);
+
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, zero);
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 4, 0));
+  field_ptr := LLVMBuildGEP2(builder, filefcbty, fcb, gep_idx, 2, MakeCStr(''));
+  LLVMBuildStore(builder, LLVMBuildBitCast(builder, buf, i8ptrty, MakeCStr('')), field_ptr);
+
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, zero);
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 5, 0));
+  field_ptr := LLVMBuildGEP2(builder, filefcbty, fcb, gep_idx, 2, MakeCStr(''));
+  LLVMBuildStore(builder, LLVMConstNull(i8ptrty), field_ptr);
+
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, zero);
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 6, 0));
+  field_ptr := LLVMBuildGEP2(builder, filefcbty, fcb, gep_idx, 2, MakeCStr(''));
+  LLVMBuildStore(builder, LLVMConstNull(i8ptrty), field_ptr);
+
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, zero);
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 7, 0));
+  field_ptr := LLVMBuildGEP2(builder, filefcbty, fcb, gep_idx, 2, MakeCStr(''));
+  LLVMBuildStore(builder, LLVMConstInt(i32ty, 0, 0), field_ptr);
+
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, zero);
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 8, 0));
+  field_ptr := LLVMBuildGEP2(builder, filefcbty, fcb, gep_idx, 2, MakeCStr(''));
+  LLVMBuildStore(builder, LLVMConstInt(i8ty, 0, 0), field_ptr);
+
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, zero);
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 9, 0));
+  field_ptr := LLVMBuildGEP2(builder, filefcbty, fcb, gep_idx, 2, MakeCStr(''));
+  LLVMBuildStore(builder, LLVMConstInt(i32ty, 0, 0), field_ptr);
+
+  LLVMBuildStore(builder, LLVMBuildBitCast(builder, fcb, i8ptrty, MakeCStr('')), slot);
+END;
+
 PROCEDURE CodegenVarDecl(decl: ADRMEM);
 VAR
   names: ADRMEM;
   tk: INTEGER;
   n, i: INTEGER32;
+  vname: Str255;
 BEGIN
   tk := ResolveTypeExpr(GetObj(decl, 'type_expr'));
   names := GetObj(decl, 'names');
   n := ArrSize(names);
   FOR i := 0 TO n - 1 DO
-    DeclareVar(CStrToStr255(cJSON_GetStringValue(ArrItem(names, i))), tk);
+  BEGIN
+    vname := CStrToStr255(cJSON_GetStringValue(ArrItem(names, i)));
+    DeclareVar(vname, tk);
+    IF TypeKind(tk) = TK_FILE THEN
+      InitFileStorage(symbols[nsymbols].llvm_val, types[tk].elem_tid, types[tk].hi, vname);
+  END;
 END;
 
 PROCEDURE ApplyLaunchBoundAttrs(decl, fn: ADRMEM);
@@ -6084,6 +6520,18 @@ BEGIN
   voidty := LLVMVoidTypeInContext(ctx);
   setty := LLVMArrayType(i64ty, 4);
   generic_set_tid := 0;
+  param_arr := AllocPtrArray(10);
+  SetPtrArrayElem(param_arr, 0, i32ty);
+  SetPtrArrayElem(param_arr, 1, i32ty);
+  SetPtrArrayElem(param_arr, 2, i32ty);
+  SetPtrArrayElem(param_arr, 3, i32ty);
+  SetPtrArrayElem(param_arr, 4, i8ptrty);
+  SetPtrArrayElem(param_arr, 5, i8ptrty);
+  SetPtrArrayElem(param_arr, 6, i8ptrty);
+  SetPtrArrayElem(param_arr, 7, i32ty);
+  SetPtrArrayElem(param_arr, 8, i8ty);
+  SetPtrArrayElem(param_arr, 9, i32ty);
+  filefcbty := LLVMStructTypeInContext(ctx, param_arr, 10, 0);
 
   { A UNIT compiland (ImplementationUnit) is a library object, not a program
     -- no main/entry block, matching the reference's is_root_compiland check
@@ -6106,6 +6554,137 @@ BEGIN
   SetPtrArrayElem(param_arr, 0, i8ptrty);
   printf_fnty := LLVMFunctionType(i32ty, param_arr, 1, 1);
   printf_fn := LLVMAddFunction(modl, MakeCStr('printf'), printf_fnty);
+
+  param_arr := AllocPtrArray(1);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  file_reset_fnty := LLVMFunctionType(voidty, param_arr, 1, 0);
+  file_reset_fn := LLVMAddFunction(modl, MakeCStr('pas_file_reset'), file_reset_fnty);
+
+  param_arr := AllocPtrArray(1);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  file_rewrite_fnty := LLVMFunctionType(voidty, param_arr, 1, 0);
+  file_rewrite_fn := LLVMAddFunction(modl, MakeCStr('pas_file_rewrite'), file_rewrite_fnty);
+
+  param_arr := AllocPtrArray(1);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  file_get_fnty := LLVMFunctionType(voidty, param_arr, 1, 0);
+  file_get_fn := LLVMAddFunction(modl, MakeCStr('pas_file_get'), file_get_fnty);
+
+  param_arr := AllocPtrArray(1);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  file_put_fnty := LLVMFunctionType(voidty, param_arr, 1, 0);
+  file_put_fn := LLVMAddFunction(modl, MakeCStr('pas_file_put'), file_put_fnty);
+
+  param_arr := AllocPtrArray(1);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  file_close_fnty := LLVMFunctionType(voidty, param_arr, 1, 0);
+  file_close_fn := LLVMAddFunction(modl, MakeCStr('pas_file_close'), file_close_fnty);
+
+  param_arr := AllocPtrArray(1);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  file_discard_fnty := LLVMFunctionType(voidty, param_arr, 1, 0);
+  file_discard_fn := LLVMAddFunction(modl, MakeCStr('pas_file_discard'), file_discard_fnty);
+
+  param_arr := AllocPtrArray(3);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  SetPtrArrayElem(param_arr, 1, i8ptrty);
+  SetPtrArrayElem(param_arr, 2, i32ty);
+  file_assign_fnty := LLVMFunctionType(voidty, param_arr, 3, 0);
+  file_assign_fn := LLVMAddFunction(modl, MakeCStr('pas_file_assign'), file_assign_fnty);
+
+  param_arr := AllocPtrArray(1);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  file_eof_fnty := LLVMFunctionType(i32ty, param_arr, 1, 0);
+  file_eof_fn := LLVMAddFunction(modl, MakeCStr('pas_file_eof'), file_eof_fnty);
+
+  param_arr := AllocPtrArray(1);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  file_eoln_fnty := LLVMFunctionType(i32ty, param_arr, 1, 0);
+  file_eoln_fn := LLVMAddFunction(modl, MakeCStr('pas_file_eoln'), file_eoln_fnty);
+
+  param_arr := AllocPtrArray(2);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  SetPtrArrayElem(param_arr, 1, i8ptrty);
+  write_fmt_fnty := LLVMFunctionType(i32ty, param_arr, 2, 1);
+  write_fmt_fn := LLVMAddFunction(modl, MakeCStr('pas_write_fmt'), write_fmt_fnty);
+
+  param_arr := AllocPtrArray(2);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  SetPtrArrayElem(param_arr, 1, LLVMPointerType(i32ty, 0));
+  fread_int_fnty := LLVMFunctionType(i32ty, param_arr, 2, 0);
+  fread_int_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_int'), fread_int_fnty);
+
+  param_arr := AllocPtrArray(2);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  SetPtrArrayElem(param_arr, 1, LLVMPointerType(i16ty, 0));
+  fread_word_fnty := LLVMFunctionType(i32ty, param_arr, 2, 0);
+  fread_word_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_word'), fread_word_fnty);
+
+  param_arr := AllocPtrArray(2);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  SetPtrArrayElem(param_arr, 1, LLVMPointerType(dblty, 0));
+  fread_real_fnty := LLVMFunctionType(i32ty, param_arr, 2, 0);
+  fread_real_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_real'), fread_real_fnty);
+
+  param_arr := AllocPtrArray(2);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  SetPtrArrayElem(param_arr, 1, LLVMPointerType(i8ty, 0));
+  fread_char_fnty := LLVMFunctionType(i32ty, param_arr, 2, 0);
+  fread_char_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_char'), fread_char_fnty);
+
+  param_arr := AllocPtrArray(3);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  SetPtrArrayElem(param_arr, 1, i8ptrty);
+  SetPtrArrayElem(param_arr, 2, i32ty);
+  fread_lstring_fnty := LLVMFunctionType(i32ty, param_arr, 3, 0);
+  fread_lstring_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_lstring'), fread_lstring_fnty);
+
+  param_arr := AllocPtrArray(3);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  SetPtrArrayElem(param_arr, 1, i8ptrty);
+  SetPtrArrayElem(param_arr, 2, i32ty);
+  fread_string_fnty := LLVMFunctionType(i32ty, param_arr, 3, 0);
+  fread_string_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_string'), fread_string_fnty);
+
+  param_arr := AllocPtrArray(1);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  freadln_skip_fnty := LLVMFunctionType(voidty, param_arr, 1, 0);
+  freadln_skip_fn := LLVMAddFunction(modl, MakeCStr('pas_freadln_skip'), freadln_skip_fnty);
+
+  param_arr := AllocPtrArray(1);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(i32ty, 0));
+  read_int_fnty := LLVMFunctionType(i32ty, param_arr, 1, 0);
+  read_int_fn := LLVMAddFunction(modl, MakeCStr('pas_read_int'), read_int_fnty);
+
+  param_arr := AllocPtrArray(1);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(i16ty, 0));
+  read_word_fnty := LLVMFunctionType(i32ty, param_arr, 1, 0);
+  read_word_fn := LLVMAddFunction(modl, MakeCStr('pas_read_word'), read_word_fnty);
+
+  param_arr := AllocPtrArray(1);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(dblty, 0));
+  read_real_fnty := LLVMFunctionType(i32ty, param_arr, 1, 0);
+  read_real_fn := LLVMAddFunction(modl, MakeCStr('pas_read_real'), read_real_fnty);
+
+  param_arr := AllocPtrArray(1);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(i8ty, 0));
+  read_char_fnty := LLVMFunctionType(i32ty, param_arr, 1, 0);
+  read_char_fn := LLVMAddFunction(modl, MakeCStr('pas_read_char'), read_char_fnty);
+
+  param_arr := AllocPtrArray(2);
+  SetPtrArrayElem(param_arr, 0, i8ptrty);
+  SetPtrArrayElem(param_arr, 1, i32ty);
+  read_lstring_fnty := LLVMFunctionType(i32ty, param_arr, 2, 0);
+  read_lstring_fn := LLVMAddFunction(modl, MakeCStr('pas_read_lstring'), read_lstring_fnty);
+
+  param_arr := AllocPtrArray(2);
+  SetPtrArrayElem(param_arr, 0, i8ptrty);
+  SetPtrArrayElem(param_arr, 1, i32ty);
+  read_string_fnty := LLVMFunctionType(i32ty, param_arr, 2, 0);
+  read_string_fn := LLVMAddFunction(modl, MakeCStr('pas_read_string'), read_string_fnty);
+
+  readln_skip_fnty := LLVMFunctionType(voidty, NIL, 0, 0);
+  readln_skip_fn := LLVMAddFunction(modl, MakeCStr('pas_readln_skip'), readln_skip_fnty);
 
   param_arr := AllocPtrArray(1);
   { C malloc takes size_t; the supported native host ABI is LP64. }

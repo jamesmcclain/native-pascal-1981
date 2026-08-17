@@ -122,8 +122,13 @@ run_single_test() {
     return 1
   fi
 
+  local stdin_file="$test_dir/$base_name.stdin"
   local run_code=0
-  "$test_bin" > "$actual_out" 2> "$actual_err" || run_code=$?
+  if [ -f "$stdin_file" ]; then
+    "$test_bin" < "$stdin_file" > "$actual_out" 2> "$actual_err" || run_code=$?
+  else
+    "$test_bin" > "$actual_out" 2> "$actual_err" || run_code=$?
+  fi
 
   if [ "$run_code" -ne "$exp_code" ]; then
     echo "FAIL: $test_src (expected exit code $exp_code, got $run_code)" >&2

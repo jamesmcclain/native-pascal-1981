@@ -101,6 +101,11 @@ CONST
   TK_ARRAY    = 8;
   TK_RECORD   = 9;
   TK_VOID     = 10;
+  TK_FILE     = 11; { aux holds the element TK (CHAR for a TEXT file);
+    aux2 repurposed as a structure flag, 0 = BINARY (FILE OF T) / 1 = ASCII
+    (the predeclared TEXT type), matching codegen.pas's own FILE
+    representation so the two files agree on what "is a TEXT file"
+    means. }
 
   MAX_SYMBOLS = 2000;
   MAX_TYPES   = 500;
@@ -317,6 +322,12 @@ BEGIN
     ELSE IF name = 'CCHAR' THEN tk := TK_CHAR
     ELSE IF (name = 'CSHORT') OR (name = 'CINT') OR (name = 'CLONG') OR (name = 'CSIZE_T') THEN tk := TK_INTEGER
     ELSE IF name = 'CDOUBLE' THEN tk := TK_REAL
+    ELSE IF name = 'TEXT' THEN
+    BEGIN
+      tk := TK_FILE;
+      aux := TK_CHAR;
+      aux2 := 1; { ASCII/TEXT structure }
+    END
     ELSE BEGIN
       ti := LookupType(name);
       IF ti = 0 THEN
@@ -341,6 +352,14 @@ BEGIN
     tk := TK_POINTER;
     aux := inner_tk;
     aux2 := inner_aux;
+  END
+  ELSE IF nt = 'FileType' THEN
+  BEGIN
+    elem_node := GetObj(node, 'element_type');
+    ResolveTypeExpr(elem_node, inner_tk, inner_aux, inner_aux2, inner_idx);
+    tk := TK_FILE;
+    aux := inner_tk;
+    IF GetStr(node, 'structure') = 'ASCII' THEN aux2 := 1 ELSE aux2 := 0;
   END
   ELSE IF nt = 'ArrayType' THEN
   BEGIN
@@ -530,7 +549,7 @@ END;
 FUNCTION CheckFuncCall(node: ADRMEM): INTEGER;
 VAR
   name: Str255;
-  args_arr: ADRMEM;
+  args_arr, warg: ADRMEM;
   nargs, i, si: INTEGER32;
   atk: INTEGER;
 BEGIN
@@ -681,6 +700,27 @@ BEGIN
       used for this file's own downstream error-checking, same as WRD
       returning TK_WORD above. }
     CheckFuncCall := TK_WORD;
+    RETURN;
+  END;
+  IF (name = 'EOF') OR (name = 'EOLN') THEN
+  BEGIN
+    IF nargs <> 1 THEN
+      AddError('EOF/EOLN requires exactly one argument')
+    ELSE BEGIN
+      warg := cJSON_GetArrayItem(args_arr, 0);
+      IF NodeType(warg) <> 'Identifier' THEN
+        AddError('EOF/EOLN argument must be a file variable')
+      ELSE BEGIN
+        si := LookupSymbol(GetStr(warg, 'name'));
+        IF si = 0 THEN
+          AddError('Undefined identifier')
+        ELSE IF symbols[si].tk <> TK_FILE THEN
+          AddError('EOF/EOLN argument must be a file variable')
+        ELSE IF (name = 'EOLN') AND ((symbols[si].aux <> TK_CHAR) OR (symbols[si].aux2 <> 1)) THEN
+          AddError('EOLN requires a TEXT file, not a binary FILE');
+      END;
+    END;
+    CheckFuncCall := TK_BOOLEAN;
     RETURN;
   END;
   si := LookupSymbol(name);
@@ -875,7 +915,7 @@ VAR
   target_node, expr_node, cond_node, args_arr, warg, wexpr: ADRMEM;
   target_tk, expr_tk, cond_tk, vi: INTEGER;
   si: INTEGER32;
-  nargs, i: INTEGER32;
+  nargs, i, start_arg: INTEGER32;
   pname: Str255;
 BEGIN
   IF node = NIL THEN
@@ -947,7 +987,29 @@ BEGIN
     nargs := cJSON_GetArraySize(args_arr);
     IF (pname = 'WRITELN') OR (pname = 'WRITE') OR (pname = 'READLN') OR (pname = 'READ') THEN
     BEGIN
-      FOR i := 0 TO nargs - 1 DO
+      { A leading file-variable argument (WRITE(F, ...) / READ(F, ...))
+        selects the destination/source file instead of being a data
+        argument -- detect and skip it, requiring it be a TEXT file (per
+        the manual, a binary FILE isn't valid here). WRITE/WRITELN args are
+        always WriteArg-wrapped (even the file selector); READ/READLN args
+        never are. }
+      start_arg := 0;
+      IF nargs > 0 THEN
+      BEGIN
+        warg := cJSON_GetArrayItem(args_arr, 0);
+        IF NodeType(warg) = 'WriteArg' THEN wexpr := GetObj(warg, 'expr') ELSE wexpr := warg;
+        IF NodeType(wexpr) = 'Identifier' THEN
+        BEGIN
+          si := LookupSymbol(GetStr(wexpr, 'name'));
+          IF (si <> 0) AND (symbols[si].tk = TK_FILE) THEN
+          BEGIN
+            IF (symbols[si].aux <> TK_CHAR) OR (symbols[si].aux2 <> 1) THEN
+              AddError('WRITE/WRITELN/READ/READLN file selector must be a TEXT file');
+            start_arg := 1;
+          END;
+        END;
+      END;
+      FOR i := start_arg TO nargs - 1 DO
       BEGIN
         warg := cJSON_GetArrayItem(args_arr, i);
         IF NodeType(warg) = 'WriteArg' THEN
@@ -955,6 +1017,47 @@ BEGIN
           wexpr := GetObj(warg, 'expr');
           IF wexpr <> NIL THEN cond_tk := CheckExpr(wexpr);
         END;
+      END;
+    END
+    ELSE IF (pname = 'RESET') OR (pname = 'REWRITE') OR (pname = 'GET') OR
+            (pname = 'PUT') OR (pname = 'CLOSE') OR (pname = 'DISCARD') THEN
+    BEGIN
+      { All six file primitives take exactly one bare file-variable argument
+        (of any structure, TEXT or binary -- unlike WRITE/READ/EOLN, none of
+        these care whether the file is TEXT). }
+      IF nargs <> 1 THEN
+        AddError('Argument count mismatch')
+      ELSE BEGIN
+        warg := cJSON_GetArrayItem(args_arr, 0);
+        IF NodeType(warg) <> 'Identifier' THEN
+          AddError('file primitive argument must be a bare file variable')
+        ELSE BEGIN
+          si := LookupSymbol(GetStr(warg, 'name'));
+          IF si = 0 THEN
+            AddError('Undefined identifier')
+          ELSE IF symbols[si].tk <> TK_FILE THEN
+            AddError('file primitive argument must be a FILE variable');
+        END;
+      END;
+    END
+    ELSE IF pname = 'ASSIGN' THEN
+    BEGIN
+      IF nargs <> 2 THEN
+        AddError('ASSIGN expects exactly two arguments')
+      ELSE BEGIN
+        warg := cJSON_GetArrayItem(args_arr, 0);
+        IF NodeType(warg) <> 'Identifier' THEN
+          AddError('ASSIGN argument 1 must be a bare file variable')
+        ELSE BEGIN
+          si := LookupSymbol(GetStr(warg, 'name'));
+          IF si = 0 THEN
+            AddError('Undefined identifier')
+          ELSE IF symbols[si].tk <> TK_FILE THEN
+            AddError('ASSIGN argument 1 must be a FILE variable');
+        END;
+        cond_tk := CheckExpr(cJSON_GetArrayItem(args_arr, 1));
+        IF (cond_tk <> TK_STRING) AND (cond_tk <> TK_CHAR) AND (cond_tk <> TK_UNKNOWN) THEN
+          AddError('ASSIGN argument 2 must be STRING, LSTRING, or CHAR');
       END;
     END
     ELSE IF (pname = 'NEW') OR (pname = 'DISPOSE') THEN
