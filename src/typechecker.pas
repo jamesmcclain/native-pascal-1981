@@ -957,6 +957,35 @@ BEGIN
         END;
       END;
     END
+    ELSE IF (pname = 'NEW') OR (pname = 'DISPOSE') THEN
+    BEGIN
+      { Mirrors codegen.pas's own arity/shape checks (its NEW/DISPOSE case
+        is the only place this dialect's short-form allocation is actually
+        lowered) so a well-typed NEW/DISPOSE call reaches codegen instead
+        of being rejected here first as "Undefined procedure" -- this file
+        previously had no handling of either name at all. NEW's second
+        (SUPER ARRAY upper-bound) argument isn't modeled here -- this file
+        has no is_super concept -- so it's checked leniently, same as
+        CONCAT below: codegen itself decides whether a second argument is
+        actually required or accepted for a given pointee type. }
+      IF ((pname = 'DISPOSE') AND (nargs <> 1)) OR
+         ((pname = 'NEW') AND (nargs <> 1) AND (nargs <> 2)) THEN
+        AddError('Argument count mismatch')
+      ELSE BEGIN
+        warg := cJSON_GetArrayItem(args_arr, 0);
+        IF NodeType(warg) <> 'Identifier' THEN
+          AddError('NEW/DISPOSE argument must be a bare pointer variable')
+        ELSE BEGIN
+          si := LookupSymbol(GetStr(warg, 'name'));
+          IF si = 0 THEN
+            AddError('Undefined identifier')
+          ELSE IF symbols[si].tk <> TK_POINTER THEN
+            AddError('NEW/DISPOSE argument must be a POINTER variable');
+        END;
+        IF nargs = 2 THEN
+          cond_tk := CheckExpr(cJSON_GetArrayItem(args_arr, 1));
+      END;
+    END
     ELSE IF pname = 'CONCAT' THEN
     BEGIN
       { CONCAT(VAR d: LSTRING-or-STRING-or-Str255; CONST s: STRING-or-

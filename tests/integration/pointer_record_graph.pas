@@ -9,14 +9,11 @@ TYPE
     ptr: PInner;
     count: INTEGER;
   END;
-FUNCTION malloc(size: CINT): PInner [C]; EXTERN;
-PROCEDURE free(p: PInner) [C]; EXTERN;
 VAR
   p1, p2: PInner;
   w: Wrapper;
 BEGIN
-  p1 := malloc(8);
-  p2 := malloc(8);
+  NEW(p1); NEW(p2);
   p1^.val := 1;
   p2^.val := 2;
 
@@ -29,5 +26,6 @@ BEGIN
   WRITELN(p2^.val);
   WRITELN(w.count);
 
-  free(p1); free(p2);
+  DISPOSE(p1);
+  DISPOSE(p2);
 END.
