@@ -25,7 +25,7 @@ GEN4_BINS := $(addprefix $(BUILD_DIR)/gen4/,$(STAGES))
 BOOTSTRAP_BINS := $(addprefix $(BIN_DIR)/,$(STAGES))
 FIXED_POINT := $(BUILD_DIR)/.fixed-point-verified
 
-.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test
+.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-bootstrap
 
 all: runtime driver bootstrap
 
@@ -89,3 +89,10 @@ cleanest: cleaner
 test: $(DRIVER_BIN)
 	./tests/run.sh
 	PYTHONPATH=. $(PYTHON) -m pytest tests/parity/
+
+# Full fixed-point regression: force a clean gen1->gen4 rebuild (not reusing
+# any cached generation) and fail if gen3/gen4 aren't byte-identical. Separate
+# from `test` because it's the slowest thing in the repo.
+test-bootstrap:
+	rm -rf $(BUILD_DIR)
+	$(MAKE) bootstrap
