@@ -23,6 +23,16 @@ BEGIN
   ELSE
     WRITELN('a differs from c');
 
+  IF names[1] = names[3] THEN
+    WRITELN('names[1] equals names[3]')
+  ELSE
+    WRITELN('names[1] differs from names[3]');
+
+  IF names[1] = names[2] THEN
+    WRITELN('names[1] equals names[2]')
+  ELSE
+    WRITELN('names[1] differs from names[2]');
+
   WRITELN(names[1]);
   WRITELN(names[2]);
   WRITELN(names[3]);

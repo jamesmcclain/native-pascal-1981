@@ -123,11 +123,16 @@ run_single_test() {
   fi
 
   local stdin_file="$test_dir/$base_name.stdin"
+  local args_file="$test_dir/$base_name.args"
+  local run_args=()
+  if [ -f "$args_file" ]; then
+    mapfile -t run_args < "$args_file"
+  fi
   local run_code=0
   if [ -f "$stdin_file" ]; then
-    "$test_bin" < "$stdin_file" > "$actual_out" 2> "$actual_err" || run_code=$?
+    "$test_bin" "${run_args[@]}" < "$stdin_file" > "$actual_out" 2> "$actual_err" || run_code=$?
   else
-    "$test_bin" > "$actual_out" 2> "$actual_err" || run_code=$?
+    "$test_bin" "${run_args[@]}" > "$actual_out" 2> "$actual_err" || run_code=$?
   fi
 
   if [ "$run_code" -ne "$exp_code" ]; then

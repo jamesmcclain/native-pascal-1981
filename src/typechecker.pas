@@ -527,7 +527,17 @@ BEGIN
     END
     ELSE IF skind = 'DEREF' THEN
     BEGIN
-      IF tk <> TK_POINTER THEN
+      IF tk = TK_FILE THEN
+      BEGIN
+        { F^: the file's buffer variable (the standard READ/WRITE-underlying
+          "current component" model, manual ch.13) -- its type is the file's
+          own element type, carried in aux exactly like a POINTER's pointee. }
+        new_tk := aux;
+        tk := new_tk;
+        aux := 0;
+        aux2 := 0;
+      END
+      ELSE IF tk <> TK_POINTER THEN
       BEGIN
         AddError('Dereference of non-pointer value');
         tk := TK_UNKNOWN;
