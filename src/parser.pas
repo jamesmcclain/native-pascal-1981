@@ -1825,6 +1825,9 @@ VAR
   packed_flag, is_super: BOOLEAN;
   nm: Str255;
   fields_arr, names_arr, field_type, max_len_expr, param_expr, values_arr: ADRMEM;
+  variants_arr, labels_arr, arm_fields_arr, arm_node, tag_type: ADRMEM;
+  tag_name: Str255;
+  has_tag: BOOLEAN;
   max_len: INTEGER;
   res_c: CINT;
 BEGIN
@@ -1855,7 +1858,8 @@ BEGIN
   BEGIN
     pos := pos + 1;
     fields_arr := cJSON_CreateArray;
-    WHILE CurKind <> 'END' DO
+    { The fixed part ends at CASE, if there is a variant part. }
+    WHILE (CurKind <> 'END') AND (CurKind <> 'CASE') DO
     BEGIN
       names_arr := ParseIdentListArr;
       Expect('COLON');
@@ -1866,9 +1870,59 @@ BEGIN
       ELSE
         BREAK;
     END;
+    variants_arr := cJSON_CreateArray;
+    tag_type := cJSON_CreateNull;
+    has_tag := FALSE;
+    tag_name := '';
+    IF CurKind = 'CASE' THEN
+    BEGIN
+      pos := pos + 1;
+      { A discriminant identifier is optional: CASE kind: INTEGER OF, or
+        CASE INTEGER OF. }
+      IF (CurKind = 'IDENTIFIER') AND (NextKind = 'COLON') THEN
+      BEGIN
+        has_tag := TRUE;
+        tag_name := CurLex;
+        pos := pos + 1;
+        Expect('COLON');
+      END;
+      tag_type := ParseType;
+      Expect('OF');
+      WHILE CurKind <> 'END' DO
+      BEGIN
+        labels_arr := ParseCaseConstantList;
+        Expect('COLON');
+        Expect('LPAREN');
+        arm_fields_arr := cJSON_CreateArray;
+        WHILE CurKind <> 'RPAREN' DO
+        BEGIN
+          names_arr := ParseIdentListArr;
+          Expect('COLON');
+          field_type := ParseType;
+          cJSON_AddItemToArray(arm_fields_arr, MakeTupleNode(names_arr, field_type));
+          IF CurKind = 'SEMICOLON' THEN
+            pos := pos + 1
+          ELSE
+            BREAK;
+        END;
+        Expect('RPAREN');
+        arm_node := CreateNode('VariantArm');
+        AddField(arm_node, 'labels', labels_arr);
+        AddField(arm_node, 'fields', arm_fields_arr);
+        cJSON_AddItemToArray(variants_arr, arm_node);
+        IF CurKind = 'SEMICOLON' THEN
+          pos := pos + 1
+        ELSE
+          BREAK;
+      END;
+    END;
     Expect('END');
     node := CreateNode('RecordType');
     AddField(node, 'fields', fields_arr);
+    AddBoolField(node, 'has_tag', has_tag);
+    AddStringField(node, 'tag_name', tag_name);
+    AddField(node, 'tag_type', tag_type);
+    AddField(node, 'variants', variants_arr);
     AddBoolField(node, 'packed', packed_flag);
     ParseType := node;
   END
