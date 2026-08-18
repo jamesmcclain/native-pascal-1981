@@ -479,6 +479,12 @@ TYPE
                       such a routine crosses the C ABI as SysV MEMORY-class
                       byval, not as the plain-Pascal first-class-aggregate
                       convention the rest of param_needs_copy documents. }
+    is_vararg: BOOLEAN; { TRUE for a [C] EXTERN routine carrying the
+                          [VARARGS] attribute -- see IsVarargsDecl. nparams
+                          is then only the FIXED prefix: the LLVM function
+                          type is variadic, a call may pass extra trailing
+                          arguments, and each of those gets C's default
+                          argument promotions applied (CodegenCallCommon). }
   END;
 
   LabelRec = RECORD
@@ -2649,6 +2655,43 @@ BEGIN
   ELSE IntFamilyWidth := 64;
 END;
 
+FUNCTION VariadicPromote(v: ADRMEM; tk: INTEGER; name: Str255): ADRMEM;
+{ C's default argument promotions (C11 6.5.2.2 p7), applied to one value in
+  a variadic call's tail -- mirrors the Python reference's
+  _c_abi_variadic_promote (c_abi.py):
+    - REAL32 (float) widens to REAL (double) via fpext.
+    - Anything narrower than C's int -- BOOLEAN (i1), CHAR/INTEGER8/WORD8
+      (i8) and this dialect's own 16-bit INTEGER/WORD -- widens to i32. The
+      extension follows the SOURCE Pascal type, not the LLVM width, which
+      cannot tell a WORD from an INTEGER: the WORD family zero-extends (a
+      WORD of 60000 must stay 60000, not become -5536) and everything else
+      sign-extends. BOOLEAN is always zero-extended.
+    - INTEGER32/WORD32, the 64-bit family, REAL, enums and pointers are
+      already at least as wide as the promoted types and pass through.
+  An aggregate has no scalar promotion at all (the reference doesn't handle
+  one either), so it is refused rather than silently mispassed. }
+BEGIN
+  IF IsAggregateTk(tk) THEN
+  BEGIN
+    AbortWith2('codegen: an aggregate cannot be a variadic argument, calling: ', name);
+    VariadicPromote := v;
+  END
+  ELSE IF tk = TK_REAL32 THEN
+    VariadicPromote := LLVMBuildFPExt(builder, v, dblty, MakeCStr(''))
+  ELSE IF tk = TK_BOOLEAN THEN
+    VariadicPromote := LLVMBuildZExt(builder, v, i32ty, MakeCStr(''))
+  ELSE IF (tk = TK_CHAR) OR (tk = TK_INTEGER8) OR (tk = TK_WORD8)
+          OR (tk = TK_INTEGER) OR (tk = TK_WORD) THEN
+  BEGIN
+    IF IsUnsignedWordTk(tk) THEN
+      VariadicPromote := LLVMBuildZExt(builder, v, i32ty, MakeCStr(''))
+    ELSE
+      VariadicPromote := LLVMBuildSExt(builder, v, i32ty, MakeCStr(''));
+  END
+  ELSE
+    VariadicPromote := v;
+END;
+
 FUNCTION CodegenShortCircuitBinOp(op: Str255; left_node, right_node: ADRMEM): ADRMEM;
 { AND THEN / OR ELSE: the right operand must not be evaluated at all when
   the left already decides the result -- e.g. typechecker.pas's own
@@ -3034,7 +3077,10 @@ BEGIN
   ELSE
   BEGIN
     nargs := ArrSize(args_arr);
-    IF nargs <> routines[ri].nparams THEN
+    { A [VARARGS] routine's nparams counts only the fixed prefix, so extra
+      trailing arguments are legal there (and only there). }
+    IF (nargs <> routines[ri].nparams)
+       AND NOT (routines[ri].is_vararg AND (nargs > routines[ri].nparams)) THEN
       AbortWith2('codegen: argument count mismatch calling: ', name);
     { A COERCED-class [C] aggregate argument expands into one LLVM argument
       per eightbyte (at most two), so the LLVM argument list can be longer
@@ -3063,7 +3109,17 @@ BEGIN
     BEGIN
       pieces_emitted := FALSE;
       arg_node := ArrItem(args_arr, i);
-      IF routines[ri].param_is_var[i + 1] THEN
+      IF i >= routines[ri].nparams THEN
+      BEGIN
+        { Variadic tail argument: there is no formal parameter at all, so
+          none of the param_is_var/param_needs_copy machinery applies (those
+          arrays only have nparams valid entries). Evaluate the argument and
+          apply C's default argument promotions, exactly as the reference's
+          codegen_c_abi_call does for the same tail. }
+        v := CodegenExpr(arg_node);
+        v := VariadicPromote(v, last_val_tk, name);
+      END
+      ELSE IF routines[ri].param_is_var[i + 1] THEN
       BEGIN
         IF NodeType(arg_node) = 'Identifier' THEN
         BEGIN
@@ -3296,7 +3352,11 @@ BEGIN
       END;
       FOR i := 0 TO nargs - 1 DO
       BEGIN
-        IF routines[ri].param_needs_copy[i + 1] THEN
+        { A variadic tail argument has no formal, so it is always exactly
+          one plain LLVM argument and carries no parameter attribute. }
+        IF i >= routines[ri].nparams THEN
+          llvm_ai := llvm_ai + 1
+        ELSE IF routines[ri].param_needs_copy[i + 1] THEN
         BEGIN
           ClassifyAggregate(routines[ri].param_tk[i + 1], agg_class, n_pieces, piece_kind, piece_bytes);
           IF agg_class = SYSV_CLASS_MEMORY THEN
@@ -7174,6 +7234,31 @@ BEGIN
 END;
 
 
+FUNCTION IsVarargsDecl(decl: ADRMEM): BOOLEAN;
+{ True for a routine carrying the [VARARGS] attribute -- the C variadic
+  ellipsis, so the declared parameters are only the fixed prefix. Only
+  meaningful on a [C] FOREIGN routine (the 1981 dialect gives a Pascal
+  routine no way to read a variadic tail), so callers pair it with
+  IsCForeignDecl and ignore it otherwise. The attribute name is already
+  canonical uppercase in the AST, exactly as IsCForeignDecl above notes, and
+  is longer than one character so it compares as a plain LSTRING. }
+VAR
+  attrs_arr, item: ADRMEM;
+  i, nattrs: INTEGER32;
+  found: BOOLEAN;
+BEGIN
+  attrs_arr := GetObj(decl, 'attributes');
+  nattrs := ArrSize(attrs_arr);
+  found := FALSE;
+  FOR i := 0 TO nattrs - 1 DO
+  BEGIN
+    item := ArrItem(attrs_arr, i);
+    IF GetStr(item, 'name') = 'VARARGS' THEN found := TRUE;
+  END;
+  IsVarargsDecl := found;
+END;
+
+
 PROCEDURE FlattenParams(params_arr: ADRMEM; VAR n: INTEGER32; VAR names: ParamNameArr;
                          VAR tks: ParamTkArr; VAR isvar: ParamVarArr; VAR needs_copy: ParamVarArr);
 { A Pascal formal-parameter section groups several names under one type
@@ -7602,7 +7687,8 @@ VAR
   existing: INTEGER32;
   ridx: INTEGER32;
   has_block_body: BOOLEAN;
-  is_c, is_exported_entry: BOOLEAN;
+  is_c, is_exported_entry, is_vararg: BOOLEAN;
+  vararg_flag: INTEGER32;
   agg_llvm_ty, byval_attr, align_attr: ADRMEM;
   llvm_idx, n_llvm: INTEGER32;
   agg_class, n_pieces, eb: INTEGER;
@@ -7623,6 +7709,9 @@ BEGIN
     decl, so the routine table's own is_c (set once, at first declaration)
     is the source of truth once ridx is known; see below. }
   is_c := IsCForeignDecl(decl);
+  { [VARARGS] only means anything across the C ABI, and (like is_c) the
+    routine table's own copy is the source of truth once ridx is known. }
+  is_vararg := is_c AND IsVarargsDecl(decl);
   is_exported_entry := GetBool(decl, 'is_exported_entry');
 
   existing := LookupRoutine(name);
@@ -7655,6 +7744,7 @@ BEGIN
     FlattenParams(params_arr, n, names, tks, isvar, needs_copy);
     routines[ridx].has_body := TRUE;
     is_c := routines[ridx].is_c; { source of truth once ridx is known -- see note above }
+    is_vararg := routines[ridx].is_vararg; { likewise }
     { The already-built fnty is reused verbatim here, so a [C] routine whose
       aggregate return was lowered to sret/coerced below already has a
       signature this branch cannot re-derive: its hidden result pointer
@@ -7789,7 +7879,11 @@ BEGIN
     ELSE IF name = 'printf' THEN BEGIN fn := printf_fn; fnty := printf_fnty; END
     ELSE
     BEGIN
-      fnty := LLVMFunctionType(ret_llvm_ty, param_llvm_types, n_llvm, 0);
+      { A [VARARGS] [C] routine gets a genuinely variadic LLVM function type
+        (trailing is_var_arg = 1), the same shape the printf/write_fmt
+        declarations in the init block above already use. }
+      IF is_vararg THEN vararg_flag := 1 ELSE vararg_flag := 0;
+      fnty := LLVMFunctionType(ret_llvm_ty, param_llvm_types, n_llvm, vararg_flag);
       fn := LLVMAddFunction(modl, MakeCStr(name), fnty);
     END;
 
@@ -7824,6 +7918,7 @@ BEGIN
     END;
     routines[ridx].has_body := has_block_body;
     routines[ridx].is_c := is_c;
+    routines[ridx].is_vararg := is_vararg;
 
     IF is_c THEN
     BEGIN

@@ -143,6 +143,11 @@ TYPE
     nparams: INTEGER;
     param_tk: ARRAY [1..MAX_PARAMS] OF INTEGER;
     ret_tk: INTEGER;
+    is_vararg: BOOLEAN;  { TRUE for a routine carrying the [VARARGS]
+                           attribute: its declared parameters are the FIXED
+                           prefix and a call may pass extra trailing
+                           arguments, which have no formal to check against
+                           (C's own variadic tail -- see CheckFuncCall). }
   END;
 
   TypeRec = RECORD
@@ -244,6 +249,7 @@ BEGIN
   symbols[nsymbols].idx_tk := idx_tk;
   symbols[nsymbols].nparams := 0;
   symbols[nsymbols].ret_tk := TK_VOID;
+  symbols[nsymbols].is_vararg := FALSE;
   DefineSymbol := nsymbols;
 END;
 
@@ -838,14 +844,20 @@ BEGIN
     CheckFuncCall := TK_UNKNOWN;
     RETURN;
   END;
-  IF nargs <> symbols[si].nparams THEN
+  { A [VARARGS] routine's declared parameters are only the fixed prefix, so
+    MORE actuals than formals is legal there (and only there); every tail
+    argument still has to be a well-formed expression, but has no formal to
+    be assignment-compatible with. }
+  IF (nargs <> symbols[si].nparams)
+     AND NOT (symbols[si].is_vararg AND (nargs > symbols[si].nparams)) THEN
     AddError('Argument count mismatch')
   ELSE
     FOR i := 0 TO nargs - 1 DO
     BEGIN
       atk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
-      IF NOT CanAssign(symbols[si].param_tk[i + 1], atk) THEN
-        AddError('Argument type mismatch');
+      IF i < symbols[si].nparams THEN
+        IF NOT CanAssign(symbols[si].param_tk[i + 1], atk) THEN
+          AddError('Argument type mismatch');
     END;
   CheckFuncCall := symbols[si].ret_tk;
 END;
@@ -1327,14 +1339,17 @@ BEGIN
           cond_tk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
       END
       ELSE BEGIN
-        IF nargs <> symbols[si].nparams THEN
+        { Same [VARARGS] arity relaxation as CheckFuncCall above. }
+        IF (nargs <> symbols[si].nparams)
+           AND NOT (symbols[si].is_vararg AND (nargs > symbols[si].nparams)) THEN
           AddError('Argument count mismatch')
         ELSE
           FOR i := 0 TO nargs - 1 DO
           BEGIN
             expr_tk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
-            IF NOT CanAssign(symbols[si].param_tk[i + 1], expr_tk) THEN
-              AddError('Argument type mismatch');
+            IF i < symbols[si].nparams THEN
+              IF NOT CanAssign(symbols[si].param_tk[i + 1], expr_tk) THEN
+                AddError('Argument type mismatch');
           END;
       END;
     END;
@@ -1407,6 +1422,9 @@ VAR
   pn, pj: INTEGER32;
   saved_func_name: Str255;
   saved_func_ret_tk, saved_func_aux, saved_func_aux2: INTEGER;
+  attrs_arr, attr_item: ADRMEM;
+  nattrs, ai: INTEGER32;
+  is_vararg: BOOLEAN;
 BEGIN
   nt := NodeType(decl);
   IF nt = 'VarDecl' THEN
@@ -1492,6 +1510,19 @@ BEGIN
       INTEGER, and the language has no implicit INTEGER32 -> INTEGER
       narrowing -- RETYPE makes the deliberate truncation explicit. }
     symbols[si].nparams := RETYPE(INTEGER, ppi);
+
+    { [VARARGS] marks the declared parameter list as a fixed prefix only.
+      Attribute names are already canonical uppercase in the AST (see
+      parser.pas ParseAttributeItem), so no case-folding is needed. }
+    is_vararg := FALSE;
+    attrs_arr := GetObj(decl, 'attributes');
+    nattrs := cJSON_GetArraySize(attrs_arr);
+    FOR ai := 0 TO nattrs - 1 DO
+    BEGIN
+      attr_item := cJSON_GetArrayItem(attrs_arr, ai);
+      IF GetStr(attr_item, 'name') = 'VARARGS' THEN is_vararg := TRUE;
+    END;
+    symbols[si].is_vararg := is_vararg;
 
     { Check the routine body (if any) in its own scope, with parameters
       bound and -- for a FUNCTION -- cur_func_name/cur_func_ret_tk/aux/aux2
