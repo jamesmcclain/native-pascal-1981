@@ -8,7 +8,7 @@ VAR
   i32, floor_div, floor_mod: INTEGER32;
   w64: WORD64;
 BEGIN
-  i32 := Base + Step;
+  i32 := Base + Step + ORD(Scale) - Scale;
   w64 := SUCC(PRED(Base)) * Scale;
   floor_div := Negative DIV Scale;
   floor_mod := Negative MOD Scale;
