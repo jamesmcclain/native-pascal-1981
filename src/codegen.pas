@@ -629,6 +629,8 @@ VAR
   in_local_scope: BOOLEAN; { FALSE while codegen'ing top-level VAR decls
                              (global storage), TRUE while inside a routine
                              body (alloca'd local storage). }
+  lowering_spliced_interface: BOOLEAN;
+  defining_implementation: BOOLEAN;
 
   routines: ARRAY [1..MAX_ROUTINES] OF RoutineRec;
   nroutines: INTEGER32;
@@ -1679,36 +1681,62 @@ PROCEDURE DeclareVar(name: Str255; tk: INTEGER);
 VAR
   gvar, zero: ADRMEM;
   i, base: INTEGER32;
-  dup: BOOLEAN;
+  dup, reuse_decl: BOOLEAN;
 BEGIN
   { Only the current scope's own slice of the symbol table can collide --
     a local is allowed (expected, even) to shadow an outer/global variable
     of the same name, matching ordinary Pascal scoping. }
   base := CurScopeBase;
   dup := FALSE;
+  reuse_decl := FALSE;
   FOR i := base + 1 TO nsymbols DO
     IF symbols[i].name = name THEN dup := TRUE;
   IF dup THEN
-    AbortWith2('codegen: duplicate declaration: ', name);
-  IF in_local_scope THEN
-    gvar := EntryAlloca(LLVMTypeForTk(tk), name)
-  ELSE
   BEGIN
-    gvar := LLVMAddGlobal(modl, LLVMTypeForTk(tk), MakeCStr(name));
-    IF (TypeKind(tk) = TK_ARRAY) OR (TypeKind(tk) = TK_RECORD) OR
-       (TypeKind(tk) = TK_LSTRING) OR (TypeKind(tk) = TK_POINTER) OR
-       (TypeKind(tk) = TK_STRING) OR (TypeKind(tk) = TK_SET) OR
-       (TypeKind(tk) = TK_FILE) OR (tk = TK_ADRMEM) THEN
-      zero := LLVMConstNull(LLVMTypeForTk(tk))
-    ELSE IF (tk = TK_REAL) OR (tk = TK_REAL32) THEN zero := LLVMConstReal(LLVMTypeForTk(tk), 0.0)
-    ELSE zero := LLVMConstInt(LLVMTypeForTk(tk), 0, 0);
-    LLVMSetInitializer(gvar, zero);
+    { An IMPLEMENTATION repeats interface VAR declarations.  The spliced
+      header created an external declaration; this is its one definition. }
+    IF (NOT in_local_scope) AND defining_implementation AND
+       (NOT lowering_spliced_interface) THEN
+    BEGIN
+      gvar := symbols[LookupSym(name)].llvm_val;
+      IF (TypeKind(tk) = TK_ARRAY) OR (TypeKind(tk) = TK_RECORD) OR
+         (TypeKind(tk) = TK_LSTRING) OR (TypeKind(tk) = TK_POINTER) OR
+         (TypeKind(tk) = TK_STRING) OR (TypeKind(tk) = TK_SET) OR
+         (TypeKind(tk) = TK_FILE) OR (tk = TK_ADRMEM) THEN
+        zero := LLVMConstNull(LLVMTypeForTk(tk))
+      ELSE IF (tk = TK_REAL) OR (tk = TK_REAL32) THEN zero := LLVMConstReal(LLVMTypeForTk(tk), 0.0)
+      ELSE zero := LLVMConstInt(LLVMTypeForTk(tk), 0, 0);
+      LLVMSetInitializer(gvar, zero);
+      reuse_decl := TRUE;
+    END;
+    IF NOT reuse_decl THEN
+      AbortWith2('codegen: duplicate declaration: ', name);
   END;
-  IF nsymbols >= MAX_SYMBOLS THEN AbortWith('codegen: too many symbols');
-  nsymbols := nsymbols + 1;
-  symbols[nsymbols].name := name;
-  symbols[nsymbols].tk := tk;
-  symbols[nsymbols].llvm_val := gvar;
+  IF NOT reuse_decl THEN
+  BEGIN
+    IF in_local_scope THEN
+      gvar := EntryAlloca(LLVMTypeForTk(tk), name)
+    ELSE
+    BEGIN
+      gvar := LLVMAddGlobal(modl, LLVMTypeForTk(tk), MakeCStr(name));
+      IF NOT lowering_spliced_interface THEN
+      BEGIN
+        IF (TypeKind(tk) = TK_ARRAY) OR (TypeKind(tk) = TK_RECORD) OR
+           (TypeKind(tk) = TK_LSTRING) OR (TypeKind(tk) = TK_POINTER) OR
+           (TypeKind(tk) = TK_STRING) OR (TypeKind(tk) = TK_SET) OR
+           (TypeKind(tk) = TK_FILE) OR (tk = TK_ADRMEM) THEN
+          zero := LLVMConstNull(LLVMTypeForTk(tk))
+        ELSE IF (tk = TK_REAL) OR (tk = TK_REAL32) THEN zero := LLVMConstReal(LLVMTypeForTk(tk), 0.0)
+        ELSE zero := LLVMConstInt(LLVMTypeForTk(tk), 0, 0);
+        LLVMSetInitializer(gvar, zero);
+      END;
+    END;
+    IF nsymbols >= MAX_SYMBOLS THEN AbortWith('codegen: too many symbols');
+    nsymbols := nsymbols + 1;
+    symbols[nsymbols].name := name;
+    symbols[nsymbols].tk := tk;
+    symbols[nsymbols].llvm_val := gvar;
+  END;
 END;
 
 { ============================ routine table =============================== }
@@ -7217,6 +7245,8 @@ BEGIN
   is_device_root := GetBool(root, 'is_device');
   is_device_compiland := is_device_root;
   is_nvptx_device := FALSE;
+  lowering_spliced_interface := FALSE;
+  defining_implementation := root_nt = 'ImplementationUnit';
   device_triple_raw := NIL;
   emit_ptx_raw := getenv(MakeCStr('PASCAL_EMIT_PTX'));
   emit_ptx := emit_ptx_raw <> NIL;
@@ -7673,7 +7703,9 @@ BEGIN
       saved_device := is_device_compiland;
       is_device_compiland := is_device_compiland OR
         GetBool(ArrItem(local_ifaces, li), 'is_device');
+      lowering_spliced_interface := TRUE;
       CodegenDeclList(GetObj(ArrItem(local_ifaces, li), 'decls'));
+      lowering_spliced_interface := FALSE;
       is_device_compiland := saved_device;
     END;
   END;
