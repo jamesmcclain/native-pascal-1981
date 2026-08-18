@@ -391,7 +391,8 @@ TYPE
     rec_tid: INTEGER;
     fname: Str255;
     field_tid: INTEGER;
-    field_index: INTEGER; { 0-based, matches the LLVM struct's GEP index }
+    field_index: INTEGER; { 0-based LLVM struct member for fixed records }
+    byte_offset: INTEGER32; { explicit offset; variant arms may overlap }
   END;
 
   ConstRec = RECORD
@@ -1267,7 +1268,7 @@ FUNCTION TypeSizeBytes(tid: INTEGER): INTEGER32;
   no-padding sum is wrong. }
 VAR
   i: INTEGER;
-  off, fa: INTEGER32;
+  off, fa, end_off: INTEGER32;
 BEGIN
   IF tid = TK_INTEGER THEN TypeSizeBytes := 2
   ELSE IF tid = TK_REAL THEN TypeSizeBytes := 8
@@ -1287,14 +1288,14 @@ BEGIN
                       * (types[tid].hi - types[tid].lo + 1)
   ELSE IF TypeKind(tid) = TK_RECORD THEN
   BEGIN
-    off := 0;
+    end_off := 0;
     FOR i := 1 TO nfields DO
       IF fields[i].rec_tid = tid THEN
       BEGIN
-        fa := TypeAlignBytes(fields[i].field_tid);
-        off := RoundUpBytes(off, fa) + TypeSizeBytes(fields[i].field_tid);
+        off := fields[i].byte_offset + TypeSizeBytes(fields[i].field_tid);
+        IF off > end_off THEN end_off := off;
       END;
-    TypeSizeBytes := RoundUpBytes(off, TypeAlignBytes(tid));
+    TypeSizeBytes := RoundUpBytes(end_off, TypeAlignBytes(tid));
   END
   ELSE IF TypeKind(tid) = TK_LSTRING THEN TypeSizeBytes := types[tid].hi + 1
   ELSE IF TypeKind(tid) = TK_STRING THEN TypeSizeBytes := types[tid].hi
@@ -1379,15 +1380,19 @@ VAR
   nm, flavor, space_name: Str255;
   nt: Str255;
   tid: INTEGER;
-  elem_tid, lo, hi, count, space_code: INTEGER;
+  elem_tid, lo, hi, space_code: INTEGER;
+  count: INTEGER32;
   arr_ty: ADRMEM;
   fields_arr, field_tuple, items, fnames_arr, ftype_expr: ADRMEM;
-  nfd, fi, fn2, fni: INTEGER;
-  field_tid: INTEGER;
+  variants_arr, arm_node, tag_type_expr: ADRMEM;
+  nfd, fi, fn2, fni, ai: INTEGER;
+  field_tid, tag_tid: INTEGER;
+  payload_align, payload_size, arm_off, fixed_off: INTEGER32;
   fname: Str255;
   elem_llvm_types: ADRMEM;
-  struct_ty: ADRMEM;
+  struct_ty, payload_ty: ADRMEM;
   field_index: INTEGER;
+  has_variants: BOOLEAN;
 BEGIN
   nt := NodeType(te);
   IF nt = 'NamedType' THEN
@@ -1461,35 +1466,82 @@ BEGIN
     IF GetBool(te, 'packed') THEN
       AbortWith('codegen: PACKED records are not supported');
     fields_arr := GetObj(te, 'fields');
+    variants_arr := GetObj(te, 'variants');
+    has_variants := ArrSize(variants_arr) > 0;
     nfd := ArrSize(fields_arr);
-    { First pass: flatten every (names, type_expr) group into one struct
-      field per name, in declaration order, and register each in `fields`.
-      Two passes because the LLVM struct type itself needs the flattened
-      element-type array built before LLVMStructTypeInContext is called. }
     field_index := 0;
+    fixed_off := 0;
     elem_llvm_types := AllocPtrArray(MAX_RECORD_FIELDS);
-    tid := RegisterType(TK_RECORD, 0, 0, 0, NIL); { placeholder; llvm_ty patched below }
+    tid := RegisterType(TK_RECORD, 0, 0, 0, NIL); { patched below }
+    { Fixed fields, including a named discriminant, are real struct members. }
     FOR fi := 0 TO nfd - 1 DO
     BEGIN
-      field_tuple := ArrItem(fields_arr, fi);
-      items := GetObj(field_tuple, 'items');
-      fnames_arr := ArrItem(items, 0);
-      ftype_expr := ArrItem(items, 1);
+      field_tuple := ArrItem(fields_arr, fi); items := GetObj(field_tuple, 'items');
+      fnames_arr := ArrItem(items, 0); ftype_expr := ArrItem(items, 1);
       field_tid := ResolveTypeExpr(ftype_expr);
-      fn2 := ArrSize(fnames_arr);
-      FOR fni := 0 TO fn2 - 1 DO
+      FOR fni := 0 TO ArrSize(fnames_arr) - 1 DO
       BEGIN
-        IF field_index >= MAX_RECORD_FIELDS THEN AbortWith('codegen: too many record fields');
+        fixed_off := RoundUpBytes(fixed_off, TypeAlignBytes(field_tid));
         fname := CStrToStr255(cJSON_GetStringValue(ArrItem(fnames_arr, fni)));
-        IF nfields >= MAX_FIELDS THEN AbortWith('codegen: too many record fields overall');
-        nfields := nfields + 1;
-        fields[nfields].rec_tid := tid;
-        fields[nfields].fname := fname;
-        fields[nfields].field_tid := field_tid;
-        fields[nfields].field_index := field_index;
+        nfields := nfields + 1; fields[nfields].rec_tid := tid; fields[nfields].fname := fname;
+        fields[nfields].field_tid := field_tid; fields[nfields].field_index := field_index;
+        fields[nfields].byte_offset := fixed_off;
         SetPtrArrayElem(elem_llvm_types, field_index, LLVMTypeForTk(field_tid));
-        field_index := field_index + 1;
+        fixed_off := fixed_off + TypeSizeBytes(field_tid); field_index := field_index + 1;
       END;
+    END;
+    IF has_variants AND GetBool(te, 'has_tag') THEN
+    BEGIN
+      tag_type_expr := GetObj(te, 'tag_type'); tag_tid := ResolveTypeExpr(tag_type_expr);
+      fixed_off := RoundUpBytes(fixed_off, TypeAlignBytes(tag_tid));
+      nfields := nfields + 1; fields[nfields].rec_tid := tid; fields[nfields].fname := GetStr(te, 'tag_name');
+      fields[nfields].field_tid := tag_tid; fields[nfields].field_index := field_index;
+      fields[nfields].byte_offset := fixed_off;
+      SetPtrArrayElem(elem_llvm_types, field_index, LLVMTypeForTk(tag_tid));
+      fixed_off := fixed_off + TypeSizeBytes(tag_tid); field_index := field_index + 1;
+    END;
+    { Every arm begins at the same aligned payload offset. }
+    payload_align := 1;
+    FOR ai := 0 TO ArrSize(variants_arr) - 1 DO
+    BEGIN
+      arm_node := ArrItem(variants_arr, ai); fields_arr := GetObj(arm_node, 'fields');
+      FOR fi := 0 TO ArrSize(fields_arr) - 1 DO
+      BEGIN
+        field_tuple := ArrItem(fields_arr, fi); items := GetObj(field_tuple, 'items');
+        field_tid := ResolveTypeExpr(ArrItem(items, 1));
+        IF TypeAlignBytes(field_tid) > payload_align THEN payload_align := TypeAlignBytes(field_tid);
+      END;
+    END;
+    fixed_off := RoundUpBytes(fixed_off, payload_align);
+    payload_size := 0;
+    FOR ai := 0 TO ArrSize(variants_arr) - 1 DO
+    BEGIN
+      arm_off := fixed_off; arm_node := ArrItem(variants_arr, ai); fields_arr := GetObj(arm_node, 'fields');
+      FOR fi := 0 TO ArrSize(fields_arr) - 1 DO
+      BEGIN
+        field_tuple := ArrItem(fields_arr, fi); items := GetObj(field_tuple, 'items'); fnames_arr := ArrItem(items, 0);
+        field_tid := ResolveTypeExpr(ArrItem(items, 1)); arm_off := RoundUpBytes(arm_off, TypeAlignBytes(field_tid));
+        FOR fni := 0 TO ArrSize(fnames_arr) - 1 DO
+        BEGIN
+          fname := CStrToStr255(cJSON_GetStringValue(ArrItem(fnames_arr, fni)));
+          nfields := nfields + 1; fields[nfields].rec_tid := tid; fields[nfields].fname := fname;
+          fields[nfields].field_tid := field_tid; fields[nfields].field_index := field_index;
+          fields[nfields].byte_offset := arm_off;
+          arm_off := arm_off + TypeSizeBytes(field_tid);
+        END;
+      END;
+      IF arm_off - fixed_off > payload_size THEN payload_size := arm_off - fixed_off;
+    END;
+    IF payload_size > 0 THEN
+    BEGIN
+      { Use an element with the payload's maximum alignment, not i8 storage. }
+      IF payload_align >= 8 THEN payload_ty := i64ty
+      ELSE IF payload_align >= 4 THEN payload_ty := i32ty
+      ELSE IF payload_align >= 2 THEN payload_ty := i16ty
+      ELSE payload_ty := i8ty;
+      count := (payload_size + payload_align - 1) DIV payload_align;
+      SetPtrArrayElem(elem_llvm_types, field_index, LLVMArrayType(payload_ty, count));
+      field_index := field_index + 1;
     END;
     struct_ty := LLVMStructTypeInContext(ctx, elem_llvm_types, field_index, 0);
     types[tid].llvm_ty := struct_ty;
@@ -2784,11 +2836,11 @@ BEGIN
       fi := LookupField(cur_tid, fname);
       IF fi = 0 THEN
         AbortWith2('codegen: unknown record field: ', fname);
-      gep_idx := AllocPtrArray(2);
-      SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-      SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, fields[fi].field_index, 0));
-      base_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(cur_tid), base_ptr, gep_idx, 2, MakeCStr(''));
+      gep_idx := AllocPtrArray(1);
+      SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, fields[fi].byte_offset, 0));
+      base_ptr := LLVMBuildGEP2(builder, i8ty, base_ptr, gep_idx, 1, MakeCStr(''));
       cur_tid := fields[fi].field_tid;
+      base_ptr := LLVMBuildBitCast(builder, base_ptr, LLVMPointerType(LLVMTypeForTk(cur_tid), 0), MakeCStr(''));
     END
     ELSE
       AbortWith2('codegen: unhandled selector kind: ', kind);
@@ -6006,10 +6058,10 @@ BEGIN
     FOR fi := 1 TO nfields DO
       IF fields[fi].rec_tid = cur_tid THEN
       BEGIN
-        gep_idx := AllocPtrArray(2);
-        SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-        SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, fields[fi].field_index, 0));
-        field_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(cur_tid), base_ptr, gep_idx, 2, MakeCStr(''));
+        gep_idx := AllocPtrArray(1);
+        SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, fields[fi].byte_offset, 0));
+        field_ptr := LLVMBuildGEP2(builder, i8ty, base_ptr, gep_idx, 1, MakeCStr(''));
+        field_ptr := LLVMBuildBitCast(builder, field_ptr, LLVMPointerType(LLVMTypeForTk(fields[fi].field_tid), 0), MakeCStr(''));
         IF nsymbols >= MAX_SYMBOLS THEN AbortWith('codegen: too many symbols');
         nsymbols := nsymbols + 1;
         symbols[nsymbols].name := fields[fi].fname;
