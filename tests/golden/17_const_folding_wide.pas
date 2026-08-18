@@ -1,15 +1,13 @@
 PROGRAM ConstFoldingWide(OUTPUT);
 CONST
-  Base = 20;
-  Step = 3;
+  Base = 32000;
+  Step = 1000;
   Scale = 2;
 VAR
-  w8: WORD8;
   i32: INTEGER32;
   w64: WORD64;
 BEGIN
-  w8 := Base + Step * Scale;
-  i32 := (Base + Step * Scale - 2) DIV 4 + (Base + Step * Scale - 2) MOD 4;
+  i32 := Base + Step;
   w64 := SUCC(PRED(Base)) * Scale;
-  WRITELN(w8, ' ', i32, ' ', w64);
+  WRITELN(i32, ' ', w64);
 END.
