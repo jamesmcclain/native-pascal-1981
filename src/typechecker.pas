@@ -1280,7 +1280,20 @@ BEGIN
     END;
   END
   ELSE IF nt = 'CompoundStmt' THEN
-    CheckCompoundOrStmt(node);
+    CheckCompoundOrStmt(node)
+  ELSE IF nt = 'LabelStmt' THEN
+    { <label>: <stmt> -- the label declaration/target itself isn't checked
+      (matching the Python reference, which builds no label table and
+      leaves GOTO unchecked; codegen.pas is the enforcement point for
+      "GOTO to undefined label", same as the reference), but the *inner*
+      statement must still be walked. Omitting this case previously meant
+      any statement reached only via a label silently skipped type
+      checking -- the same class of bug as the historical CompoundStmt
+      dispatch gap (see this file's header comment / §1.7). }
+    CheckStmt(GetObj(node, 'stmt'))
+  ELSE IF nt = 'GotoStmt' THEN
+    { No-op: see the LabelStmt case's comment above. }
+    BEGIN END;
 END;
 
 { ============================== declarations ============================ }

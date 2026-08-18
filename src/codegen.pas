@@ -254,6 +254,7 @@ PROCEDURE exit(code: CINT) [C]; EXTERN;
 FUNCTION getenv(name: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_GetStringValue(item: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_IsNull(item: ADRMEM): CINT [C]; EXTERN;
+FUNCTION cJSON_IsNumber(item: ADRMEM): CINT [C]; EXTERN;
 
 { SysV MEMORY-class byval/align attribute emission for [C] FOREIGN aggregate
   parameters (see EmitByvalAttrsForParam / SysVAggClass below). Modern LLVM
@@ -336,6 +337,10 @@ CONST
   MAX_TYPES = 200;
   MAX_FIELDS = 500;
   MAX_RECORD_FIELDS = 32;
+  MAX_LABELS = 64; { GOTO targets within a single routine -- generous against
+    real self-hosting sources, which use none, and this dialect's own
+    MAX_STMT_DEPTH=256 nesting ceiling bounds how many LabelStmts a routine
+    body could plausibly contain. }
   MAX_CONSTS = 200;
   MAX_DEV_ROUTINES = 128; { device routines registered for the kernel-entry
     readonly summary below -- a separate, smaller table than `routines`
@@ -444,6 +449,14 @@ TYPE
                       such a routine crosses the C ABI as SysV MEMORY-class
                       byval, not as the plain-Pascal first-class-aggregate
                       convention the rest of param_needs_copy documents. }
+  END;
+
+  LabelRec = RECORD
+    name: Str255; { normalized key for both spellings a label can take --
+                    an identifier as-is, or an integer label's decimal text
+                    (see LabelKey) -- since the JSON 'label' field on
+                    GotoStmt/LabelStmt/BreakStmt/CycleStmt is polymorphic. }
+    block: ADRMEM;
   END;
 
 VAR
@@ -640,7 +653,27 @@ VAR
                                                 loop's body so BREAK/CYCLE can
                                                 branch to the right block. }
   loop_cycle_blocks: ARRAY [1..32] OF ADRMEM;
+  loop_labels: ARRAY [1..32] OF Str255; { '' unless the loop at this depth is
+                                          prefixed by a label (`lbl: FOR ...`),
+                                          in which case a labeled BREAK/CYCLE
+                                          naming it can target this depth
+                                          instead of only the innermost loop. }
   loop_depth: INTEGER32;
+
+  labels: ARRAY [1..MAX_LABELS] OF LabelRec; { every LABEL target reachable by
+    GOTO within the routine currently being codegen'd, collected up front by
+    SetupFunctionLabels so a forward GOTO can branch to a block that doesn't
+    exist yet in program-text order. Routine-local: cleared and rebuilt at
+    the start of every PROGRAM/PROCEDURE/FUNCTION/unit-init body, matching
+    the Python reference's own per-routine label_blocks. }
+  nlabels: INTEGER32;
+  cur_routine_has_labels: BOOLEAN; { CodegenStmtArray consults this to decide
+    whether code after a terminated block might still be a live GOTO target
+    (see its own comment) rather than genuinely dead. }
+  pending_loop_label: Str255; { set by CodegenLabelStmt just before it
+    descends into an inner WhileStmt/RepeatStmt/ForStmt, consumed (and
+    cleared) by that loop's own codegen procedure when it pushes loop_depth;
+    '' for an unlabeled loop. }
 
   last_val_tk: INTEGER; { side-channel result of CodegenExpr, mirroring the
                           typechecker's own aux-field convention: the dialect
@@ -4128,23 +4161,192 @@ END;
 
 PROCEDURE CodegenStmt(stmt: ADRMEM); FORWARD;
 
+{ --------------------------- GOTO / labels --------------------------------
+  Mirrors the Python reference's _collect_labels/setup_function_labels: every
+  LabelStmt reachable within a routine gets one LLVM basic block, allocated
+  up front (before the body is codegen'd) so a forward GOTO can branch to a
+  block that doesn't exist yet in program-text order. Routine-local only --
+  the `labels` table is rebuilt from scratch for every PROGRAM/PROCEDURE/
+  FUNCTION/unit-init body (see SetupFunctionLabels's call sites), matching
+  the reference's own per-routine label_blocks and its "GOTO to undefined
+  label" restriction against cross-routine jumps. }
+
+FUNCTION IntToStr255(n: INTEGER32): Str255;
+{ No such helper exists anywhere else in this file -- every other numeric
+  diagnostic is either a fixed string or routed through AbortWith2's plain
+  Str255 concatenation, never a formatted integer. Needed here because a
+  numeric GOTO label (e.g. `GOTO 100;`) arrives from the parser as a JSON
+  number, not a string, and the `labels` table's lookup key is always text.
+  Builds digits into `tmp` least-significant-first via direct Str255
+  indexing (the same s[0]=length-byte convention CStrToStr255 uses), then
+  reverses into `res` -- no CONCAT needed, this is plain char-array work. }
+VAR
+  neg: BOOLEAN;
+  v: INTEGER32;
+  digit: INTEGER32;
+  tmp, res: Str255;
+  len, i, out_i: INTEGER;
+BEGIN
+  neg := n < 0;
+  IF neg THEN v := -n ELSE v := n;
+  len := 0;
+  IF v = 0 THEN
+  BEGIN
+    len := 1;
+    tmp[1] := '0';
+  END
+  ELSE
+    WHILE v > 0 DO
+    BEGIN
+      len := len + 1;
+      digit := ORD('0') + (v MOD 10);
+      tmp[len] := CHR(RETYPE(INTEGER, digit));
+      v := v DIV 10;
+    END;
+  out_i := 0;
+  IF neg THEN
+  BEGIN
+    out_i := out_i + 1;
+    res[out_i] := '-';
+  END;
+  FOR i := len DOWNTO 1 DO
+  BEGIN
+    out_i := out_i + 1;
+    res[out_i] := tmp[i];
+  END;
+  res[0] := CHR(out_i);
+  IntToStr255 := res;
+END;
+
+FUNCTION LabelKey(node: ADRMEM; key: Str255): Str255;
+{ The parser's 'label' field (GotoStmt/LabelStmt/BreakStmt/CycleStmt) is a
+  JSON number for a numeric label, a JSON string for an identifier label --
+  read whichever is present and normalize to the same Str255 key either way. }
+VAR
+  item: ADRMEM;
+BEGIN
+  item := GetObj(node, key);
+  IF (item <> NIL) AND (cJSON_IsNumber(item) <> 0) THEN
+    LabelKey := IntToStr255(GetInt(node, key))
+  ELSE
+    LabelKey := GetStr(node, key);
+END;
+
+FUNCTION LookupLabel(name: Str255): INTEGER32;
+VAR
+  i: INTEGER32;
+BEGIN
+  i := nlabels;
+  WHILE (i >= 1) AND (labels[i].name <> name) DO
+    i := i - 1;
+  LookupLabel := i;
+END;
+
+PROCEDURE RegisterLabel(name: Str255);
+BEGIN
+  IF LookupLabel(name) = 0 THEN
+  BEGIN
+    IF nlabels >= MAX_LABELS THEN AbortWith('codegen: too many labels in one routine');
+    nlabels := nlabels + 1;
+    labels[nlabels].name := name;
+    labels[nlabels].block := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('label_'));
+  END;
+END;
+
+PROCEDURE CollectLabels(stmt: ADRMEM); FORWARD;
+
+PROCEDURE CollectLabelsArr(arr: ADRMEM);
+VAR
+  n, i: INTEGER32;
+BEGIN
+  IF arr <> NIL THEN
+  BEGIN
+    n := ArrSize(arr);
+    FOR i := 0 TO n - 1 DO
+      CollectLabels(ArrItem(arr, i));
+  END;
+END;
+
+PROCEDURE CollectLabels(stmt: ADRMEM);
+{ Non-emitting walk mirroring the reference's own _collect_labels node
+  coverage: every statement kind that can syntactically contain a LabelStmt
+  (directly or nested) is walked; leaf statement kinds (assignment, ProcCall,
+  RETURN/BREAK/CYCLE, GOTO itself) have no children and are ignored. This
+  dialect has no EXIT statement (see CodegenBinOp's own note on the same
+  restriction), so an early "stmt = NIL" return is instead the outermost
+  guard around the whole dispatch chain. }
+VAR
+  nt: Str255;
+  elements, el: ADRMEM;
+  n, i: INTEGER32;
+BEGIN
+  IF stmt <> NIL THEN
+  BEGIN
+  nt := NodeType(stmt);
+  IF nt = 'CompoundStmt' THEN
+    CollectLabelsArr(GetObj(stmt, 'stmts'))
+  ELSE IF nt = 'IfStmt' THEN
+  BEGIN
+    CollectLabels(GetObj(stmt, 'then_branch'));
+    CollectLabels(GetObjOrNil(stmt, 'else_branch'));
+  END
+  ELSE IF nt = 'WhileStmt' THEN
+    CollectLabels(GetObj(stmt, 'body'))
+  ELSE IF nt = 'RepeatStmt' THEN
+    CollectLabelsArr(GetObj(stmt, 'body'))
+  ELSE IF nt = 'ForStmt' THEN
+    CollectLabels(GetObj(stmt, 'body'))
+  ELSE IF nt = 'CaseStmt' THEN
+  BEGIN
+    elements := GetObj(stmt, 'elements');
+    n := ArrSize(elements);
+    FOR i := 0 TO n - 1 DO
+    BEGIN
+      el := ArrItem(elements, i);
+      CollectLabels(GetObj(el, 'stmt'));
+    END;
+    CollectLabels(GetObjOrNil(stmt, 'otherwise'));
+  END
+  ELSE IF nt = 'LabelStmt' THEN
+  BEGIN
+    RegisterLabel(LabelKey(stmt, 'label'));
+    CollectLabels(GetObj(stmt, 'stmt'));
+  END;
+  END;
+END;
+
+PROCEDURE SetupFunctionLabels(body_arr: ADRMEM);
+BEGIN
+  nlabels := 0;
+  CollectLabelsArr(body_arr);
+  cur_routine_has_labels := nlabels > 0;
+  pending_loop_label := '';
+END;
+
 PROCEDURE CodegenStmtArray(arr: ADRMEM);
 VAR
   n, i: INTEGER32;
-  live: BOOLEAN;
+  dead_bb: ADRMEM;
 BEGIN
   n := ArrSize(arr);
-  live := TRUE;
   FOR i := 0 TO n - 1 DO
   BEGIN
-    { A RETURN/BREAK/CYCLE terminates its block; nothing downstream in a
-      straight-line statement list can still be reached (no label/GOTO
-      support in this native codegen yet), so stop emitting once the
-      current block already has a terminator. }
-    IF live AND (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder)) <> NIL) THEN
-      live := FALSE;
-    IF live THEN
-      CodegenStmt(ArrItem(arr, i));
+    { A RETURN/BREAK/CYCLE/GOTO terminates its block; ordinarily nothing
+      downstream in a straight-line statement list can still be reached, so
+      stop emitting (matches the pre-GOTO behavior exactly when the routine
+      has no labels at all). But when it does, a later statement might be a
+      LabelStmt (or contain one) that a GOTO elsewhere in the routine
+      branches to -- SetupFunctionLabels already gave it a real block, so
+      dropping it here would leave that block never populated. Mirrors the
+      reference's own codegen_stmt_list: open a fresh (currently
+      unreachable) continuation block and keep going instead of stopping. }
+    IF LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder)) <> NIL THEN
+    BEGIN
+      IF NOT cur_routine_has_labels THEN BREAK;
+      dead_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('dead'));
+      LLVMPositionBuilderAtEnd(builder, dead_bb);
+    END;
+    CodegenStmt(ArrItem(arr, i));
   END;
 END;
 
@@ -4392,6 +4594,8 @@ BEGIN
   loop_depth := loop_depth + 1;
   loop_break_blocks[loop_depth] := end_bb;
   loop_cycle_blocks[loop_depth] := loop_bb;
+  loop_labels[loop_depth] := pending_loop_label;
+  pending_loop_label := '';
   CodegenStmt(GetObj(stmt, 'body'));
   loop_depth := loop_depth - 1;
   IF LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder)) = NIL THEN
@@ -4416,6 +4620,8 @@ BEGIN
   loop_depth := loop_depth + 1;
   loop_break_blocks[loop_depth] := end_bb;
   loop_cycle_blocks[loop_depth] := loop_bb;
+  loop_labels[loop_depth] := pending_loop_label;
+  pending_loop_label := '';
   CodegenStmtArray(GetObj(stmt, 'body'));
   loop_depth := loop_depth - 1;
   IF LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder)) = NIL THEN
@@ -4480,6 +4686,8 @@ BEGIN
   loop_depth := loop_depth + 1;
   loop_break_blocks[loop_depth] := end_bb;
   loop_cycle_blocks[loop_depth] := step_bb;
+  loop_labels[loop_depth] := pending_loop_label;
+  pending_loop_label := '';
   CodegenStmt(GetObj(stmt, 'body'));
   loop_depth := loop_depth - 1;
   IF LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder)) = NIL THEN
@@ -5675,18 +5883,96 @@ BEGIN
   END;
 END;
 
+FUNCTION FindLabeledLoopDepth(lbl: Str255): INTEGER32;
+{ Searches innermost-to-outermost (loop_depth downto 1) for the enclosing
+  loop a labeled BREAK/CYCLE names -- matches the manual's BREAK <label>/
+  CYCLE <label> targeting a specific enclosing loop, not just the
+  innermost one. Returns 0 if no enclosing loop carries that label. }
+VAR
+  d: INTEGER32;
+BEGIN
+  FindLabeledLoopDepth := 0;
+  FOR d := loop_depth DOWNTO 1 DO
+    IF loop_labels[d] = lbl THEN
+    BEGIN
+      FindLabeledLoopDepth := d;
+      BREAK;
+    END;
+END;
+
 PROCEDURE CodegenBreakStmt(stmt: ADRMEM);
+VAR
+  lbl: Str255;
+  d: INTEGER32;
 BEGIN
   IF loop_depth = 0 THEN
     AbortWith('codegen: BREAK outside of a loop');
-  LLVMBuildBr(builder, loop_break_blocks[loop_depth]);
+  IF GetObjOrNil(stmt, 'label') = NIL THEN
+    LLVMBuildBr(builder, loop_break_blocks[loop_depth])
+  ELSE
+  BEGIN
+    lbl := LabelKey(stmt, 'label');
+    d := FindLabeledLoopDepth(lbl);
+    IF d = 0 THEN AbortWith2('codegen: BREAK targets a label with no enclosing loop: ', lbl);
+    LLVMBuildBr(builder, loop_break_blocks[d]);
+  END;
 END;
 
 PROCEDURE CodegenCycleStmt(stmt: ADRMEM);
+VAR
+  lbl: Str255;
+  d: INTEGER32;
 BEGIN
   IF loop_depth = 0 THEN
     AbortWith('codegen: CYCLE outside of a loop');
-  LLVMBuildBr(builder, loop_cycle_blocks[loop_depth]);
+  IF GetObjOrNil(stmt, 'label') = NIL THEN
+    LLVMBuildBr(builder, loop_cycle_blocks[loop_depth])
+  ELSE
+  BEGIN
+    lbl := LabelKey(stmt, 'label');
+    d := FindLabeledLoopDepth(lbl);
+    IF d = 0 THEN AbortWith2('codegen: CYCLE targets a label with no enclosing loop: ', lbl);
+    LLVMBuildBr(builder, loop_cycle_blocks[d]);
+  END;
+END;
+
+PROCEDURE CodegenGotoStmt(stmt: ADRMEM);
+VAR
+  lbl: Str255;
+  li: INTEGER32;
+BEGIN
+  lbl := LabelKey(stmt, 'label');
+  li := LookupLabel(lbl);
+  IF li = 0 THEN
+    AbortWith2('codegen: GOTO to undefined label (routine-local only): ', lbl);
+  LLVMBuildBr(builder, labels[li].block);
+END;
+
+PROCEDURE CodegenLabelStmt(stmt: ADRMEM);
+{ The label's block was already allocated by SetupFunctionLabels before this
+  routine's body was codegen'd (so a forward GOTO higher up could already
+  reference it). Branch into it from the current position if not already
+  terminated, then continue codegen'ing the inner statement there. If that
+  inner statement is itself a loop, hand its label down via
+  pending_loop_label so a labeled BREAK/CYCLE elsewhere can target it. }
+VAR
+  lbl: Str255;
+  li: INTEGER32;
+  inner: ADRMEM;
+  inner_nt: Str255;
+BEGIN
+  lbl := LabelKey(stmt, 'label');
+  li := LookupLabel(lbl);
+  IF li = 0 THEN
+    AbortWith2('codegen: internal error: label block missing: ', lbl);
+  IF LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder)) = NIL THEN
+    LLVMBuildBr(builder, labels[li].block);
+  LLVMPositionBuilderAtEnd(builder, labels[li].block);
+  inner := GetObj(stmt, 'stmt');
+  inner_nt := NodeType(inner);
+  IF (inner_nt = 'WhileStmt') OR (inner_nt = 'RepeatStmt') OR (inner_nt = 'ForStmt') THEN
+    pending_loop_label := lbl;
+  CodegenStmt(inner);
 END;
 
 PROCEDURE CodegenStmt(stmt: ADRMEM);
@@ -5706,6 +5992,8 @@ BEGIN
   ELSE IF nt = 'ReturnStmt' THEN CodegenReturnStmt(stmt)
   ELSE IF nt = 'BreakStmt' THEN CodegenBreakStmt(stmt)
   ELSE IF nt = 'CycleStmt' THEN CodegenCycleStmt(stmt)
+  ELSE IF nt = 'LabelStmt' THEN CodegenLabelStmt(stmt)
+  ELSE IF nt = 'GotoStmt' THEN CodegenGotoStmt(stmt)
   ELSE IF nt = 'EmptyStmt' THEN BEGIN END
   ELSE
   BEGIN
@@ -6709,6 +6997,7 @@ BEGIN
     END;
 
     CodegenDeclList(GetObj(body_blk, 'decls'));
+    SetupFunctionLabels(GetObj(body_blk, 'body'));
     CodegenStmtArray(GetObj(body_blk, 'body'));
 
     IF is_func THEN
@@ -6785,6 +7074,12 @@ BEGIN
   ELSE IF nt = 'ConstDecl' THEN CodegenConstDecl(decl)
   ELSE IF nt = 'ProcDecl' THEN CodegenRoutineDecl(decl, FALSE)
   ELSE IF nt = 'FuncDecl' THEN CodegenRoutineDecl(decl, TRUE)
+  ELSE IF nt = 'LabelDecl' THEN
+    { No-op: every label's block was already allocated by SetupFunctionLabels
+      from the actual LabelStmt occurrences in the body, independent of this
+      declaration's text -- matches the Python reference's own LabelDecl
+      handling (codegen/decls.py: emits no direct code). }
+    BEGIN END
   ELSE
     AbortWith2('codegen: unhandled declaration kind: ', nt);
 END;
@@ -7242,6 +7537,9 @@ BEGIN
   nconsts := 0;
   cur_func_name := '';
   loop_depth := 0;
+  nlabels := 0;
+  cur_routine_has_labels := FALSE;
+  pending_loop_label := '';
   ntypes := 13; { ids 1..13 are the bare TK_INTEGER..TK_ADRMEM scalars, not
                  `types` table entries -- the first RegisterType call must
                  hand out id 14, not 1. }
@@ -7291,6 +7589,7 @@ BEGIN
     CodegenProgramParameters(root);
 
     body := GetObj(block, 'body');
+    SetupFunctionLabels(body);
     CodegenStmtArray(body);
 
     EmitLaunchRegistry;
@@ -7332,6 +7631,7 @@ BEGIN
       LLVMPositionBuilderAtEnd(builder, init_bb);
       cur_fn := init_fn;
       cur_func_name := '';
+      SetupFunctionLabels(init_body);
       CodegenStmtArray(init_body);
       IF LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder)) = NIL THEN
         ret_val := LLVMBuildRet(builder, LLVMConstInt(i32ty, 0, 0));
