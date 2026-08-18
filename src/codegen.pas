@@ -1660,6 +1660,19 @@ BEGIN
   SysVAggClass := agg_class;
 END;
 
+FUNCTION SysVByvalAlign(tk: INTEGER): INTEGER32;
+{ The `align` attribute a MEMORY-class aggregate's byval/sret pointer needs.
+  SysV AMD64 passes MEMORY-class arguments in eightbyte-granular stack slots
+  regardless of the aggregate's own natural alignment, so clang always emits
+  at least align 8 for byval/sret even when TypeAlignBytes reports less (a
+  RECORD of only INTEGER32 fields naturally aligns to 4, but still lands on
+  an 8-byte-aligned stack slot) -- found by a clang spot-check diverging from
+  this compiler's earlier align-4 output for exactly such a RECORD. }
+BEGIN
+  IF TypeAlignBytes(tk) > 8 THEN SysVByvalAlign := TypeAlignBytes(tk)
+  ELSE SysVByvalAlign := 8;
+END;
+
 FUNCTION SysVPieceLLVMType(kind: INTEGER; nbytes: INTEGER32): ADRMEM;
 { The LLVM type one COERCED eightbyte is passed in, from the piece kind and
   byte width ClassifyAggregate reports (nbytes is meaningful only for the
@@ -3271,7 +3284,7 @@ BEGIN
           index 1 -- same sret(ty)/noalias/align shape the declaration side
           attaches, since LLVM wants parameter attributes on both. }
         sret_attr := LLVMCreateTypeAttribute(ctx, sret_kind_id, LLVMTypeForTk(routines[ri].ret_tk));
-        align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, TypeAlignBytes(routines[ri].ret_tk));
+        align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, SysVByvalAlign(routines[ri].ret_tk));
         LLVMAddCallSiteAttribute(res, 1, sret_attr);
         LLVMAddCallSiteAttribute(res, 1, align_attr);
         IF noalias_kind_id <> 0 THEN
@@ -3289,7 +3302,7 @@ BEGIN
           IF agg_class = SYSV_CLASS_MEMORY THEN
           BEGIN
             byval_attr := LLVMCreateTypeAttribute(ctx, byval_kind_id, LLVMTypeForTk(routines[ri].param_tk[i + 1]));
-            align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, TypeAlignBytes(routines[ri].param_tk[i + 1]));
+            align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, SysVByvalAlign(routines[ri].param_tk[i + 1]));
             LLVMAddCallSiteAttribute(res, llvm_ai + 1, byval_attr);
             LLVMAddCallSiteAttribute(res, llvm_ai + 1, align_attr);
             llvm_ai := llvm_ai + 1;
@@ -7836,7 +7849,7 @@ BEGIN
           the reference records alongside its own sret attributes. }
         agg_llvm_ty := LLVMTypeForTk(ret_tk);
         sret_attr := LLVMCreateTypeAttribute(ctx, sret_kind_id, agg_llvm_ty);
-        align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, TypeAlignBytes(ret_tk));
+        align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, SysVByvalAlign(ret_tk));
         LLVMAddAttributeAtIndex(fn, 1, sret_attr);
         LLVMAddAttributeAtIndex(fn, 1, align_attr);
         IF noalias_kind_id <> 0 THEN
@@ -7855,7 +7868,7 @@ BEGIN
           BEGIN
             agg_llvm_ty := LLVMTypeForTk(tks[i]);
             byval_attr := LLVMCreateTypeAttribute(ctx, byval_kind_id, agg_llvm_ty);
-            align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, TypeAlignBytes(tks[i]));
+            align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, SysVByvalAlign(tks[i]));
             LLVMAddAttributeAtIndex(fn, llvm_idx + 1, byval_attr);
             LLVMAddAttributeAtIndex(fn, llvm_idx + 1, align_attr);
             llvm_idx := llvm_idx + 1;

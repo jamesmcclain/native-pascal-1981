@@ -1,4 +1,4 @@
-{ CHECK: declare void @TakesStr(ptr byval([256 x i8]) align 1) }
+{ CHECK: declare void @TakesStr(ptr byval([256 x i8]) align 8) }
 PROGRAM ByvalCheck(output);
 TYPE
   Str255 = LSTRING(255);
