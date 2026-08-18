@@ -274,6 +274,14 @@ BEGIN
   LookupField := i;
 END;
 
+PROCEDURE AddUniqueRecordField(record_id: INTEGER; fname: Str255; ftk, faux, faux2: INTEGER);
+BEGIN
+  IF LookupField(record_id, fname) <> 0 THEN
+    AddError('Duplicate record field name')
+  ELSE
+    AddFieldEntry(record_id, fname, ftk, faux, faux2);
+END;
+
 FUNCTION IsOrdinal(tk: INTEGER): BOOLEAN;
 BEGIN
   IsOrdinal := (tk = TK_INTEGER) OR (tk = TK_WORD) OR (tk = TK_CHAR) OR (tk = TK_BOOLEAN);
@@ -290,6 +298,7 @@ PROCEDURE ResolveTypeExpr(node: ADRMEM; VAR tk, aux, aux2, idx_tk: INTEGER);
 VAR
   nt, name: Str255;
   base_node, elem_node, fields_arr, tup, items, names_arr, ftype_node: ADRMEM;
+  variants_arr, arm_node, tag_type_node: ADRMEM;
   inner_tk, inner_aux, inner_aux2, inner_idx: INTEGER;
   ti: INTEGER32;
   rid: INTEGER;
@@ -397,7 +406,39 @@ BEGIN
       FOR ni := 0 TO nn - 1 DO
       BEGIN
         nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, ni)));
-        AddFieldEntry(rid, nm, inner_tk, inner_aux, inner_aux2);
+        AddUniqueRecordField(rid, nm, inner_tk, inner_aux, inner_aux2);
+      END;
+    END;
+    variants_arr := GetObj(node, 'variants');
+    IF cJSON_GetArraySize(variants_arr) > 0 THEN
+    BEGIN
+      tag_type_node := GetObj(node, 'tag_type');
+      ResolveTypeExpr(tag_type_node, inner_tk, inner_aux, inner_aux2, inner_idx);
+      IF NOT IsOrdinal(inner_tk) THEN
+        AddError('Variant record tag type must be ordinal');
+      IF GetBool(node, 'has_tag') THEN
+      BEGIN
+        nm := GetStr(node, 'tag_name');
+        AddUniqueRecordField(rid, nm, inner_tk, inner_aux, inner_aux2);
+      END;
+      FOR fi := 0 TO cJSON_GetArraySize(variants_arr) - 1 DO
+      BEGIN
+        arm_node := cJSON_GetArrayItem(variants_arr, fi);
+        fields_arr := GetObj(arm_node, 'fields');
+        FOR ni := 0 TO cJSON_GetArraySize(fields_arr) - 1 DO
+        BEGIN
+          tup := cJSON_GetArrayItem(fields_arr, ni);
+          items := GetObj(tup, 'items');
+          names_arr := cJSON_GetArrayItem(items, 0);
+          ftype_node := cJSON_GetArrayItem(items, 1);
+          ResolveTypeExpr(ftype_node, inner_tk, inner_aux, inner_aux2, inner_idx);
+          nn := cJSON_GetArraySize(names_arr);
+          FOR n := 0 TO nn - 1 DO
+          BEGIN
+            nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, n)));
+            AddUniqueRecordField(rid, nm, inner_tk, inner_aux, inner_aux2);
+          END;
+        END;
       END;
     END;
     tk := TK_RECORD;
