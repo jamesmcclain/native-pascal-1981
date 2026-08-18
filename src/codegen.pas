@@ -1027,32 +1027,93 @@ BEGIN
   LookupConst := found;
 END;
 
-FUNCTION IsIntLiteralLike(expr_node: ADRMEM): BOOLEAN;
-{ A bare IntLiteral, or a unary-MINUS of one (`-50`) -- the two shapes a
-  compile-time INTEGER constant can take as an AssignStmt's RHS in this
-  file (no general constant-folding of arbitrary expressions, unlike the
-  Python reference's _fold_const_int; this covers the shapes that actually
-  occur in practice for the WORD/INTEGER8 constant-adaptation rule). }
+FUNCTION Real64ToInt64(val: REAL): INTEGER64; FORWARD;
+FUNCTION UpperStr(s: Str255): Str255; FORWARD;
+
+FUNCTION FoldConstInt(expr_node: ADRMEM; VAR folded: INTEGER64): BOOLEAN;
+{ Fold the integer-only constant-expression subset used by the reference
+  typechecker's _fold_const_int: literals, unary +/-, arithmetic, earlier
+  integer CONSTs, and ORD/SUCC/PRED.  This is deliberately not CodegenExpr:
+  callers need the untruncated value before rebuilding it at a wider target
+  type for the vintage INTEGER-constant adaptation rule. }
 VAR
+  nt, op, nm: Str255;
+  left, right, q, r: INTEGER64;
   ci: INTEGER32;
+  args: ADRMEM;
 BEGIN
-  IF NodeType(expr_node) = 'IntLiteral' THEN IsIntLiteralLike := TRUE
-  ELSE IF (NodeType(expr_node) = 'UnaryOp') AND (GetStr(expr_node, 'op') = 'MINUS')
-    AND (NodeType(GetObj(expr_node, 'operand')) = 'IntLiteral') THEN IsIntLiteralLike := TRUE
-  { A bare reference to a CONST name (e.g. comparing "tk = TK_WORD" where
-    TK_WORD is itself a CONST) folds to a compile-time INTEGER value just
-    like a literal does, so it gets the same wide-integer adaptation --
-    unless the CONST is itself a REAL literal (e.g. RADIX = 1.0e9). A plain
-    AND clause here would still index const_tbl[0] when LookupConst returns
-    0, since AND is not short-circuit in this dialect -- guard with a nested
-    IF instead. }
-  ELSE IF NodeType(expr_node) = 'Identifier' THEN
+  nt := NodeType(expr_node);
+  FoldConstInt := FALSE;
+  IF nt = 'IntLiteral' THEN
+  BEGIN
+    folded := Real64ToInt64(GetReal(expr_node, 'value'));
+    FoldConstInt := TRUE;
+  END
+  ELSE IF nt = 'UnaryOp' THEN
+  BEGIN
+    op := GetStr(expr_node, 'op');
+    IF ((op = 'PLUS') OR (op = 'MINUS')) AND FoldConstInt(GetObj(expr_node, 'operand'), folded) THEN
+    BEGIN
+      IF op = 'MINUS' THEN folded := 0 - folded;
+      FoldConstInt := TRUE;
+    END;
+  END
+  ELSE IF nt = 'BinOp' THEN
+  BEGIN
+    op := GetStr(expr_node, 'op');
+    IF ((op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') OR (op = 'DIV') OR (op = 'MOD')) AND
+       FoldConstInt(GetObj(expr_node, 'left'), left) AND
+       FoldConstInt(GetObj(expr_node, 'right'), right) THEN
+    BEGIN
+      IF op = 'PLUS' THEN folded := left + right
+      ELSE IF op = 'MINUS' THEN folded := left - right
+      ELSE IF op = 'MUL' THEN folded := left * right
+      ELSE IF right <> 0 THEN
+      BEGIN
+        { Match Python's // and % rather than the host's truncating DIV/MOD. }
+        q := left DIV right;
+        r := left MOD right;
+        IF (r <> 0) AND (((left < 0) AND (right > 0)) OR ((left > 0) AND (right < 0))) THEN
+          q := q - 1;
+        IF op = 'DIV' THEN folded := q
+        ELSE folded := left - q * right;
+        FoldConstInt := TRUE;
+      END
+      ELSE
+        FoldConstInt := FALSE;
+      IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') THEN FoldConstInt := TRUE;
+    END;
+  END
+  ELSE IF nt = 'Identifier' THEN
   BEGIN
     ci := LookupConst(GetStr(expr_node, 'name'));
-    IF ci = 0 THEN IsIntLiteralLike := FALSE
-    ELSE IsIntLiteralLike := NOT const_tbl[ci].is_real;
+    IF ci <> 0 THEN
+      IF NOT const_tbl[ci].is_real THEN
+      BEGIN
+        folded := const_tbl[ci].ival;
+        FoldConstInt := TRUE;
+      END;
   END
-  ELSE IsIntLiteralLike := FALSE;
+  ELSE IF nt = 'FuncCall' THEN
+  BEGIN
+    nm := UpperStr(GetStr(expr_node, 'name'));
+    args := GetObj(expr_node, 'args');
+    IF ((nm = 'ORD') OR (nm = 'SUCC') OR (nm = 'PRED')) AND (ArrSize(args) = 1) AND
+       FoldConstInt(ArrItem(args, 0), folded) THEN
+    BEGIN
+      IF nm = 'SUCC' THEN folded := folded + 1
+      ELSE IF nm = 'PRED' THEN folded := folded - 1;
+      FoldConstInt := TRUE;
+    END;
+  END;
+END;
+
+FUNCTION IsIntLiteralLike(expr_node: ADRMEM): BOOLEAN;
+{ True when FoldConstInt can produce a compile-time INTEGER value. }
+VAR
+  folded: INTEGER64;
+BEGIN
+  IsIntLiteralLike := FoldConstInt(expr_node, folded);
 END;
 
 FUNCTION MakeRadix64: INTEGER64;
@@ -1106,24 +1167,15 @@ BEGIN
 END;
 
 FUNCTION IntLiteralValue(expr_node: ADRMEM): INTEGER64;
-{ The signed value of an IsIntLiteralLike node. Deliberately re-reads the
-  raw JSON value via GetReal (a full double, exact for every magnitude an
-  INTEGER64/WORD64 literal can take) rather than reusing CodegenExpr's own
-  IntLiteral result, or GetInt: CodegenExpr's path always builds an i16
-  constant (this dialect's native INTEGER width) and GetInt truncates to
-  INTEGER32, both silently losing magnitude for a literal destined for an
-  INTEGER64/WORD64 target, which needs the value rebuilt at the target's
-  own width instead. }
+{ The full signed value of an IsIntLiteralLike expression. }
+VAR
+  folded: INTEGER64;
 BEGIN
-  IF NodeType(expr_node) = 'IntLiteral' THEN
-    IntLiteralValue := Real64ToInt64(GetReal(expr_node, 'value'))
-  ELSE IF (NodeType(expr_node) = 'UnaryOp') AND (GetStr(expr_node, 'op') = 'MINUS') THEN
-    IntLiteralValue := 0 - Real64ToInt64(GetReal(GetObj(expr_node, 'operand'), 'value'))
-  ELSE IF (NodeType(expr_node) = 'Identifier') AND (LookupConst(GetStr(expr_node, 'name')) <> 0) THEN
-    IntLiteralValue := const_tbl[LookupConst(GetStr(expr_node, 'name'))].ival
+  IF FoldConstInt(expr_node, folded) THEN
+    IntLiteralValue := folded
   ELSE
   BEGIN
-    AbortWith('codegen: IntLiteralValue: not a literal');
+    AbortWith('codegen: IntLiteralValue: not a foldable integer constant');
     IntLiteralValue := 0;
   END;
 END;
@@ -1999,7 +2051,6 @@ END;
 
 PROCEDURE ResolveStringExprCharsLen(expr: ADRMEM; VAR chars_ptr: ADRMEM; VAR len_val: ADRMEM); FORWARD;
 FUNCTION LoadFileFcbPtr(name: Str255): ADRMEM; FORWARD;
-FUNCTION UpperStr(s: Str255): Str255; FORWARD;
 
 FUNCTION StaticDesignatorType(node: ADRMEM): INTEGER;
 { Type-only counterpart of ComputeDesignatorAddress: walks the same
