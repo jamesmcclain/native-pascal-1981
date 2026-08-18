@@ -1919,10 +1919,16 @@ BEGIN
     Expect('END');
     node := CreateNode('RecordType');
     AddField(node, 'fields', fields_arr);
-    AddBoolField(node, 'has_tag', has_tag);
-    AddStringField(node, 'tag_name', tag_name);
-    AddField(node, 'tag_type', tag_type);
-    AddField(node, 'variants', variants_arr);
+    { Preserve the established RecordType JSON shape for ordinary records;
+      native/Python typed-AST parity relies on it.  These fields are native
+      extensions only when a variant part actually exists. }
+    IF cJSON_GetArraySize(variants_arr) > 0 THEN
+    BEGIN
+      AddBoolField(node, 'has_tag', has_tag);
+      AddStringField(node, 'tag_name', tag_name);
+      AddField(node, 'tag_type', tag_type);
+      AddField(node, 'variants', variants_arr);
+    END;
     AddBoolField(node, 'packed', packed_flag);
     ParseType := node;
   END
