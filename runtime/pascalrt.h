@@ -94,6 +94,7 @@ const char *pas_enum_write_token(int32_t value, const char **names, int count);
 /* File-based formatted READ */
 int   pas_fread_int(struct pas_file_fcb *f, int32_t *out);
 int   pas_fread_word(struct pas_file_fcb *f, uint16_t *out);
+int   pas_fread_ptr(struct pas_file_fcb *f, uint64_t *out);
 int   pas_fread_real(struct pas_file_fcb *f, double *out);
 int   pas_fread_char(struct pas_file_fcb *f, uint8_t *out);
 int   pas_fread_lstring(struct pas_file_fcb *f, uint8_t *buf, int cap);
@@ -113,6 +114,7 @@ void  pas_fread_filename(struct pas_file_fcb *src,
 
 int   pas_read_int(int32_t *out);
 int   pas_read_word(uint16_t *out);
+int   pas_read_ptr(uint64_t *out);
 int   pas_read_real(double *out);
 int   pas_read_char(uint8_t *out);
 int   pas_read_lstring(uint8_t *buf, int cap);

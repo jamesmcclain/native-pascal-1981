@@ -11,11 +11,12 @@
 #include <limits.h>
 
 #define MAX_EXTRA_ARGS 256
+#define MAX_INPUT_FILES 256
 
 static void print_usage(const char *progname)
 {
     fprintf(stderr,
-            "Usage: %s [options] <source.pas>\n\n"
+            "Usage: %s [options] <source.pas> [source.pas ...]\n\n"
             "Options:\n"
             "  -o <file>               Place output into <file>\n"
             "  -c                      Compile to object file only (.o)\n"
@@ -75,6 +76,8 @@ static char *resolve_path(const char *env_var, const char *root_dir, const char 
 int main(int argc, char **argv)
 {
     const char *input_file = NULL;
+    const char *input_files[MAX_INPUT_FILES];
+    int input_count = 0;
     const char *output_file = NULL;
     int compile_only = 0;
     int asm_only = 0;
@@ -145,11 +148,12 @@ int main(int argc, char **argv)
             print_usage(argv[0]);
             return 1;
         } else {
-            if (input_file != NULL) {
-                fprintf(stderr, "error: multiple input files are not supported: '%s' and '%s'\n", input_file, argv[i]);
+            if (input_count >= MAX_INPUT_FILES) {
+                fprintf(stderr, "error: too many input files (maximum %d)\n", MAX_INPUT_FILES);
                 return 1;
             }
-            input_file = argv[i];
+            input_files[input_count++] = argv[i];
+            input_file = input_files[0];
         }
     }
 
@@ -161,6 +165,10 @@ int main(int argc, char **argv)
 
     (void) dialect;             // Dialect defaults to extended for native toolchain
 
+    if (input_count > 1 && (compile_only || asm_only)) {
+        fprintf(stderr, "error: -c and -S require exactly one input file\n");
+        return 1;
+    }
     // Determine output file if not explicitly set
     char default_out[PATH_MAX + 16];
     if (!output_file) {
@@ -370,12 +378,46 @@ int main(int argc, char **argv)
     }
     const char *cc_bin = (cc_env && cc_env[0] != '\0') ? cc_env : "clang";
 
+    char extra_objects[MAX_INPUT_FILES - 1][PATH_MAX];
+    int extra_object_count = 0;
+    for (int i = 1; i < input_count; ++i) {
+        char extra_ll[PATH_MAX] = "";
+        snprintf(extra_ll, sizeof(extra_ll), "/tmp/pascal1981_XXXXXX.ll");
+        int extra_fd = mkstemps(extra_ll, 3);
+        if (extra_fd < 0) {
+            perror("error creating temporary IR file");
+            return 1;
+        }
+        close(extra_fd);
+        snprintf(extra_objects[extra_object_count], PATH_MAX, "%s", extra_ll);
+        size_t extra_len = strlen(extra_objects[extra_object_count]);
+        strcpy(extra_objects[extra_object_count] + extra_len - 3, ".o");
+
+        char extra_cmd[16384];
+        snprintf(extra_cmd, sizeof(extra_cmd),
+                 "\"%s\" < \"%s\" | \"%s\" | \"%s\" | \"%s\" > \"%s\" && %s %s -c \"%s\" -o \"%s\"",
+                 lexer_bin, input_files[i], parser_bin, typechecker_bin, codegen_bin, extra_ll, cc_bin, opt_level, extra_ll, extra_objects[extra_object_count]);
+        if (verbose)
+            fprintf(stderr, "[pipeline] %s\n", extra_cmd);
+        if (system(extra_cmd) != 0) {
+            unlink(extra_ll);
+            for (int j = 0; j < extra_object_count; ++j)
+                unlink(extra_objects[j]);
+            return 1;
+        }
+        unlink(extra_ll);
+        ++extra_object_count;
+    }
+
     char cmd[16384];
     size_t offset = 0;
     if (compile_only) {
         offset += snprintf(cmd + offset, sizeof(cmd) - offset, "%s %s -c \"%s\" -o \"%s\"", cc_bin, opt_level, temp_ll, output_file);
     } else {
         offset += snprintf(cmd + offset, sizeof(cmd) - offset, "%s %s \"%s\" \"%s\" -lcjson", cc_bin, opt_level, temp_ll, runtime_lib);
+        for (int i = 0; i < extra_object_count; ++i) {
+            offset += snprintf(cmd + offset, sizeof(cmd) - offset, " \"%s\"", extra_objects[i]);
+        }
         for (int i = 0; i < extra_clang_argc; ++i) {
             offset += snprintf(cmd + offset, sizeof(cmd) - offset, " %s", extra_clang_args[i]);
         }
@@ -389,6 +431,9 @@ int main(int argc, char **argv)
     int clang_res = system(cmd);
     if (temp_ll[0] != '\0') {
         unlink(temp_ll);
+    }
+    for (int i = 0; i < extra_object_count; ++i) {
+        unlink(extra_objects[i]);
     }
 
     free(root_dir);

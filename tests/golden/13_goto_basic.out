@@ -1,0 +1,6 @@
+forward goto ok
+1
+2
+3
+inner 1
+escaped loop

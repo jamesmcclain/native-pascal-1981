@@ -106,6 +106,16 @@ CONST
     (the predeclared TEXT type), matching codegen.pas's own FILE
     representation so the two files agree on what "is a TEXT file"
     means. }
+  TK_SET      = 12; { aux holds the base ordinal type's TK (TK_INTEGER,
+    TK_CHAR, TK_WORD, or TK_BOOLEAN), mirroring codegen.pas's own SET
+    representation, minus the exact lo/hi bounds this coarse v1 model
+    doesn't need to track for element/IN/set-operator checking. }
+  TK_ENUM     = 13; { a user-declared enumerated type. This coarse model
+    doesn't distinguish one enum type from another (or from its members'
+    constant symbols): every enum and enum constant carries TK_ENUM, the
+    same deliberate looseness the rest of this file applies where a v1
+    shape check is the documented scope. codegen.pas is the enforcement
+    backstop, exactly as for the other coarse distinctions here. }
 
   MAX_SYMBOLS = 2000;
   MAX_TYPES   = 500;
@@ -133,6 +143,11 @@ TYPE
     nparams: INTEGER;
     param_tk: ARRAY [1..MAX_PARAMS] OF INTEGER;
     ret_tk: INTEGER;
+    is_vararg: BOOLEAN;  { TRUE for a routine carrying the [VARARGS]
+                           attribute: its declared parameters are the FIXED
+                           prefix and a call may pass extra trailing
+                           arguments, which have no formal to check against
+                           (C's own variadic tail -- see CheckFuncCall). }
   END;
 
   TypeRec = RECORD
@@ -163,6 +178,12 @@ VAR
   fields: ARRAY [1..MAX_FIELDS] OF FieldRec;
   nfields: INTEGER32;
   next_record_id: INTEGER;
+
+  last_designator_aux, last_designator_aux2: INTEGER; { side channel set by
+    CheckDesignator on every call, mirroring codegen.pas's last_val_tk
+    convention -- lets WithStmt recover the resolved record's id (aux) to
+    scan `fields[]` for it, without changing CheckDesignator's signature or
+    any existing call site. }
 
   errors: ARRAY [1..MAX_ERRORS] OF Str255;
   nerrors: INTEGER32;
@@ -228,6 +249,7 @@ BEGIN
   symbols[nsymbols].idx_tk := idx_tk;
   symbols[nsymbols].nparams := 0;
   symbols[nsymbols].ret_tk := TK_VOID;
+  symbols[nsymbols].is_vararg := FALSE;
   DefineSymbol := nsymbols;
 END;
 
@@ -264,9 +286,17 @@ BEGIN
   LookupField := i;
 END;
 
+PROCEDURE AddUniqueRecordField(record_id: INTEGER; fname: Str255; ftk, faux, faux2: INTEGER);
+BEGIN
+  IF LookupField(record_id, fname) <> 0 THEN
+    AddError('Duplicate record field name')
+  ELSE
+    AddFieldEntry(record_id, fname, ftk, faux, faux2);
+END;
+
 FUNCTION IsOrdinal(tk: INTEGER): BOOLEAN;
 BEGIN
-  IsOrdinal := (tk = TK_INTEGER) OR (tk = TK_WORD) OR (tk = TK_CHAR) OR (tk = TK_BOOLEAN);
+  IsOrdinal := (tk = TK_INTEGER) OR (tk = TK_WORD) OR (tk = TK_CHAR) OR (tk = TK_BOOLEAN) OR (tk = TK_ENUM);
 END;
 
 FUNCTION IsNumeric(tk: INTEGER): BOOLEAN;
@@ -280,6 +310,7 @@ PROCEDURE ResolveTypeExpr(node: ADRMEM; VAR tk, aux, aux2, idx_tk: INTEGER);
 VAR
   nt, name: Str255;
   base_node, elem_node, fields_arr, tup, items, names_arr, ftype_node: ADRMEM;
+  variants_arr, arm_node, tag_type_node: ADRMEM;
   inner_tk, inner_aux, inner_aux2, inner_idx: INTEGER;
   ti: INTEGER32;
   rid: INTEGER;
@@ -387,11 +418,80 @@ BEGIN
       FOR ni := 0 TO nn - 1 DO
       BEGIN
         nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, ni)));
-        AddFieldEntry(rid, nm, inner_tk, inner_aux, inner_aux2);
+        AddUniqueRecordField(rid, nm, inner_tk, inner_aux, inner_aux2);
+      END;
+    END;
+    variants_arr := GetObj(node, 'variants');
+    IF cJSON_GetArraySize(variants_arr) > 0 THEN
+    BEGIN
+      tag_type_node := GetObj(node, 'tag_type');
+      ResolveTypeExpr(tag_type_node, inner_tk, inner_aux, inner_aux2, inner_idx);
+      IF NOT IsOrdinal(inner_tk) THEN
+        AddError('Variant record tag type must be ordinal');
+      IF GetBool(node, 'has_tag') THEN
+      BEGIN
+        nm := GetStr(node, 'tag_name');
+        AddUniqueRecordField(rid, nm, inner_tk, inner_aux, inner_aux2);
+      END;
+      FOR fi := 0 TO cJSON_GetArraySize(variants_arr) - 1 DO
+      BEGIN
+        arm_node := cJSON_GetArrayItem(variants_arr, fi);
+        fields_arr := GetObj(arm_node, 'fields');
+        FOR ni := 0 TO cJSON_GetArraySize(fields_arr) - 1 DO
+        BEGIN
+          tup := cJSON_GetArrayItem(fields_arr, ni);
+          items := GetObj(tup, 'items');
+          names_arr := cJSON_GetArrayItem(items, 0);
+          ftype_node := cJSON_GetArrayItem(items, 1);
+          ResolveTypeExpr(ftype_node, inner_tk, inner_aux, inner_aux2, inner_idx);
+          nn := cJSON_GetArraySize(names_arr);
+          FOR n := 0 TO nn - 1 DO
+          BEGIN
+            nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, n)));
+            AddUniqueRecordField(rid, nm, inner_tk, inner_aux, inner_aux2);
+          END;
+        END;
       END;
     END;
     tk := TK_RECORD;
     aux := rid;
+  END
+  ELSE IF (nt = 'SubrangeType') OR (nt = 'BuiltinType') THEN
+  BEGIN
+    { Only reachable today from a SetType's `base` field (ParseSetBase's own
+      output shapes) -- SubrangeType elsewhere (e.g. an ARRAY index range)
+      is read directly by its own caller, not through ResolveTypeExpr. A
+      SubrangeType base's ordinal kind follows its low bound's literal kind
+      (CharLiteral -> TK_CHAR, BoolLiteral -> TK_BOOLEAN, else TK_INTEGER);
+      a BuiltinType base is a reserved-word ordinal type name. }
+    IF nt = 'SubrangeType' THEN
+    BEGIN
+      IF NodeType(GetObj(node, 'low')) = 'CharLiteral' THEN tk := TK_CHAR
+      ELSE IF NodeType(GetObj(node, 'low')) = 'BoolLiteral' THEN tk := TK_BOOLEAN
+      ELSE tk := TK_INTEGER;
+    END
+    ELSE BEGIN
+      name := GetStr(node, 'name');
+      IF name = 'CHAR' THEN tk := TK_CHAR
+      ELSE IF name = 'BOOLEAN' THEN tk := TK_BOOLEAN
+      ELSE IF name = 'WORD' THEN tk := TK_WORD
+      ELSE IF name = 'INTEGER' THEN tk := TK_INTEGER
+      ELSE BEGIN
+        AddError('SET OF <base> requires an ordinal base type');
+        tk := TK_UNKNOWN;
+      END;
+    END;
+  END
+  ELSE IF nt = 'EnumType' THEN
+    tk := TK_ENUM
+  ELSE IF nt = 'SetType' THEN
+  BEGIN
+    base_node := GetObj(node, 'base');
+    ResolveTypeExpr(base_node, inner_tk, inner_aux, inner_aux2, inner_idx);
+    IF NOT IsOrdinal(inner_tk) THEN
+      AddError('SET OF <base> requires an ordinal base type');
+    tk := TK_SET;
+    aux := inner_tk;
   END;
 END;
 
@@ -553,6 +653,8 @@ BEGIN
       END;
     END;
   END;
+  last_designator_aux := aux;
+  last_designator_aux2 := aux2;
   CheckDesignator := tk;
 END;
 
@@ -649,8 +751,8 @@ BEGIN
     END
     ELSE BEGIN
       atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
-      IF (atk <> TK_INTEGER) AND (atk <> TK_WORD) AND (atk <> TK_CHAR) AND (atk <> TK_UNKNOWN) THEN
-        AddError('SUCC/PRED argument must be INTEGER, WORD, or CHAR');
+      IF (atk <> TK_INTEGER) AND (atk <> TK_WORD) AND (atk <> TK_CHAR) AND (atk <> TK_ENUM) AND (atk <> TK_UNKNOWN) THEN
+        AddError('SUCC/PRED argument must be INTEGER, WORD, CHAR, or an enumerated type');
       CheckFuncCall := atk;
     END;
     RETURN;
@@ -742,14 +844,20 @@ BEGIN
     CheckFuncCall := TK_UNKNOWN;
     RETURN;
   END;
-  IF nargs <> symbols[si].nparams THEN
+  { A [VARARGS] routine's declared parameters are only the fixed prefix, so
+    MORE actuals than formals is legal there (and only there); every tail
+    argument still has to be a well-formed expression, but has no formal to
+    be assignment-compatible with. }
+  IF (nargs <> symbols[si].nparams)
+     AND NOT (symbols[si].is_vararg AND (nargs > symbols[si].nparams)) THEN
     AddError('Argument count mismatch')
   ELSE
     FOR i := 0 TO nargs - 1 DO
     BEGIN
       atk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
-      IF NOT CanAssign(symbols[si].param_tk[i + 1], atk) THEN
-        AddError('Argument type mismatch');
+      IF i < symbols[si].nparams THEN
+        IF NOT CanAssign(symbols[si].param_tk[i + 1], atk) THEN
+          AddError('Argument type mismatch');
     END;
   CheckFuncCall := symbols[si].ret_tk;
 END;
@@ -761,6 +869,8 @@ VAR
   left_node, right_node, operand_node, type_node: ADRMEM;
   lt, rt, ot, op_kind, aux, aux2, idx_tk: INTEGER;
   op: Str255;
+  elems_arr, elem_node: ADRMEM;
+  n_elems, ei: INTEGER32;
 BEGIN
   nt := NodeType(node);
   IF nt = 'IntLiteral' THEN
@@ -805,6 +915,36 @@ BEGIN
     ELSE
       CheckExpr := symbols[si].tk;
   END
+  ELSE IF nt = 'SetConstructor' THEN
+  BEGIN
+    { Element/range-bound ordinal checking only; this v1 type-kind model has
+      no way to carry a SET's declared base ordinal kind through CheckExpr's
+      bare-tk return value (unlike codegen.pas's richer type table), so a
+      mismatched base across elements (e.g. mixing CHAR and INTEGER) is not
+      caught here -- codegen.pas is the enforcement backstop for that, same
+      division of labor as elsewhere in this file (see the header comment). }
+    elems_arr := GetObj(node, 'elements');
+    n_elems := cJSON_GetArraySize(elems_arr);
+    FOR ei := 0 TO n_elems - 1 DO
+    BEGIN
+      elem_node := cJSON_GetArrayItem(elems_arr, ei);
+      IF NodeType(elem_node) = 'RangeExpr' THEN
+      BEGIN
+        lt := CheckExpr(GetObj(elem_node, 'low'));
+        rt := CheckExpr(GetObj(elem_node, 'high'));
+        IF (lt <> TK_UNKNOWN) AND NOT IsOrdinal(lt) THEN
+          AddError('Set range bound must be an ordinal type');
+        IF (rt <> TK_UNKNOWN) AND NOT IsOrdinal(rt) THEN
+          AddError('Set range bound must be an ordinal type');
+      END
+      ELSE BEGIN
+        ot := CheckExpr(elem_node);
+        IF (ot <> TK_UNKNOWN) AND NOT IsOrdinal(ot) THEN
+          AddError('Set element must be an ordinal type');
+      END;
+    END;
+    CheckExpr := TK_SET;
+  END
   ELSE IF nt = 'Designator' THEN
     CheckExpr := CheckDesignator(node)
   ELSE IF nt = 'FuncCall' THEN
@@ -844,6 +984,33 @@ BEGIN
       IF NOT (IsNumeric(lt) AND IsNumeric(rt)) AND (lt <> rt) THEN
         AddError('Comparison operands are not comparable');
       CheckExpr := TK_BOOLEAN;
+    END
+    ELSE IF op = 'IN' THEN
+    BEGIN
+      IF NOT IsOrdinal(lt) THEN
+        AddError('IN requires an ordinal left operand');
+      IF rt <> TK_SET THEN
+        AddError('IN requires a SET right operand');
+      CheckExpr := TK_BOOLEAN;
+    END
+    ELSE IF (lt = TK_SET) OR (rt = TK_SET) THEN
+    BEGIN
+      { Set union/intersection/difference (PLUS/MINUS/MUL): both operands
+        must be SET. Base-kind mismatch (e.g. SET OF CHAR + SET OF INTEGER)
+        is not caught here -- see the SetConstructor case's comment on why
+        this coarse model can't carry a SET's base ordinal kind. }
+      IF (lt <> TK_SET) OR (rt <> TK_SET) THEN
+      BEGIN
+        AddError('Set operator requires SET operands');
+        CheckExpr := TK_UNKNOWN;
+      END
+      ELSE IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') THEN
+        CheckExpr := TK_SET
+      ELSE
+      BEGIN
+        AddError('Unsupported SET operator');
+        CheckExpr := TK_UNKNOWN;
+      END;
     END
     ELSE BEGIN
       { arithmetic: PLUS/MINUS/TIMES/DIVIDE/DIV/MOD. Pointer arithmetic
@@ -927,6 +1094,9 @@ VAR
   si: INTEGER32;
   nargs, i, start_arg: INTEGER32;
   pname: Str255;
+  with_targets, with_target: ADRMEM;
+  n_with_targets, wi, fi, pushed: INTEGER32;
+  with_tk, rec_id: INTEGER;
 BEGIN
   IF node = NIL THEN
     nt := ''
@@ -1070,6 +1240,49 @@ BEGIN
           AddError('ASSIGN argument 2 must be STRING, LSTRING, or CHAR');
       END;
     END
+    ELSE IF pname = 'READSET' THEN
+    BEGIN
+      { READSET([file,] dest, set_of_char): manual-documented extended I/O
+        builtin (djvu.txt), reads from `file` (INPUT if omitted) into `dest`
+        until a delimiter char in `set_of_char` is seen. Mirrors the
+        WRITE/READ file-selector detection above; dest is required to be
+        assignable and LSTRING-shaped -- this coarse model conflates
+        STRING/LSTRING into TK_STRING (see ResolveTypeExpr's NamedType
+        case), so both are accepted here the same way ASSIGN's second
+        argument already is. }
+      IF (nargs <> 2) AND (nargs <> 3) THEN
+        AddError('READSET expects 2 or 3 arguments')
+      ELSE BEGIN
+        start_arg := 0;
+        IF nargs = 3 THEN
+        BEGIN
+          warg := cJSON_GetArrayItem(args_arr, 0);
+          IF NodeType(warg) <> 'Identifier' THEN
+            AddError('READSET file argument must be a bare file variable')
+          ELSE BEGIN
+            si := LookupSymbol(GetStr(warg, 'name'));
+            IF si = 0 THEN
+              AddError('Undefined identifier')
+            ELSE IF (symbols[si].tk <> TK_FILE) OR (symbols[si].aux <> TK_CHAR) OR (symbols[si].aux2 <> 1) THEN
+              AddError('READSET file argument must be a TEXT file');
+          END;
+          start_arg := 1;
+        END;
+        warg := cJSON_GetArrayItem(args_arr, start_arg);
+        IF NodeType(warg) <> 'Identifier' THEN
+          AddError('READSET destination must be a bare LSTRING variable')
+        ELSE BEGIN
+          si := LookupSymbol(GetStr(warg, 'name'));
+          IF si = 0 THEN
+            AddError('Undefined identifier')
+          ELSE IF symbols[si].tk <> TK_STRING THEN
+            AddError('READSET destination must be STRING or LSTRING');
+        END;
+        cond_tk := CheckExpr(cJSON_GetArrayItem(args_arr, start_arg + 1));
+        IF cond_tk <> TK_SET THEN
+          AddError('READSET set argument must be a SET OF CHAR value');
+      END;
+    END
     ELSE IF (pname = 'NEW') OR (pname = 'DISPOSE') THEN
     BEGIN
       { Mirrors codegen.pas's own arity/shape checks (its NEW/DISPOSE case
@@ -1126,20 +1339,69 @@ BEGIN
           cond_tk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
       END
       ELSE BEGIN
-        IF nargs <> symbols[si].nparams THEN
+        { Same [VARARGS] arity relaxation as CheckFuncCall above. }
+        IF (nargs <> symbols[si].nparams)
+           AND NOT (symbols[si].is_vararg AND (nargs > symbols[si].nparams)) THEN
           AddError('Argument count mismatch')
         ELSE
           FOR i := 0 TO nargs - 1 DO
           BEGIN
             expr_tk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
-            IF NOT CanAssign(symbols[si].param_tk[i + 1], expr_tk) THEN
-              AddError('Argument type mismatch');
+            IF i < symbols[si].nparams THEN
+              IF NOT CanAssign(symbols[si].param_tk[i + 1], expr_tk) THEN
+                AddError('Argument type mismatch');
           END;
       END;
     END;
   END
   ELSE IF nt = 'CompoundStmt' THEN
-    CheckCompoundOrStmt(node);
+    CheckCompoundOrStmt(node)
+  ELSE IF nt = 'LabelStmt' THEN
+    { <label>: <stmt> -- the label declaration/target itself isn't checked
+      (matching the Python reference, which builds no label table and
+      leaves GOTO unchecked; codegen.pas is the enforcement point for
+      "GOTO to undefined label", same as the reference), but the *inner*
+      statement must still be walked. Omitting this case previously meant
+      any statement reached only via a label silently skipped type
+      checking -- the same class of bug as the historical CompoundStmt
+      dispatch gap (see this file's header comment / §1.7). }
+    CheckStmt(GetObj(node, 'stmt'))
+  ELSE IF nt = 'GotoStmt' THEN
+    { No-op: see the LabelStmt case's comment above. }
+    BEGIN END
+  ELSE IF nt = 'WithStmt' THEN
+  BEGIN
+    { WITH t1, t2, ... DO body -- equivalent to WITH t1 DO WITH t2 DO ...
+      DO body (djvu.txt:10194-10198): push one scope per target left to
+      right, each target's fields becoming bare identifiers visible in the
+      inner scope, so a later target's field of the same name shadows an
+      earlier one -- LookupSymbol's backward scan gives this for free. Only
+      a RECORD-typed target is legal; a bare pointer-to-record is rejected
+      (must be explicitly DEREF'd first), matching the reference and the
+      manual. }
+    with_targets := GetObj(node, 'targets');
+    n_with_targets := cJSON_GetArraySize(with_targets);
+    pushed := 0;
+    FOR wi := 0 TO n_with_targets - 1 DO
+    BEGIN
+      with_target := cJSON_GetArrayItem(with_targets, wi);
+      with_tk := CheckDesignator(with_target);
+      IF with_tk = TK_RECORD THEN
+      BEGIN
+        rec_id := last_designator_aux;
+        PushScope;
+        pushed := pushed + 1;
+        FOR fi := 1 TO nfields DO
+          IF fields[fi].record_id = rec_id THEN
+            si := DefineSymbol(fields[fi].fname, 'VAR', fields[fi].ftk, fields[fi].faux, fields[fi].faux2, 0);
+      END
+      ELSE IF with_tk <> TK_UNKNOWN THEN
+        AddError('WITH target must be a record');
+    END;
+    CheckCompoundOrStmt(GetObj(node, 'body'));
+    FOR wi := 1 TO pushed DO
+      PopScope;
+  END;
 END;
 
 { ============================== declarations ============================ }
@@ -1160,6 +1422,9 @@ VAR
   pn, pj: INTEGER32;
   saved_func_name: Str255;
   saved_func_ret_tk, saved_func_aux, saved_func_aux2: INTEGER;
+  attrs_arr, attr_item: ADRMEM;
+  nattrs, ai: INTEGER32;
+  is_vararg: BOOLEAN;
 BEGIN
   nt := NodeType(decl);
   IF nt = 'VarDecl' THEN
@@ -1193,6 +1458,20 @@ BEGIN
       types[ntypes].aux := aux;
       types[ntypes].aux2 := aux2;
       types[ntypes].idx_tk := idx_tk;
+    END;
+    IF NodeType(type_expr) = 'EnumType' THEN
+    BEGIN
+      { An enum's member identifiers are constants of the enum type, in
+        declaration order -- registered here so a member resolves as a
+        value wherever an identifier is legal (the typechecker half of
+        what codegen.pas's const_tbl registration does for folding). }
+      names_arr := GetObj(type_expr, 'values');
+      n := cJSON_GetArraySize(names_arr);
+      FOR i := 0 TO n - 1 DO
+      BEGIN
+        nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, i)));
+        si := DefineSymbol(nm, 'CONST', TK_ENUM, 0, 0, 0);
+      END;
     END;
   END
   ELSE IF (nt = 'ProcDecl') OR (nt = 'FuncDecl') THEN
@@ -1231,6 +1510,19 @@ BEGIN
       INTEGER, and the language has no implicit INTEGER32 -> INTEGER
       narrowing -- RETYPE makes the deliberate truncation explicit. }
     symbols[si].nparams := RETYPE(INTEGER, ppi);
+
+    { [VARARGS] marks the declared parameter list as a fixed prefix only.
+      Attribute names are already canonical uppercase in the AST (see
+      parser.pas ParseAttributeItem), so no case-folding is needed. }
+    is_vararg := FALSE;
+    attrs_arr := GetObj(decl, 'attributes');
+    nattrs := cJSON_GetArraySize(attrs_arr);
+    FOR ai := 0 TO nattrs - 1 DO
+    BEGIN
+      attr_item := cJSON_GetArrayItem(attrs_arr, ai);
+      IF GetStr(attr_item, 'name') = 'VARARGS' THEN is_vararg := TRUE;
+    END;
+    symbols[si].is_vararg := is_vararg;
 
     { Check the routine body (if any) in its own scope, with parameters
       bound and -- for a FUNCTION -- cur_func_name/cur_func_ret_tk/aux/aux2
@@ -1376,9 +1668,9 @@ BEGIN
 
   IF nerrors > 0 THEN
   BEGIN
-    res_c := puts(MakeCStr('Type checking failed:'));
+    EPrint('Type checking failed:');
     FOR i := 1 TO nerrors DO
-      res_c := puts(MakeCStr(errors[i]));
+      EPrint(errors[i]);
     exit(1);
   END;
 

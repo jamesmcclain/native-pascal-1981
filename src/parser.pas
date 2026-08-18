@@ -185,7 +185,7 @@ BEGIN
 
   IF json_root = NIL THEN
   BEGIN
-    res_c := puts(MakeCStr('Error: Failed to parse input token JSON'));
+    EPrint('Error: Failed to parse input token JSON');
     exit(1);
   END;
 
@@ -547,10 +547,10 @@ BEGIN
   END
   ELSE
   BEGIN
-    res_c := puts(MakeCStr('Parser Error: Expected token match failed. Expected:'));
-    res_c := puts(MakeCStr(target_k));
-    res_c := puts(MakeCStr('Got:'));
-    res_c := puts(MakeCStr(ck));
+    EPrint('Parser Error: Expected token match failed. Expected:');
+    EPrint(target_k);
+    EPrint('Got:');
+    EPrint(ck);
     exit(1);
   END;
 END;
@@ -579,7 +579,7 @@ BEGIN
   expr_depth := expr_depth + 1;
   IF expr_depth > MAX_EXPR_DEPTH THEN
   BEGIN
-    res_c := puts(MakeCStr('Parser Error: expression too complex (nesting deeper than 64); try breaking it up with intermediate value assigns'));
+    EPrint('Parser Error: expression too complex (nesting deeper than 64); try breaking it up with intermediate value assigns');
     exit(1);
   END;
 END;
@@ -596,7 +596,7 @@ BEGIN
   stmt_depth := stmt_depth + 1;
   IF stmt_depth > MAX_STMT_DEPTH THEN
   BEGIN
-    res_c := puts(MakeCStr('Parser Error: statements nested too deeply (deeper than 256); try splitting the routine up'));
+    EPrint('Parser Error: statements nested too deeply (deeper than 256); try splitting the routine up');
     exit(1);
   END;
 END;
@@ -921,13 +921,13 @@ BEGIN
     END
     ELSE
     BEGIN
-      res_c := puts(MakeCStr('Parser Error: expected numeric constant'));
+      EPrint('Parser Error: expected numeric constant');
       exit(1);
     END;
   END
   ELSE
   BEGIN
-    res_c := puts(MakeCStr('Parser Error: expected constant'));
+    EPrint('Parser Error: expected constant');
     exit(1);
   END;
 END;
@@ -1131,8 +1131,8 @@ BEGIN
   END
   ELSE
   BEGIN
-    res_c := puts(MakeCStr('Parser Error: Invalid factor expression'));
-    res_c := puts(MakeCStr(CurKind));
+    EPrint('Parser Error: Invalid factor expression');
+    EPrint(CurKind);
     exit(1);
   END;
 END;
@@ -1410,7 +1410,7 @@ BEGIN
   END
   ELSE
   BEGIN
-    res_c := puts(MakeCStr('Parser Error: expected TO or DOWNTO'));
+    EPrint('Parser Error: expected TO or DOWNTO');
     exit(1);
   END;
   AddField(node, 'end', ParseExpression);
@@ -1635,7 +1635,7 @@ BEGIN
     misplaced hint here rather than silently dropping it. }
   IF CurHasUnroll() AND (k <> 'FOR') AND (k <> 'WHILE') AND (k <> 'REPEAT') THEN
   BEGIN
-    res_c := puts(MakeCStr('Parser Error: {$UNROLL n} must immediately precede a FOR, WHILE, or REPEAT statement'));
+    EPrint('Parser Error: {$UNROLL n} must immediately precede a FOR, WHILE, or REPEAT statement');
     exit(1);
   END;
   IF k = 'BEGIN' THEN
@@ -1717,7 +1717,7 @@ BEGIN
     { An empty statement is legal only at a statement boundary.  Returning
       one for arbitrary input leaves the token unconsumed and makes callers
       such as ParseCompoundStmt loop forever on malformed source. }
-    res_c := puts(MakeCStr('Parser Error: expected statement'));
+    EPrint('Parser Error: expected statement');
     exit(1);
     ParseStatement := NIL;
   END;
@@ -1801,7 +1801,7 @@ BEGIN
   END
   ELSE
   BEGIN
-    res_c := puts(MakeCStr('Parser Error: expected set base type'));
+    EPrint('Parser Error: expected set base type');
     exit(1);
   END;
 END;
@@ -1825,6 +1825,9 @@ VAR
   packed_flag, is_super: BOOLEAN;
   nm: Str255;
   fields_arr, names_arr, field_type, max_len_expr, param_expr, values_arr: ADRMEM;
+  variants_arr, labels_arr, arm_fields_arr, arm_node, tag_type: ADRMEM;
+  tag_name: Str255;
+  has_tag: BOOLEAN;
   max_len: INTEGER;
   res_c: CINT;
 BEGIN
@@ -1855,7 +1858,8 @@ BEGIN
   BEGIN
     pos := pos + 1;
     fields_arr := cJSON_CreateArray;
-    WHILE CurKind <> 'END' DO
+    { The fixed part ends at CASE, if there is a variant part. }
+    WHILE (CurKind <> 'END') AND (CurKind <> 'CASE') DO
     BEGIN
       names_arr := ParseIdentListArr;
       Expect('COLON');
@@ -1866,9 +1870,65 @@ BEGIN
       ELSE
         BREAK;
     END;
+    variants_arr := cJSON_CreateArray;
+    tag_type := cJSON_CreateNull;
+    has_tag := FALSE;
+    tag_name := '';
+    IF CurKind = 'CASE' THEN
+    BEGIN
+      pos := pos + 1;
+      { A discriminant identifier is optional: CASE kind: INTEGER OF, or
+        CASE INTEGER OF. }
+      IF (CurKind = 'IDENTIFIER') AND (NextKind = 'COLON') THEN
+      BEGIN
+        has_tag := TRUE;
+        tag_name := CurLex;
+        pos := pos + 1;
+        Expect('COLON');
+      END;
+      tag_type := ParseType;
+      Expect('OF');
+      WHILE CurKind <> 'END' DO
+      BEGIN
+        labels_arr := ParseCaseConstantList;
+        Expect('COLON');
+        Expect('LPAREN');
+        arm_fields_arr := cJSON_CreateArray;
+        WHILE CurKind <> 'RPAREN' DO
+        BEGIN
+          names_arr := ParseIdentListArr;
+          Expect('COLON');
+          field_type := ParseType;
+          cJSON_AddItemToArray(arm_fields_arr, MakeTupleNode(names_arr, field_type));
+          IF CurKind = 'SEMICOLON' THEN
+            pos := pos + 1
+          ELSE
+            BREAK;
+        END;
+        Expect('RPAREN');
+        arm_node := CreateNode('VariantArm');
+        AddField(arm_node, 'labels', labels_arr);
+        AddField(arm_node, 'fields', arm_fields_arr);
+        cJSON_AddItemToArray(variants_arr, arm_node);
+        IF CurKind = 'SEMICOLON' THEN
+          pos := pos + 1
+        ELSE
+          BREAK;
+      END;
+    END;
     Expect('END');
     node := CreateNode('RecordType');
     AddField(node, 'fields', fields_arr);
+    { Preserve the established RecordType JSON shape for ordinary records;
+      native/Python typed-AST parity relies on it.  These fields are native
+      extensions only when a variant part actually exists. }
+    IF cJSON_GetArraySize(variants_arr) > 0 THEN
+    BEGIN
+      AddBoolField(node, 'has_tag', has_tag);
+      AddStringField(node, 'tag_name', tag_name);
+      AddField(node, 'tag_type', tag_type);
+      AddField(node, 'variants', variants_arr);
+    END;
     AddBoolField(node, 'packed', packed_flag);
     ParseType := node;
   END
@@ -1983,7 +2043,7 @@ BEGIN
   END
   ELSE
   BEGIN
-    res_c := puts(MakeCStr('Parser Error: expected type'));
+    EPrint('Parser Error: expected type');
     exit(1);
   END;
 END;
@@ -2050,13 +2110,13 @@ BEGIN
     END
     ELSE
     BEGIN
-      res_c := puts(MakeCStr('Parser Error: expected attribute item'));
+      EPrint('Parser Error: expected attribute item');
       exit(1);
     END;
   END
   ELSE
   BEGIN
-    res_c := puts(MakeCStr('Parser Error: expected attribute item'));
+    EPrint('Parser Error: expected attribute item');
     exit(1);
   END;
 END;
@@ -2653,7 +2713,7 @@ BEGIN
     END
     ELSE
     BEGIN
-      res_c := puts(MakeCStr('Parser Error: expected compilation unit start'));
+      EPrint('Parser Error: expected compilation unit start');
       exit(1);
     END;
 

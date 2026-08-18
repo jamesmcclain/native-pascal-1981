@@ -144,12 +144,16 @@ FUNCTION LLVMInt8TypeInContext(ctx: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION LLVMInt1TypeInContext(ctx: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION LLVMInt64TypeInContext(ctx: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION LLVMDoubleTypeInContext(ctx: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION LLVMIntTypeInContext(ctx: ADRMEM; nbits: CINT): ADRMEM [C]; EXTERN;
 FUNCTION LLVMPointerType(elem_ty: ADRMEM; addr_space: CINT): ADRMEM [C]; EXTERN;
 FUNCTION LLVMArrayType(elem_ty: ADRMEM; count: CINT): ADRMEM [C]; EXTERN;
+FUNCTION LLVMVectorType(elem_ty: ADRMEM; count: CINT): ADRMEM [C]; EXTERN;
 FUNCTION LLVMStructTypeInContext(ctx: ADRMEM; elem_tys: ADRMEM; count: CINT; is_packed: CINT): ADRMEM [C]; EXTERN;
 FUNCTION LLVMConstNull(ty: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION LLVMBuildGEP2(b: ADRMEM; ty: ADRMEM; ptr: ADRMEM; indices: ADRMEM; nindices: CINT; name: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION LLVMBuildBitCast(b: ADRMEM; val: ADRMEM; destty: ADRMEM; name: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION LLVMBuildPtrToInt(b: ADRMEM; val: ADRMEM; destty: ADRMEM; name: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION LLVMBuildIntToPtr(b: ADRMEM; val: ADRMEM; destty: ADRMEM; name: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION LLVMBuildZExt(b: ADRMEM; val: ADRMEM; destty: ADRMEM; name: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION LLVMBuildTrunc(b: ADRMEM; val: ADRMEM; destty: ADRMEM; name: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION LLVMFunctionType(ret_ty: ADRMEM; params: ADRMEM; pcount: CINT; vararg: CINT): ADRMEM [C]; EXTERN;
@@ -190,6 +194,12 @@ PROCEDURE LLVMSetThreadLocal(gvar: ADRMEM; is_tl: CINT) [C]; EXTERN;
     copy of them. }
 FUNCTION LLVMBuildLoad2(b: ADRMEM; ty: ADRMEM; ptr: ADRMEM; name: ADRMEM): ADRMEM [C]; EXTERN;
 PROCEDURE LLVMBuildStore(b: ADRMEM; val: ADRMEM; ptr: ADRMEM) [C]; EXTERN;
+PROCEDURE LLVMSetAlignment(v: ADRMEM; bytes: CINT) [C]; EXTERN;
+  { Applies to an alloca/load/store instruction. Needed by the SysV
+    register-coercion paths, which read and write an aggregate's storage
+    through eightbyte-wide piece types whose own ABI alignment can exceed
+    the aggregate's -- exactly what clang spells as `load i64, ptr %s,
+    align 4` for a two-INTEGER32 struct. }
 FUNCTION LLVMBuildAdd(b: ADRMEM; lhs: ADRMEM; rhs: ADRMEM; name: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION LLVMBuildSub(b: ADRMEM; lhs: ADRMEM; rhs: ADRMEM; name: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION LLVMBuildMul(b: ADRMEM; lhs: ADRMEM; rhs: ADRMEM; name: ADRMEM): ADRMEM [C]; EXTERN;
@@ -254,6 +264,7 @@ PROCEDURE exit(code: CINT) [C]; EXTERN;
 FUNCTION getenv(name: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_GetStringValue(item: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_IsNull(item: ADRMEM): CINT [C]; EXTERN;
+FUNCTION cJSON_IsNumber(item: ADRMEM): CINT [C]; EXTERN;
 
 { SysV MEMORY-class byval/align attribute emission for [C] FOREIGN aggregate
   parameters (see EmitByvalAttrsForParam / SysVAggClass below). Modern LLVM
@@ -328,14 +339,28 @@ CONST
     The variable's own storage (llvm_ty) is always a bare i8* pointing at a
     separately entry-alloca'd FCB + inline buffer, matching the reference's
     _init_file_storage: the handle the rest of codegen sees is opaque. }
+  TK_ENUM    = 21; { a user-declared enumerated type -- always a types[]
+    entry (tid >= 14), never a bare tid: i32 storage holding the 0-based
+    ordinal, member identifiers registered in const_tbl (see the
+    ResolveTypeExpr EnumType case). The manual reads enumerated values as
+    numbers and writes them that way too by default (13610-13618), so an
+    enum participates in I/O exactly like an INTEGER32. }
 
   MAX_SYMBOLS = 500;
   MAX_SCOPES = 64;
   MAX_PARAMS = 16;
+  MAX_SYSV_LEAVES = 32; { Upper bound on the scalar leaves of an aggregate the
+    SysV classifier ever walks: it only runs on types of at most 16 bytes and
+    the smallest leaf is 1 byte, so 16 is the true maximum; 32 leaves headroom
+    and the walker aborts loudly rather than truncating if it is ever hit. }
   MAX_ROUTINES = 384;
   MAX_TYPES = 200;
   MAX_FIELDS = 500;
   MAX_RECORD_FIELDS = 32;
+  MAX_LABELS = 64; { GOTO targets within a single routine -- generous against
+    real self-hosting sources, which use none, and this dialect's own
+    MAX_STMT_DEPTH=256 nesting ceiling bounds how many LabelStmts a routine
+    body could plausibly contain. }
   MAX_CONSTS = 200;
   MAX_DEV_ROUTINES = 128; { device routines registered for the kernel-entry
     readonly summary below -- a separate, smaller table than `routines`
@@ -386,7 +411,8 @@ TYPE
     rec_tid: INTEGER;
     fname: Str255;
     field_tid: INTEGER;
-    field_index: INTEGER; { 0-based, matches the LLVM struct's GEP index }
+    field_index: INTEGER; { 0-based LLVM struct member for fixed records }
+    byte_offset: INTEGER32; { explicit offset; variant arms may overlap }
   END;
 
   ConstRec = RECORD
@@ -418,6 +444,15 @@ TYPE
   ParamTkArr = ARRAY [1..MAX_PARAMS] OF INTEGER;
   ParamVarArr = ARRAY [1..MAX_PARAMS] OF BOOLEAN;
 
+  { SysV AMD64 aggregate classification working/result storage. An aggregate
+    that is not MEMORY class is at most 16 bytes, i.e. at most two eightbytes,
+    so the per-eightbyte result arrays have exactly two slots. }
+  SysVPieceArr = ARRAY [1..2] OF INTEGER;
+  SysVPieceSzArr = ARRAY [1..2] OF INTEGER32;
+  SysVFlagArr = ARRAY [1..2] OF BOOLEAN;
+  SysVLeafOffArr = ARRAY [1..MAX_SYSV_LEAVES] OF INTEGER32;
+  SysVLeafTidArr = ARRAY [1..MAX_SYSV_LEAVES] OF INTEGER;
+
   RoutineRec = RECORD
     name: Str255;
     is_func: BOOLEAN;
@@ -444,6 +479,20 @@ TYPE
                       such a routine crosses the C ABI as SysV MEMORY-class
                       byval, not as the plain-Pascal first-class-aggregate
                       convention the rest of param_needs_copy documents. }
+    is_vararg: BOOLEAN; { TRUE for a [C] EXTERN routine carrying the
+                          [VARARGS] attribute -- see IsVarargsDecl. nparams
+                          is then only the FIXED prefix: the LLVM function
+                          type is variadic, a call may pass extra trailing
+                          arguments, and each of those gets C's default
+                          argument promotions applied (CodegenCallCommon). }
+  END;
+
+  LabelRec = RECORD
+    name: Str255; { normalized key for both spellings a label can take --
+                    an identifier as-is, or an integer label's decimal text
+                    (see LabelKey) -- since the JSON 'label' field on
+                    GotoStmt/LabelStmt/BreakStmt/CycleStmt is polymorphic. }
+    block: ADRMEM;
   END;
 
 VAR
@@ -509,14 +558,21 @@ VAR
     the file-targeted counterpart of printf_fn above, same varargs shape. }
   fread_int_fnty, fread_int_fn: ADRMEM;
   fread_word_fnty, fread_word_fn: ADRMEM;
+  fread_ptr_fnty, fread_ptr_fn: ADRMEM; { pointer-as-number READ, the manual's
+    implementation-defined round-trip format (13620-13623). }
+  fread_enum_name_fnty, fread_enum_name_fn: ADRMEM; { BOOLEAN-by-name-or-number
+    READ from a file (manual 13610-13618). }
   fread_real_fnty, fread_real_fn: ADRMEM;
   fread_char_fnty, fread_char_fn: ADRMEM;
   fread_lstring_fnty, fread_lstring_fn: ADRMEM;
   fread_string_fnty, fread_string_fn: ADRMEM;
   freadln_skip_fnty, freadln_skip_fn: ADRMEM;
+  freadset_fnty, freadset_fn: ADRMEM; { pas_freadset(fcb*, lstr*, cap, set_words*) }
   read_int_fnty, read_int_fn: ADRMEM; { stdin counterparts (readq.c), used by
     a bare READ/READLN with no leading file argument. }
   read_word_fnty, read_word_fn: ADRMEM;
+  read_ptr_fnty, read_ptr_fn: ADRMEM; { stdin counterparts of the two above. }
+  read_enum_name_fnty, read_enum_name_fn: ADRMEM;
   read_real_fnty, read_real_fn: ADRMEM;
   read_char_fnty, read_char_fn: ADRMEM;
   read_lstring_fnty, read_lstring_fn: ADRMEM;
@@ -526,6 +582,9 @@ VAR
     [C] FOREIGN MEMORY-class byval call marshalling below, resolved once at
     init time (see byval_align_kinds_init) rather than re-resolving by name
     on every call site/declaration. }
+  sret_kind_id: CINT; { and, for a MEMORY-class aggregate RETURN, the hidden
+    result-pointer parameter's `sret(ty)` -- a TYPE attribute like byval, not
+    a bare enum one, so it is built with LLVMCreateTypeAttribute. }
   readonly_kind_id, nocapture_kind_id, noalias_kind_id: CINT;
   deref_kind_id: CINT; { and the kernel-entry parameter facts (readonly,
     nocapture, noalias, dereferenceable), resolved the same way. }
@@ -614,6 +673,8 @@ VAR
   in_local_scope: BOOLEAN; { FALSE while codegen'ing top-level VAR decls
                              (global storage), TRUE while inside a routine
                              body (alloca'd local storage). }
+  lowering_spliced_interface: BOOLEAN;
+  defining_implementation: BOOLEAN;
 
   routines: ARRAY [1..MAX_ROUTINES] OF RoutineRec;
   nroutines: INTEGER32;
@@ -639,7 +700,27 @@ VAR
                                                 loop's body so BREAK/CYCLE can
                                                 branch to the right block. }
   loop_cycle_blocks: ARRAY [1..32] OF ADRMEM;
+  loop_labels: ARRAY [1..32] OF Str255; { '' unless the loop at this depth is
+                                          prefixed by a label (`lbl: FOR ...`),
+                                          in which case a labeled BREAK/CYCLE
+                                          naming it can target this depth
+                                          instead of only the innermost loop. }
   loop_depth: INTEGER32;
+
+  labels: ARRAY [1..MAX_LABELS] OF LabelRec; { every LABEL target reachable by
+    GOTO within the routine currently being codegen'd, collected up front by
+    SetupFunctionLabels so a forward GOTO can branch to a block that doesn't
+    exist yet in program-text order. Routine-local: cleared and rebuilt at
+    the start of every PROGRAM/PROCEDURE/FUNCTION/unit-init body, matching
+    the Python reference's own per-routine label_blocks. }
+  nlabels: INTEGER32;
+  cur_routine_has_labels: BOOLEAN; { CodegenStmtArray consults this to decide
+    whether code after a terminated block might still be a live GOTO target
+    (see its own comment) rather than genuinely dead. }
+  pending_loop_label: Str255; { set by CodegenLabelStmt just before it
+    descends into an inner WhileStmt/RepeatStmt/ForStmt, consumed (and
+    cleared) by that loop's own codegen procedure when it pushes loop_depth;
+    '' for an unlabeled loop. }
 
   last_val_tk: INTEGER; { side-channel result of CodegenExpr, mirroring the
                           typechecker's own aux-field convention: the dialect
@@ -654,7 +735,7 @@ PROCEDURE AbortWith(msg: Str255);
 VAR
   res_c: CINT;
 BEGIN
-  res_c := puts(MakeCStr(msg));
+  EPrint(msg);
   exit(1);
 END;
 
@@ -990,32 +1071,93 @@ BEGIN
   LookupConst := found;
 END;
 
-FUNCTION IsIntLiteralLike(expr_node: ADRMEM): BOOLEAN;
-{ A bare IntLiteral, or a unary-MINUS of one (`-50`) -- the two shapes a
-  compile-time INTEGER constant can take as an AssignStmt's RHS in this
-  file (no general constant-folding of arbitrary expressions, unlike the
-  Python reference's _fold_const_int; this covers the shapes that actually
-  occur in practice for the WORD/INTEGER8 constant-adaptation rule). }
+FUNCTION Real64ToInt64(val: REAL): INTEGER64; FORWARD;
+FUNCTION UpperStr(s: Str255): Str255; FORWARD;
+
+FUNCTION FoldConstInt(expr_node: ADRMEM; VAR folded: INTEGER64): BOOLEAN;
+{ Fold the integer-only constant-expression subset used by the reference
+  typechecker's _fold_const_int: literals, unary +/-, arithmetic, earlier
+  integer CONSTs, and ORD/SUCC/PRED.  This is deliberately not CodegenExpr:
+  callers need the untruncated value before rebuilding it at a wider target
+  type for the vintage INTEGER-constant adaptation rule. }
 VAR
+  nt, op, nm: Str255;
+  left, right, q, r: INTEGER64;
   ci: INTEGER32;
+  args: ADRMEM;
 BEGIN
-  IF NodeType(expr_node) = 'IntLiteral' THEN IsIntLiteralLike := TRUE
-  ELSE IF (NodeType(expr_node) = 'UnaryOp') AND (GetStr(expr_node, 'op') = 'MINUS')
-    AND (NodeType(GetObj(expr_node, 'operand')) = 'IntLiteral') THEN IsIntLiteralLike := TRUE
-  { A bare reference to a CONST name (e.g. comparing "tk = TK_WORD" where
-    TK_WORD is itself a CONST) folds to a compile-time INTEGER value just
-    like a literal does, so it gets the same wide-integer adaptation --
-    unless the CONST is itself a REAL literal (e.g. RADIX = 1.0e9). A plain
-    AND clause here would still index const_tbl[0] when LookupConst returns
-    0, since AND is not short-circuit in this dialect -- guard with a nested
-    IF instead. }
-  ELSE IF NodeType(expr_node) = 'Identifier' THEN
+  nt := NodeType(expr_node);
+  FoldConstInt := FALSE;
+  IF nt = 'IntLiteral' THEN
+  BEGIN
+    folded := Real64ToInt64(GetReal(expr_node, 'value'));
+    FoldConstInt := TRUE;
+  END
+  ELSE IF nt = 'UnaryOp' THEN
+  BEGIN
+    op := GetStr(expr_node, 'op');
+    IF ((op = 'PLUS') OR (op = 'MINUS')) AND FoldConstInt(GetObj(expr_node, 'operand'), folded) THEN
+    BEGIN
+      IF op = 'MINUS' THEN folded := 0 - folded;
+      FoldConstInt := TRUE;
+    END;
+  END
+  ELSE IF nt = 'BinOp' THEN
+  BEGIN
+    op := GetStr(expr_node, 'op');
+    IF ((op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') OR (op = 'DIV') OR (op = 'MOD')) AND
+       FoldConstInt(GetObj(expr_node, 'left'), left) AND
+       FoldConstInt(GetObj(expr_node, 'right'), right) THEN
+    BEGIN
+      IF op = 'PLUS' THEN folded := left + right
+      ELSE IF op = 'MINUS' THEN folded := left - right
+      ELSE IF op = 'MUL' THEN folded := left * right
+      ELSE IF right <> 0 THEN
+      BEGIN
+        { Match Python's // and % rather than the host's truncating DIV/MOD. }
+        q := left DIV right;
+        r := left MOD right;
+        IF (r <> 0) AND (((left < 0) AND (right > 0)) OR ((left > 0) AND (right < 0))) THEN
+          q := q - 1;
+        IF op = 'DIV' THEN folded := q
+        ELSE folded := left - q * right;
+        FoldConstInt := TRUE;
+      END
+      ELSE
+        FoldConstInt := FALSE;
+      IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') THEN FoldConstInt := TRUE;
+    END;
+  END
+  ELSE IF nt = 'Identifier' THEN
   BEGIN
     ci := LookupConst(GetStr(expr_node, 'name'));
-    IF ci = 0 THEN IsIntLiteralLike := FALSE
-    ELSE IsIntLiteralLike := NOT const_tbl[ci].is_real;
+    IF ci <> 0 THEN
+      IF NOT const_tbl[ci].is_real THEN
+      BEGIN
+        folded := const_tbl[ci].ival;
+        FoldConstInt := TRUE;
+      END;
   END
-  ELSE IsIntLiteralLike := FALSE;
+  ELSE IF nt = 'FuncCall' THEN
+  BEGIN
+    nm := UpperStr(GetStr(expr_node, 'name'));
+    args := GetObj(expr_node, 'args');
+    IF ((nm = 'ORD') OR (nm = 'SUCC') OR (nm = 'PRED')) AND (ArrSize(args) = 1) AND
+       FoldConstInt(ArrItem(args, 0), folded) THEN
+    BEGIN
+      IF nm = 'SUCC' THEN folded := folded + 1
+      ELSE IF nm = 'PRED' THEN folded := folded - 1;
+      FoldConstInt := TRUE;
+    END;
+  END;
+END;
+
+FUNCTION IsIntLiteralLike(expr_node: ADRMEM): BOOLEAN;
+{ True when FoldConstInt can produce a compile-time INTEGER value. }
+VAR
+  folded: INTEGER64;
+BEGIN
+  IsIntLiteralLike := FoldConstInt(expr_node, folded);
 END;
 
 FUNCTION MakeRadix64: INTEGER64;
@@ -1069,24 +1211,15 @@ BEGIN
 END;
 
 FUNCTION IntLiteralValue(expr_node: ADRMEM): INTEGER64;
-{ The signed value of an IsIntLiteralLike node. Deliberately re-reads the
-  raw JSON value via GetReal (a full double, exact for every magnitude an
-  INTEGER64/WORD64 literal can take) rather than reusing CodegenExpr's own
-  IntLiteral result, or GetInt: CodegenExpr's path always builds an i16
-  constant (this dialect's native INTEGER width) and GetInt truncates to
-  INTEGER32, both silently losing magnitude for a literal destined for an
-  INTEGER64/WORD64 target, which needs the value rebuilt at the target's
-  own width instead. }
+{ The full signed value of an IsIntLiteralLike expression. }
+VAR
+  folded: INTEGER64;
 BEGIN
-  IF NodeType(expr_node) = 'IntLiteral' THEN
-    IntLiteralValue := Real64ToInt64(GetReal(expr_node, 'value'))
-  ELSE IF (NodeType(expr_node) = 'UnaryOp') AND (GetStr(expr_node, 'op') = 'MINUS') THEN
-    IntLiteralValue := 0 - Real64ToInt64(GetReal(GetObj(expr_node, 'operand'), 'value'))
-  ELSE IF (NodeType(expr_node) = 'Identifier') AND (LookupConst(GetStr(expr_node, 'name')) <> 0) THEN
-    IntLiteralValue := const_tbl[LookupConst(GetStr(expr_node, 'name'))].ival
+  IF FoldConstInt(expr_node, folded) THEN
+    IntLiteralValue := folded
   ELSE
   BEGIN
-    AbortWith('codegen: IntLiteralValue: not a literal');
+    AbortWith('codegen: IntLiteralValue: not a foldable integer constant');
     IntLiteralValue := 0;
   END;
 END;
@@ -1099,7 +1232,10 @@ FUNCTION IsWideIntTk(tk: INTEGER): BOOLEAN;
   threading (typecheck/exprs.py). }
 BEGIN
   IsWideIntTk := (tk = TK_WORD) OR (tk = TK_INTEGER8) OR (tk = TK_WORD8) OR
-    (tk = TK_INTEGER32) OR (tk = TK_WORD32) OR (tk = TK_INTEGER64) OR (tk = TK_WORD64);
+    (tk = TK_INTEGER32) OR (tk = TK_WORD32) OR (tk = TK_INTEGER64) OR (tk = TK_WORD64)
+    OR (TypeKind(tk) = TK_ENUM); { an enum member constant (a bare INTEGER
+    literal until this point) adapts to its enum sibling's i32 ordinal
+    storage the same way it adapts to any wider integer target. }
 END;
 
 FUNCTION IsIntegerFamilyTk(tk: INTEGER): BOOLEAN; FORWARD;
@@ -1143,6 +1279,32 @@ BEGIN
       matching the reference's general C-ABI argument coercion (not just a
       literal exemption -- any integer-typed expression, e.g. cJSON_CreateNumber(int_var)). }
     CoerceForAssign := LLVMBuildSIToFP(builder, v, LLVMTypeForTk(to_tid), MakeCStr(''))
+  ELSE IF TypeKind(to_tid) = TK_ENUM THEN
+  BEGIN
+    { An enum target stores a 0-based ordinal in i32. Enum member
+      constants arrive here as TK_INTEGER i16 literals, SUCC/PRED results
+      and other enum variables as enum-typed i32 values, and plain
+      integer-family expressions (the manual's ordinal arithmetic) as
+      their own widths -- coerce each into the i32 storage. }
+    IF IsIntLiteralLike(expr_node) THEN
+      CoerceForAssign := LLVMConstInt(i32ty, IntLiteralValue(expr_node), 1)
+    ELSE IF TypeKind(from_tid) = TK_ENUM THEN
+      CoerceForAssign := v
+    ELSE IF IsIntegerFamilyTk(from_tid) THEN
+    BEGIN
+      IF IntFamilyWidth(from_tid) > 32 THEN
+        CoerceForAssign := LLVMBuildTrunc(builder, v, i32ty, MakeCStr(''))
+      ELSE IF IsUnsignedWordTk(from_tid) THEN
+        CoerceForAssign := LLVMBuildZExt(builder, v, i32ty, MakeCStr(''))
+      ELSE
+        CoerceForAssign := LLVMBuildSExt(builder, v, i32ty, MakeCStr(''));
+    END
+    ELSE
+    BEGIN
+      AbortWith2('codegen: assignment type mismatch for: ', ctx_name);
+      CoerceForAssign := v;
+    END;
+  END
   ELSE IF IsIntegerFamilyTk(from_tid) AND IsIntegerFamilyTk(to_tid) THEN
   BEGIN
     { General integer-family narrow/widen, matching the reference's
@@ -1233,7 +1395,7 @@ FUNCTION TypeSizeBytes(tid: INTEGER): INTEGER32;
   no-padding sum is wrong. }
 VAR
   i: INTEGER;
-  off, fa: INTEGER32;
+  off, fa, end_off: INTEGER32;
 BEGIN
   IF tid = TK_INTEGER THEN TypeSizeBytes := 2
   ELSE IF tid = TK_REAL THEN TypeSizeBytes := 8
@@ -1253,14 +1415,14 @@ BEGIN
                       * (types[tid].hi - types[tid].lo + 1)
   ELSE IF TypeKind(tid) = TK_RECORD THEN
   BEGIN
-    off := 0;
+    end_off := 0;
     FOR i := 1 TO nfields DO
       IF fields[i].rec_tid = tid THEN
       BEGIN
-        fa := TypeAlignBytes(fields[i].field_tid);
-        off := RoundUpBytes(off, fa) + TypeSizeBytes(fields[i].field_tid);
+        off := fields[i].byte_offset + TypeSizeBytes(fields[i].field_tid);
+        IF off > end_off THEN end_off := off;
       END;
-    TypeSizeBytes := RoundUpBytes(off, TypeAlignBytes(tid));
+    TypeSizeBytes := RoundUpBytes(end_off, TypeAlignBytes(tid));
   END
   ELSE IF TypeKind(tid) = TK_LSTRING THEN TypeSizeBytes := types[tid].hi + 1
   ELSE IF TypeKind(tid) = TK_STRING THEN TypeSizeBytes := types[tid].hi
@@ -1271,6 +1433,305 @@ BEGIN
     AbortWith('codegen: TypeSizeBytes: unsupported type');
     TypeSizeBytes := 0;
   END;
+END;
+
+FUNCTION IsAggregateTk(tk: INTEGER): BOOLEAN;
+{ The types that cross the C ABI as aggregates rather than as single
+  machine values -- exactly the set FlattenParams marks needs_copy for, kept
+  as one named predicate so the parameter side and the RETURN side (which
+  has no needs_copy flag of its own) can never drift apart. }
+BEGIN
+  IsAggregateTk := (TypeKind(tk) = TK_ARRAY) OR (TypeKind(tk) = TK_RECORD) OR
+                   (TypeKind(tk) = TK_LSTRING) OR (TypeKind(tk) = TK_STRING);
+END;
+
+CONST
+  SYSV_CLASS_MEMORY = 1;
+  SYSV_CLASS_COERCED = 2; { <=16-byte aggregate whose eightbytes all classify
+    INTEGER and/or SSE: passed/returned in one or two registers, each register
+    holding one "piece" (see SYSV_PIECE_* below). }
+
+  { Eightbyte classes, the NONE/INTEGER/SSE/MEMORY lattice merged by
+    SysVMergeClass below. }
+  SYSV_EB_NONE = 0;
+  SYSV_EB_INTEGER = 1;
+  SYSV_EB_SSE = 2;
+  SYSV_EB_MEMORY = 3;
+
+  { Per-eightbyte register piece kinds for a COERCED aggregate. The byte width
+    that goes with a piece is reported separately: it is meaningful only for
+    SYSV_PIECE_INTEGER (an integer of that many bytes); the float/double/vector
+    kinds have their width implied (4/8/8). }
+  SYSV_PIECE_INTEGER = 1;
+  SYSV_PIECE_FLOAT = 2;
+  SYSV_PIECE_DOUBLE = 3;
+  SYSV_PIECE_SSEVEC = 4; { two packed floats, i.e. <2 x float> }
+
+FUNCTION SysVMergeClass(a: INTEGER; b: INTEGER): INTEGER;
+{ The System V AMD64 class-merge lattice. }
+BEGIN
+  IF a = b THEN SysVMergeClass := a
+  ELSE IF a = SYSV_EB_NONE THEN SysVMergeClass := b
+  ELSE IF b = SYSV_EB_NONE THEN SysVMergeClass := a
+  ELSE IF (a = SYSV_EB_MEMORY) OR (b = SYSV_EB_MEMORY) THEN SysVMergeClass := SYSV_EB_MEMORY
+  ELSE IF (a = SYSV_EB_INTEGER) OR (b = SYSV_EB_INTEGER) THEN SysVMergeClass := SYSV_EB_INTEGER
+  ELSE SysVMergeClass := SYSV_EB_SSE;
+END;
+
+FUNCTION IsSysVLeafTid(tid: INTEGER): BOOLEAN;
+{ TRUE for exactly the scalar types TypeSizeBytes/TypeAlignBytes handle
+  without recursing -- the leaves of the walk below. }
+BEGIN
+  IsSysVLeafTid := (tid = TK_INTEGER) OR (tid = TK_WORD) OR (tid = TK_INTEGER8)
+                OR (tid = TK_WORD8) OR (tid = TK_BOOLEAN) OR (tid = TK_CHAR)
+                OR (tid = TK_INTEGER32) OR (tid = TK_WORD32) OR (tid = TK_REAL32)
+                OR (tid = TK_INTEGER64) OR (tid = TK_WORD64) OR (tid = TK_REAL)
+                OR (tid = TK_ADRMEM) OR (TypeKind(tid) = TK_POINTER);
+END;
+
+PROCEDURE WalkTypeLeaves(tid: INTEGER; base_off: INTEGER32; VAR nleaves: INTEGER32;
+                          VAR leaf_off: SysVLeafOffArr; VAR leaf_tid: SysVLeafTidArr);
+{ Append (absolute byte offset, scalar leaf tid) for every scalar leaf of tid
+  to the caller's arrays, recursing through RECORD fields and ARRAY elements.
+  Pascal has no generators, so the flat result is accumulated into fixed-size
+  VAR arrays instead of being yielded lazily. RECORD field offsets come
+  straight from fields[].byte_offset (already the natural-alignment layout);
+  ARRAY elements use the same stride TypeSizeBytes uses for the array's own
+  size, so the two can never disagree. }
+VAR
+  i: INTEGER;
+  stride: INTEGER32;
+  k, n: INTEGER32;
+BEGIN
+  IF IsSysVLeafTid(tid) THEN
+  BEGIN
+    IF nleaves >= MAX_SYSV_LEAVES THEN
+      AbortWith('codegen: WalkTypeLeaves: too many scalar leaves in aggregate');
+    nleaves := nleaves + 1;
+    leaf_off[nleaves] := base_off;
+    leaf_tid[nleaves] := tid;
+  END
+  ELSE IF TypeKind(tid) = TK_ARRAY THEN
+  BEGIN
+    stride := RoundUpBytes(TypeSizeBytes(types[tid].elem_tid), TypeAlignBytes(types[tid].elem_tid));
+    n := types[tid].hi - types[tid].lo + 1;
+    FOR k := 0 TO n - 1 DO
+      WalkTypeLeaves(types[tid].elem_tid, base_off + k * stride, nleaves, leaf_off, leaf_tid);
+  END
+  ELSE IF TypeKind(tid) = TK_RECORD THEN
+  BEGIN
+    FOR i := 1 TO nfields DO
+      IF fields[i].rec_tid = tid THEN
+        WalkTypeLeaves(fields[i].field_tid, base_off + fields[i].byte_offset,
+                       nleaves, leaf_off, leaf_tid);
+  END
+  ELSE
+    AbortWith('codegen: WalkTypeLeaves: unsupported type in C aggregate');
+END;
+
+PROCEDURE ClassifyAggregate(tk: INTEGER; VAR agg_class: INTEGER; VAR n_pieces: INTEGER;
+                             VAR piece_kind: SysVPieceArr; VAR piece_bytes: SysVPieceSzArr);
+{ The full System V AMD64 aggregate classifier. Splits an aggregate of at most
+  16 bytes into one or two eightbytes, merges every scalar leaf's class into
+  the eightbyte it lands in, and reports either MEMORY (passed in memory) or
+  COERCED plus the register piece each eightbyte is passed in.
+
+  Worked examples (byte offsets / eightbyte index / merged class):
+    RECORD a, b: INTEGER32 END -- size 8, leaves 0:i32, 4:i32, both eightbyte
+      0, INTEGER+INTEGER = INTEGER, end = 8 -> COERCED, 1 integer piece of
+      8 bytes.
+    RECORD a: REAL END -- size 8, leaf 0:REAL -> eightbyte 0 SSE with a
+      double leaf -> COERCED, 1 double piece.
+    RECORD a, b: REAL32 END -- size 8, leaves 0:f32, 4:f32 -> eightbyte 0 SSE,
+      no double, sse_end 8 > 4 -> COERCED, 1 two-float-vector piece.
+    ARRAY [1..3] OF INTEGER32 -- size 12, leaves 0, 4, 8; eightbyte 0 gets
+      offsets 0 and 4 (end 8, used 8), eightbyte 1 gets offset 8 (end 12,
+      used 4) -> COERCED, pieces integer/8 bytes and integer/4 bytes.
+    Anything over 16 bytes, or of size 0 -> MEMORY, no pieces. }
+VAR
+  size, used: INTEGER32;
+  nleaves, li, lsz, lend: INTEGER32;
+  leaf_off: SysVLeafOffArr;
+  leaf_tid: SysVLeafTidArr;
+  eb, n_eb, leaf_cls, i: INTEGER;
+  cls: SysVPieceArr;
+  eb_end: SysVPieceSzArr;
+  sse_end: SysVPieceSzArr;
+  sse_dbl: SysVFlagArr;
+BEGIN
+  n_pieces := 0;
+  size := TypeSizeBytes(tk);
+  IF (size = 0) OR (size > 16) THEN
+  BEGIN
+    agg_class := SYSV_CLASS_MEMORY;
+    RETURN;
+  END;
+
+  { (size + 7) DIV 8, spelled out so the eightbyte index stays a plain
+    INTEGER rather than an INTEGER32: size is at most 16 here. }
+  IF size > 8 THEN n_eb := 2 ELSE n_eb := 1;
+  FOR i := 1 TO 2 DO
+  BEGIN
+    cls[i] := SYSV_EB_NONE;
+    eb_end[i] := 0;
+    sse_end[i] := 0;
+    sse_dbl[i] := FALSE;
+  END;
+
+  nleaves := 0;
+  WalkTypeLeaves(tk, 0, nleaves, leaf_off, leaf_tid);
+
+  FOR li := 1 TO nleaves DO
+  BEGIN
+    lsz := TypeSizeBytes(leaf_tid[li]);
+    { Eightbyte index, 1-based here (the reference's 0-based off DIV 8). A
+      leaf can only land past the second eightbyte in a malformed layout, and
+      such a leaf is skipped, exactly as the reference skips eb >= n_eb. }
+    IF leaf_off[li] >= 8 THEN eb := 2 ELSE eb := 1;
+    IF (eb <= n_eb) AND (leaf_off[li] < 16) THEN
+    BEGIN
+      IF (leaf_tid[li] = TK_REAL) OR (leaf_tid[li] = TK_REAL32) THEN
+        leaf_cls := SYSV_EB_SSE
+      ELSE
+        leaf_cls := SYSV_EB_INTEGER;
+      cls[eb] := SysVMergeClass(cls[eb], leaf_cls);
+      { Last occupied byte within this eightbyte, clamped to its end. }
+      lend := leaf_off[li] + lsz;
+      IF lend > eb * 8 THEN lend := eb * 8;
+      IF lend > eb_end[eb] THEN eb_end[eb] := lend;
+      IF leaf_cls = SYSV_EB_SSE THEN
+      BEGIN
+        IF lend > sse_end[eb] THEN sse_end[eb] := lend;
+        IF leaf_tid[li] = TK_REAL THEN sse_dbl[eb] := TRUE;
+      END;
+    END;
+  END;
+
+  FOR eb := 1 TO n_eb DO
+    IF cls[eb] = SYSV_EB_MEMORY THEN
+    BEGIN
+      agg_class := SYSV_CLASS_MEMORY;
+      n_pieces := 0;
+      RETURN;
+    END;
+
+  agg_class := SYSV_CLASS_COERCED;
+  n_pieces := n_eb;
+  FOR eb := 1 TO n_eb DO
+  BEGIN
+    used := eb_end[eb] - (eb - 1) * 8;
+    IF cls[eb] = SYSV_EB_SSE THEN
+    BEGIN
+      IF sse_dbl[eb] THEN
+      BEGIN
+        piece_kind[eb] := SYSV_PIECE_DOUBLE;
+        piece_bytes[eb] := 8;
+      END
+      ELSE IF (sse_end[eb] - (eb - 1) * 8) > 4 THEN
+      BEGIN
+        piece_kind[eb] := SYSV_PIECE_SSEVEC;
+        piece_bytes[eb] := 8;
+      END
+      ELSE
+      BEGIN
+        piece_kind[eb] := SYSV_PIECE_FLOAT;
+        piece_bytes[eb] := 4;
+      END;
+    END
+    ELSE
+    BEGIN
+      { INTEGER, and also the INTEGER+SSE merge result. The reference builds
+        an integer of max(8, used * 8) *bits*, i.e. at least one byte wide;
+        the equivalent byte width is what is reported here. }
+      piece_kind[eb] := SYSV_PIECE_INTEGER;
+      IF used > 1 THEN piece_bytes[eb] := used ELSE piece_bytes[eb] := 1;
+    END;
+  END;
+END;
+
+FUNCTION SysVAggClass(tk: INTEGER): INTEGER;
+{ Memory-vs-register answer only, for callers that do not need the per-piece
+  breakdown ClassifyAggregate reports. Returns plain INTEGER (not INTEGER32),
+  matching TypeKind's own return type -- the native typechecker's
+  CheckExpr/IsNumeric treats INTEGER and INTEGER32 as distinct,
+  non-interchangeable comparison operand kinds, and every caller here
+  compares the result against an INTEGER-typed CONST (SYSV_CLASS_MEMORY /
+  SYSV_CLASS_COERCED). }
+VAR
+  agg_class, n_pieces: INTEGER;
+  piece_kind: SysVPieceArr;
+  piece_bytes: SysVPieceSzArr;
+BEGIN
+  ClassifyAggregate(tk, agg_class, n_pieces, piece_kind, piece_bytes);
+  SysVAggClass := agg_class;
+END;
+
+FUNCTION SysVByvalAlign(tk: INTEGER): INTEGER32;
+{ The `align` attribute a MEMORY-class aggregate's byval/sret pointer needs.
+  SysV AMD64 passes MEMORY-class arguments in eightbyte-granular stack slots
+  regardless of the aggregate's own natural alignment, so clang always emits
+  at least align 8 for byval/sret even when TypeAlignBytes reports less (a
+  RECORD of only INTEGER32 fields naturally aligns to 4, but still lands on
+  an 8-byte-aligned stack slot) -- found by a clang spot-check diverging from
+  this compiler's earlier align-4 output for exactly such a RECORD. }
+BEGIN
+  IF TypeAlignBytes(tk) > 8 THEN SysVByvalAlign := TypeAlignBytes(tk)
+  ELSE SysVByvalAlign := 8;
+END;
+
+FUNCTION SysVPieceLLVMType(kind: INTEGER; nbytes: INTEGER32): ADRMEM;
+{ The LLVM type one COERCED eightbyte is passed in, from the piece kind and
+  byte width ClassifyAggregate reports (nbytes is meaningful only for the
+  integer kind; the others have their width implied). }
+BEGIN
+  IF kind = SYSV_PIECE_DOUBLE THEN SysVPieceLLVMType := dblty
+  ELSE IF kind = SYSV_PIECE_FLOAT THEN SysVPieceLLVMType := f32ty
+  ELSE IF kind = SYSV_PIECE_SSEVEC THEN SysVPieceLLVMType := LLVMVectorType(f32ty, 2)
+  ELSE SysVPieceLLVMType := LLVMIntTypeInContext(ctx, nbytes * 8);
+END;
+
+FUNCTION SysVCoercedStructType(n_pieces: INTEGER; VAR piece_kind: SysVPieceArr;
+                                VAR piece_bytes: SysVPieceSzArr): ADRMEM;
+{ The literal struct of an aggregate's register pieces, laid over the
+  aggregate's own storage so each piece can be loaded/stored at its
+  eightbyte offset (the reference's AggInfo.coerced_struct). Always a
+  struct, even for a single piece: a one-element struct GEPs the same way a
+  two-element one does, which keeps the piece loops below single-shaped. }
+VAR
+  elem_tys: ADRMEM;
+  eb: INTEGER;
+BEGIN
+  elem_tys := AllocPtrArray(n_pieces);
+  FOR eb := 1 TO n_pieces DO
+    SetPtrArrayElem(elem_tys, eb - 1, SysVPieceLLVMType(piece_kind[eb], piece_bytes[eb]));
+  SysVCoercedStructType := LLVMStructTypeInContext(ctx, elem_tys, n_pieces, 0);
+END;
+
+FUNCTION SysVCoercedRetType(n_pieces: INTEGER; VAR piece_kind: SysVPieceArr;
+                             VAR piece_bytes: SysVPieceSzArr): ADRMEM;
+{ The LLVM return type of a COERCED-class aggregate return: the bare piece
+  type when the aggregate occupies a single eightbyte, otherwise the literal
+  struct of both pieces -- mirroring the reference's
+  `pcs[0] if len(pcs) == 1 else ret_agg.coerced_struct()`. Note this differs
+  from the parameter side, which always spreads the pieces into separate
+  parameters; a function has only one return slot to spend. }
+BEGIN
+  IF n_pieces = 1 THEN
+    SysVCoercedRetType := SysVPieceLLVMType(piece_kind[1], piece_bytes[1])
+  ELSE
+    SysVCoercedRetType := SysVCoercedStructType(n_pieces, piece_kind, piece_bytes);
+END;
+
+FUNCTION SysVCoercedPiecePtr(base: ADRMEM; cstruct_ty: ADRMEM; eb: INTEGER): ADRMEM;
+{ Address of COERCED piece `eb` (1-based) within storage `base` already
+  bitcast to a pointer to cstruct_ty. }
+VAR
+  gep_idx: ADRMEM;
+BEGIN
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, eb - 1, 0));
+  SysVCoercedPiecePtr := LLVMBuildGEP2(builder, cstruct_ty, base, gep_idx, 2, MakeCStr(''));
 END;
 
 FUNCTION ResolveIntLiteral(node: ADRMEM): INTEGER;
@@ -1345,15 +1806,21 @@ VAR
   nm, flavor, space_name: Str255;
   nt: Str255;
   tid: INTEGER;
-  elem_tid, lo, hi, count, space_code: INTEGER;
+  elem_tid, lo, hi, space_code: INTEGER;
+  count: INTEGER32;
   arr_ty: ADRMEM;
   fields_arr, field_tuple, items, fnames_arr, ftype_expr: ADRMEM;
-  nfd, fi, fn2, fni: INTEGER;
-  field_tid: INTEGER;
+  variants_arr, arm_node, tag_type_expr: ADRMEM;
+  nfd, fi, fn2, fni, ai: INTEGER;
+  field_tid, tag_tid: INTEGER;
+  payload_align, payload_size, arm_off, fixed_off: INTEGER32;
   fname: Str255;
   elem_llvm_types: ADRMEM;
-  struct_ty: ADRMEM;
+  struct_ty, payload_ty: ADRMEM;
   field_index: INTEGER;
+  has_variants: BOOLEAN;
+  values_arr: ADRMEM; { EnumType's member identifier list }
+  mi: INTEGER32;
 BEGIN
   nt := NodeType(te);
   IF nt = 'NamedType' THEN
@@ -1427,35 +1894,82 @@ BEGIN
     IF GetBool(te, 'packed') THEN
       AbortWith('codegen: PACKED records are not supported');
     fields_arr := GetObj(te, 'fields');
+    variants_arr := GetObj(te, 'variants');
+    has_variants := ArrSize(variants_arr) > 0;
     nfd := ArrSize(fields_arr);
-    { First pass: flatten every (names, type_expr) group into one struct
-      field per name, in declaration order, and register each in `fields`.
-      Two passes because the LLVM struct type itself needs the flattened
-      element-type array built before LLVMStructTypeInContext is called. }
     field_index := 0;
+    fixed_off := 0;
     elem_llvm_types := AllocPtrArray(MAX_RECORD_FIELDS);
-    tid := RegisterType(TK_RECORD, 0, 0, 0, NIL); { placeholder; llvm_ty patched below }
+    tid := RegisterType(TK_RECORD, 0, 0, 0, NIL); { patched below }
+    { Fixed fields, including a named discriminant, are real struct members. }
     FOR fi := 0 TO nfd - 1 DO
     BEGIN
-      field_tuple := ArrItem(fields_arr, fi);
-      items := GetObj(field_tuple, 'items');
-      fnames_arr := ArrItem(items, 0);
-      ftype_expr := ArrItem(items, 1);
+      field_tuple := ArrItem(fields_arr, fi); items := GetObj(field_tuple, 'items');
+      fnames_arr := ArrItem(items, 0); ftype_expr := ArrItem(items, 1);
       field_tid := ResolveTypeExpr(ftype_expr);
-      fn2 := ArrSize(fnames_arr);
-      FOR fni := 0 TO fn2 - 1 DO
+      FOR fni := 0 TO ArrSize(fnames_arr) - 1 DO
       BEGIN
-        IF field_index >= MAX_RECORD_FIELDS THEN AbortWith('codegen: too many record fields');
+        fixed_off := RoundUpBytes(fixed_off, TypeAlignBytes(field_tid));
         fname := CStrToStr255(cJSON_GetStringValue(ArrItem(fnames_arr, fni)));
-        IF nfields >= MAX_FIELDS THEN AbortWith('codegen: too many record fields overall');
-        nfields := nfields + 1;
-        fields[nfields].rec_tid := tid;
-        fields[nfields].fname := fname;
-        fields[nfields].field_tid := field_tid;
-        fields[nfields].field_index := field_index;
+        nfields := nfields + 1; fields[nfields].rec_tid := tid; fields[nfields].fname := fname;
+        fields[nfields].field_tid := field_tid; fields[nfields].field_index := field_index;
+        fields[nfields].byte_offset := fixed_off;
         SetPtrArrayElem(elem_llvm_types, field_index, LLVMTypeForTk(field_tid));
-        field_index := field_index + 1;
+        fixed_off := fixed_off + TypeSizeBytes(field_tid); field_index := field_index + 1;
       END;
+    END;
+    IF has_variants AND GetBool(te, 'has_tag') THEN
+    BEGIN
+      tag_type_expr := GetObj(te, 'tag_type'); tag_tid := ResolveTypeExpr(tag_type_expr);
+      fixed_off := RoundUpBytes(fixed_off, TypeAlignBytes(tag_tid));
+      nfields := nfields + 1; fields[nfields].rec_tid := tid; fields[nfields].fname := GetStr(te, 'tag_name');
+      fields[nfields].field_tid := tag_tid; fields[nfields].field_index := field_index;
+      fields[nfields].byte_offset := fixed_off;
+      SetPtrArrayElem(elem_llvm_types, field_index, LLVMTypeForTk(tag_tid));
+      fixed_off := fixed_off + TypeSizeBytes(tag_tid); field_index := field_index + 1;
+    END;
+    { Every arm begins at the same aligned payload offset. }
+    payload_align := 1;
+    FOR ai := 0 TO ArrSize(variants_arr) - 1 DO
+    BEGIN
+      arm_node := ArrItem(variants_arr, ai); fields_arr := GetObj(arm_node, 'fields');
+      FOR fi := 0 TO ArrSize(fields_arr) - 1 DO
+      BEGIN
+        field_tuple := ArrItem(fields_arr, fi); items := GetObj(field_tuple, 'items');
+        field_tid := ResolveTypeExpr(ArrItem(items, 1));
+        IF TypeAlignBytes(field_tid) > payload_align THEN payload_align := TypeAlignBytes(field_tid);
+      END;
+    END;
+    fixed_off := RoundUpBytes(fixed_off, payload_align);
+    payload_size := 0;
+    FOR ai := 0 TO ArrSize(variants_arr) - 1 DO
+    BEGIN
+      arm_off := fixed_off; arm_node := ArrItem(variants_arr, ai); fields_arr := GetObj(arm_node, 'fields');
+      FOR fi := 0 TO ArrSize(fields_arr) - 1 DO
+      BEGIN
+        field_tuple := ArrItem(fields_arr, fi); items := GetObj(field_tuple, 'items'); fnames_arr := ArrItem(items, 0);
+        field_tid := ResolveTypeExpr(ArrItem(items, 1)); arm_off := RoundUpBytes(arm_off, TypeAlignBytes(field_tid));
+        FOR fni := 0 TO ArrSize(fnames_arr) - 1 DO
+        BEGIN
+          fname := CStrToStr255(cJSON_GetStringValue(ArrItem(fnames_arr, fni)));
+          nfields := nfields + 1; fields[nfields].rec_tid := tid; fields[nfields].fname := fname;
+          fields[nfields].field_tid := field_tid; fields[nfields].field_index := field_index;
+          fields[nfields].byte_offset := arm_off;
+          arm_off := arm_off + TypeSizeBytes(field_tid);
+        END;
+      END;
+      IF arm_off - fixed_off > payload_size THEN payload_size := arm_off - fixed_off;
+    END;
+    IF payload_size > 0 THEN
+    BEGIN
+      { Use an element with the payload's maximum alignment, not i8 storage. }
+      IF payload_align >= 8 THEN payload_ty := i64ty
+      ELSE IF payload_align >= 4 THEN payload_ty := i32ty
+      ELSE IF payload_align >= 2 THEN payload_ty := i16ty
+      ELSE payload_ty := i8ty;
+      count := (payload_size + payload_align - 1) DIV payload_align;
+      SetPtrArrayElem(elem_llvm_types, field_index, LLVMArrayType(payload_ty, count));
+      field_index := field_index + 1;
     END;
     struct_ty := LLVMStructTypeInContext(ctx, elem_llvm_types, field_index, 0);
     types[tid].llvm_ty := struct_ty;
@@ -1519,13 +2033,63 @@ BEGIN
       representation regardless of declared base range (matching the Python
       reference's set_llvm_type) -- only the base's low/high are kept, and
       only to know the ordinal's legal range, not to size the storage.
-      Scoped to a SubrangeType base (SET OF lo..hi); a bare enum/named-type
-      base is not yet supported. }
-    IF NodeType(GetObj(te, 'base')) <> 'SubrangeType' THEN
-      AbortWith('codegen: SET OF <base> is only supported over a lo..hi subrange');
-    lo := ResolveIntLiteral(GetObj(GetObj(te, 'base'), 'low'));
-    hi := ResolveIntLiteral(GetObj(GetObj(te, 'base'), 'high'));
-    tid := RegisterType(TK_SET, TK_INTEGER, lo, hi, setty);
+      Two base shapes: a SubrangeType (SET OF lo..hi, always an INTEGER
+      ordinal here since this dialect only lexes plain-integer subrange
+      bounds in this position) or a bare ordinal type name -- CHAR, WORD,
+      BOOLEAN, or INTEGER -- parsed by ParseSetBase as either a NamedType
+      (e.g. a bare identifier) or a BuiltinType node (a reserved-word type
+      name). The manual's own worked example (djvu.txt:7107-7126) is
+      `SET OF CHAR`, so this case has to exist, not just SubrangeType. }
+    IF NodeType(GetObj(te, 'base')) = 'SubrangeType' THEN
+    BEGIN
+      lo := ResolveIntLiteral(GetObj(GetObj(te, 'base'), 'low'));
+      hi := ResolveIntLiteral(GetObj(GetObj(te, 'base'), 'high'));
+      tid := RegisterType(TK_SET, TK_INTEGER, lo, hi, setty);
+    END
+    ELSE IF (NodeType(GetObj(te, 'base')) = 'NamedType') OR (NodeType(GetObj(te, 'base')) = 'BuiltinType') THEN
+    BEGIN
+      nm := GetStr(GetObj(te, 'base'), 'name');
+      IF nm = 'CHAR' THEN tid := RegisterType(TK_SET, TK_CHAR, 0, 255, setty)
+      ELSE IF nm = 'BOOLEAN' THEN tid := RegisterType(TK_SET, TK_BOOLEAN, 0, 1, setty)
+      ELSE IF (nm = 'INTEGER') OR (nm = 'WORD') THEN tid := RegisterType(TK_SET, TK_INTEGER, 0, 255, setty)
+      ELSE
+      BEGIN
+        AbortWith2('codegen: SET OF <base> requires an ordinal base type (INTEGER subrange, CHAR, WORD, or BOOLEAN), got: ', nm);
+        tid := TK_UNKNOWN;
+      END;
+    END
+    ELSE
+    BEGIN
+      AbortWith('codegen: SET OF <base> is only supported over a lo..hi subrange or an ordinal named type');
+      tid := TK_UNKNOWN;
+    END;
+  END
+  ELSE IF nt = 'EnumType' THEN
+  BEGIN
+    { An enumerated type: i32 storage holding the 0-based ordinal, matching
+      the reference's EnumType lowering. Each member identifier is
+      registered in const_tbl at its ordinal -- the native counterpart of
+      the reference's own constants-table registration (codegen/decls.py's
+      self.constants) -- which is what lets a member stand anywhere a
+      compile-time integer constant is legal (array bounds, FOR bounds,
+      CASE arms). The bounds recorded on the type are the ordinal range,
+      and I/O treats the value as a plain INTEGER32: the manual reads
+      enumerated values as numbers, not names (djvu.txt:13610-13618), and
+      writes them that way under the vintage defaults too. }
+    values_arr := GetObj(te, 'values');
+    count := ArrSize(values_arr);
+    tid := RegisterType(TK_ENUM, 0, 0, RETYPE(INTEGER, count - 1), i32ty);
+    FOR mi := 0 TO count - 1 DO
+    BEGIN
+      fname := CStrToStr255(cJSON_GetStringValue(ArrItem(values_arr, mi)));
+      IF LookupConst(fname) <> 0 THEN
+        AbortWith2('codegen: duplicate const declaration: ', fname);
+      IF nconsts >= MAX_CONSTS THEN AbortWith('codegen: too many consts');
+      nconsts := nconsts + 1;
+      const_tbl[nconsts].name := fname;
+      const_tbl[nconsts].is_real := FALSE;
+      const_tbl[nconsts].ival := mi;
+    END;
   END
   ELSE
   BEGIN
@@ -1570,36 +2134,62 @@ PROCEDURE DeclareVar(name: Str255; tk: INTEGER);
 VAR
   gvar, zero: ADRMEM;
   i, base: INTEGER32;
-  dup: BOOLEAN;
+  dup, reuse_decl: BOOLEAN;
 BEGIN
   { Only the current scope's own slice of the symbol table can collide --
     a local is allowed (expected, even) to shadow an outer/global variable
     of the same name, matching ordinary Pascal scoping. }
   base := CurScopeBase;
   dup := FALSE;
+  reuse_decl := FALSE;
   FOR i := base + 1 TO nsymbols DO
     IF symbols[i].name = name THEN dup := TRUE;
   IF dup THEN
-    AbortWith2('codegen: duplicate declaration: ', name);
-  IF in_local_scope THEN
-    gvar := EntryAlloca(LLVMTypeForTk(tk), name)
-  ELSE
   BEGIN
-    gvar := LLVMAddGlobal(modl, LLVMTypeForTk(tk), MakeCStr(name));
-    IF (TypeKind(tk) = TK_ARRAY) OR (TypeKind(tk) = TK_RECORD) OR
-       (TypeKind(tk) = TK_LSTRING) OR (TypeKind(tk) = TK_POINTER) OR
-       (TypeKind(tk) = TK_STRING) OR (TypeKind(tk) = TK_SET) OR
-       (TypeKind(tk) = TK_FILE) OR (tk = TK_ADRMEM) THEN
-      zero := LLVMConstNull(LLVMTypeForTk(tk))
-    ELSE IF (tk = TK_REAL) OR (tk = TK_REAL32) THEN zero := LLVMConstReal(LLVMTypeForTk(tk), 0.0)
-    ELSE zero := LLVMConstInt(LLVMTypeForTk(tk), 0, 0);
-    LLVMSetInitializer(gvar, zero);
+    { An IMPLEMENTATION repeats interface VAR declarations.  The spliced
+      header created an external declaration; this is its one definition. }
+    IF (NOT in_local_scope) AND defining_implementation AND
+       (NOT lowering_spliced_interface) THEN
+    BEGIN
+      gvar := symbols[LookupSym(name)].llvm_val;
+      IF (TypeKind(tk) = TK_ARRAY) OR (TypeKind(tk) = TK_RECORD) OR
+         (TypeKind(tk) = TK_LSTRING) OR (TypeKind(tk) = TK_POINTER) OR
+         (TypeKind(tk) = TK_STRING) OR (TypeKind(tk) = TK_SET) OR
+         (TypeKind(tk) = TK_FILE) OR (tk = TK_ADRMEM) THEN
+        zero := LLVMConstNull(LLVMTypeForTk(tk))
+      ELSE IF (tk = TK_REAL) OR (tk = TK_REAL32) THEN zero := LLVMConstReal(LLVMTypeForTk(tk), 0.0)
+      ELSE zero := LLVMConstInt(LLVMTypeForTk(tk), 0, 0);
+      LLVMSetInitializer(gvar, zero);
+      reuse_decl := TRUE;
+    END;
+    IF NOT reuse_decl THEN
+      AbortWith2('codegen: duplicate declaration: ', name);
   END;
-  IF nsymbols >= MAX_SYMBOLS THEN AbortWith('codegen: too many symbols');
-  nsymbols := nsymbols + 1;
-  symbols[nsymbols].name := name;
-  symbols[nsymbols].tk := tk;
-  symbols[nsymbols].llvm_val := gvar;
+  IF NOT reuse_decl THEN
+  BEGIN
+    IF in_local_scope THEN
+      gvar := EntryAlloca(LLVMTypeForTk(tk), name)
+    ELSE
+    BEGIN
+      gvar := LLVMAddGlobal(modl, LLVMTypeForTk(tk), MakeCStr(name));
+      IF NOT lowering_spliced_interface THEN
+      BEGIN
+        IF (TypeKind(tk) = TK_ARRAY) OR (TypeKind(tk) = TK_RECORD) OR
+           (TypeKind(tk) = TK_LSTRING) OR (TypeKind(tk) = TK_POINTER) OR
+           (TypeKind(tk) = TK_STRING) OR (TypeKind(tk) = TK_SET) OR
+           (TypeKind(tk) = TK_FILE) OR (tk = TK_ADRMEM) THEN
+          zero := LLVMConstNull(LLVMTypeForTk(tk))
+        ELSE IF (tk = TK_REAL) OR (tk = TK_REAL32) THEN zero := LLVMConstReal(LLVMTypeForTk(tk), 0.0)
+        ELSE zero := LLVMConstInt(LLVMTypeForTk(tk), 0, 0);
+        LLVMSetInitializer(gvar, zero);
+      END;
+    END;
+    IF nsymbols >= MAX_SYMBOLS THEN AbortWith('codegen: too many symbols');
+    nsymbols := nsymbols + 1;
+    symbols[nsymbols].name := name;
+    symbols[nsymbols].tk := tk;
+    symbols[nsymbols].llvm_val := gvar;
+  END;
 END;
 
 { ============================ routine table =============================== }
@@ -1625,6 +2215,24 @@ BEGIN
     RoutineIsFunc := FALSE
   ELSE
     RoutineIsFunc := routines[routi].is_func;
+END;
+
+FUNCTION CFuncRetAggClass(routi: INTEGER32): INTEGER;
+{ SYSV_CLASS_MEMORY / SYSV_CLASS_COERCED for a [C] FOREIGN FUNCTION that
+  returns an aggregate by value, and 0 for everything else (a PROCEDURE, a
+  scalar-returning function, or any plain-Pascal routine -- those keep the
+  first-class-LLVM-aggregate return convention untouched). Recomputed from
+  ret_tk on demand rather than cached in RoutineRec, exactly as the
+  parameter side recomputes ClassifyAggregate at each of its sites, so the
+  declaration and the call site can never disagree about the shape.
+  routi = 0 ("not found") is guarded here for the same non-short-circuit-AND
+  reason RoutineIsFunc documents. }
+BEGIN
+  CFuncRetAggClass := 0;
+  IF routi <> 0 THEN
+    IF routines[routi].is_c AND routines[routi].is_func THEN
+      IF IsAggregateTk(routines[routi].ret_tk) THEN
+        CFuncRetAggClass := SysVAggClass(routines[routi].ret_tk);
 END;
 
 { ============================== expressions =============================== }
@@ -1683,9 +2291,11 @@ VAR
   cur_i, cmp_val, next_i: ADRMEM;
 BEGIN
   low_val := CodegenExpr(low_node);
-  IF last_val_tk <> TK_INTEGER THEN AbortWith('codegen: a set range bound must be INTEGER');
+  IF last_val_tk = TK_CHAR THEN low_val := LLVMBuildZExt(builder, low_val, i16ty, MakeCStr(''))
+  ELSE IF last_val_tk <> TK_INTEGER THEN AbortWith('codegen: a set range bound must be INTEGER or CHAR');
   high_val := CodegenExpr(high_node);
-  IF last_val_tk <> TK_INTEGER THEN AbortWith('codegen: a set range bound must be INTEGER');
+  IF last_val_tk = TK_CHAR THEN high_val := LLVMBuildZExt(builder, high_val, i16ty, MakeCStr(''))
+  ELSE IF last_val_tk <> TK_INTEGER THEN AbortWith('codegen: a set range bound must be INTEGER or CHAR');
 
   i_slot := EntryAlloca(i16ty, '');
   LLVMBuildStore(builder, low_val, i_slot);
@@ -1729,8 +2339,10 @@ BEGIN
     ELSE
     BEGIN
       ordv := CodegenExpr(el);
-      IF last_val_tk <> TK_INTEGER THEN
-        AbortWith('codegen: a set element must be INTEGER');
+      IF last_val_tk = TK_CHAR THEN
+        ordv := LLVMBuildZExt(builder, ordv, i16ty, MakeCStr(''))
+      ELSE IF last_val_tk <> TK_INTEGER THEN
+        AbortWith('codegen: a set element must be INTEGER or CHAR');
       SetRuntimeBit(slot, ordv);
     END;
   END;
@@ -1858,7 +2470,6 @@ END;
 
 PROCEDURE ResolveStringExprCharsLen(expr: ADRMEM; VAR chars_ptr: ADRMEM; VAR len_val: ADRMEM); FORWARD;
 FUNCTION LoadFileFcbPtr(name: Str255): ADRMEM; FORWARD;
-FUNCTION UpperStr(s: Str255): Str255; FORWARD;
 
 FUNCTION StaticDesignatorType(node: ADRMEM): INTEGER;
 { Type-only counterpart of ComputeDesignatorAddress: walks the same
@@ -2044,6 +2655,43 @@ BEGIN
   ELSE IntFamilyWidth := 64;
 END;
 
+FUNCTION VariadicPromote(v: ADRMEM; tk: INTEGER; name: Str255): ADRMEM;
+{ C's default argument promotions (C11 6.5.2.2 p7), applied to one value in
+  a variadic call's tail -- mirrors the Python reference's
+  _c_abi_variadic_promote (c_abi.py):
+    - REAL32 (float) widens to REAL (double) via fpext.
+    - Anything narrower than C's int -- BOOLEAN (i1), CHAR/INTEGER8/WORD8
+      (i8) and this dialect's own 16-bit INTEGER/WORD -- widens to i32. The
+      extension follows the SOURCE Pascal type, not the LLVM width, which
+      cannot tell a WORD from an INTEGER: the WORD family zero-extends (a
+      WORD of 60000 must stay 60000, not become -5536) and everything else
+      sign-extends. BOOLEAN is always zero-extended.
+    - INTEGER32/WORD32, the 64-bit family, REAL, enums and pointers are
+      already at least as wide as the promoted types and pass through.
+  An aggregate has no scalar promotion at all (the reference doesn't handle
+  one either), so it is refused rather than silently mispassed. }
+BEGIN
+  IF IsAggregateTk(tk) THEN
+  BEGIN
+    AbortWith2('codegen: an aggregate cannot be a variadic argument, calling: ', name);
+    VariadicPromote := v;
+  END
+  ELSE IF tk = TK_REAL32 THEN
+    VariadicPromote := LLVMBuildFPExt(builder, v, dblty, MakeCStr(''))
+  ELSE IF tk = TK_BOOLEAN THEN
+    VariadicPromote := LLVMBuildZExt(builder, v, i32ty, MakeCStr(''))
+  ELSE IF (tk = TK_CHAR) OR (tk = TK_INTEGER8) OR (tk = TK_WORD8)
+          OR (tk = TK_INTEGER) OR (tk = TK_WORD) THEN
+  BEGIN
+    IF IsUnsignedWordTk(tk) THEN
+      VariadicPromote := LLVMBuildZExt(builder, v, i32ty, MakeCStr(''))
+    ELSE
+      VariadicPromote := LLVMBuildSExt(builder, v, i32ty, MakeCStr(''));
+  END
+  ELSE
+    VariadicPromote := v;
+END;
+
 FUNCTION CodegenShortCircuitBinOp(op: Str255; left_node, right_node: ADRMEM): ADRMEM;
 { AND THEN / OR ELSE: the right operand must not be evaluated at all when
   the left already decides the result -- e.g. typechecker.pas's own
@@ -2155,6 +2803,13 @@ BEGIN
     ltk := TK_INTEGER
   ELSE IF (ltk = TK_INTEGER) AND (rtk = TK_WORD) THEN
     rtk := TK_INTEGER
+  ELSE IF (ltk = TK_ADRMEM) AND (TypeKind(rtk) = TK_POINTER) THEN
+    { NIL (an ADRMEM constant) against a typed pointer -- both are the
+      same opaque i8* value, only the tracked tag differs, the same
+      mutual compatibility TypesCompatibleForAssign already applies. }
+    ltk := rtk
+  ELSE IF (rtk = TK_ADRMEM) AND (TypeKind(ltk) = TK_POINTER) THEN
+    rtk := ltk
   ELSE IF (op = 'SLASH') AND IsIntegerFamilyTk(ltk) AND IsIntegerFamilyTk(rtk) THEN
   BEGIN
     { SLASH is always real division in Pascal (7/2 = 3.5), forcing a
@@ -2214,8 +2869,9 @@ BEGIN
   END
   ELSE IF op = 'IN' THEN
   BEGIN
-    IF ltk <> TK_INTEGER THEN
-      AbortWith('codegen: IN requires an INTEGER left operand');
+    IF ltk = TK_CHAR THEN lval := LLVMBuildZExt(builder, lval, i16ty, MakeCStr(''))
+    ELSE IF ltk <> TK_INTEGER THEN
+      AbortWith('codegen: IN requires an INTEGER or CHAR left operand');
     IF TypeKind(rtk) <> TK_SET THEN
       AbortWith('codegen: IN requires a SET right operand');
     res := CodegenSetMember(lval, rval);
@@ -2259,7 +2915,7 @@ BEGIN
       here). }
     IF (ltk = TK_INTEGER) OR (ltk = TK_WORD) OR (ltk = TK_INTEGER8) OR (ltk = TK_WORD8) OR
        (ltk = TK_INTEGER32) OR (ltk = TK_WORD32) OR (ltk = TK_INTEGER64) OR (ltk = TK_WORD64) OR
-       (ltk = TK_CHAR) OR (ltk = TK_BOOLEAN) THEN
+       (ltk = TK_CHAR) OR (ltk = TK_BOOLEAN) OR (TypeKind(ltk) = TK_ENUM) THEN
     BEGIN
       { CHAR/BOOLEAN are ordinal in Pascal, so full ordering (not just EQ/
         NEQ) is meaningful for them too, and LLVM's icmp works the same way
@@ -2401,6 +3057,16 @@ VAR
   is_bare_niladic_call: BOOLEAN;
   res: ADRMEM;
   bv_temp, byval_attr, align_attr: ADRMEM;
+  llvm_ai: INTEGER32;
+  pieces_emitted: BOOLEAN;
+  agg_class, n_pieces, eb: INTEGER;
+  piece_kind: SysVPieceArr;
+  piece_bytes: SysVPieceSzArr;
+  cstruct_ty, cptr, piece_ptr, piece_val: ADRMEM;
+  ret_class, ret_npieces: INTEGER;
+  ret_pk: SysVPieceArr;
+  ret_pb: SysVPieceSzArr;
+  sret_slot, sret_attr, noalias_attr, ret_ll, ret_cptr: ADRMEM;
 BEGIN
   ri := LookupRoutine(name);
   IF ri = 0 THEN
@@ -2411,13 +3077,49 @@ BEGIN
   ELSE
   BEGIN
     nargs := ArrSize(args_arr);
-    IF nargs <> routines[ri].nparams THEN
+    { A [VARARGS] routine's nparams counts only the fixed prefix, so extra
+      trailing arguments are legal there (and only there). }
+    IF (nargs <> routines[ri].nparams)
+       AND NOT (routines[ri].is_vararg AND (nargs > routines[ri].nparams)) THEN
       AbortWith2('codegen: argument count mismatch calling: ', name);
-    call_args := AllocPtrArray(nargs);
+    { A COERCED-class [C] aggregate argument expands into one LLVM argument
+      per eightbyte (at most two), so the LLVM argument list can be longer
+      than the Pascal one and its index has to be tracked separately -- see
+      llvm_ai below. Two slots per Pascal argument is the worst case, plus
+      one for the hidden sret result pointer a MEMORY-class aggregate return
+      prepends -- which is also why the array is sized nargs * 2 + 1 rather
+      than nargs * 2 (an sret call with no real arguments at all still needs
+      one slot). }
+    ret_class := CFuncRetAggClass(ri);
+    IF ret_class <> 0 THEN
+      ClassifyAggregate(routines[ri].ret_tk, ret_class, ret_npieces, ret_pk, ret_pb);
+    call_args := AllocPtrArray(nargs * 2 + 1);
+    llvm_ai := 0;
+    IF ret_class = SYSV_CLASS_MEMORY THEN
+    BEGIN
+      { The callee writes its result through this pointer and returns void;
+        the aggregate is loaded back out of it below so this function's
+        contract -- "returns the call's result as an SSA value" -- is
+        unchanged for every caller. }
+      sret_slot := EntryAlloca(LLVMTypeForTk(routines[ri].ret_tk), '');
+      SetPtrArrayElem(call_args, 0, sret_slot);
+      llvm_ai := 1;
+    END;
     FOR i := 0 TO nargs - 1 DO
     BEGIN
+      pieces_emitted := FALSE;
       arg_node := ArrItem(args_arr, i);
-      IF routines[ri].param_is_var[i + 1] THEN
+      IF i >= routines[ri].nparams THEN
+      BEGIN
+        { Variadic tail argument: there is no formal parameter at all, so
+          none of the param_is_var/param_needs_copy machinery applies (those
+          arrays only have nparams valid entries). Evaluate the argument and
+          apply C's default argument promotions, exactly as the reference's
+          codegen_c_abi_call does for the same tail. }
+        v := CodegenExpr(arg_node);
+        v := VariadicPromote(v, last_val_tk, name);
+      END
+      ELSE IF routines[ri].param_is_var[i + 1] THEN
       BEGIN
         IF NodeType(arg_node) = 'Identifier' THEN
         BEGIN
@@ -2516,9 +3218,36 @@ BEGIN
           AbortWith2('codegen: a value-aggregate argument must be an lvalue or call, calling: ', name);
           v := NIL;
         END;
-        bv_temp := EntryAlloca(LLVMTypeForTk(routines[ri].param_tk[i + 1]), '');
-        EmitBlockCopy(bv_temp, v, TypeSizeBytes(routines[ri].param_tk[i + 1]));
-        v := bv_temp;
+        ClassifyAggregate(routines[ri].param_tk[i + 1], agg_class, n_pieces, piece_kind, piece_bytes);
+        IF agg_class = SYSV_CLASS_MEMORY THEN
+        BEGIN
+          bv_temp := EntryAlloca(LLVMTypeForTk(routines[ri].param_tk[i + 1]), '');
+          EmitBlockCopy(bv_temp, v, TypeSizeBytes(routines[ri].param_tk[i + 1]));
+          v := bv_temp;
+        END
+        ELSE
+        BEGIN
+          { COERCED class: the aggregate travels in one or two registers
+            instead of memory, so there is nothing for the callee to alias
+            and no private copy to make. View the source storage as the
+            coerced piece struct and pass each eightbyte as its own LLVM
+            argument, mirroring c_abi.py's coerced call-site marshalling.
+            Each load carries the AGGREGATE's alignment, not the piece
+            type's: an eightbyte read out of e.g. a 4-aligned two-INTEGER32
+            record is an i64 load of align 4, exactly as clang emits it. }
+          cstruct_ty := SysVCoercedStructType(n_pieces, piece_kind, piece_bytes);
+          cptr := LLVMBuildBitCast(builder, v, LLVMPointerType(cstruct_ty, 0), MakeCStr(''));
+          FOR eb := 1 TO n_pieces DO
+          BEGIN
+            piece_ptr := SysVCoercedPiecePtr(cptr, cstruct_ty, eb);
+            piece_val := LLVMBuildLoad2(builder, SysVPieceLLVMType(piece_kind[eb], piece_bytes[eb]),
+                                        piece_ptr, MakeCStr(''));
+            LLVMSetAlignment(piece_val, TypeAlignBytes(routines[ri].param_tk[i + 1]));
+            SetPtrArrayElem(call_args, llvm_ai, piece_val);
+            llvm_ai := llvm_ai + 1;
+          END;
+          pieces_emitted := TRUE;
+        END;
       END
       ELSE IF routines[ri].param_needs_copy[i + 1] THEN
       BEGIN
@@ -2587,24 +3316,91 @@ BEGIN
           reuse CoerceForAssign rather than a bare tid-equality check. }
         v := CoerceForAssign(v, last_val_tk, routines[ri].param_tk[i + 1], arg_node, name);
       END;
-      SetPtrArrayElem(call_args, i, v);
+      IF NOT pieces_emitted THEN
+      BEGIN
+        SetPtrArrayElem(call_args, llvm_ai, v);
+        llvm_ai := llvm_ai + 1;
+      END;
     END;
-    res := LLVMBuildCall2(builder, routines[ri].fnty, routines[ri].fn, call_args, nargs, MakeCStr(''));
+    res := LLVMBuildCall2(builder, routines[ri].fnty, routines[ri].fn, call_args, llvm_ai, MakeCStr(''));
     IF routines[ri].is_c THEN
     BEGIN
       { Attach byval(ty)/align at the CALL SITE too, matching clang's own
         lowering (verification step 7) -- the declaration side alone
         (CodegenRoutineDecl) isn't enough; LLVM expects both. }
+      { Walked with its own LLVM argument index (attribute indices are
+        1-based over LLVM parameters, 0 being the return), since a COERCED
+        aggregate argument occupies one slot per eightbyte -- and carries no
+        parameter attribute at all: byval/align describe a pointer to
+        memory, which a register-passed aggregate never has. }
+      llvm_ai := 0;
+      IF ret_class = SYSV_CLASS_MEMORY THEN
+      BEGIN
+        { The hidden result pointer occupies LLVM argument 0, attribute
+          index 1 -- same sret(ty)/noalias/align shape the declaration side
+          attaches, since LLVM wants parameter attributes on both. }
+        sret_attr := LLVMCreateTypeAttribute(ctx, sret_kind_id, LLVMTypeForTk(routines[ri].ret_tk));
+        align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, SysVByvalAlign(routines[ri].ret_tk));
+        LLVMAddCallSiteAttribute(res, 1, sret_attr);
+        LLVMAddCallSiteAttribute(res, 1, align_attr);
+        IF noalias_kind_id <> 0 THEN
+        BEGIN
+          noalias_attr := LLVMCreateEnumAttribute(ctx, noalias_kind_id, 0);
+          LLVMAddCallSiteAttribute(res, 1, noalias_attr);
+        END;
+        llvm_ai := 1;
+      END;
       FOR i := 0 TO nargs - 1 DO
       BEGIN
-        IF routines[ri].param_needs_copy[i + 1] THEN
+        { A variadic tail argument has no formal, so it is always exactly
+          one plain LLVM argument and carries no parameter attribute. }
+        IF i >= routines[ri].nparams THEN
+          llvm_ai := llvm_ai + 1
+        ELSE IF routines[ri].param_needs_copy[i + 1] THEN
         BEGIN
-          byval_attr := LLVMCreateTypeAttribute(ctx, byval_kind_id, LLVMTypeForTk(routines[ri].param_tk[i + 1]));
-          align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, TypeAlignBytes(routines[ri].param_tk[i + 1]));
-          LLVMAddCallSiteAttribute(res, i + 1, byval_attr);
-          LLVMAddCallSiteAttribute(res, i + 1, align_attr);
-        END;
+          ClassifyAggregate(routines[ri].param_tk[i + 1], agg_class, n_pieces, piece_kind, piece_bytes);
+          IF agg_class = SYSV_CLASS_MEMORY THEN
+          BEGIN
+            byval_attr := LLVMCreateTypeAttribute(ctx, byval_kind_id, LLVMTypeForTk(routines[ri].param_tk[i + 1]));
+            align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, SysVByvalAlign(routines[ri].param_tk[i + 1]));
+            LLVMAddCallSiteAttribute(res, llvm_ai + 1, byval_attr);
+            LLVMAddCallSiteAttribute(res, llvm_ai + 1, align_attr);
+            llvm_ai := llvm_ai + 1;
+          END
+          ELSE
+            llvm_ai := llvm_ai + n_pieces;
+        END
+        ELSE
+          llvm_ai := llvm_ai + 1;
       END;
+    END;
+    { Turn a [C] aggregate return back into the plain SSA aggregate value
+      every caller of this function expects, so the sret/coerced lowering
+      stays entirely inside here (mirrors the reference's own
+      codegen_c_abi_call tail). }
+    IF ret_class = SYSV_CLASS_MEMORY THEN
+      res := LLVMBuildLoad2(builder, LLVMTypeForTk(routines[ri].ret_tk), sret_slot, MakeCStr(''))
+    ELSE IF ret_class = SYSV_CLASS_COERCED THEN
+    BEGIN
+      { The register piece(s) came back as the call's own return value:
+        write them into real storage of the aggregate's type, viewed as the
+        coerced return type, then read the aggregate back out. The slot is
+        over-aligned to a full eightbyte for the same reason the callee-side
+        COERCED parameter prologue over-aligns its own: the piece store can
+        be wider than the aggregate's natural alignment. The slot is typed
+        as the COERCED type rather than the aggregate's own, since rounding
+        each eightbyte up can make it the larger of the two (e.g. a 12-byte
+        ARRAY [1..3] OF INTEGER32 coerces to a 16-byte i64-plus-i32 pair);
+        reading
+        the aggregate back out of the wider storage is always in bounds,
+        the other way round would not be. }
+      ret_ll := SysVCoercedRetType(ret_npieces, ret_pk, ret_pb);
+      sret_slot := EntryAlloca(ret_ll, '');
+      LLVMSetAlignment(sret_slot, 8);
+      LLVMBuildStore(builder, res, sret_slot);
+      ret_cptr := LLVMBuildBitCast(builder, sret_slot,
+                                   LLVMPointerType(LLVMTypeForTk(routines[ri].ret_tk), 0), MakeCStr(''));
+      res := LLVMBuildLoad2(builder, LLVMTypeForTk(routines[ri].ret_tk), ret_cptr, MakeCStr(''));
     END;
     last_val_tk := routines[ri].ret_tk;
   END;
@@ -2722,11 +3518,11 @@ BEGIN
       fi := LookupField(cur_tid, fname);
       IF fi = 0 THEN
         AbortWith2('codegen: unknown record field: ', fname);
-      gep_idx := AllocPtrArray(2);
-      SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-      SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, fields[fi].field_index, 0));
-      base_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(cur_tid), base_ptr, gep_idx, 2, MakeCStr(''));
+      gep_idx := AllocPtrArray(1);
+      SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, fields[fi].byte_offset, 0));
+      base_ptr := LLVMBuildGEP2(builder, i8ty, base_ptr, gep_idx, 1, MakeCStr(''));
       cur_tid := fields[fi].field_tid;
+      base_ptr := LLVMBuildBitCast(builder, base_ptr, LLVMPointerType(LLVMTypeForTk(cur_tid), 0), MakeCStr(''));
     END
     ELSE
       AbortWith2('codegen: unhandled selector kind: ', kind);
@@ -2819,9 +3615,24 @@ BEGIN
   END
   ELSE IF nm = 'ORD' THEN
   BEGIN
-    IF argtk = TK_CHAR THEN res := LLVMBuildZExt(builder, v, i16ty, MakeCStr(''))
-    ELSE res := v;
-    last_val_tk := TK_INTEGER;
+    IF argtk = TK_CHAR THEN
+    BEGIN
+      res := LLVMBuildZExt(builder, v, i16ty, MakeCStr(''));
+      last_val_tk := TK_INTEGER;
+    END
+    ELSE IF TypeKind(argtk) = TK_ENUM THEN
+    BEGIN
+      { An enum ordinal is physically i32 (the enum's storage); tag the
+        result INTEGER32 rather than INTEGER so WRITE's %d path doesn't
+        try to sign-extend an already-32-bit value. }
+      res := v;
+      last_val_tk := TK_INTEGER32;
+    END
+    ELSE
+    BEGIN
+      res := v;
+      last_val_tk := TK_INTEGER;
+    END;
   END
   ELSE IF nm = 'ODD' THEN
   BEGIN
@@ -2832,12 +3643,14 @@ BEGIN
   ELSE IF nm = 'SUCC' THEN
   BEGIN
     IF argtk = TK_CHAR THEN res := LLVMBuildAdd(builder, v, LLVMConstInt(i8ty, 1, 0), MakeCStr(''))
+    ELSE IF TypeKind(argtk) = TK_ENUM THEN res := LLVMBuildAdd(builder, v, LLVMConstInt(i32ty, 1, 0), MakeCStr(''))
     ELSE res := LLVMBuildAdd(builder, v, LLVMConstInt(i16ty, 1, 0), MakeCStr(''));
     last_val_tk := argtk;
   END
   ELSE IF nm = 'PRED' THEN
   BEGIN
     IF argtk = TK_CHAR THEN res := LLVMBuildSub(builder, v, LLVMConstInt(i8ty, 1, 0), MakeCStr(''))
+    ELSE IF TypeKind(argtk) = TK_ENUM THEN res := LLVMBuildSub(builder, v, LLVMConstInt(i32ty, 1, 0), MakeCStr(''))
     ELSE res := LLVMBuildSub(builder, v, LLVMConstInt(i16ty, 1, 0), MakeCStr(''));
     last_val_tk := argtk;
   END
@@ -3544,6 +4357,22 @@ BEGIN
     out_v := bool_str;
     IF have_width THEN CONCAT(fmt, '%*s') ELSE CONCAT(fmt, '%s');
   END
+  ELSE IF TypeKind(tid) = TK_ENUM THEN
+  BEGIN
+    { An enumerated value writes as its ordinal number -- the vintage
+      default (the reference's symbolic-enum-io feature is off by default).
+      The value is already i32, the enum's storage, so no extend. }
+    IF have_width THEN CONCAT(fmt, '%*d') ELSE CONCAT(fmt, '%d');
+  END
+  ELSE IF TypeKind(tid) = TK_POINTER THEN
+  BEGIN
+    { The manual reads pointer variables as numbers, in an
+      implementation-defined format such that writing then reading
+      preserves the value (13620-13623); this toolchain's format is
+      unsigned decimal, matched by runtime's pas_read_ptr. }
+    out_v := LLVMBuildPtrToInt(builder, in_v, i64ty, MakeCStr(''));
+    IF have_width THEN CONCAT(fmt, '%*llu') ELSE CONCAT(fmt, '%llu');
+  END
   ELSE
     AbortWith('codegen: unsupported WRITE argument type');
   IF NOT handled_own_args THEN
@@ -3712,6 +4541,26 @@ BEGIN
   END;
 END;
 
+FUNCTION BoolNameTable: ADRMEM;
+{ A stack-built two-slot const-char* table holding "FALSE" then "TRUE" --
+  the name list pas_read_enum_name matches BOOLEAN input against, so a
+  BOOLEAN can be read by ordinal number or by identifier name
+  (case-insensitively), exactly the union the manual allows (13610-13618). }
+VAR
+  tbl, gep_idx, slot: ADRMEM;
+BEGIN
+  tbl := EntryAlloca(LLVMArrayType(i8ptrty, 2), 'boolnames');
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
+  slot := LLVMBuildGEP2(builder, LLVMArrayType(i8ptrty, 2), tbl, gep_idx, 2, MakeCStr(''));
+  LLVMBuildStore(builder, LLVMBuildGlobalStringPtr(builder, MakeCStr('FALSE'), MakeCStr('boolname')), slot);
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 1, 0));
+  slot := LLVMBuildGEP2(builder, LLVMArrayType(i8ptrty, 2), tbl, gep_idx, 2, MakeCStr(''));
+  LLVMBuildStore(builder, LLVMBuildGlobalStringPtr(builder, MakeCStr('TRUE'), MakeCStr('boolname')), slot);
+  BoolNameTable := LLVMBuildBitCast(builder, tbl, LLVMPointerType(i8ptrty, 0), MakeCStr(''));
+END;
+
 PROCEDURE CodegenReadStdinVar(addr: ADRMEM; tid: INTEGER);
 { Reads one value from stdin into `addr`, dispatching on `tid` -- the
   non-file subset of CodegenReadArgs's per-argument logic, factored out for
@@ -3719,7 +4568,7 @@ PROCEDURE CodegenReadStdinVar(addr: ADRMEM; tid: INTEGER);
   by reading it exactly like an ordinary bare READ, just under the
   command-line/keyboard stdin redirect runtime/cmdline.c sets up). }
 VAR
-  tmp32, loaded, call_args, buf_i8, cap: ADRMEM;
+  tmp32, loaded, call_args, buf_i8, cap, tmp64: ADRMEM;
 BEGIN
   IF TypeKind(tid) = TK_INTEGER THEN
   BEGIN
@@ -3766,6 +4615,46 @@ BEGIN
     SetPtrArrayElem(call_args, 0, buf_i8);
     SetPtrArrayElem(call_args, 1, cap);
     loaded := LLVMBuildCall2(builder, read_string_fnty, read_string_fn, call_args, 2, MakeCStr(''));
+  END
+  ELSE IF TypeKind(tid) = TK_ENUM THEN
+  BEGIN
+    { Enumerated values read as a numeric ordinal -- the manual reads them
+      as numbers, not names (13610-13618), and the reference does the same
+      with symbolic-enum-io off. Storage is i32, matching pas_read_int's
+      output width, so no conversion. }
+    tmp32 := EntryAlloca(i32ty, '');
+    call_args := AllocPtrArray(1);
+    SetPtrArrayElem(call_args, 0, tmp32);
+    loaded := LLVMBuildCall2(builder, read_int_fnty, read_int_fn, call_args, 1, MakeCStr(''));
+    loaded := LLVMBuildLoad2(builder, i32ty, tmp32, MakeCStr(''));
+    LLVMBuildStore(builder, loaded, addr);
+  END
+  ELSE IF TypeKind(tid) = TK_BOOLEAN THEN
+  BEGIN
+    { The manual reads a BOOLEAN as a number or by the TRUE/FALSE names
+      (13610-13618); pas_read_enum_name against the FALSE/TRUE table
+      accepts exactly that union. }
+    tmp32 := EntryAlloca(i32ty, '');
+    call_args := AllocPtrArray(3);
+    SetPtrArrayElem(call_args, 0, tmp32);
+    SetPtrArrayElem(call_args, 1, BoolNameTable);
+    SetPtrArrayElem(call_args, 2, LLVMConstInt(i32ty, 2, 0));
+    loaded := LLVMBuildCall2(builder, read_enum_name_fnty, read_enum_name_fn, call_args, 3, MakeCStr(''));
+    loaded := LLVMBuildLoad2(builder, i32ty, tmp32, MakeCStr(''));
+    loaded := LLVMBuildTrunc(builder, loaded, i1ty, MakeCStr(''));
+    LLVMBuildStore(builder, loaded, addr);
+  END
+  ELSE IF TypeKind(tid) = TK_POINTER THEN
+  BEGIN
+    { Pointer-as-number read, the implementation-defined round-trip format
+      shared with WRITE's pointer path (manual 13620-13623). }
+    tmp64 := EntryAlloca(i64ty, '');
+    call_args := AllocPtrArray(1);
+    SetPtrArrayElem(call_args, 0, tmp64);
+    loaded := LLVMBuildCall2(builder, read_ptr_fnty, read_ptr_fn, call_args, 1, MakeCStr(''));
+    loaded := LLVMBuildLoad2(builder, i64ty, tmp64, MakeCStr(''));
+    loaded := LLVMBuildIntToPtr(builder, loaded, i8ptrty, MakeCStr(''));
+    LLVMBuildStore(builder, loaded, addr);
   END
   ELSE
     AbortWith('codegen: unsupported program-parameter type');
@@ -3872,7 +4761,7 @@ PROCEDURE CodegenReadArgs(args: ADRMEM; is_readln: BOOLEAN);
 VAR
   nargs, i, symi: INTEGER32;
   start_idx: INTEGER32;
-  arg0, argnode, addr, fcb_ptr, tmp32, loaded, call_args, buf_i8, cap: ADRMEM;
+  arg0, argnode, addr, fcb_ptr, tmp32, loaded, call_args, buf_i8, cap, tmp64: ADRMEM;
   tid: INTEGER;
   using_file: BOOLEAN;
 BEGIN
@@ -4025,6 +4914,75 @@ BEGIN
         loaded := LLVMBuildCall2(builder, read_string_fnty, read_string_fn, call_args, 2, MakeCStr(''));
       END;
     END
+    ELSE IF TypeKind(tid) = TK_ENUM THEN
+    BEGIN
+      { Enumerated values read as a numeric ordinal (manual 13610-13618);
+        i32 storage matches the reader's output width. }
+      tmp32 := EntryAlloca(i32ty, '');
+      IF using_file THEN
+      BEGIN
+        call_args := AllocPtrArray(2);
+        SetPtrArrayElem(call_args, 0, fcb_ptr);
+        SetPtrArrayElem(call_args, 1, tmp32);
+        loaded := LLVMBuildCall2(builder, fread_int_fnty, fread_int_fn, call_args, 2, MakeCStr(''));
+      END
+      ELSE
+      BEGIN
+        call_args := AllocPtrArray(1);
+        SetPtrArrayElem(call_args, 0, tmp32);
+        loaded := LLVMBuildCall2(builder, read_int_fnty, read_int_fn, call_args, 1, MakeCStr(''));
+      END;
+      loaded := LLVMBuildLoad2(builder, i32ty, tmp32, MakeCStr(''));
+      LLVMBuildStore(builder, loaded, addr);
+    END
+    ELSE IF TypeKind(tid) = TK_BOOLEAN THEN
+    BEGIN
+      { Number-or-name BOOLEAN read (manual 13610-13618), file and stdin
+        forms alike. }
+      tmp32 := EntryAlloca(i32ty, '');
+      IF using_file THEN
+      BEGIN
+        call_args := AllocPtrArray(4);
+        SetPtrArrayElem(call_args, 0, fcb_ptr);
+        SetPtrArrayElem(call_args, 1, tmp32);
+        SetPtrArrayElem(call_args, 2, BoolNameTable);
+        SetPtrArrayElem(call_args, 3, LLVMConstInt(i32ty, 2, 0));
+        loaded := LLVMBuildCall2(builder, fread_enum_name_fnty, fread_enum_name_fn, call_args, 4, MakeCStr(''));
+      END
+      ELSE
+      BEGIN
+        call_args := AllocPtrArray(3);
+        SetPtrArrayElem(call_args, 0, tmp32);
+        SetPtrArrayElem(call_args, 1, BoolNameTable);
+        SetPtrArrayElem(call_args, 2, LLVMConstInt(i32ty, 2, 0));
+        loaded := LLVMBuildCall2(builder, read_enum_name_fnty, read_enum_name_fn, call_args, 3, MakeCStr(''));
+      END;
+      loaded := LLVMBuildLoad2(builder, i32ty, tmp32, MakeCStr(''));
+      loaded := LLVMBuildTrunc(builder, loaded, i1ty, MakeCStr(''));
+      LLVMBuildStore(builder, loaded, addr);
+    END
+    ELSE IF TypeKind(tid) = TK_POINTER THEN
+    BEGIN
+      { Pointer-as-number read, round-tripping WRITE's unsigned-decimal
+        pointer format (manual 13620-13623). }
+      tmp64 := EntryAlloca(i64ty, '');
+      IF using_file THEN
+      BEGIN
+        call_args := AllocPtrArray(2);
+        SetPtrArrayElem(call_args, 0, fcb_ptr);
+        SetPtrArrayElem(call_args, 1, tmp64);
+        loaded := LLVMBuildCall2(builder, fread_ptr_fnty, fread_ptr_fn, call_args, 2, MakeCStr(''));
+      END
+      ELSE
+      BEGIN
+        call_args := AllocPtrArray(1);
+        SetPtrArrayElem(call_args, 0, tmp64);
+        loaded := LLVMBuildCall2(builder, read_ptr_fnty, read_ptr_fn, call_args, 1, MakeCStr(''));
+      END;
+      loaded := LLVMBuildLoad2(builder, i64ty, tmp64, MakeCStr(''));
+      loaded := LLVMBuildIntToPtr(builder, loaded, i8ptrty, MakeCStr(''));
+      LLVMBuildStore(builder, loaded, addr);
+    END
     ELSE
       AbortWith('codegen: unsupported READ argument type');
   END;
@@ -4042,27 +5000,249 @@ BEGIN
   END;
 END;
 
+PROCEDURE CodegenReadSet(args: ADRMEM);
+{ READSET([file,] dest, set_of_char): manual-documented extended I/O builtin
+  (djvu.txt:9047-9081-adjacent), lowered straight to the runtime's existing
+  pas_freadset (runtime/fileops.c) -- no runtime changes needed, only this
+  call-site wiring, mirroring the reference's builtin_readset. Scoped to the
+  3-argument (explicit TEXT file) form: pas_freadset always requires a real
+  FCB* and this compiler has no INPUT-stream FCB binding of its own (unlike
+  the Python reference, which lazily attaches a predeclared INPUT global via
+  pas_file_attach_std) -- a real, stated gap rather than a silent one. }
+VAR
+  nargs, start_idx: INTEGER32;
+  arg0, dest_node, set_node: ADRMEM;
+  fcb_ptr: ADRMEM;
+  symi: INTEGER32;
+  addr, buf_i8, cap, set_val, set_slot, gep_idx, words_ptr, call_args, discard: ADRMEM;
+  tid: INTEGER;
+BEGIN
+  nargs := ArrSize(args);
+  IF nargs <> 3 THEN
+    AbortWith('codegen: READSET without an explicit TEXT file argument is not yet supported (no native INPUT stream FCB binding)');
+  arg0 := ArrItem(args, 0);
+  fcb_ptr := LoadFileFcbPtr(GetStr(arg0, 'name'));
+  start_idx := 1;
+
+  dest_node := ArrItem(args, start_idx);
+  symi := LookupSym(GetStr(dest_node, 'name'));
+  IF symi = 0 THEN AbortWith2('codegen: undefined variable: ', GetStr(dest_node, 'name'));
+  tid := symbols[symi].tk;
+  IF TypeKind(tid) <> TK_LSTRING THEN
+    AbortWith('codegen: READSET destination must be LSTRING');
+  addr := symbols[symi].llvm_val;
+  buf_i8 := LLVMBuildBitCast(builder, addr, i8ptrty, MakeCStr(''));
+  cap := LLVMConstInt(i32ty, types[tid].hi, 0);
+
+  set_node := ArrItem(args, start_idx + 1);
+  set_val := CodegenExpr(set_node);
+  IF TypeKind(last_val_tk) <> TK_SET THEN
+    AbortWith('codegen: READSET set argument must be SET OF CHAR');
+  set_slot := EntryAlloca(setty, '');
+  LLVMBuildStore(builder, set_val, set_slot);
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
+  words_ptr := LLVMBuildGEP2(builder, setty, set_slot, gep_idx, 2, MakeCStr(''));
+
+  call_args := AllocPtrArray(4);
+  SetPtrArrayElem(call_args, 0, fcb_ptr);
+  SetPtrArrayElem(call_args, 1, buf_i8);
+  SetPtrArrayElem(call_args, 2, cap);
+  SetPtrArrayElem(call_args, 3, words_ptr);
+  discard := LLVMBuildCall2(builder, freadset_fnty, freadset_fn, call_args, 4, MakeCStr(''));
+END;
+
 { ============================== statements ================================ }
 
 PROCEDURE CodegenStmt(stmt: ADRMEM); FORWARD;
 
+{ --------------------------- GOTO / labels --------------------------------
+  Mirrors the Python reference's _collect_labels/setup_function_labels: every
+  LabelStmt reachable within a routine gets one LLVM basic block, allocated
+  up front (before the body is codegen'd) so a forward GOTO can branch to a
+  block that doesn't exist yet in program-text order. Routine-local only --
+  the `labels` table is rebuilt from scratch for every PROGRAM/PROCEDURE/
+  FUNCTION/unit-init body (see SetupFunctionLabels's call sites), matching
+  the reference's own per-routine label_blocks and its "GOTO to undefined
+  label" restriction against cross-routine jumps. }
+
+FUNCTION IntToStr255(n: INTEGER32): Str255;
+{ No such helper exists anywhere else in this file -- every other numeric
+  diagnostic is either a fixed string or routed through AbortWith2's plain
+  Str255 concatenation, never a formatted integer. Needed here because a
+  numeric GOTO label (e.g. `GOTO 100;`) arrives from the parser as a JSON
+  number, not a string, and the `labels` table's lookup key is always text.
+  Builds digits into `tmp` least-significant-first via direct Str255
+  indexing (the same s[0]=length-byte convention CStrToStr255 uses), then
+  reverses into `res` -- no CONCAT needed, this is plain char-array work. }
+VAR
+  neg: BOOLEAN;
+  v: INTEGER32;
+  digit: INTEGER32;
+  tmp, res: Str255;
+  len, i, out_i: INTEGER;
+BEGIN
+  neg := n < 0;
+  IF neg THEN v := -n ELSE v := n;
+  len := 0;
+  IF v = 0 THEN
+  BEGIN
+    len := 1;
+    tmp[1] := '0';
+  END
+  ELSE
+    WHILE v > 0 DO
+    BEGIN
+      len := len + 1;
+      digit := ORD('0') + (v MOD 10);
+      tmp[len] := CHR(RETYPE(INTEGER, digit));
+      v := v DIV 10;
+    END;
+  out_i := 0;
+  IF neg THEN
+  BEGIN
+    out_i := out_i + 1;
+    res[out_i] := '-';
+  END;
+  FOR i := len DOWNTO 1 DO
+  BEGIN
+    out_i := out_i + 1;
+    res[out_i] := tmp[i];
+  END;
+  res[0] := CHR(out_i);
+  IntToStr255 := res;
+END;
+
+FUNCTION LabelKey(node: ADRMEM; key: Str255): Str255;
+{ The parser's 'label' field (GotoStmt/LabelStmt/BreakStmt/CycleStmt) is a
+  JSON number for a numeric label, a JSON string for an identifier label --
+  read whichever is present and normalize to the same Str255 key either way. }
+VAR
+  item: ADRMEM;
+BEGIN
+  item := GetObj(node, key);
+  IF (item <> NIL) AND (cJSON_IsNumber(item) <> 0) THEN
+    LabelKey := IntToStr255(GetInt(node, key))
+  ELSE
+    LabelKey := GetStr(node, key);
+END;
+
+FUNCTION LookupLabel(name: Str255): INTEGER32;
+VAR
+  i: INTEGER32;
+BEGIN
+  i := nlabels;
+  WHILE (i >= 1) AND (labels[i].name <> name) DO
+    i := i - 1;
+  LookupLabel := i;
+END;
+
+PROCEDURE RegisterLabel(name: Str255);
+BEGIN
+  IF LookupLabel(name) = 0 THEN
+  BEGIN
+    IF nlabels >= MAX_LABELS THEN AbortWith('codegen: too many labels in one routine');
+    nlabels := nlabels + 1;
+    labels[nlabels].name := name;
+    labels[nlabels].block := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('label_'));
+  END;
+END;
+
+PROCEDURE CollectLabels(stmt: ADRMEM); FORWARD;
+
+PROCEDURE CollectLabelsArr(arr: ADRMEM);
+VAR
+  n, i: INTEGER32;
+BEGIN
+  IF arr <> NIL THEN
+  BEGIN
+    n := ArrSize(arr);
+    FOR i := 0 TO n - 1 DO
+      CollectLabels(ArrItem(arr, i));
+  END;
+END;
+
+PROCEDURE CollectLabels(stmt: ADRMEM);
+{ Non-emitting walk mirroring the reference's own _collect_labels node
+  coverage: every statement kind that can syntactically contain a LabelStmt
+  (directly or nested) is walked; leaf statement kinds (assignment, ProcCall,
+  RETURN/BREAK/CYCLE, GOTO itself) have no children and are ignored. This
+  dialect has no EXIT statement (see CodegenBinOp's own note on the same
+  restriction), so an early "stmt = NIL" return is instead the outermost
+  guard around the whole dispatch chain. }
+VAR
+  nt: Str255;
+  elements, el: ADRMEM;
+  n, i: INTEGER32;
+BEGIN
+  IF stmt <> NIL THEN
+  BEGIN
+  nt := NodeType(stmt);
+  IF nt = 'CompoundStmt' THEN
+    CollectLabelsArr(GetObj(stmt, 'stmts'))
+  ELSE IF nt = 'IfStmt' THEN
+  BEGIN
+    CollectLabels(GetObj(stmt, 'then_branch'));
+    CollectLabels(GetObjOrNil(stmt, 'else_branch'));
+  END
+  ELSE IF nt = 'WhileStmt' THEN
+    CollectLabels(GetObj(stmt, 'body'))
+  ELSE IF nt = 'RepeatStmt' THEN
+    CollectLabelsArr(GetObj(stmt, 'body'))
+  ELSE IF nt = 'ForStmt' THEN
+    CollectLabels(GetObj(stmt, 'body'))
+  ELSE IF nt = 'CaseStmt' THEN
+  BEGIN
+    elements := GetObj(stmt, 'elements');
+    n := ArrSize(elements);
+    FOR i := 0 TO n - 1 DO
+    BEGIN
+      el := ArrItem(elements, i);
+      CollectLabels(GetObj(el, 'stmt'));
+    END;
+    CollectLabels(GetObjOrNil(stmt, 'otherwise'));
+  END
+  ELSE IF nt = 'LabelStmt' THEN
+  BEGIN
+    RegisterLabel(LabelKey(stmt, 'label'));
+    CollectLabels(GetObj(stmt, 'stmt'));
+  END;
+  END;
+END;
+
+PROCEDURE SetupFunctionLabels(body_arr: ADRMEM);
+BEGIN
+  nlabels := 0;
+  CollectLabelsArr(body_arr);
+  cur_routine_has_labels := nlabels > 0;
+  pending_loop_label := '';
+END;
+
 PROCEDURE CodegenStmtArray(arr: ADRMEM);
 VAR
   n, i: INTEGER32;
-  live: BOOLEAN;
+  dead_bb: ADRMEM;
 BEGIN
   n := ArrSize(arr);
-  live := TRUE;
   FOR i := 0 TO n - 1 DO
   BEGIN
-    { A RETURN/BREAK/CYCLE terminates its block; nothing downstream in a
-      straight-line statement list can still be reached (no label/GOTO
-      support in this native codegen yet), so stop emitting once the
-      current block already has a terminator. }
-    IF live AND (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder)) <> NIL) THEN
-      live := FALSE;
-    IF live THEN
-      CodegenStmt(ArrItem(arr, i));
+    { A RETURN/BREAK/CYCLE/GOTO terminates its block; ordinarily nothing
+      downstream in a straight-line statement list can still be reached, so
+      stop emitting (matches the pre-GOTO behavior exactly when the routine
+      has no labels at all). But when it does, a later statement might be a
+      LabelStmt (or contain one) that a GOTO elsewhere in the routine
+      branches to -- SetupFunctionLabels already gave it a real block, so
+      dropping it here would leave that block never populated. Mirrors the
+      reference's own codegen_stmt_list: open a fresh (currently
+      unreachable) continuation block and keep going instead of stopping. }
+    IF LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder)) <> NIL THEN
+    BEGIN
+      IF NOT cur_routine_has_labels THEN BREAK;
+      dead_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('dead'));
+      LLVMPositionBuilderAtEnd(builder, dead_bb);
+    END;
+    CodegenStmt(ArrItem(arr, i));
   END;
 END;
 
@@ -4310,6 +5490,8 @@ BEGIN
   loop_depth := loop_depth + 1;
   loop_break_blocks[loop_depth] := end_bb;
   loop_cycle_blocks[loop_depth] := loop_bb;
+  loop_labels[loop_depth] := pending_loop_label;
+  pending_loop_label := '';
   CodegenStmt(GetObj(stmt, 'body'));
   loop_depth := loop_depth - 1;
   IF LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder)) = NIL THEN
@@ -4334,6 +5516,8 @@ BEGIN
   loop_depth := loop_depth + 1;
   loop_break_blocks[loop_depth] := end_bb;
   loop_cycle_blocks[loop_depth] := loop_bb;
+  loop_labels[loop_depth] := pending_loop_label;
+  pending_loop_label := '';
   CodegenStmtArray(GetObj(stmt, 'body'));
   loop_depth := loop_depth - 1;
   IF LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder)) = NIL THEN
@@ -4365,8 +5549,8 @@ BEGIN
   IF symi = 0 THEN
     AbortWith2('codegen: undefined FOR loop variable: ', var_name);
   var_tk := symbols[symi].tk;
-  IF NOT IsIntegerFamilyTk(var_tk) THEN
-    AbortWith('codegen: FOR loop variable must be an integer-family type');
+  IF NOT IsIntegerFamilyTk(var_tk) AND (TypeKind(var_tk) <> TK_ENUM) THEN
+    AbortWith('codegen: FOR loop variable must be an integer-family or enumerated type');
   var_llty := LLVMTypeForTk(var_tk);
 
   start_node := GetObj(stmt, 'start');
@@ -4398,6 +5582,8 @@ BEGIN
   loop_depth := loop_depth + 1;
   loop_break_blocks[loop_depth] := end_bb;
   loop_cycle_blocks[loop_depth] := step_bb;
+  loop_labels[loop_depth] := pending_loop_label;
+  pending_loop_label := '';
   CodegenStmt(GetObj(stmt, 'body'));
   loop_depth := loop_depth - 1;
   IF LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder)) = NIL THEN
@@ -5462,6 +6648,8 @@ BEGIN
     CodegenReadArgs(GetObj(stmt, 'args'), TRUE)
   ELSE IF (name = 'READ') THEN
     CodegenReadArgs(GetObj(stmt, 'args'), FALSE)
+  ELSE IF (name = 'READSET') THEN
+    CodegenReadSet(GetObj(stmt, 'args'))
   ELSE IF (name = 'RESET') OR (name = 'REWRITE') OR (name = 'GET') OR
           (name = 'PUT') OR (name = 'CLOSE') OR (name = 'DISCARD') THEN
   BEGIN
@@ -5591,18 +6779,143 @@ BEGIN
   END;
 END;
 
+FUNCTION FindLabeledLoopDepth(lbl: Str255): INTEGER32;
+{ Searches innermost-to-outermost (loop_depth downto 1) for the enclosing
+  loop a labeled BREAK/CYCLE names -- matches the manual's BREAK <label>/
+  CYCLE <label> targeting a specific enclosing loop, not just the
+  innermost one. Returns 0 if no enclosing loop carries that label. }
+VAR
+  d: INTEGER32;
+BEGIN
+  FindLabeledLoopDepth := 0;
+  FOR d := loop_depth DOWNTO 1 DO
+    IF loop_labels[d] = lbl THEN
+    BEGIN
+      FindLabeledLoopDepth := d;
+      BREAK;
+    END;
+END;
+
 PROCEDURE CodegenBreakStmt(stmt: ADRMEM);
+VAR
+  lbl: Str255;
+  d: INTEGER32;
 BEGIN
   IF loop_depth = 0 THEN
     AbortWith('codegen: BREAK outside of a loop');
-  LLVMBuildBr(builder, loop_break_blocks[loop_depth]);
+  IF GetObjOrNil(stmt, 'label') = NIL THEN
+    LLVMBuildBr(builder, loop_break_blocks[loop_depth])
+  ELSE
+  BEGIN
+    lbl := LabelKey(stmt, 'label');
+    d := FindLabeledLoopDepth(lbl);
+    IF d = 0 THEN AbortWith2('codegen: BREAK targets a label with no enclosing loop: ', lbl);
+    LLVMBuildBr(builder, loop_break_blocks[d]);
+  END;
 END;
 
 PROCEDURE CodegenCycleStmt(stmt: ADRMEM);
+VAR
+  lbl: Str255;
+  d: INTEGER32;
 BEGIN
   IF loop_depth = 0 THEN
     AbortWith('codegen: CYCLE outside of a loop');
-  LLVMBuildBr(builder, loop_cycle_blocks[loop_depth]);
+  IF GetObjOrNil(stmt, 'label') = NIL THEN
+    LLVMBuildBr(builder, loop_cycle_blocks[loop_depth])
+  ELSE
+  BEGIN
+    lbl := LabelKey(stmt, 'label');
+    d := FindLabeledLoopDepth(lbl);
+    IF d = 0 THEN AbortWith2('codegen: CYCLE targets a label with no enclosing loop: ', lbl);
+    LLVMBuildBr(builder, loop_cycle_blocks[d]);
+  END;
+END;
+
+PROCEDURE CodegenGotoStmt(stmt: ADRMEM);
+VAR
+  lbl: Str255;
+  li: INTEGER32;
+BEGIN
+  lbl := LabelKey(stmt, 'label');
+  li := LookupLabel(lbl);
+  IF li = 0 THEN
+    AbortWith2('codegen: GOTO to undefined label (routine-local only): ', lbl);
+  LLVMBuildBr(builder, labels[li].block);
+END;
+
+PROCEDURE CodegenLabelStmt(stmt: ADRMEM);
+{ The label's block was already allocated by SetupFunctionLabels before this
+  routine's body was codegen'd (so a forward GOTO higher up could already
+  reference it). Branch into it from the current position if not already
+  terminated, then continue codegen'ing the inner statement there. If that
+  inner statement is itself a loop, hand its label down via
+  pending_loop_label so a labeled BREAK/CYCLE elsewhere can target it. }
+VAR
+  lbl: Str255;
+  li: INTEGER32;
+  inner: ADRMEM;
+  inner_nt: Str255;
+BEGIN
+  lbl := LabelKey(stmt, 'label');
+  li := LookupLabel(lbl);
+  IF li = 0 THEN
+    AbortWith2('codegen: internal error: label block missing: ', lbl);
+  IF LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder)) = NIL THEN
+    LLVMBuildBr(builder, labels[li].block);
+  LLVMPositionBuilderAtEnd(builder, labels[li].block);
+  inner := GetObj(stmt, 'stmt');
+  inner_nt := NodeType(inner);
+  IF (inner_nt = 'WhileStmt') OR (inner_nt = 'RepeatStmt') OR (inner_nt = 'ForStmt') THEN
+    pending_loop_label := lbl;
+  CodegenStmt(inner);
+END;
+
+PROCEDURE CodegenWithStmt(stmt: ADRMEM);
+{ WITH t1, t2, ... DO body: one PushScope per target left to right, each
+  target's fields registered directly as symbols whose llvm_val IS the
+  field's own GEP'd storage address (not a copy) -- so reads/writes inside
+  body affect the underlying record in place, matching the reference's
+  "bind field name directly to GEP pointer" (codegen/stmts.py's
+  codegen_with_stmt). A later target's field of the same name shadows an
+  earlier one for free, since LookupSym's backward scan finds the most
+  recently appended symbol first. }
+VAR
+  targets, target: ADRMEM;
+  ntargets, ti, fi: INTEGER32;
+  base_ptr, field_ptr, gep_idx: ADRMEM;
+  cur_tid: INTEGER;
+  pushed: INTEGER32;
+BEGIN
+  targets := GetObj(stmt, 'targets');
+  ntargets := ArrSize(targets);
+  pushed := 0;
+  FOR ti := 0 TO ntargets - 1 DO
+  BEGIN
+    target := ArrItem(targets, ti);
+    base_ptr := ComputeDesignatorAddress(target);
+    cur_tid := last_val_tk;
+    IF TypeKind(cur_tid) <> TK_RECORD THEN
+      AbortWith('codegen: WITH target must be a record');
+    PushScope;
+    pushed := pushed + 1;
+    FOR fi := 1 TO nfields DO
+      IF fields[fi].rec_tid = cur_tid THEN
+      BEGIN
+        gep_idx := AllocPtrArray(1);
+        SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, fields[fi].byte_offset, 0));
+        field_ptr := LLVMBuildGEP2(builder, i8ty, base_ptr, gep_idx, 1, MakeCStr(''));
+        field_ptr := LLVMBuildBitCast(builder, field_ptr, LLVMPointerType(LLVMTypeForTk(fields[fi].field_tid), 0), MakeCStr(''));
+        IF nsymbols >= MAX_SYMBOLS THEN AbortWith('codegen: too many symbols');
+        nsymbols := nsymbols + 1;
+        symbols[nsymbols].name := fields[fi].fname;
+        symbols[nsymbols].tk := fields[fi].field_tid;
+        symbols[nsymbols].llvm_val := field_ptr;
+      END;
+  END;
+  CodegenStmt(GetObj(stmt, 'body'));
+  FOR ti := 1 TO pushed DO
+    PopScope;
 END;
 
 PROCEDURE CodegenStmt(stmt: ADRMEM);
@@ -5622,6 +6935,9 @@ BEGIN
   ELSE IF nt = 'ReturnStmt' THEN CodegenReturnStmt(stmt)
   ELSE IF nt = 'BreakStmt' THEN CodegenBreakStmt(stmt)
   ELSE IF nt = 'CycleStmt' THEN CodegenCycleStmt(stmt)
+  ELSE IF nt = 'LabelStmt' THEN CodegenLabelStmt(stmt)
+  ELSE IF nt = 'GotoStmt' THEN CodegenGotoStmt(stmt)
+  ELSE IF nt = 'WithStmt' THEN CodegenWithStmt(stmt)
   ELSE IF nt = 'EmptyStmt' THEN BEGIN END
   ELSE
   BEGIN
@@ -5917,32 +7233,31 @@ BEGIN
   IsCForeignDecl := has_c AND (has_extern_attr OR (directive = 'EXTERN') OR (directive = 'EXTERNAL'));
 END;
 
-CONST
-  SYSV_CLASS_MEMORY = 1;
-  SYSV_CLASS_UNIMPLEMENTED = 2; { <=16-byte register-class aggregates: the
-    full eightbyte INTEGER/SSE classifier is planned future SysV work. None of
-    the five self-hosting sources hit this today, so it aborts loudly rather
-    than emitting something silently wrong. }
 
-FUNCTION SysVAggClass(tk: INTEGER): INTEGER;
-{ Single landing point for the (currently MEMORY-only) SysV AMD64 aggregate
-  classifier, mirroring where c_abi.py's classify_aggregate sits -- a later
-  full eightbyte INTEGER/SSE/MEMORY classifier replaces just this function's
-  body, not any of its callers. Returns plain INTEGER (not INTEGER32),
-  matching TypeKind's own return type -- the native typechecker's
-  CheckExpr/IsNumeric treats INTEGER and INTEGER32 as distinct,
-  non-interchangeable comparison operand kinds, and every caller here
-  compares the result against an INTEGER-typed CONST (SYSV_CLASS_MEMORY /
-  SYSV_CLASS_UNIMPLEMENTED). }
+FUNCTION IsVarargsDecl(decl: ADRMEM): BOOLEAN;
+{ True for a routine carrying the [VARARGS] attribute -- the C variadic
+  ellipsis, so the declared parameters are only the fixed prefix. Only
+  meaningful on a [C] FOREIGN routine (the 1981 dialect gives a Pascal
+  routine no way to read a variadic tail), so callers pair it with
+  IsCForeignDecl and ignore it otherwise. The attribute name is already
+  canonical uppercase in the AST, exactly as IsCForeignDecl above notes, and
+  is longer than one character so it compares as a plain LSTRING. }
 VAR
-  sz: INTEGER32;
+  attrs_arr, item: ADRMEM;
+  i, nattrs: INTEGER32;
+  found: BOOLEAN;
 BEGIN
-  sz := TypeSizeBytes(tk);
-  IF (sz = 0) OR (sz > 16) THEN
-    SysVAggClass := SYSV_CLASS_MEMORY
-  ELSE
-    SysVAggClass := SYSV_CLASS_UNIMPLEMENTED;
+  attrs_arr := GetObj(decl, 'attributes');
+  nattrs := ArrSize(attrs_arr);
+  found := FALSE;
+  FOR i := 0 TO nattrs - 1 DO
+  BEGIN
+    item := ArrItem(attrs_arr, i);
+    IF GetStr(item, 'name') = 'VARARGS' THEN found := TRUE;
+  END;
+  IsVarargsDecl := found;
 END;
+
 
 PROCEDURE FlattenParams(params_arr: ADRMEM; VAR n: INTEGER32; VAR names: ParamNameArr;
                          VAR tks: ParamTkArr; VAR isvar: ParamVarArr; VAR needs_copy: ParamVarArr);
@@ -6372,8 +7687,18 @@ VAR
   existing: INTEGER32;
   ridx: INTEGER32;
   has_block_body: BOOLEAN;
-  is_c, is_exported_entry: BOOLEAN;
+  is_c, is_exported_entry, is_vararg: BOOLEAN;
+  vararg_flag: INTEGER32;
   agg_llvm_ty, byval_attr, align_attr: ADRMEM;
+  llvm_idx, n_llvm: INTEGER32;
+  agg_class, n_pieces, eb: INTEGER;
+  piece_kind: SysVPieceArr;
+  piece_bytes: SysVPieceSzArr;
+  cstruct_ty, cptr: ADRMEM;
+  ret_class, ret_npieces: INTEGER;
+  ret_pk: SysVPieceArr;
+  ret_pb: SysVPieceSzArr;
+  sret_attr, noalias_attr: ADRMEM;
 BEGIN
   name := GetStr(decl, 'name');
   body_blk := GetObj(decl, 'body');
@@ -6384,6 +7709,9 @@ BEGIN
     decl, so the routine table's own is_c (set once, at first declaration)
     is the source of truth once ridx is known; see below. }
   is_c := IsCForeignDecl(decl);
+  { [VARARGS] only means anything across the C ABI, and (like is_c) the
+    routine table's own copy is the source of truth once ridx is known. }
+  is_vararg := is_c AND IsVarargsDecl(decl);
   is_exported_entry := GetBool(decl, 'is_exported_entry');
 
   existing := LookupRoutine(name);
@@ -6416,39 +7744,24 @@ BEGIN
     FlattenParams(params_arr, n, names, tks, isvar, needs_copy);
     routines[ridx].has_body := TRUE;
     is_c := routines[ridx].is_c; { source of truth once ridx is known -- see note above }
+    is_vararg := routines[ridx].is_vararg; { likewise }
+    { The already-built fnty is reused verbatim here, so a [C] routine whose
+      aggregate return was lowered to sret/coerced below already has a
+      signature this branch cannot re-derive: its hidden result pointer
+      shifts every LLVMGetParam index in the prologue, and its LLVM return
+      type is no longer the aggregate cur_func_ret_slot/RETURN would store.
+      IsCForeignDecl only answers TRUE for an EXTERN declaration, so the
+      only way to reach this is an EXTERN [C] name later given a real body
+      in the same compiland -- refuse it loudly rather than emit a body
+      against the wrong convention. }
+    IF has_block_body AND is_c AND is_func THEN
+      IF IsAggregateTk(ret_tk) THEN
+        AbortWith2('codegen: [C] EXTERN routine with an aggregate return cannot be defined here: ', name);
   END
   ELSE
   BEGIN
     params_arr := GetObj(decl, 'params');
     FlattenParams(params_arr, n, names, tks, isvar, needs_copy);
-
-    param_llvm_types := AllocPtrArray(n);
-    FOR i := 1 TO n DO
-    BEGIN
-      IF isvar[i] THEN
-        SetPtrArrayElem(param_llvm_types, i - 1, LLVMPointerType(LLVMTypeForTk(tks[i]), 0))
-      ELSE IF needs_copy[i] AND is_c THEN
-      BEGIN
-        { [C] FOREIGN routine, value-mode aggregate param: SysV MEMORY-class
-          byval, matching c_abi.py -- a pointer to a private per-call copy,
-          with the byval(ty)/align attributes attached below once `fn`
-          exists. Only MEMORY class (>16 bytes, or 0) is implemented; a
-          <=16-byte aggregate would need the eightbyte register-class
-          coercion this self-hosting subset doesn't implement (SysVAggClass). }
-        IF SysVAggClass(tks[i]) <> SYSV_CLASS_MEMORY THEN
-          AbortWith2('codegen: [C] FOREIGN aggregate parameter <=16 bytes needs SysV register-class coercion, not yet implemented, for: ', name);
-        SetPtrArrayElem(param_llvm_types, i - 1, LLVMPointerType(LLVMTypeForTk(tks[i]), 0));
-      END
-      ELSE
-        { needs_copy[i] (value-mode ARRAY/RECORD/LSTRING/STRING aggregate)
-          on a plain (non-[C]) routine is passed as a first-class LLVM
-          aggregate value, matching the Python reference
-          (codegen/types_map.py) -- not a pointer. The incoming value
-          itself becomes the callee's private copy in the prologue below,
-          so Pascal by-value semantics still hold without any
-          caller-visible aliasing. }
-        SetPtrArrayElem(param_llvm_types, i - 1, LLVMTypeForTk(tks[i]));
-    END;
 
     IF is_func THEN
     BEGIN
@@ -6460,6 +7773,81 @@ BEGIN
       ret_tk := TK_UNKNOWN;
       ret_llvm_ty := voidty;
     END;
+
+    { The return has to be classified BEFORE the parameter list is built: a
+      [C] FOREIGN FUNCTION returning a MEMORY-class aggregate returns void
+      and takes a hidden pointer to the caller's result storage as its FIRST
+      LLVM parameter, shifting every real parameter's LLVM index by one.
+      A COERCED-class aggregate return needs no hidden pointer -- it comes
+      back in one or two registers, i.e. as a plain non-aggregate LLVM
+      return type -- so it only rewrites ret_llvm_ty. Everything else
+      (PROCEDUREs, scalar returns, and every plain non-[C] routine, which
+      keeps returning a first-class LLVM aggregate) is untouched. }
+    ret_class := 0;
+    IF is_c AND is_func THEN
+      IF IsAggregateTk(ret_tk) THEN
+      BEGIN
+        ClassifyAggregate(ret_tk, ret_class, ret_npieces, ret_pk, ret_pb);
+        IF ret_class = SYSV_CLASS_MEMORY THEN ret_llvm_ty := voidty
+        ELSE ret_llvm_ty := SysVCoercedRetType(ret_npieces, ret_pk, ret_pb);
+      END;
+
+    { A COERCED-class [C] aggregate parameter is passed as one LLVM
+      parameter per eightbyte (at most two), so the LLVM parameter list can
+      be longer than the Pascal one -- llvm_idx below is the running LLVM
+      parameter index, and n_llvm the final count. Two slots per Pascal
+      parameter is the worst case, plus one for an sret hidden pointer
+      (which also seeds llvm_idx at 1 instead of 0). }
+    param_llvm_types := AllocPtrArray(n * 2 + 1);
+    llvm_idx := 0;
+    IF ret_class = SYSV_CLASS_MEMORY THEN
+    BEGIN
+      SetPtrArrayElem(param_llvm_types, 0, LLVMPointerType(LLVMTypeForTk(ret_tk), 0));
+      llvm_idx := 1;
+    END;
+    FOR i := 1 TO n DO
+    BEGIN
+      IF isvar[i] THEN
+      BEGIN
+        SetPtrArrayElem(param_llvm_types, llvm_idx, LLVMPointerType(LLVMTypeForTk(tks[i]), 0));
+        llvm_idx := llvm_idx + 1;
+      END
+      ELSE IF needs_copy[i] AND is_c THEN
+      BEGIN
+        { [C] FOREIGN routine, value-mode aggregate param, matching
+          c_abi.py: MEMORY class (>16 bytes, or 0) is a pointer to a
+          private per-call copy, with the byval(ty)/align attributes
+          attached below once `fn` exists; COERCED class (<=16 bytes, all
+          eightbytes INTEGER/SSE) is flattened into its register pieces
+          instead, and gets no parameter attribute at all. }
+        ClassifyAggregate(tks[i], agg_class, n_pieces, piece_kind, piece_bytes);
+        IF agg_class = SYSV_CLASS_MEMORY THEN
+        BEGIN
+          SetPtrArrayElem(param_llvm_types, llvm_idx, LLVMPointerType(LLVMTypeForTk(tks[i]), 0));
+          llvm_idx := llvm_idx + 1;
+        END
+        ELSE
+          FOR eb := 1 TO n_pieces DO
+          BEGIN
+            SetPtrArrayElem(param_llvm_types, llvm_idx,
+                            SysVPieceLLVMType(piece_kind[eb], piece_bytes[eb]));
+            llvm_idx := llvm_idx + 1;
+          END;
+      END
+      ELSE
+      BEGIN
+        { needs_copy[i] (value-mode ARRAY/RECORD/LSTRING/STRING aggregate)
+          on a plain (non-[C]) routine is passed as a first-class LLVM
+          aggregate value, matching the Python reference
+          (codegen/types_map.py) -- not a pointer. The incoming value
+          itself becomes the callee's private copy in the prologue below,
+          so Pascal by-value semantics still hold without any
+          caller-visible aliasing. }
+        SetPtrArrayElem(param_llvm_types, llvm_idx, LLVMTypeForTk(tks[i]));
+        llvm_idx := llvm_idx + 1;
+      END;
+    END;
+    n_llvm := llvm_idx;
 
     { A handful of C runtime/libm functions (malloc, free, printf, ...) are
       already declared in the module by the init block above, for this
@@ -6491,7 +7879,11 @@ BEGIN
     ELSE IF name = 'printf' THEN BEGIN fn := printf_fn; fnty := printf_fnty; END
     ELSE
     BEGIN
-      fnty := LLVMFunctionType(ret_llvm_ty, param_llvm_types, n, 0);
+      { A [VARARGS] [C] routine gets a genuinely variadic LLVM function type
+        (trailing is_var_arg = 1), the same shape the printf/write_fmt
+        declarations in the init block above already use. }
+      IF is_vararg THEN vararg_flag := 1 ELSE vararg_flag := 0;
+      fnty := LLVMFunctionType(ret_llvm_ty, param_llvm_types, n_llvm, vararg_flag);
       fn := LLVMAddFunction(modl, MakeCStr(name), fnty);
     END;
 
@@ -6526,6 +7918,7 @@ BEGIN
     END;
     routines[ridx].has_body := has_block_body;
     routines[ridx].is_c := is_c;
+    routines[ridx].is_vararg := is_vararg;
 
     IF is_c THEN
     BEGIN
@@ -6534,17 +7927,52 @@ BEGIN
         function definition/declaration and each call site; clang emits
         both, and only doing one leaves the IR inconsistent with what a
         real C compiler produces for the same signature (verification step
-        7). Attribute index is 1-based over parameters (0 is the return). }
+        7). Attribute index is 1-based over LLVM parameters (0 is the
+        return), which is why it is walked with llvm_idx rather than the
+        Pascal parameter index: a COERCED aggregate parameter occupies one
+        slot per eightbyte and carries no attribute of its own -- byval and
+        align describe a pointer to memory, which a register-passed
+        aggregate never has. }
+      llvm_idx := 0;
+      IF ret_class = SYSV_CLASS_MEMORY THEN
+      BEGIN
+        { The hidden result pointer is LLVM parameter 0, i.e. attribute
+          index 1. `sret(ty)` names the pointee type the callee writes the
+          result through; `noalias` is the SysV promise that this storage is
+          the caller's fresh result temp and overlaps nothing else the call
+          can see; `align` matches what the byval path attaches, and what
+          the reference records alongside its own sret attributes. }
+        agg_llvm_ty := LLVMTypeForTk(ret_tk);
+        sret_attr := LLVMCreateTypeAttribute(ctx, sret_kind_id, agg_llvm_ty);
+        align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, SysVByvalAlign(ret_tk));
+        LLVMAddAttributeAtIndex(fn, 1, sret_attr);
+        LLVMAddAttributeAtIndex(fn, 1, align_attr);
+        IF noalias_kind_id <> 0 THEN
+        BEGIN
+          noalias_attr := LLVMCreateEnumAttribute(ctx, noalias_kind_id, 0);
+          LLVMAddAttributeAtIndex(fn, 1, noalias_attr);
+        END;
+        llvm_idx := 1;
+      END;
       FOR i := 1 TO n DO
       BEGIN
         IF needs_copy[i] THEN
         BEGIN
-          agg_llvm_ty := LLVMTypeForTk(tks[i]);
-          byval_attr := LLVMCreateTypeAttribute(ctx, byval_kind_id, agg_llvm_ty);
-          align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, TypeAlignBytes(tks[i]));
-          LLVMAddAttributeAtIndex(fn, i, byval_attr);
-          LLVMAddAttributeAtIndex(fn, i, align_attr);
-        END;
+          ClassifyAggregate(tks[i], agg_class, n_pieces, piece_kind, piece_bytes);
+          IF agg_class = SYSV_CLASS_MEMORY THEN
+          BEGIN
+            agg_llvm_ty := LLVMTypeForTk(tks[i]);
+            byval_attr := LLVMCreateTypeAttribute(ctx, byval_kind_id, agg_llvm_ty);
+            align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, SysVByvalAlign(tks[i]));
+            LLVMAddAttributeAtIndex(fn, llvm_idx + 1, byval_attr);
+            LLVMAddAttributeAtIndex(fn, llvm_idx + 1, align_attr);
+            llvm_idx := llvm_idx + 1;
+          END
+          ELSE
+            llvm_idx := llvm_idx + n_pieces;
+        END
+        ELSE
+          llvm_idx := llvm_idx + 1;
       END;
     END;
   END;
@@ -6590,17 +8018,54 @@ BEGIN
     ELSE
       cur_func_name := '';
 
+    { llvm_idx is the running LLVM parameter index: it only tracks the
+      Pascal parameter index while no COERCED [C] aggregate parameter has
+      been seen, since such a parameter arrives as one LLVM parameter per
+      eightbyte (at most two). }
+    llvm_idx := 0;
     FOR i := 1 TO n DO
     BEGIN
-      param_val := LLVMGetParam(fn, i - 1);
+      param_val := LLVMGetParam(fn, llvm_idx);
+      llvm_idx := llvm_idx + 1;
       IF isvar[i] THEN
         palloca := param_val { the incoming pointer already IS the storage }
       ELSE IF needs_copy[i] AND is_c THEN
-        { SysV byval: the incoming pointer already refers to a private
-          per-call copy the caller made (see the byval caller-side temp in
-          CodegenCallCommon) -- use it directly as storage, exactly like
-          isvar above, no further copy needed. }
-        palloca := param_val
+      BEGIN
+        ClassifyAggregate(tks[i], agg_class, n_pieces, piece_kind, piece_bytes);
+        IF agg_class = SYSV_CLASS_MEMORY THEN
+          { SysV byval: the incoming pointer already refers to a private
+            per-call copy the caller made (see the byval caller-side temp in
+            CodegenCallCommon) -- use it directly as storage, exactly like
+            isvar above, no further copy needed. }
+          palloca := param_val
+        ELSE
+        BEGIN
+          { COERCED class: the aggregate arrived in one or two registers.
+            Reverse the caller's flattening -- give it real storage of the
+            aggregate's own type and write each incoming piece back through
+            the coerced piece struct laid over that storage, so the rest of
+            codegen sees an ordinary aggregate local. The slot is
+            over-aligned to a full eightbyte so every piece store is
+            naturally aligned even when the aggregate's own alignment is
+            smaller (e.g. a two-INTEGER32 record, align 4, written as one
+            i64). }
+          palloca := EntryAlloca(LLVMTypeForTk(tks[i]), names[i]);
+          LLVMSetAlignment(palloca, 8);
+          cstruct_ty := SysVCoercedStructType(n_pieces, piece_kind, piece_bytes);
+          cptr := LLVMBuildBitCast(builder, palloca, LLVMPointerType(cstruct_ty, 0), MakeCStr(''));
+          FOR eb := 1 TO n_pieces DO
+          BEGIN
+            { param_val already holds the first piece; the rest follow it
+              in consecutive LLVM parameters. }
+            IF eb > 1 THEN
+            BEGIN
+              param_val := LLVMGetParam(fn, llvm_idx);
+              llvm_idx := llvm_idx + 1;
+            END;
+            LLVMBuildStore(builder, param_val, SysVCoercedPiecePtr(cptr, cstruct_ty, eb));
+          END;
+        END;
+      END
       ELSE IF needs_copy[i] THEN
       BEGIN
         { Value-mode aggregate on a plain (non-[C]) routine: param_val is
@@ -6625,6 +8090,7 @@ BEGIN
     END;
 
     CodegenDeclList(GetObj(body_blk, 'decls'));
+    SetupFunctionLabels(GetObj(body_blk, 'body'));
     CodegenStmtArray(GetObj(body_blk, 'body'));
 
     IF is_func THEN
@@ -6701,6 +8167,12 @@ BEGIN
   ELSE IF nt = 'ConstDecl' THEN CodegenConstDecl(decl)
   ELSE IF nt = 'ProcDecl' THEN CodegenRoutineDecl(decl, FALSE)
   ELSE IF nt = 'FuncDecl' THEN CodegenRoutineDecl(decl, TRUE)
+  ELSE IF nt = 'LabelDecl' THEN
+    { No-op: every label's block was already allocated by SetupFunctionLabels
+      from the actual LabelStmt occurrences in the body, independent of this
+      declaration's text -- matches the Python reference's own LabelDecl
+      handling (codegen/decls.py: emits no direct code). }
+    BEGIN END
   ELSE
     AbortWith2('codegen: unhandled declaration kind: ', nt);
 END;
@@ -6738,6 +8210,8 @@ BEGIN
   is_device_root := GetBool(root, 'is_device');
   is_device_compiland := is_device_root;
   is_nvptx_device := FALSE;
+  lowering_spliced_interface := FALSE;
+  defining_implementation := root_nt = 'ImplementationUnit';
   device_triple_raw := NIL;
   emit_ptx_raw := getenv(MakeCStr('PASCAL_EMIT_PTX'));
   emit_ptx := emit_ptx_raw <> NIL;
@@ -6914,6 +8388,20 @@ BEGIN
 
   param_arr := AllocPtrArray(2);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  SetPtrArrayElem(param_arr, 1, LLVMPointerType(i64ty, 0));
+  fread_ptr_fnty := LLVMFunctionType(i32ty, param_arr, 2, 0);
+  fread_ptr_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_ptr'), fread_ptr_fnty);
+
+  param_arr := AllocPtrArray(4);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  SetPtrArrayElem(param_arr, 1, LLVMPointerType(i32ty, 0));
+  SetPtrArrayElem(param_arr, 2, LLVMPointerType(i8ptrty, 0));
+  SetPtrArrayElem(param_arr, 3, i32ty);
+  fread_enum_name_fnty := LLVMFunctionType(i32ty, param_arr, 4, 0);
+  fread_enum_name_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_enum_name'), fread_enum_name_fnty);
+
+  param_arr := AllocPtrArray(2);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
   SetPtrArrayElem(param_arr, 1, LLVMPointerType(dblty, 0));
   fread_real_fnty := LLVMFunctionType(i32ty, param_arr, 2, 0);
   fread_real_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_real'), fread_real_fnty);
@@ -6943,6 +8431,14 @@ BEGIN
   freadln_skip_fnty := LLVMFunctionType(voidty, param_arr, 1, 0);
   freadln_skip_fn := LLVMAddFunction(modl, MakeCStr('pas_freadln_skip'), freadln_skip_fnty);
 
+  param_arr := AllocPtrArray(4);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  SetPtrArrayElem(param_arr, 1, i8ptrty);
+  SetPtrArrayElem(param_arr, 2, i32ty);
+  SetPtrArrayElem(param_arr, 3, LLVMPointerType(i64ty, 0));
+  freadset_fnty := LLVMFunctionType(voidty, param_arr, 4, 0);
+  freadset_fn := LLVMAddFunction(modl, MakeCStr('pas_freadset'), freadset_fnty);
+
   param_arr := AllocPtrArray(1);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(i32ty, 0));
   read_int_fnty := LLVMFunctionType(i32ty, param_arr, 1, 0);
@@ -6952,6 +8448,18 @@ BEGIN
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(i16ty, 0));
   read_word_fnty := LLVMFunctionType(i32ty, param_arr, 1, 0);
   read_word_fn := LLVMAddFunction(modl, MakeCStr('pas_read_word'), read_word_fnty);
+
+  param_arr := AllocPtrArray(1);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(i64ty, 0));
+  read_ptr_fnty := LLVMFunctionType(i32ty, param_arr, 1, 0);
+  read_ptr_fn := LLVMAddFunction(modl, MakeCStr('pas_read_ptr'), read_ptr_fnty);
+
+  param_arr := AllocPtrArray(3);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(i32ty, 0));
+  SetPtrArrayElem(param_arr, 1, LLVMPointerType(i8ptrty, 0));
+  SetPtrArrayElem(param_arr, 2, i32ty);
+  read_enum_name_fnty := LLVMFunctionType(i32ty, param_arr, 3, 0);
+  read_enum_name_fn := LLVMAddFunction(modl, MakeCStr('pas_read_enum_name'), read_enum_name_fnty);
 
   param_arr := AllocPtrArray(1);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(dblty, 0));
@@ -7049,6 +8557,7 @@ BEGIN
   dev_free_fn := LLVMAddFunction(modl, MakeCStr('pas_dev_free'), dev_free_fnty);
 
   byval_kind_id := LLVMGetEnumAttributeKindForName(MakeCStr('byval'), 5);
+  sret_kind_id := LLVMGetEnumAttributeKindForName(MakeCStr('sret'), 4);
   align_kind_id := LLVMGetEnumAttributeKindForName(MakeCStr('align'), 5);
   readonly_kind_id := LLVMGetEnumAttributeKindForName(MakeCStr('readonly'), 8);
   nocapture_kind_id := LLVMGetEnumAttributeKindForName(MakeCStr('nocapture'), 9);
@@ -7150,6 +8659,9 @@ BEGIN
   nconsts := 0;
   cur_func_name := '';
   loop_depth := 0;
+  nlabels := 0;
+  cur_routine_has_labels := FALSE;
+  pending_loop_label := '';
   ntypes := 13; { ids 1..13 are the bare TK_INTEGER..TK_ADRMEM scalars, not
                  `types` table entries -- the first RegisterType call must
                  hand out id 14, not 1. }
@@ -7183,7 +8695,9 @@ BEGIN
       saved_device := is_device_compiland;
       is_device_compiland := is_device_compiland OR
         GetBool(ArrItem(local_ifaces, li), 'is_device');
+      lowering_spliced_interface := TRUE;
       CodegenDeclList(GetObj(ArrItem(local_ifaces, li), 'decls'));
+      lowering_spliced_interface := FALSE;
       is_device_compiland := saved_device;
     END;
   END;
@@ -7199,6 +8713,7 @@ BEGIN
     CodegenProgramParameters(root);
 
     body := GetObj(block, 'body');
+    SetupFunctionLabels(body);
     CodegenStmtArray(body);
 
     EmitLaunchRegistry;
@@ -7240,6 +8755,7 @@ BEGIN
       LLVMPositionBuilderAtEnd(builder, init_bb);
       cur_fn := init_fn;
       cur_func_name := '';
+      SetupFunctionLabels(init_body);
       CodegenStmtArray(init_body);
       IF LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder)) = NIL THEN
         ret_val := LLVMBuildRet(builder, LLVMConstInt(i32ty, 0, 0));
@@ -7263,8 +8779,8 @@ BEGIN
   ok := LLVMVerifyModule(modl, LLVMAbortProcessAction, verify_msg_raw);
   IF ok <> 0 THEN
   BEGIN
-    res_c := puts(MakeCStr('codegen: module verification failed:'));
-    res_c := puts(verify_msg^);
+    EPrint('codegen: module verification failed:');
+    EPrintC(verify_msg^);
     exit(1);
   END;
 
@@ -7286,8 +8802,8 @@ BEGIN
     ok := LLVMGetTargetFromTriple(device_triple_raw, target_out_raw, target_err_out_raw);
     IF ok <> 0 THEN
     BEGIN
-      res_c := puts(MakeCStr('codegen: cannot select NVPTX target:'));
-      res_c := puts(target_err_out^);
+      EPrint('codegen: cannot select NVPTX target:');
+      EPrintC(target_err_out^);
       exit(1);
     END;
     target_ref := target_out^;
@@ -7308,8 +8824,8 @@ BEGIN
     ok := LLVMTargetMachineEmitToMemoryBuffer(target_machine, modl, 0, ptx_err_out_raw, ptx_buffer_out_raw);
     IF ok <> 0 THEN
     BEGIN
-      res_c := puts(MakeCStr('codegen: NVPTX assembly emission failed:'));
-      res_c := puts(ptx_err_out^);
+      EPrint('codegen: NVPTX assembly emission failed:');
+      EPrintC(ptx_err_out^);
       exit(1);
     END;
     ptx_buffer := ptx_buffer_out^;

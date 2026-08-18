@@ -1,0 +1,10 @@
+(*$INCLUDE:'units_graph.alpha.inc'*)
+(*$INCLUDE:'units_graph.gamma.inc'*)
+IMPLEMENTATION OF gamma;
+USES alpha;
+FUNCTION GammaValue: INTEGER;
+BEGIN
+  GammaValue := BaseValue + 2;
+END;
+BEGIN
+END.

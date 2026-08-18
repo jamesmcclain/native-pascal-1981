@@ -1,0 +1,9 @@
+(*$INCLUDE:'unit_exported_var.inc'*)
+IMPLEMENTATION OF unitstate;
+VAR Counter: INTEGER;
+PROCEDURE Increment;
+BEGIN
+  Counter := Counter + 1;
+END;
+BEGIN
+END.

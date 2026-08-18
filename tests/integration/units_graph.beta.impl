@@ -1,0 +1,10 @@
+(*$INCLUDE:'units_graph.alpha.inc'*)
+(*$INCLUDE:'units_graph.beta.inc'*)
+IMPLEMENTATION OF beta;
+USES alpha;
+FUNCTION BetaValue: INTEGER;
+BEGIN
+  BetaValue := BaseValue + 1;
+END;
+BEGIN
+END.
