@@ -23,7 +23,7 @@ FUNCTION cJSON_GetNumberValue(item: ADRMEM): REAL [C]; EXTERN;
 FUNCTION cJSON_IsTrue(item: ADRMEM): CINT [C]; EXTERN;
 FUNCTION getchar: CINT [C]; EXTERN;
 PROCEDURE free(ptr: ADRMEM) [C]; EXTERN;
-FUNCTION puts(str: ADRMEM): CINT [C]; EXTERN;
+PROCEDURE pas_eprint(msg: ADRMEM) [C]; EXTERN;
 PROCEDURE exit(code: CINT) [C]; EXTERN;
 
 FUNCTION MakeCStr(s: Str255): ADRMEM;
@@ -114,6 +114,16 @@ BEGIN
   ParseJson := cJSON_Parse(text);
 END;
 
+PROCEDURE EPrintC(msg: ADRMEM);
+BEGIN
+  pas_eprint(msg);
+END;
+
+PROCEDURE EPrint(msg: Str255);
+BEGIN
+  EPrintC(MakeCStr(msg));
+END;
+
 FUNCTION NodeType(obj: ADRMEM): Str255;
 BEGIN
   IF obj = NIL THEN
@@ -199,7 +209,6 @@ VAR
   input_ch: CINT;
   p_in, p_out, p_in_base, p_out_base: ^CHAR;
   json_root: ADRMEM;
-  res_c: CINT;
 BEGIN
   cap := 32000;
   raw_input := malloc(cap);
@@ -240,7 +249,7 @@ BEGIN
   free(raw_input);
   IF json_root = NIL THEN
   BEGIN
-    res_c := puts(MakeCStr('Error: Failed to parse input AST JSON'));
+    EPrint('Error: Failed to parse input AST JSON');
     exit(1);
   END;
   ReadAllStdin := json_root;

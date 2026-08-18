@@ -7,7 +7,7 @@ INTERFACE;
 UNIT jsonutil (MakeCStr, CStrToStr255, CreateNode, AddField, AddStringField,
                AddIntField, AddRealField, AddBoolField, AddNullField,
                ParseJson, NodeType, GetObj, GetStr, GetInt, GetReal, GetBool,
-               ArrSize, ArrItem, HasKey, ReadAllStdin);
+               ArrSize, ArrItem, HasKey, EPrint, EPrintC, ReadAllStdin);
 
 TYPE
   Str255     = LSTRING(255);
@@ -34,6 +34,8 @@ FUNCTION GetBool(obj: ADRMEM; key: Str255): BOOLEAN;
 FUNCTION ArrSize(arr: ADRMEM): INTEGER32;
 FUNCTION ArrItem(arr: ADRMEM; i: INTEGER32): ADRMEM;
 FUNCTION HasKey(obj: ADRMEM; key: Str255): BOOLEAN;
+PROCEDURE EPrint(msg: Str255);
+PROCEDURE EPrintC(msg: ADRMEM);
 FUNCTION ReadAllStdin: ADRMEM;
 
 END;
