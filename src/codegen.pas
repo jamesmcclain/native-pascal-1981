@@ -691,7 +691,7 @@ PROCEDURE AbortWith(msg: Str255);
 VAR
   res_c: CINT;
 BEGIN
-  res_c := puts(MakeCStr(msg));
+  EPrint(msg);
   exit(1);
 END;
 
@@ -7787,8 +7787,8 @@ BEGIN
   ok := LLVMVerifyModule(modl, LLVMAbortProcessAction, verify_msg_raw);
   IF ok <> 0 THEN
   BEGIN
-    res_c := puts(MakeCStr('codegen: module verification failed:'));
-    res_c := puts(verify_msg^);
+    EPrint('codegen: module verification failed:');
+    EPrintC(verify_msg^);
     exit(1);
   END;
 
@@ -7810,8 +7810,8 @@ BEGIN
     ok := LLVMGetTargetFromTriple(device_triple_raw, target_out_raw, target_err_out_raw);
     IF ok <> 0 THEN
     BEGIN
-      res_c := puts(MakeCStr('codegen: cannot select NVPTX target:'));
-      res_c := puts(target_err_out^);
+      EPrint('codegen: cannot select NVPTX target:');
+      EPrintC(target_err_out^);
       exit(1);
     END;
     target_ref := target_out^;
@@ -7832,8 +7832,8 @@ BEGIN
     ok := LLVMTargetMachineEmitToMemoryBuffer(target_machine, modl, 0, ptx_err_out_raw, ptx_buffer_out_raw);
     IF ok <> 0 THEN
     BEGIN
-      res_c := puts(MakeCStr('codegen: NVPTX assembly emission failed:'));
-      res_c := puts(ptx_err_out^);
+      EPrint('codegen: NVPTX assembly emission failed:');
+      EPrintC(ptx_err_out^);
       exit(1);
     END;
     ptx_buffer := ptx_buffer_out^;

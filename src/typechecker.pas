@@ -1615,9 +1615,9 @@ BEGIN
 
   IF nerrors > 0 THEN
   BEGIN
-    res_c := puts(MakeCStr('Type checking failed:'));
+    EPrint('Type checking failed:');
     FOR i := 1 TO nerrors DO
-      res_c := puts(MakeCStr(errors[i]));
+      EPrint(errors[i]);
     exit(1);
   END;
 

@@ -185,7 +185,7 @@ BEGIN
 
   IF json_root = NIL THEN
   BEGIN
-    res_c := puts(MakeCStr('Error: Failed to parse input token JSON'));
+    EPrint('Error: Failed to parse input token JSON');
     exit(1);
   END;
 
@@ -547,10 +547,10 @@ BEGIN
   END
   ELSE
   BEGIN
-    res_c := puts(MakeCStr('Parser Error: Expected token match failed. Expected:'));
-    res_c := puts(MakeCStr(target_k));
-    res_c := puts(MakeCStr('Got:'));
-    res_c := puts(MakeCStr(ck));
+    EPrint('Parser Error: Expected token match failed. Expected:');
+    EPrint(target_k);
+    EPrint('Got:');
+    EPrint(ck);
     exit(1);
   END;
 END;
@@ -579,7 +579,7 @@ BEGIN
   expr_depth := expr_depth + 1;
   IF expr_depth > MAX_EXPR_DEPTH THEN
   BEGIN
-    res_c := puts(MakeCStr('Parser Error: expression too complex (nesting deeper than 64); try breaking it up with intermediate value assigns'));
+    EPrint('Parser Error: expression too complex (nesting deeper than 64); try breaking it up with intermediate value assigns');
     exit(1);
   END;
 END;
@@ -596,7 +596,7 @@ BEGIN
   stmt_depth := stmt_depth + 1;
   IF stmt_depth > MAX_STMT_DEPTH THEN
   BEGIN
-    res_c := puts(MakeCStr('Parser Error: statements nested too deeply (deeper than 256); try splitting the routine up'));
+    EPrint('Parser Error: statements nested too deeply (deeper than 256); try splitting the routine up');
     exit(1);
   END;
 END;
@@ -921,13 +921,13 @@ BEGIN
     END
     ELSE
     BEGIN
-      res_c := puts(MakeCStr('Parser Error: expected numeric constant'));
+      EPrint('Parser Error: expected numeric constant');
       exit(1);
     END;
   END
   ELSE
   BEGIN
-    res_c := puts(MakeCStr('Parser Error: expected constant'));
+    EPrint('Parser Error: expected constant');
     exit(1);
   END;
 END;
@@ -1131,8 +1131,8 @@ BEGIN
   END
   ELSE
   BEGIN
-    res_c := puts(MakeCStr('Parser Error: Invalid factor expression'));
-    res_c := puts(MakeCStr(CurKind));
+    EPrint('Parser Error: Invalid factor expression');
+    EPrint(CurKind);
     exit(1);
   END;
 END;
@@ -1410,7 +1410,7 @@ BEGIN
   END
   ELSE
   BEGIN
-    res_c := puts(MakeCStr('Parser Error: expected TO or DOWNTO'));
+    EPrint('Parser Error: expected TO or DOWNTO');
     exit(1);
   END;
   AddField(node, 'end', ParseExpression);
@@ -1635,7 +1635,7 @@ BEGIN
     misplaced hint here rather than silently dropping it. }
   IF CurHasUnroll() AND (k <> 'FOR') AND (k <> 'WHILE') AND (k <> 'REPEAT') THEN
   BEGIN
-    res_c := puts(MakeCStr('Parser Error: {$UNROLL n} must immediately precede a FOR, WHILE, or REPEAT statement'));
+    EPrint('Parser Error: {$UNROLL n} must immediately precede a FOR, WHILE, or REPEAT statement');
     exit(1);
   END;
   IF k = 'BEGIN' THEN
@@ -1717,7 +1717,7 @@ BEGIN
     { An empty statement is legal only at a statement boundary.  Returning
       one for arbitrary input leaves the token unconsumed and makes callers
       such as ParseCompoundStmt loop forever on malformed source. }
-    res_c := puts(MakeCStr('Parser Error: expected statement'));
+    EPrint('Parser Error: expected statement');
     exit(1);
     ParseStatement := NIL;
   END;
@@ -1801,7 +1801,7 @@ BEGIN
   END
   ELSE
   BEGIN
-    res_c := puts(MakeCStr('Parser Error: expected set base type'));
+    EPrint('Parser Error: expected set base type');
     exit(1);
   END;
 END;
@@ -2043,7 +2043,7 @@ BEGIN
   END
   ELSE
   BEGIN
-    res_c := puts(MakeCStr('Parser Error: expected type'));
+    EPrint('Parser Error: expected type');
     exit(1);
   END;
 END;
@@ -2110,13 +2110,13 @@ BEGIN
     END
     ELSE
     BEGIN
-      res_c := puts(MakeCStr('Parser Error: expected attribute item'));
+      EPrint('Parser Error: expected attribute item');
       exit(1);
     END;
   END
   ELSE
   BEGIN
-    res_c := puts(MakeCStr('Parser Error: expected attribute item'));
+    EPrint('Parser Error: expected attribute item');
     exit(1);
   END;
 END;
@@ -2713,7 +2713,7 @@ BEGIN
     END
     ELSE
     BEGIN
-      res_c := puts(MakeCStr('Parser Error: expected compilation unit start'));
+      EPrint('Parser Error: expected compilation unit start');
       exit(1);
     END;
 

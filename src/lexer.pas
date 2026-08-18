@@ -703,7 +703,11 @@ BEGIN
   save_col := cur_col;
 
   ok := ReadFileToBuf(fname, new_buf, new_len);
-  IF NOT ok THEN exit(1);
+  IF NOT ok THEN
+  BEGIN
+    EPrint('Lexer Error: unable to read included file');
+    exit(1);
+  END;
 
   src_buf := new_buf;
   src_len := new_len;
@@ -1524,6 +1528,7 @@ BEGIN
         or a stray close-brace): the Python reference raises LexerError here
         rather than silently accepting it. Match that failure mode with a
         nonzero exit rather than emitting a bogus token. }
+      EPrint('Lexer Error: unrecognized character');
       exit(1);
     END;
   END;
