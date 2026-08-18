@@ -100,17 +100,25 @@ run_single_test() {
     "$DRIVER" "$test_src" -o "$test_bin" > "$work_dir/compile.out" 2> "$work_dir/compile.err" || compile_code=$?
   fi
 
-  # Negative compilation test
+  # Negative compilation test. A sibling .err fixture, when present, also
+  # verifies that diagnostics reach stderr rather than the pipeline's stdout.
   if [ "$exp_code" -ne 0 ] && [ ! -f "$expected_out" ]; then
-    if [ "$compile_code" -ne 0 ]; then
-      echo "PASS: $test_src (expected compilation failure)"
-      rm -rf "$work_dir"
-      return 0
-    else
+    if [ "$compile_code" -eq 0 ]; then
       echo "FAIL: $test_src (expected compile failure with code $exp_code, but compiled successfully)" >&2
       rm -rf "$work_dir"
       return 1
     fi
+    if [ -f "$expected_err" ] && ! diff -u "$expected_err" "$work_dir/compile.err" > "$work_dir/diff_err.out"; then
+      echo "FAIL: $test_src (compile stderr mismatch)" >&2
+      if [ "$VERBOSE" -eq 1 ]; then
+        cat "$work_dir/diff_err.out" >&2
+      fi
+      rm -rf "$work_dir"
+      return 1
+    fi
+    echo "PASS: $test_src (expected compilation failure)"
+    rm -rf "$work_dir"
+    return 0
   fi
 
   if [ "$compile_code" -ne 0 ]; then

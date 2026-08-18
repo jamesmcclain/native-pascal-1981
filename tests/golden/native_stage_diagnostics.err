@@ -1,0 +1,6 @@
+Parser Error: Expected token match failed. Expected:
+DOT
+Got:
+EOF
+Error: Failed to parse input AST JSON
+Error: Failed to parse input AST JSON
