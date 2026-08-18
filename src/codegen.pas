@@ -144,8 +144,10 @@ FUNCTION LLVMInt8TypeInContext(ctx: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION LLVMInt1TypeInContext(ctx: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION LLVMInt64TypeInContext(ctx: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION LLVMDoubleTypeInContext(ctx: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION LLVMIntTypeInContext(ctx: ADRMEM; nbits: CINT): ADRMEM [C]; EXTERN;
 FUNCTION LLVMPointerType(elem_ty: ADRMEM; addr_space: CINT): ADRMEM [C]; EXTERN;
 FUNCTION LLVMArrayType(elem_ty: ADRMEM; count: CINT): ADRMEM [C]; EXTERN;
+FUNCTION LLVMVectorType(elem_ty: ADRMEM; count: CINT): ADRMEM [C]; EXTERN;
 FUNCTION LLVMStructTypeInContext(ctx: ADRMEM; elem_tys: ADRMEM; count: CINT; is_packed: CINT): ADRMEM [C]; EXTERN;
 FUNCTION LLVMConstNull(ty: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION LLVMBuildGEP2(b: ADRMEM; ty: ADRMEM; ptr: ADRMEM; indices: ADRMEM; nindices: CINT; name: ADRMEM): ADRMEM [C]; EXTERN;
@@ -192,6 +194,12 @@ PROCEDURE LLVMSetThreadLocal(gvar: ADRMEM; is_tl: CINT) [C]; EXTERN;
     copy of them. }
 FUNCTION LLVMBuildLoad2(b: ADRMEM; ty: ADRMEM; ptr: ADRMEM; name: ADRMEM): ADRMEM [C]; EXTERN;
 PROCEDURE LLVMBuildStore(b: ADRMEM; val: ADRMEM; ptr: ADRMEM) [C]; EXTERN;
+PROCEDURE LLVMSetAlignment(v: ADRMEM; bytes: CINT) [C]; EXTERN;
+  { Applies to an alloca/load/store instruction. Needed by the SysV
+    register-coercion paths, which read and write an aggregate's storage
+    through eightbyte-wide piece types whose own ABI alignment can exceed
+    the aggregate's -- exactly what clang spells as `load i64, ptr %s,
+    align 4` for a two-INTEGER32 struct. }
 FUNCTION LLVMBuildAdd(b: ADRMEM; lhs: ADRMEM; rhs: ADRMEM; name: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION LLVMBuildSub(b: ADRMEM; lhs: ADRMEM; rhs: ADRMEM; name: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION LLVMBuildMul(b: ADRMEM; lhs: ADRMEM; rhs: ADRMEM; name: ADRMEM): ADRMEM [C]; EXTERN;
@@ -1416,6 +1424,267 @@ BEGIN
     AbortWith('codegen: TypeSizeBytes: unsupported type');
     TypeSizeBytes := 0;
   END;
+END;
+
+CONST
+  SYSV_CLASS_MEMORY = 1;
+  SYSV_CLASS_COERCED = 2; { <=16-byte aggregate whose eightbytes all classify
+    INTEGER and/or SSE: passed/returned in one or two registers, each register
+    holding one "piece" (see SYSV_PIECE_* below). }
+
+  { Eightbyte classes, the NONE/INTEGER/SSE/MEMORY lattice merged by
+    SysVMergeClass below. }
+  SYSV_EB_NONE = 0;
+  SYSV_EB_INTEGER = 1;
+  SYSV_EB_SSE = 2;
+  SYSV_EB_MEMORY = 3;
+
+  { Per-eightbyte register piece kinds for a COERCED aggregate. The byte width
+    that goes with a piece is reported separately: it is meaningful only for
+    SYSV_PIECE_INTEGER (an integer of that many bytes); the float/double/vector
+    kinds have their width implied (4/8/8). }
+  SYSV_PIECE_INTEGER = 1;
+  SYSV_PIECE_FLOAT = 2;
+  SYSV_PIECE_DOUBLE = 3;
+  SYSV_PIECE_SSEVEC = 4; { two packed floats, i.e. <2 x float> }
+
+FUNCTION SysVMergeClass(a: INTEGER; b: INTEGER): INTEGER;
+{ The System V AMD64 class-merge lattice. }
+BEGIN
+  IF a = b THEN SysVMergeClass := a
+  ELSE IF a = SYSV_EB_NONE THEN SysVMergeClass := b
+  ELSE IF b = SYSV_EB_NONE THEN SysVMergeClass := a
+  ELSE IF (a = SYSV_EB_MEMORY) OR (b = SYSV_EB_MEMORY) THEN SysVMergeClass := SYSV_EB_MEMORY
+  ELSE IF (a = SYSV_EB_INTEGER) OR (b = SYSV_EB_INTEGER) THEN SysVMergeClass := SYSV_EB_INTEGER
+  ELSE SysVMergeClass := SYSV_EB_SSE;
+END;
+
+FUNCTION IsSysVLeafTid(tid: INTEGER): BOOLEAN;
+{ TRUE for exactly the scalar types TypeSizeBytes/TypeAlignBytes handle
+  without recursing -- the leaves of the walk below. }
+BEGIN
+  IsSysVLeafTid := (tid = TK_INTEGER) OR (tid = TK_WORD) OR (tid = TK_INTEGER8)
+                OR (tid = TK_WORD8) OR (tid = TK_BOOLEAN) OR (tid = TK_CHAR)
+                OR (tid = TK_INTEGER32) OR (tid = TK_WORD32) OR (tid = TK_REAL32)
+                OR (tid = TK_INTEGER64) OR (tid = TK_WORD64) OR (tid = TK_REAL)
+                OR (tid = TK_ADRMEM) OR (TypeKind(tid) = TK_POINTER);
+END;
+
+PROCEDURE WalkTypeLeaves(tid: INTEGER; base_off: INTEGER32; VAR nleaves: INTEGER32;
+                          VAR leaf_off: SysVLeafOffArr; VAR leaf_tid: SysVLeafTidArr);
+{ Append (absolute byte offset, scalar leaf tid) for every scalar leaf of tid
+  to the caller's arrays, recursing through RECORD fields and ARRAY elements.
+  Pascal has no generators, so the flat result is accumulated into fixed-size
+  VAR arrays instead of being yielded lazily. RECORD field offsets come
+  straight from fields[].byte_offset (already the natural-alignment layout);
+  ARRAY elements use the same stride TypeSizeBytes uses for the array's own
+  size, so the two can never disagree. }
+VAR
+  i: INTEGER;
+  stride: INTEGER32;
+  k, n: INTEGER32;
+BEGIN
+  IF IsSysVLeafTid(tid) THEN
+  BEGIN
+    IF nleaves >= MAX_SYSV_LEAVES THEN
+      AbortWith('codegen: WalkTypeLeaves: too many scalar leaves in aggregate');
+    nleaves := nleaves + 1;
+    leaf_off[nleaves] := base_off;
+    leaf_tid[nleaves] := tid;
+  END
+  ELSE IF TypeKind(tid) = TK_ARRAY THEN
+  BEGIN
+    stride := RoundUpBytes(TypeSizeBytes(types[tid].elem_tid), TypeAlignBytes(types[tid].elem_tid));
+    n := types[tid].hi - types[tid].lo + 1;
+    FOR k := 0 TO n - 1 DO
+      WalkTypeLeaves(types[tid].elem_tid, base_off + k * stride, nleaves, leaf_off, leaf_tid);
+  END
+  ELSE IF TypeKind(tid) = TK_RECORD THEN
+  BEGIN
+    FOR i := 1 TO nfields DO
+      IF fields[i].rec_tid = tid THEN
+        WalkTypeLeaves(fields[i].field_tid, base_off + fields[i].byte_offset,
+                       nleaves, leaf_off, leaf_tid);
+  END
+  ELSE
+    AbortWith('codegen: WalkTypeLeaves: unsupported type in C aggregate');
+END;
+
+PROCEDURE ClassifyAggregate(tk: INTEGER; VAR agg_class: INTEGER; VAR n_pieces: INTEGER;
+                             VAR piece_kind: SysVPieceArr; VAR piece_bytes: SysVPieceSzArr);
+{ The full System V AMD64 aggregate classifier. Splits an aggregate of at most
+  16 bytes into one or two eightbytes, merges every scalar leaf's class into
+  the eightbyte it lands in, and reports either MEMORY (passed in memory) or
+  COERCED plus the register piece each eightbyte is passed in.
+
+  Worked examples (byte offsets / eightbyte index / merged class):
+    RECORD a, b: INTEGER32 END -- size 8, leaves 0:i32, 4:i32, both eightbyte
+      0, INTEGER+INTEGER = INTEGER, end = 8 -> COERCED, 1 integer piece of
+      8 bytes.
+    RECORD a: REAL END -- size 8, leaf 0:REAL -> eightbyte 0 SSE with a
+      double leaf -> COERCED, 1 double piece.
+    RECORD a, b: REAL32 END -- size 8, leaves 0:f32, 4:f32 -> eightbyte 0 SSE,
+      no double, sse_end 8 > 4 -> COERCED, 1 two-float-vector piece.
+    ARRAY [1..3] OF INTEGER32 -- size 12, leaves 0, 4, 8; eightbyte 0 gets
+      offsets 0 and 4 (end 8, used 8), eightbyte 1 gets offset 8 (end 12,
+      used 4) -> COERCED, pieces integer/8 bytes and integer/4 bytes.
+    Anything over 16 bytes, or of size 0 -> MEMORY, no pieces. }
+VAR
+  size, used: INTEGER32;
+  nleaves, li, lsz, lend: INTEGER32;
+  leaf_off: SysVLeafOffArr;
+  leaf_tid: SysVLeafTidArr;
+  eb, n_eb, leaf_cls, i: INTEGER;
+  cls: SysVPieceArr;
+  eb_end: SysVPieceSzArr;
+  sse_end: SysVPieceSzArr;
+  sse_dbl: SysVFlagArr;
+BEGIN
+  n_pieces := 0;
+  size := TypeSizeBytes(tk);
+  IF (size = 0) OR (size > 16) THEN
+  BEGIN
+    agg_class := SYSV_CLASS_MEMORY;
+    RETURN;
+  END;
+
+  { (size + 7) DIV 8, spelled out so the eightbyte index stays a plain
+    INTEGER rather than an INTEGER32: size is at most 16 here. }
+  IF size > 8 THEN n_eb := 2 ELSE n_eb := 1;
+  FOR i := 1 TO 2 DO
+  BEGIN
+    cls[i] := SYSV_EB_NONE;
+    eb_end[i] := 0;
+    sse_end[i] := 0;
+    sse_dbl[i] := FALSE;
+  END;
+
+  nleaves := 0;
+  WalkTypeLeaves(tk, 0, nleaves, leaf_off, leaf_tid);
+
+  FOR li := 1 TO nleaves DO
+  BEGIN
+    lsz := TypeSizeBytes(leaf_tid[li]);
+    { Eightbyte index, 1-based here (the reference's 0-based off DIV 8). A
+      leaf can only land past the second eightbyte in a malformed layout, and
+      such a leaf is skipped, exactly as the reference skips eb >= n_eb. }
+    IF leaf_off[li] >= 8 THEN eb := 2 ELSE eb := 1;
+    IF (eb <= n_eb) AND (leaf_off[li] < 16) THEN
+    BEGIN
+      IF (leaf_tid[li] = TK_REAL) OR (leaf_tid[li] = TK_REAL32) THEN
+        leaf_cls := SYSV_EB_SSE
+      ELSE
+        leaf_cls := SYSV_EB_INTEGER;
+      cls[eb] := SysVMergeClass(cls[eb], leaf_cls);
+      { Last occupied byte within this eightbyte, clamped to its end. }
+      lend := leaf_off[li] + lsz;
+      IF lend > eb * 8 THEN lend := eb * 8;
+      IF lend > eb_end[eb] THEN eb_end[eb] := lend;
+      IF leaf_cls = SYSV_EB_SSE THEN
+      BEGIN
+        IF lend > sse_end[eb] THEN sse_end[eb] := lend;
+        IF leaf_tid[li] = TK_REAL THEN sse_dbl[eb] := TRUE;
+      END;
+    END;
+  END;
+
+  FOR eb := 1 TO n_eb DO
+    IF cls[eb] = SYSV_EB_MEMORY THEN
+    BEGIN
+      agg_class := SYSV_CLASS_MEMORY;
+      n_pieces := 0;
+      RETURN;
+    END;
+
+  agg_class := SYSV_CLASS_COERCED;
+  n_pieces := n_eb;
+  FOR eb := 1 TO n_eb DO
+  BEGIN
+    used := eb_end[eb] - (eb - 1) * 8;
+    IF cls[eb] = SYSV_EB_SSE THEN
+    BEGIN
+      IF sse_dbl[eb] THEN
+      BEGIN
+        piece_kind[eb] := SYSV_PIECE_DOUBLE;
+        piece_bytes[eb] := 8;
+      END
+      ELSE IF (sse_end[eb] - (eb - 1) * 8) > 4 THEN
+      BEGIN
+        piece_kind[eb] := SYSV_PIECE_SSEVEC;
+        piece_bytes[eb] := 8;
+      END
+      ELSE
+      BEGIN
+        piece_kind[eb] := SYSV_PIECE_FLOAT;
+        piece_bytes[eb] := 4;
+      END;
+    END
+    ELSE
+    BEGIN
+      { INTEGER, and also the INTEGER+SSE merge result. The reference builds
+        an integer of max(8, used * 8) *bits*, i.e. at least one byte wide;
+        the equivalent byte width is what is reported here. }
+      piece_kind[eb] := SYSV_PIECE_INTEGER;
+      IF used > 1 THEN piece_bytes[eb] := used ELSE piece_bytes[eb] := 1;
+    END;
+  END;
+END;
+
+FUNCTION SysVAggClass(tk: INTEGER): INTEGER;
+{ Memory-vs-register answer only, for callers that do not need the per-piece
+  breakdown ClassifyAggregate reports. Returns plain INTEGER (not INTEGER32),
+  matching TypeKind's own return type -- the native typechecker's
+  CheckExpr/IsNumeric treats INTEGER and INTEGER32 as distinct,
+  non-interchangeable comparison operand kinds, and every caller here
+  compares the result against an INTEGER-typed CONST (SYSV_CLASS_MEMORY /
+  SYSV_CLASS_COERCED). }
+VAR
+  agg_class, n_pieces: INTEGER;
+  piece_kind: SysVPieceArr;
+  piece_bytes: SysVPieceSzArr;
+BEGIN
+  ClassifyAggregate(tk, agg_class, n_pieces, piece_kind, piece_bytes);
+  SysVAggClass := agg_class;
+END;
+
+FUNCTION SysVPieceLLVMType(kind: INTEGER; nbytes: INTEGER32): ADRMEM;
+{ The LLVM type one COERCED eightbyte is passed in, from the piece kind and
+  byte width ClassifyAggregate reports (nbytes is meaningful only for the
+  integer kind; the others have their width implied). }
+BEGIN
+  IF kind = SYSV_PIECE_DOUBLE THEN SysVPieceLLVMType := dblty
+  ELSE IF kind = SYSV_PIECE_FLOAT THEN SysVPieceLLVMType := f32ty
+  ELSE IF kind = SYSV_PIECE_SSEVEC THEN SysVPieceLLVMType := LLVMVectorType(f32ty, 2)
+  ELSE SysVPieceLLVMType := LLVMIntTypeInContext(ctx, nbytes * 8);
+END;
+
+FUNCTION SysVCoercedStructType(n_pieces: INTEGER; VAR piece_kind: SysVPieceArr;
+                                VAR piece_bytes: SysVPieceSzArr): ADRMEM;
+{ The literal struct of an aggregate's register pieces, laid over the
+  aggregate's own storage so each piece can be loaded/stored at its
+  eightbyte offset (the reference's AggInfo.coerced_struct). Always a
+  struct, even for a single piece: a one-element struct GEPs the same way a
+  two-element one does, which keeps the piece loops below single-shaped. }
+VAR
+  elem_tys: ADRMEM;
+  eb: INTEGER;
+BEGIN
+  elem_tys := AllocPtrArray(n_pieces);
+  FOR eb := 1 TO n_pieces DO
+    SetPtrArrayElem(elem_tys, eb - 1, SysVPieceLLVMType(piece_kind[eb], piece_bytes[eb]));
+  SysVCoercedStructType := LLVMStructTypeInContext(ctx, elem_tys, n_pieces, 0);
+END;
+
+FUNCTION SysVCoercedPiecePtr(base: ADRMEM; cstruct_ty: ADRMEM; eb: INTEGER): ADRMEM;
+{ Address of COERCED piece `eb` (1-based) within storage `base` already
+  bitcast to a pointer to cstruct_ty. }
+VAR
+  gep_idx: ADRMEM;
+BEGIN
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, eb - 1, 0));
+  SysVCoercedPiecePtr := LLVMBuildGEP2(builder, cstruct_ty, base, gep_idx, 2, MakeCStr(''));
 END;
 
 FUNCTION ResolveIntLiteral(node: ADRMEM): INTEGER;
@@ -2686,6 +2955,12 @@ VAR
   is_bare_niladic_call: BOOLEAN;
   res: ADRMEM;
   bv_temp, byval_attr, align_attr: ADRMEM;
+  llvm_ai: INTEGER32;
+  pieces_emitted: BOOLEAN;
+  agg_class, n_pieces, eb: INTEGER;
+  piece_kind: SysVPieceArr;
+  piece_bytes: SysVPieceSzArr;
+  cstruct_ty, cptr, piece_ptr, piece_val: ADRMEM;
 BEGIN
   ri := LookupRoutine(name);
   IF ri = 0 THEN
@@ -2698,9 +2973,15 @@ BEGIN
     nargs := ArrSize(args_arr);
     IF nargs <> routines[ri].nparams THEN
       AbortWith2('codegen: argument count mismatch calling: ', name);
-    call_args := AllocPtrArray(nargs);
+    { A COERCED-class [C] aggregate argument expands into one LLVM argument
+      per eightbyte (at most two), so the LLVM argument list can be longer
+      than the Pascal one and its index has to be tracked separately -- see
+      llvm_ai below. Two slots per Pascal argument is the worst case. }
+    call_args := AllocPtrArray(nargs * 2);
+    llvm_ai := 0;
     FOR i := 0 TO nargs - 1 DO
     BEGIN
+      pieces_emitted := FALSE;
       arg_node := ArrItem(args_arr, i);
       IF routines[ri].param_is_var[i + 1] THEN
       BEGIN
@@ -2801,9 +3082,36 @@ BEGIN
           AbortWith2('codegen: a value-aggregate argument must be an lvalue or call, calling: ', name);
           v := NIL;
         END;
-        bv_temp := EntryAlloca(LLVMTypeForTk(routines[ri].param_tk[i + 1]), '');
-        EmitBlockCopy(bv_temp, v, TypeSizeBytes(routines[ri].param_tk[i + 1]));
-        v := bv_temp;
+        ClassifyAggregate(routines[ri].param_tk[i + 1], agg_class, n_pieces, piece_kind, piece_bytes);
+        IF agg_class = SYSV_CLASS_MEMORY THEN
+        BEGIN
+          bv_temp := EntryAlloca(LLVMTypeForTk(routines[ri].param_tk[i + 1]), '');
+          EmitBlockCopy(bv_temp, v, TypeSizeBytes(routines[ri].param_tk[i + 1]));
+          v := bv_temp;
+        END
+        ELSE
+        BEGIN
+          { COERCED class: the aggregate travels in one or two registers
+            instead of memory, so there is nothing for the callee to alias
+            and no private copy to make. View the source storage as the
+            coerced piece struct and pass each eightbyte as its own LLVM
+            argument, mirroring c_abi.py's coerced call-site marshalling.
+            Each load carries the AGGREGATE's alignment, not the piece
+            type's: an eightbyte read out of e.g. a 4-aligned two-INTEGER32
+            record is an i64 load of align 4, exactly as clang emits it. }
+          cstruct_ty := SysVCoercedStructType(n_pieces, piece_kind, piece_bytes);
+          cptr := LLVMBuildBitCast(builder, v, LLVMPointerType(cstruct_ty, 0), MakeCStr(''));
+          FOR eb := 1 TO n_pieces DO
+          BEGIN
+            piece_ptr := SysVCoercedPiecePtr(cptr, cstruct_ty, eb);
+            piece_val := LLVMBuildLoad2(builder, SysVPieceLLVMType(piece_kind[eb], piece_bytes[eb]),
+                                        piece_ptr, MakeCStr(''));
+            LLVMSetAlignment(piece_val, TypeAlignBytes(routines[ri].param_tk[i + 1]));
+            SetPtrArrayElem(call_args, llvm_ai, piece_val);
+            llvm_ai := llvm_ai + 1;
+          END;
+          pieces_emitted := TRUE;
+        END;
       END
       ELSE IF routines[ri].param_needs_copy[i + 1] THEN
       BEGIN
@@ -2872,23 +3180,42 @@ BEGIN
           reuse CoerceForAssign rather than a bare tid-equality check. }
         v := CoerceForAssign(v, last_val_tk, routines[ri].param_tk[i + 1], arg_node, name);
       END;
-      SetPtrArrayElem(call_args, i, v);
+      IF NOT pieces_emitted THEN
+      BEGIN
+        SetPtrArrayElem(call_args, llvm_ai, v);
+        llvm_ai := llvm_ai + 1;
+      END;
     END;
-    res := LLVMBuildCall2(builder, routines[ri].fnty, routines[ri].fn, call_args, nargs, MakeCStr(''));
+    res := LLVMBuildCall2(builder, routines[ri].fnty, routines[ri].fn, call_args, llvm_ai, MakeCStr(''));
     IF routines[ri].is_c THEN
     BEGIN
       { Attach byval(ty)/align at the CALL SITE too, matching clang's own
         lowering (verification step 7) -- the declaration side alone
         (CodegenRoutineDecl) isn't enough; LLVM expects both. }
+      { Walked with its own LLVM argument index (attribute indices are
+        1-based over LLVM parameters, 0 being the return), since a COERCED
+        aggregate argument occupies one slot per eightbyte -- and carries no
+        parameter attribute at all: byval/align describe a pointer to
+        memory, which a register-passed aggregate never has. }
+      llvm_ai := 0;
       FOR i := 0 TO nargs - 1 DO
       BEGIN
         IF routines[ri].param_needs_copy[i + 1] THEN
         BEGIN
-          byval_attr := LLVMCreateTypeAttribute(ctx, byval_kind_id, LLVMTypeForTk(routines[ri].param_tk[i + 1]));
-          align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, TypeAlignBytes(routines[ri].param_tk[i + 1]));
-          LLVMAddCallSiteAttribute(res, i + 1, byval_attr);
-          LLVMAddCallSiteAttribute(res, i + 1, align_attr);
-        END;
+          ClassifyAggregate(routines[ri].param_tk[i + 1], agg_class, n_pieces, piece_kind, piece_bytes);
+          IF agg_class = SYSV_CLASS_MEMORY THEN
+          BEGIN
+            byval_attr := LLVMCreateTypeAttribute(ctx, byval_kind_id, LLVMTypeForTk(routines[ri].param_tk[i + 1]));
+            align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, TypeAlignBytes(routines[ri].param_tk[i + 1]));
+            LLVMAddCallSiteAttribute(res, llvm_ai + 1, byval_attr);
+            LLVMAddCallSiteAttribute(res, llvm_ai + 1, align_attr);
+            llvm_ai := llvm_ai + 1;
+          END
+          ELSE
+            llvm_ai := llvm_ai + n_pieces;
+        END
+        ELSE
+          llvm_ai := llvm_ai + 1;
       END;
     END;
     last_val_tk := routines[ri].ret_tk;
@@ -6722,226 +7049,6 @@ BEGIN
   IsCForeignDecl := has_c AND (has_extern_attr OR (directive = 'EXTERN') OR (directive = 'EXTERNAL'));
 END;
 
-CONST
-  SYSV_CLASS_MEMORY = 1;
-  SYSV_CLASS_COERCED = 2; { <=16-byte aggregate whose eightbytes all classify
-    INTEGER and/or SSE: passed/returned in one or two registers, each register
-    holding one "piece" (see SYSV_PIECE_* below). }
-
-  { Eightbyte classes, the NONE/INTEGER/SSE/MEMORY lattice merged by
-    SysVMergeClass below. }
-  SYSV_EB_NONE = 0;
-  SYSV_EB_INTEGER = 1;
-  SYSV_EB_SSE = 2;
-  SYSV_EB_MEMORY = 3;
-
-  { Per-eightbyte register piece kinds for a COERCED aggregate. The byte width
-    that goes with a piece is reported separately: it is meaningful only for
-    SYSV_PIECE_INTEGER (an integer of that many bytes); the float/double/vector
-    kinds have their width implied (4/8/8). }
-  SYSV_PIECE_INTEGER = 1;
-  SYSV_PIECE_FLOAT = 2;
-  SYSV_PIECE_DOUBLE = 3;
-  SYSV_PIECE_SSEVEC = 4; { two packed floats, i.e. <2 x float> }
-
-FUNCTION SysVMergeClass(a: INTEGER; b: INTEGER): INTEGER;
-{ The System V AMD64 class-merge lattice. }
-BEGIN
-  IF a = b THEN SysVMergeClass := a
-  ELSE IF a = SYSV_EB_NONE THEN SysVMergeClass := b
-  ELSE IF b = SYSV_EB_NONE THEN SysVMergeClass := a
-  ELSE IF (a = SYSV_EB_MEMORY) OR (b = SYSV_EB_MEMORY) THEN SysVMergeClass := SYSV_EB_MEMORY
-  ELSE IF (a = SYSV_EB_INTEGER) OR (b = SYSV_EB_INTEGER) THEN SysVMergeClass := SYSV_EB_INTEGER
-  ELSE SysVMergeClass := SYSV_EB_SSE;
-END;
-
-FUNCTION IsSysVLeafTid(tid: INTEGER): BOOLEAN;
-{ TRUE for exactly the scalar types TypeSizeBytes/TypeAlignBytes handle
-  without recursing -- the leaves of the walk below. }
-BEGIN
-  IsSysVLeafTid := (tid = TK_INTEGER) OR (tid = TK_WORD) OR (tid = TK_INTEGER8)
-                OR (tid = TK_WORD8) OR (tid = TK_BOOLEAN) OR (tid = TK_CHAR)
-                OR (tid = TK_INTEGER32) OR (tid = TK_WORD32) OR (tid = TK_REAL32)
-                OR (tid = TK_INTEGER64) OR (tid = TK_WORD64) OR (tid = TK_REAL)
-                OR (tid = TK_ADRMEM) OR (TypeKind(tid) = TK_POINTER);
-END;
-
-PROCEDURE WalkTypeLeaves(tid: INTEGER; base_off: INTEGER32; VAR nleaves: INTEGER32;
-                          VAR leaf_off: SysVLeafOffArr; VAR leaf_tid: SysVLeafTidArr);
-{ Append (absolute byte offset, scalar leaf tid) for every scalar leaf of tid
-  to the caller's arrays, recursing through RECORD fields and ARRAY elements.
-  Pascal has no generators, so the flat result is accumulated into fixed-size
-  VAR arrays instead of being yielded lazily. RECORD field offsets come
-  straight from fields[].byte_offset (already the natural-alignment layout);
-  ARRAY elements use the same stride TypeSizeBytes uses for the array's own
-  size, so the two can never disagree. }
-VAR
-  i: INTEGER;
-  stride: INTEGER32;
-  k, n: INTEGER32;
-BEGIN
-  IF IsSysVLeafTid(tid) THEN
-  BEGIN
-    IF nleaves >= MAX_SYSV_LEAVES THEN
-      AbortWith('codegen: WalkTypeLeaves: too many scalar leaves in aggregate');
-    nleaves := nleaves + 1;
-    leaf_off[nleaves] := base_off;
-    leaf_tid[nleaves] := tid;
-  END
-  ELSE IF TypeKind(tid) = TK_ARRAY THEN
-  BEGIN
-    stride := RoundUpBytes(TypeSizeBytes(types[tid].elem_tid), TypeAlignBytes(types[tid].elem_tid));
-    n := types[tid].hi - types[tid].lo + 1;
-    FOR k := 0 TO n - 1 DO
-      WalkTypeLeaves(types[tid].elem_tid, base_off + k * stride, nleaves, leaf_off, leaf_tid);
-  END
-  ELSE IF TypeKind(tid) = TK_RECORD THEN
-  BEGIN
-    FOR i := 1 TO nfields DO
-      IF fields[i].rec_tid = tid THEN
-        WalkTypeLeaves(fields[i].field_tid, base_off + fields[i].byte_offset,
-                       nleaves, leaf_off, leaf_tid);
-  END
-  ELSE
-    AbortWith('codegen: WalkTypeLeaves: unsupported type in C aggregate');
-END;
-
-PROCEDURE ClassifyAggregate(tk: INTEGER; VAR agg_class: INTEGER; VAR n_pieces: INTEGER;
-                             VAR piece_kind: SysVPieceArr; VAR piece_bytes: SysVPieceSzArr);
-{ The full System V AMD64 aggregate classifier. Splits an aggregate of at most
-  16 bytes into one or two eightbytes, merges every scalar leaf's class into
-  the eightbyte it lands in, and reports either MEMORY (passed in memory) or
-  COERCED plus the register piece each eightbyte is passed in.
-
-  Worked examples (byte offsets / eightbyte index / merged class):
-    RECORD a, b: INTEGER32 END -- size 8, leaves 0:i32, 4:i32, both eightbyte
-      0, INTEGER+INTEGER = INTEGER, end = 8 -> COERCED, 1 integer piece of
-      8 bytes.
-    RECORD a: REAL END -- size 8, leaf 0:REAL -> eightbyte 0 SSE with a
-      double leaf -> COERCED, 1 double piece.
-    RECORD a, b: REAL32 END -- size 8, leaves 0:f32, 4:f32 -> eightbyte 0 SSE,
-      no double, sse_end 8 > 4 -> COERCED, 1 two-float-vector piece.
-    ARRAY [1..3] OF INTEGER32 -- size 12, leaves 0, 4, 8; eightbyte 0 gets
-      offsets 0 and 4 (end 8, used 8), eightbyte 1 gets offset 8 (end 12,
-      used 4) -> COERCED, pieces integer/8 bytes and integer/4 bytes.
-    Anything over 16 bytes, or of size 0 -> MEMORY, no pieces. }
-VAR
-  size, used: INTEGER32;
-  nleaves, li, lsz, lend: INTEGER32;
-  leaf_off: SysVLeafOffArr;
-  leaf_tid: SysVLeafTidArr;
-  eb, n_eb, leaf_cls, i: INTEGER;
-  cls: SysVPieceArr;
-  eb_end: SysVPieceSzArr;
-  sse_end: SysVPieceSzArr;
-  sse_dbl: SysVFlagArr;
-BEGIN
-  n_pieces := 0;
-  size := TypeSizeBytes(tk);
-  IF (size = 0) OR (size > 16) THEN
-  BEGIN
-    agg_class := SYSV_CLASS_MEMORY;
-    RETURN;
-  END;
-
-  { (size + 7) DIV 8, spelled out so the eightbyte index stays a plain
-    INTEGER rather than an INTEGER32: size is at most 16 here. }
-  IF size > 8 THEN n_eb := 2 ELSE n_eb := 1;
-  FOR i := 1 TO 2 DO
-  BEGIN
-    cls[i] := SYSV_EB_NONE;
-    eb_end[i] := 0;
-    sse_end[i] := 0;
-    sse_dbl[i] := FALSE;
-  END;
-
-  nleaves := 0;
-  WalkTypeLeaves(tk, 0, nleaves, leaf_off, leaf_tid);
-
-  FOR li := 1 TO nleaves DO
-  BEGIN
-    lsz := TypeSizeBytes(leaf_tid[li]);
-    { Eightbyte index, 1-based here (the reference's 0-based off DIV 8). A
-      leaf can only land past the second eightbyte in a malformed layout, and
-      such a leaf is skipped, exactly as the reference skips eb >= n_eb. }
-    IF leaf_off[li] >= 8 THEN eb := 2 ELSE eb := 1;
-    IF (eb <= n_eb) AND (leaf_off[li] < 16) THEN
-    BEGIN
-      IF (leaf_tid[li] = TK_REAL) OR (leaf_tid[li] = TK_REAL32) THEN
-        leaf_cls := SYSV_EB_SSE
-      ELSE
-        leaf_cls := SYSV_EB_INTEGER;
-      cls[eb] := SysVMergeClass(cls[eb], leaf_cls);
-      { Last occupied byte within this eightbyte, clamped to its end. }
-      lend := leaf_off[li] + lsz;
-      IF lend > eb * 8 THEN lend := eb * 8;
-      IF lend > eb_end[eb] THEN eb_end[eb] := lend;
-      IF leaf_cls = SYSV_EB_SSE THEN
-      BEGIN
-        IF lend > sse_end[eb] THEN sse_end[eb] := lend;
-        IF leaf_tid[li] = TK_REAL THEN sse_dbl[eb] := TRUE;
-      END;
-    END;
-  END;
-
-  FOR eb := 1 TO n_eb DO
-    IF cls[eb] = SYSV_EB_MEMORY THEN
-    BEGIN
-      agg_class := SYSV_CLASS_MEMORY;
-      n_pieces := 0;
-      RETURN;
-    END;
-
-  agg_class := SYSV_CLASS_COERCED;
-  n_pieces := n_eb;
-  FOR eb := 1 TO n_eb DO
-  BEGIN
-    used := eb_end[eb] - (eb - 1) * 8;
-    IF cls[eb] = SYSV_EB_SSE THEN
-    BEGIN
-      IF sse_dbl[eb] THEN
-      BEGIN
-        piece_kind[eb] := SYSV_PIECE_DOUBLE;
-        piece_bytes[eb] := 8;
-      END
-      ELSE IF (sse_end[eb] - (eb - 1) * 8) > 4 THEN
-      BEGIN
-        piece_kind[eb] := SYSV_PIECE_SSEVEC;
-        piece_bytes[eb] := 8;
-      END
-      ELSE
-      BEGIN
-        piece_kind[eb] := SYSV_PIECE_FLOAT;
-        piece_bytes[eb] := 4;
-      END;
-    END
-    ELSE
-    BEGIN
-      { INTEGER, and also the INTEGER+SSE merge result. The reference builds
-        an integer of max(8, used * 8) *bits*, i.e. at least one byte wide;
-        the equivalent byte width is what is reported here. }
-      piece_kind[eb] := SYSV_PIECE_INTEGER;
-      IF used > 1 THEN piece_bytes[eb] := used ELSE piece_bytes[eb] := 1;
-    END;
-  END;
-END;
-
-FUNCTION SysVAggClass(tk: INTEGER): INTEGER;
-{ Memory-vs-register answer only, for callers that do not need the per-piece
-  breakdown ClassifyAggregate reports. Returns plain INTEGER (not INTEGER32),
-  matching TypeKind's own return type -- the native typechecker's
-  CheckExpr/IsNumeric treats INTEGER and INTEGER32 as distinct,
-  non-interchangeable comparison operand kinds, and every caller here
-  compares the result against an INTEGER-typed CONST (SYSV_CLASS_MEMORY /
-  SYSV_CLASS_COERCED). }
-VAR
-  agg_class, n_pieces: INTEGER;
-  piece_kind: SysVPieceArr;
-  piece_bytes: SysVPieceSzArr;
-BEGIN
-  ClassifyAggregate(tk, agg_class, n_pieces, piece_kind, piece_bytes);
-  SysVAggClass := agg_class;
-END;
 
 PROCEDURE FlattenParams(params_arr: ADRMEM; VAR n: INTEGER32; VAR names: ParamNameArr;
                          VAR tks: ParamTkArr; VAR isvar: ParamVarArr; VAR needs_copy: ParamVarArr);
@@ -7373,6 +7480,11 @@ VAR
   has_block_body: BOOLEAN;
   is_c, is_exported_entry: BOOLEAN;
   agg_llvm_ty, byval_attr, align_attr: ADRMEM;
+  llvm_idx, n_llvm: INTEGER32;
+  agg_class, n_pieces, eb: INTEGER;
+  piece_kind: SysVPieceArr;
+  piece_bytes: SysVPieceSzArr;
+  cstruct_ty, cptr: ADRMEM;
 BEGIN
   name := GetStr(decl, 'name');
   body_blk := GetObj(decl, 'body');
@@ -7421,26 +7533,44 @@ BEGIN
     params_arr := GetObj(decl, 'params');
     FlattenParams(params_arr, n, names, tks, isvar, needs_copy);
 
-    param_llvm_types := AllocPtrArray(n);
+    { A COERCED-class [C] aggregate parameter is passed as one LLVM
+      parameter per eightbyte (at most two), so the LLVM parameter list can
+      be longer than the Pascal one -- llvm_idx below is the running LLVM
+      parameter index, and n_llvm the final count. Two slots per Pascal
+      parameter is the worst case. }
+    param_llvm_types := AllocPtrArray(n * 2);
+    llvm_idx := 0;
     FOR i := 1 TO n DO
     BEGIN
       IF isvar[i] THEN
-        SetPtrArrayElem(param_llvm_types, i - 1, LLVMPointerType(LLVMTypeForTk(tks[i]), 0))
+      BEGIN
+        SetPtrArrayElem(param_llvm_types, llvm_idx, LLVMPointerType(LLVMTypeForTk(tks[i]), 0));
+        llvm_idx := llvm_idx + 1;
+      END
       ELSE IF needs_copy[i] AND is_c THEN
       BEGIN
-        { [C] FOREIGN routine, value-mode aggregate param: SysV MEMORY-class
-          byval, matching c_abi.py -- a pointer to a private per-call copy,
-          with the byval(ty)/align attributes attached below once `fn`
-          exists. Only MEMORY class (>16 bytes, or 0) is implemented; a
-          COERCED-class aggregate (<=16 bytes, all eightbytes INTEGER/SSE)
-          instead needs the eightbyte register coercion this subset doesn't
-          implement yet, so it aborts loudly (SysVAggClass). }
-        IF SysVAggClass(tks[i]) = SYSV_CLASS_MEMORY THEN
-          SetPtrArrayElem(param_llvm_types, i - 1, LLVMPointerType(LLVMTypeForTk(tks[i]), 0))
+        { [C] FOREIGN routine, value-mode aggregate param, matching
+          c_abi.py: MEMORY class (>16 bytes, or 0) is a pointer to a
+          private per-call copy, with the byval(ty)/align attributes
+          attached below once `fn` exists; COERCED class (<=16 bytes, all
+          eightbytes INTEGER/SSE) is flattened into its register pieces
+          instead, and gets no parameter attribute at all. }
+        ClassifyAggregate(tks[i], agg_class, n_pieces, piece_kind, piece_bytes);
+        IF agg_class = SYSV_CLASS_MEMORY THEN
+        BEGIN
+          SetPtrArrayElem(param_llvm_types, llvm_idx, LLVMPointerType(LLVMTypeForTk(tks[i]), 0));
+          llvm_idx := llvm_idx + 1;
+        END
         ELSE
-          AbortWith2('codegen: [C] FOREIGN COERCED aggregate parameter needs SysV register-class coercion, not yet implemented, for: ', name);
+          FOR eb := 1 TO n_pieces DO
+          BEGIN
+            SetPtrArrayElem(param_llvm_types, llvm_idx,
+                            SysVPieceLLVMType(piece_kind[eb], piece_bytes[eb]));
+            llvm_idx := llvm_idx + 1;
+          END;
       END
       ELSE
+      BEGIN
         { needs_copy[i] (value-mode ARRAY/RECORD/LSTRING/STRING aggregate)
           on a plain (non-[C]) routine is passed as a first-class LLVM
           aggregate value, matching the Python reference
@@ -7448,8 +7578,11 @@ BEGIN
           itself becomes the callee's private copy in the prologue below,
           so Pascal by-value semantics still hold without any
           caller-visible aliasing. }
-        SetPtrArrayElem(param_llvm_types, i - 1, LLVMTypeForTk(tks[i]));
+        SetPtrArrayElem(param_llvm_types, llvm_idx, LLVMTypeForTk(tks[i]));
+        llvm_idx := llvm_idx + 1;
+      END;
     END;
+    n_llvm := llvm_idx;
 
     IF is_func THEN
     BEGIN
@@ -7492,7 +7625,7 @@ BEGIN
     ELSE IF name = 'printf' THEN BEGIN fn := printf_fn; fnty := printf_fnty; END
     ELSE
     BEGIN
-      fnty := LLVMFunctionType(ret_llvm_ty, param_llvm_types, n, 0);
+      fnty := LLVMFunctionType(ret_llvm_ty, param_llvm_types, n_llvm, 0);
       fn := LLVMAddFunction(modl, MakeCStr(name), fnty);
     END;
 
@@ -7535,17 +7668,32 @@ BEGIN
         function definition/declaration and each call site; clang emits
         both, and only doing one leaves the IR inconsistent with what a
         real C compiler produces for the same signature (verification step
-        7). Attribute index is 1-based over parameters (0 is the return). }
+        7). Attribute index is 1-based over LLVM parameters (0 is the
+        return), which is why it is walked with llvm_idx rather than the
+        Pascal parameter index: a COERCED aggregate parameter occupies one
+        slot per eightbyte and carries no attribute of its own -- byval and
+        align describe a pointer to memory, which a register-passed
+        aggregate never has. }
+      llvm_idx := 0;
       FOR i := 1 TO n DO
       BEGIN
         IF needs_copy[i] THEN
         BEGIN
-          agg_llvm_ty := LLVMTypeForTk(tks[i]);
-          byval_attr := LLVMCreateTypeAttribute(ctx, byval_kind_id, agg_llvm_ty);
-          align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, TypeAlignBytes(tks[i]));
-          LLVMAddAttributeAtIndex(fn, i, byval_attr);
-          LLVMAddAttributeAtIndex(fn, i, align_attr);
-        END;
+          ClassifyAggregate(tks[i], agg_class, n_pieces, piece_kind, piece_bytes);
+          IF agg_class = SYSV_CLASS_MEMORY THEN
+          BEGIN
+            agg_llvm_ty := LLVMTypeForTk(tks[i]);
+            byval_attr := LLVMCreateTypeAttribute(ctx, byval_kind_id, agg_llvm_ty);
+            align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, TypeAlignBytes(tks[i]));
+            LLVMAddAttributeAtIndex(fn, llvm_idx + 1, byval_attr);
+            LLVMAddAttributeAtIndex(fn, llvm_idx + 1, align_attr);
+            llvm_idx := llvm_idx + 1;
+          END
+          ELSE
+            llvm_idx := llvm_idx + n_pieces;
+        END
+        ELSE
+          llvm_idx := llvm_idx + 1;
       END;
     END;
   END;
@@ -7591,17 +7739,54 @@ BEGIN
     ELSE
       cur_func_name := '';
 
+    { llvm_idx is the running LLVM parameter index: it only tracks the
+      Pascal parameter index while no COERCED [C] aggregate parameter has
+      been seen, since such a parameter arrives as one LLVM parameter per
+      eightbyte (at most two). }
+    llvm_idx := 0;
     FOR i := 1 TO n DO
     BEGIN
-      param_val := LLVMGetParam(fn, i - 1);
+      param_val := LLVMGetParam(fn, llvm_idx);
+      llvm_idx := llvm_idx + 1;
       IF isvar[i] THEN
         palloca := param_val { the incoming pointer already IS the storage }
       ELSE IF needs_copy[i] AND is_c THEN
-        { SysV byval: the incoming pointer already refers to a private
-          per-call copy the caller made (see the byval caller-side temp in
-          CodegenCallCommon) -- use it directly as storage, exactly like
-          isvar above, no further copy needed. }
-        palloca := param_val
+      BEGIN
+        ClassifyAggregate(tks[i], agg_class, n_pieces, piece_kind, piece_bytes);
+        IF agg_class = SYSV_CLASS_MEMORY THEN
+          { SysV byval: the incoming pointer already refers to a private
+            per-call copy the caller made (see the byval caller-side temp in
+            CodegenCallCommon) -- use it directly as storage, exactly like
+            isvar above, no further copy needed. }
+          palloca := param_val
+        ELSE
+        BEGIN
+          { COERCED class: the aggregate arrived in one or two registers.
+            Reverse the caller's flattening -- give it real storage of the
+            aggregate's own type and write each incoming piece back through
+            the coerced piece struct laid over that storage, so the rest of
+            codegen sees an ordinary aggregate local. The slot is
+            over-aligned to a full eightbyte so every piece store is
+            naturally aligned even when the aggregate's own alignment is
+            smaller (e.g. a two-INTEGER32 record, align 4, written as one
+            i64). }
+          palloca := EntryAlloca(LLVMTypeForTk(tks[i]), names[i]);
+          LLVMSetAlignment(palloca, 8);
+          cstruct_ty := SysVCoercedStructType(n_pieces, piece_kind, piece_bytes);
+          cptr := LLVMBuildBitCast(builder, palloca, LLVMPointerType(cstruct_ty, 0), MakeCStr(''));
+          FOR eb := 1 TO n_pieces DO
+          BEGIN
+            { param_val already holds the first piece; the rest follow it
+              in consecutive LLVM parameters. }
+            IF eb > 1 THEN
+            BEGIN
+              param_val := LLVMGetParam(fn, llvm_idx);
+              llvm_idx := llvm_idx + 1;
+            END;
+            LLVMBuildStore(builder, param_val, SysVCoercedPiecePtr(cptr, cstruct_ty, eb));
+          END;
+        END;
+      END
       ELSE IF needs_copy[i] THEN
       BEGIN
         { Value-mode aggregate on a plain (non-[C]) routine: param_val is
