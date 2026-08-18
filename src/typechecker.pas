@@ -168,6 +168,12 @@ VAR
   nfields: INTEGER32;
   next_record_id: INTEGER;
 
+  last_designator_aux, last_designator_aux2: INTEGER; { side channel set by
+    CheckDesignator on every call, mirroring codegen.pas's last_val_tk
+    convention -- lets WithStmt recover the resolved record's id (aux) to
+    scan `fields[]` for it, without changing CheckDesignator's signature or
+    any existing call site. }
+
   errors: ARRAY [1..MAX_ERRORS] OF Str255;
   nerrors: INTEGER32;
 
@@ -592,6 +598,8 @@ BEGIN
       END;
     END;
   END;
+  last_designator_aux := aux;
+  last_designator_aux2 := aux2;
   CheckDesignator := tk;
 END;
 
@@ -1025,6 +1033,9 @@ VAR
   si: INTEGER32;
   nargs, i, start_arg: INTEGER32;
   pname: Str255;
+  with_targets, with_target: ADRMEM;
+  n_with_targets, wi, fi, pushed: INTEGER32;
+  with_tk, rec_id: INTEGER;
 BEGIN
   IF node = NIL THEN
     nt := ''
@@ -1293,7 +1304,40 @@ BEGIN
     CheckStmt(GetObj(node, 'stmt'))
   ELSE IF nt = 'GotoStmt' THEN
     { No-op: see the LabelStmt case's comment above. }
-    BEGIN END;
+    BEGIN END
+  ELSE IF nt = 'WithStmt' THEN
+  BEGIN
+    { WITH t1, t2, ... DO body -- equivalent to WITH t1 DO WITH t2 DO ...
+      DO body (djvu.txt:10194-10198): push one scope per target left to
+      right, each target's fields becoming bare identifiers visible in the
+      inner scope, so a later target's field of the same name shadows an
+      earlier one -- LookupSymbol's backward scan gives this for free. Only
+      a RECORD-typed target is legal; a bare pointer-to-record is rejected
+      (must be explicitly DEREF'd first), matching the reference and the
+      manual. }
+    with_targets := GetObj(node, 'targets');
+    n_with_targets := cJSON_GetArraySize(with_targets);
+    pushed := 0;
+    FOR wi := 0 TO n_with_targets - 1 DO
+    BEGIN
+      with_target := cJSON_GetArrayItem(with_targets, wi);
+      with_tk := CheckDesignator(with_target);
+      IF with_tk = TK_RECORD THEN
+      BEGIN
+        rec_id := last_designator_aux;
+        PushScope;
+        pushed := pushed + 1;
+        FOR fi := 1 TO nfields DO
+          IF fields[fi].record_id = rec_id THEN
+            si := DefineSymbol(fields[fi].fname, 'VAR', fields[fi].ftk, fields[fi].faux, fields[fi].faux2, 0);
+      END
+      ELSE IF with_tk <> TK_UNKNOWN THEN
+        AddError('WITH target must be a record');
+    END;
+    CheckCompoundOrStmt(GetObj(node, 'body'));
+    FOR wi := 1 TO pushed DO
+      PopScope;
+  END;
 END;
 
 { ============================== declarations ============================ }
