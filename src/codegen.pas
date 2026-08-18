@@ -5975,6 +5975,53 @@ BEGIN
   CodegenStmt(inner);
 END;
 
+PROCEDURE CodegenWithStmt(stmt: ADRMEM);
+{ WITH t1, t2, ... DO body: one PushScope per target left to right, each
+  target's fields registered directly as symbols whose llvm_val IS the
+  field's own GEP'd storage address (not a copy) -- so reads/writes inside
+  body affect the underlying record in place, matching the reference's
+  "bind field name directly to GEP pointer" (codegen/stmts.py's
+  codegen_with_stmt). A later target's field of the same name shadows an
+  earlier one for free, since LookupSym's backward scan finds the most
+  recently appended symbol first. }
+VAR
+  targets, target: ADRMEM;
+  ntargets, ti, fi: INTEGER32;
+  base_ptr, field_ptr, gep_idx: ADRMEM;
+  cur_tid: INTEGER;
+  pushed: INTEGER32;
+BEGIN
+  targets := GetObj(stmt, 'targets');
+  ntargets := ArrSize(targets);
+  pushed := 0;
+  FOR ti := 0 TO ntargets - 1 DO
+  BEGIN
+    target := ArrItem(targets, ti);
+    base_ptr := ComputeDesignatorAddress(target);
+    cur_tid := last_val_tk;
+    IF TypeKind(cur_tid) <> TK_RECORD THEN
+      AbortWith('codegen: WITH target must be a record');
+    PushScope;
+    pushed := pushed + 1;
+    FOR fi := 1 TO nfields DO
+      IF fields[fi].rec_tid = cur_tid THEN
+      BEGIN
+        gep_idx := AllocPtrArray(2);
+        SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+        SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, fields[fi].field_index, 0));
+        field_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(cur_tid), base_ptr, gep_idx, 2, MakeCStr(''));
+        IF nsymbols >= MAX_SYMBOLS THEN AbortWith('codegen: too many symbols');
+        nsymbols := nsymbols + 1;
+        symbols[nsymbols].name := fields[fi].fname;
+        symbols[nsymbols].tk := fields[fi].field_tid;
+        symbols[nsymbols].llvm_val := field_ptr;
+      END;
+  END;
+  CodegenStmt(GetObj(stmt, 'body'));
+  FOR ti := 1 TO pushed DO
+    PopScope;
+END;
+
 PROCEDURE CodegenStmt(stmt: ADRMEM);
 VAR
   nt, msg: Str255;
@@ -5994,6 +6041,7 @@ BEGIN
   ELSE IF nt = 'CycleStmt' THEN CodegenCycleStmt(stmt)
   ELSE IF nt = 'LabelStmt' THEN CodegenLabelStmt(stmt)
   ELSE IF nt = 'GotoStmt' THEN CodegenGotoStmt(stmt)
+  ELSE IF nt = 'WithStmt' THEN CodegenWithStmt(stmt)
   ELSE IF nt = 'EmptyStmt' THEN BEGIN END
   ELSE
   BEGIN
