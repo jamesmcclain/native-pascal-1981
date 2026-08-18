@@ -110,6 +110,12 @@ CONST
     TK_CHAR, TK_WORD, or TK_BOOLEAN), mirroring codegen.pas's own SET
     representation, minus the exact lo/hi bounds this coarse v1 model
     doesn't need to track for element/IN/set-operator checking. }
+  TK_ENUM     = 13; { a user-declared enumerated type. This coarse model
+    doesn't distinguish one enum type from another (or from its members'
+    constant symbols): every enum and enum constant carries TK_ENUM, the
+    same deliberate looseness the rest of this file applies where a v1
+    shape check is the documented scope. codegen.pas is the enforcement
+    backstop, exactly as for the other coarse distinctions here. }
 
   MAX_SYMBOLS = 2000;
   MAX_TYPES   = 500;
@@ -284,7 +290,7 @@ END;
 
 FUNCTION IsOrdinal(tk: INTEGER): BOOLEAN;
 BEGIN
-  IsOrdinal := (tk = TK_INTEGER) OR (tk = TK_WORD) OR (tk = TK_CHAR) OR (tk = TK_BOOLEAN);
+  IsOrdinal := (tk = TK_INTEGER) OR (tk = TK_WORD) OR (tk = TK_CHAR) OR (tk = TK_BOOLEAN) OR (tk = TK_ENUM);
 END;
 
 FUNCTION IsNumeric(tk: INTEGER): BOOLEAN;
@@ -470,6 +476,8 @@ BEGIN
       END;
     END;
   END
+  ELSE IF nt = 'EnumType' THEN
+    tk := TK_ENUM
   ELSE IF nt = 'SetType' THEN
   BEGIN
     base_node := GetObj(node, 'base');
@@ -737,8 +745,8 @@ BEGIN
     END
     ELSE BEGIN
       atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
-      IF (atk <> TK_INTEGER) AND (atk <> TK_WORD) AND (atk <> TK_CHAR) AND (atk <> TK_UNKNOWN) THEN
-        AddError('SUCC/PRED argument must be INTEGER, WORD, or CHAR');
+      IF (atk <> TK_INTEGER) AND (atk <> TK_WORD) AND (atk <> TK_CHAR) AND (atk <> TK_ENUM) AND (atk <> TK_UNKNOWN) THEN
+        AddError('SUCC/PRED argument must be INTEGER, WORD, CHAR, or an enumerated type');
       CheckFuncCall := atk;
     END;
     RETURN;
@@ -1432,6 +1440,20 @@ BEGIN
       types[ntypes].aux := aux;
       types[ntypes].aux2 := aux2;
       types[ntypes].idx_tk := idx_tk;
+    END;
+    IF NodeType(type_expr) = 'EnumType' THEN
+    BEGIN
+      { An enum's member identifiers are constants of the enum type, in
+        declaration order -- registered here so a member resolves as a
+        value wherever an identifier is legal (the typechecker half of
+        what codegen.pas's const_tbl registration does for folding). }
+      names_arr := GetObj(type_expr, 'values');
+      n := cJSON_GetArraySize(names_arr);
+      FOR i := 0 TO n - 1 DO
+      BEGIN
+        nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, i)));
+        si := DefineSymbol(nm, 'CONST', TK_ENUM, 0, 0, 0);
+      END;
     END;
   END
   ELSE IF (nt = 'ProcDecl') OR (nt = 'FuncDecl') THEN

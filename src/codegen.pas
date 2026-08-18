@@ -150,6 +150,8 @@ FUNCTION LLVMStructTypeInContext(ctx: ADRMEM; elem_tys: ADRMEM; count: CINT; is_
 FUNCTION LLVMConstNull(ty: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION LLVMBuildGEP2(b: ADRMEM; ty: ADRMEM; ptr: ADRMEM; indices: ADRMEM; nindices: CINT; name: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION LLVMBuildBitCast(b: ADRMEM; val: ADRMEM; destty: ADRMEM; name: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION LLVMBuildPtrToInt(b: ADRMEM; val: ADRMEM; destty: ADRMEM; name: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION LLVMBuildIntToPtr(b: ADRMEM; val: ADRMEM; destty: ADRMEM; name: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION LLVMBuildZExt(b: ADRMEM; val: ADRMEM; destty: ADRMEM; name: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION LLVMBuildTrunc(b: ADRMEM; val: ADRMEM; destty: ADRMEM; name: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION LLVMFunctionType(ret_ty: ADRMEM; params: ADRMEM; pcount: CINT; vararg: CINT): ADRMEM [C]; EXTERN;
@@ -329,6 +331,12 @@ CONST
     The variable's own storage (llvm_ty) is always a bare i8* pointing at a
     separately entry-alloca'd FCB + inline buffer, matching the reference's
     _init_file_storage: the handle the rest of codegen sees is opaque. }
+  TK_ENUM    = 21; { a user-declared enumerated type -- always a types[]
+    entry (tid >= 14), never a bare tid: i32 storage holding the 0-based
+    ordinal, member identifiers registered in const_tbl (see the
+    ResolveTypeExpr EnumType case). The manual reads enumerated values as
+    numbers and writes them that way too by default (13610-13618), so an
+    enum participates in I/O exactly like an INTEGER32. }
 
   MAX_SYMBOLS = 500;
   MAX_SCOPES = 64;
@@ -523,6 +531,10 @@ VAR
     the file-targeted counterpart of printf_fn above, same varargs shape. }
   fread_int_fnty, fread_int_fn: ADRMEM;
   fread_word_fnty, fread_word_fn: ADRMEM;
+  fread_ptr_fnty, fread_ptr_fn: ADRMEM; { pointer-as-number READ, the manual's
+    implementation-defined round-trip format (13620-13623). }
+  fread_enum_name_fnty, fread_enum_name_fn: ADRMEM; { BOOLEAN-by-name-or-number
+    READ from a file (manual 13610-13618). }
   fread_real_fnty, fread_real_fn: ADRMEM;
   fread_char_fnty, fread_char_fn: ADRMEM;
   fread_lstring_fnty, fread_lstring_fn: ADRMEM;
@@ -532,6 +544,8 @@ VAR
   read_int_fnty, read_int_fn: ADRMEM; { stdin counterparts (readq.c), used by
     a bare READ/READLN with no leading file argument. }
   read_word_fnty, read_word_fn: ADRMEM;
+  read_ptr_fnty, read_ptr_fn: ADRMEM; { stdin counterparts of the two above. }
+  read_enum_name_fnty, read_enum_name_fn: ADRMEM;
   read_real_fnty, read_real_fn: ADRMEM;
   read_char_fnty, read_char_fn: ADRMEM;
   read_lstring_fnty, read_lstring_fn: ADRMEM;
@@ -1188,7 +1202,10 @@ FUNCTION IsWideIntTk(tk: INTEGER): BOOLEAN;
   threading (typecheck/exprs.py). }
 BEGIN
   IsWideIntTk := (tk = TK_WORD) OR (tk = TK_INTEGER8) OR (tk = TK_WORD8) OR
-    (tk = TK_INTEGER32) OR (tk = TK_WORD32) OR (tk = TK_INTEGER64) OR (tk = TK_WORD64);
+    (tk = TK_INTEGER32) OR (tk = TK_WORD32) OR (tk = TK_INTEGER64) OR (tk = TK_WORD64)
+    OR (TypeKind(tk) = TK_ENUM); { an enum member constant (a bare INTEGER
+    literal until this point) adapts to its enum sibling's i32 ordinal
+    storage the same way it adapts to any wider integer target. }
 END;
 
 FUNCTION IsIntegerFamilyTk(tk: INTEGER): BOOLEAN; FORWARD;
@@ -1232,6 +1249,32 @@ BEGIN
       matching the reference's general C-ABI argument coercion (not just a
       literal exemption -- any integer-typed expression, e.g. cJSON_CreateNumber(int_var)). }
     CoerceForAssign := LLVMBuildSIToFP(builder, v, LLVMTypeForTk(to_tid), MakeCStr(''))
+  ELSE IF TypeKind(to_tid) = TK_ENUM THEN
+  BEGIN
+    { An enum target stores a 0-based ordinal in i32. Enum member
+      constants arrive here as TK_INTEGER i16 literals, SUCC/PRED results
+      and other enum variables as enum-typed i32 values, and plain
+      integer-family expressions (the manual's ordinal arithmetic) as
+      their own widths -- coerce each into the i32 storage. }
+    IF IsIntLiteralLike(expr_node) THEN
+      CoerceForAssign := LLVMConstInt(i32ty, IntLiteralValue(expr_node), 1)
+    ELSE IF TypeKind(from_tid) = TK_ENUM THEN
+      CoerceForAssign := v
+    ELSE IF IsIntegerFamilyTk(from_tid) THEN
+    BEGIN
+      IF IntFamilyWidth(from_tid) > 32 THEN
+        CoerceForAssign := LLVMBuildTrunc(builder, v, i32ty, MakeCStr(''))
+      ELSE IF IsUnsignedWordTk(from_tid) THEN
+        CoerceForAssign := LLVMBuildZExt(builder, v, i32ty, MakeCStr(''))
+      ELSE
+        CoerceForAssign := LLVMBuildSExt(builder, v, i32ty, MakeCStr(''));
+    END
+    ELSE
+    BEGIN
+      AbortWith2('codegen: assignment type mismatch for: ', ctx_name);
+      CoerceForAssign := v;
+    END;
+  END
   ELSE IF IsIntegerFamilyTk(from_tid) AND IsIntegerFamilyTk(to_tid) THEN
   BEGIN
     { General integer-family narrow/widen, matching the reference's
@@ -1447,6 +1490,8 @@ VAR
   struct_ty, payload_ty: ADRMEM;
   field_index: INTEGER;
   has_variants: BOOLEAN;
+  values_arr: ADRMEM; { EnumType's member identifier list }
+  mi: INTEGER32;
 BEGIN
   nt := NodeType(te);
   IF nt = 'NamedType' THEN
@@ -1688,6 +1733,33 @@ BEGIN
     BEGIN
       AbortWith('codegen: SET OF <base> is only supported over a lo..hi subrange or an ordinal named type');
       tid := TK_UNKNOWN;
+    END;
+  END
+  ELSE IF nt = 'EnumType' THEN
+  BEGIN
+    { An enumerated type: i32 storage holding the 0-based ordinal, matching
+      the reference's EnumType lowering. Each member identifier is
+      registered in const_tbl at its ordinal -- the native counterpart of
+      the reference's own constants-table registration (codegen/decls.py's
+      self.constants) -- which is what lets a member stand anywhere a
+      compile-time integer constant is legal (array bounds, FOR bounds,
+      CASE arms). The bounds recorded on the type are the ordinal range,
+      and I/O treats the value as a plain INTEGER32: the manual reads
+      enumerated values as numbers, not names (djvu.txt:13610-13618), and
+      writes them that way under the vintage defaults too. }
+    values_arr := GetObj(te, 'values');
+    count := ArrSize(values_arr);
+    tid := RegisterType(TK_ENUM, 0, 0, RETYPE(INTEGER, count - 1), i32ty);
+    FOR mi := 0 TO count - 1 DO
+    BEGIN
+      fname := CStrToStr255(cJSON_GetStringValue(ArrItem(values_arr, mi)));
+      IF LookupConst(fname) <> 0 THEN
+        AbortWith2('codegen: duplicate const declaration: ', fname);
+      IF nconsts >= MAX_CONSTS THEN AbortWith('codegen: too many consts');
+      nconsts := nconsts + 1;
+      const_tbl[nconsts].name := fname;
+      const_tbl[nconsts].is_real := FALSE;
+      const_tbl[nconsts].ival := mi;
     END;
   END
   ELSE
@@ -2347,6 +2419,13 @@ BEGIN
     ltk := TK_INTEGER
   ELSE IF (ltk = TK_INTEGER) AND (rtk = TK_WORD) THEN
     rtk := TK_INTEGER
+  ELSE IF (ltk = TK_ADRMEM) AND (TypeKind(rtk) = TK_POINTER) THEN
+    { NIL (an ADRMEM constant) against a typed pointer -- both are the
+      same opaque i8* value, only the tracked tag differs, the same
+      mutual compatibility TypesCompatibleForAssign already applies. }
+    ltk := rtk
+  ELSE IF (rtk = TK_ADRMEM) AND (TypeKind(ltk) = TK_POINTER) THEN
+    rtk := ltk
   ELSE IF (op = 'SLASH') AND IsIntegerFamilyTk(ltk) AND IsIntegerFamilyTk(rtk) THEN
   BEGIN
     { SLASH is always real division in Pascal (7/2 = 3.5), forcing a
@@ -2452,7 +2531,7 @@ BEGIN
       here). }
     IF (ltk = TK_INTEGER) OR (ltk = TK_WORD) OR (ltk = TK_INTEGER8) OR (ltk = TK_WORD8) OR
        (ltk = TK_INTEGER32) OR (ltk = TK_WORD32) OR (ltk = TK_INTEGER64) OR (ltk = TK_WORD64) OR
-       (ltk = TK_CHAR) OR (ltk = TK_BOOLEAN) THEN
+       (ltk = TK_CHAR) OR (ltk = TK_BOOLEAN) OR (TypeKind(ltk) = TK_ENUM) THEN
     BEGIN
       { CHAR/BOOLEAN are ordinal in Pascal, so full ordering (not just EQ/
         NEQ) is meaningful for them too, and LLVM's icmp works the same way
@@ -3012,9 +3091,24 @@ BEGIN
   END
   ELSE IF nm = 'ORD' THEN
   BEGIN
-    IF argtk = TK_CHAR THEN res := LLVMBuildZExt(builder, v, i16ty, MakeCStr(''))
-    ELSE res := v;
-    last_val_tk := TK_INTEGER;
+    IF argtk = TK_CHAR THEN
+    BEGIN
+      res := LLVMBuildZExt(builder, v, i16ty, MakeCStr(''));
+      last_val_tk := TK_INTEGER;
+    END
+    ELSE IF TypeKind(argtk) = TK_ENUM THEN
+    BEGIN
+      { An enum ordinal is physically i32 (the enum's storage); tag the
+        result INTEGER32 rather than INTEGER so WRITE's %d path doesn't
+        try to sign-extend an already-32-bit value. }
+      res := v;
+      last_val_tk := TK_INTEGER32;
+    END
+    ELSE
+    BEGIN
+      res := v;
+      last_val_tk := TK_INTEGER;
+    END;
   END
   ELSE IF nm = 'ODD' THEN
   BEGIN
@@ -3025,12 +3119,14 @@ BEGIN
   ELSE IF nm = 'SUCC' THEN
   BEGIN
     IF argtk = TK_CHAR THEN res := LLVMBuildAdd(builder, v, LLVMConstInt(i8ty, 1, 0), MakeCStr(''))
+    ELSE IF TypeKind(argtk) = TK_ENUM THEN res := LLVMBuildAdd(builder, v, LLVMConstInt(i32ty, 1, 0), MakeCStr(''))
     ELSE res := LLVMBuildAdd(builder, v, LLVMConstInt(i16ty, 1, 0), MakeCStr(''));
     last_val_tk := argtk;
   END
   ELSE IF nm = 'PRED' THEN
   BEGIN
     IF argtk = TK_CHAR THEN res := LLVMBuildSub(builder, v, LLVMConstInt(i8ty, 1, 0), MakeCStr(''))
+    ELSE IF TypeKind(argtk) = TK_ENUM THEN res := LLVMBuildSub(builder, v, LLVMConstInt(i32ty, 1, 0), MakeCStr(''))
     ELSE res := LLVMBuildSub(builder, v, LLVMConstInt(i16ty, 1, 0), MakeCStr(''));
     last_val_tk := argtk;
   END
@@ -3737,6 +3833,22 @@ BEGIN
     out_v := bool_str;
     IF have_width THEN CONCAT(fmt, '%*s') ELSE CONCAT(fmt, '%s');
   END
+  ELSE IF TypeKind(tid) = TK_ENUM THEN
+  BEGIN
+    { An enumerated value writes as its ordinal number -- the vintage
+      default (the reference's symbolic-enum-io feature is off by default).
+      The value is already i32, the enum's storage, so no extend. }
+    IF have_width THEN CONCAT(fmt, '%*d') ELSE CONCAT(fmt, '%d');
+  END
+  ELSE IF TypeKind(tid) = TK_POINTER THEN
+  BEGIN
+    { The manual reads pointer variables as numbers, in an
+      implementation-defined format such that writing then reading
+      preserves the value (13620-13623); this toolchain's format is
+      unsigned decimal, matched by runtime's pas_read_ptr. }
+    out_v := LLVMBuildPtrToInt(builder, in_v, i64ty, MakeCStr(''));
+    IF have_width THEN CONCAT(fmt, '%*llu') ELSE CONCAT(fmt, '%llu');
+  END
   ELSE
     AbortWith('codegen: unsupported WRITE argument type');
   IF NOT handled_own_args THEN
@@ -3905,6 +4017,26 @@ BEGIN
   END;
 END;
 
+FUNCTION BoolNameTable: ADRMEM;
+{ A stack-built two-slot const-char* table holding "FALSE" then "TRUE" --
+  the name list pas_read_enum_name matches BOOLEAN input against, so a
+  BOOLEAN can be read by ordinal number or by identifier name
+  (case-insensitively), exactly the union the manual allows (13610-13618). }
+VAR
+  tbl, gep_idx, slot: ADRMEM;
+BEGIN
+  tbl := EntryAlloca(LLVMArrayType(i8ptrty, 2), 'boolnames');
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
+  slot := LLVMBuildGEP2(builder, LLVMArrayType(i8ptrty, 2), tbl, gep_idx, 2, MakeCStr(''));
+  LLVMBuildStore(builder, LLVMBuildGlobalStringPtr(builder, MakeCStr('FALSE'), MakeCStr('boolname')), slot);
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 1, 0));
+  slot := LLVMBuildGEP2(builder, LLVMArrayType(i8ptrty, 2), tbl, gep_idx, 2, MakeCStr(''));
+  LLVMBuildStore(builder, LLVMBuildGlobalStringPtr(builder, MakeCStr('TRUE'), MakeCStr('boolname')), slot);
+  BoolNameTable := LLVMBuildBitCast(builder, tbl, LLVMPointerType(i8ptrty, 0), MakeCStr(''));
+END;
+
 PROCEDURE CodegenReadStdinVar(addr: ADRMEM; tid: INTEGER);
 { Reads one value from stdin into `addr`, dispatching on `tid` -- the
   non-file subset of CodegenReadArgs's per-argument logic, factored out for
@@ -3912,7 +4044,7 @@ PROCEDURE CodegenReadStdinVar(addr: ADRMEM; tid: INTEGER);
   by reading it exactly like an ordinary bare READ, just under the
   command-line/keyboard stdin redirect runtime/cmdline.c sets up). }
 VAR
-  tmp32, loaded, call_args, buf_i8, cap: ADRMEM;
+  tmp32, loaded, call_args, buf_i8, cap, tmp64: ADRMEM;
 BEGIN
   IF TypeKind(tid) = TK_INTEGER THEN
   BEGIN
@@ -3959,6 +4091,46 @@ BEGIN
     SetPtrArrayElem(call_args, 0, buf_i8);
     SetPtrArrayElem(call_args, 1, cap);
     loaded := LLVMBuildCall2(builder, read_string_fnty, read_string_fn, call_args, 2, MakeCStr(''));
+  END
+  ELSE IF TypeKind(tid) = TK_ENUM THEN
+  BEGIN
+    { Enumerated values read as a numeric ordinal -- the manual reads them
+      as numbers, not names (13610-13618), and the reference does the same
+      with symbolic-enum-io off. Storage is i32, matching pas_read_int's
+      output width, so no conversion. }
+    tmp32 := EntryAlloca(i32ty, '');
+    call_args := AllocPtrArray(1);
+    SetPtrArrayElem(call_args, 0, tmp32);
+    loaded := LLVMBuildCall2(builder, read_int_fnty, read_int_fn, call_args, 1, MakeCStr(''));
+    loaded := LLVMBuildLoad2(builder, i32ty, tmp32, MakeCStr(''));
+    LLVMBuildStore(builder, loaded, addr);
+  END
+  ELSE IF TypeKind(tid) = TK_BOOLEAN THEN
+  BEGIN
+    { The manual reads a BOOLEAN as a number or by the TRUE/FALSE names
+      (13610-13618); pas_read_enum_name against the FALSE/TRUE table
+      accepts exactly that union. }
+    tmp32 := EntryAlloca(i32ty, '');
+    call_args := AllocPtrArray(3);
+    SetPtrArrayElem(call_args, 0, tmp32);
+    SetPtrArrayElem(call_args, 1, BoolNameTable);
+    SetPtrArrayElem(call_args, 2, LLVMConstInt(i32ty, 2, 0));
+    loaded := LLVMBuildCall2(builder, read_enum_name_fnty, read_enum_name_fn, call_args, 3, MakeCStr(''));
+    loaded := LLVMBuildLoad2(builder, i32ty, tmp32, MakeCStr(''));
+    loaded := LLVMBuildTrunc(builder, loaded, i1ty, MakeCStr(''));
+    LLVMBuildStore(builder, loaded, addr);
+  END
+  ELSE IF TypeKind(tid) = TK_POINTER THEN
+  BEGIN
+    { Pointer-as-number read, the implementation-defined round-trip format
+      shared with WRITE's pointer path (manual 13620-13623). }
+    tmp64 := EntryAlloca(i64ty, '');
+    call_args := AllocPtrArray(1);
+    SetPtrArrayElem(call_args, 0, tmp64);
+    loaded := LLVMBuildCall2(builder, read_ptr_fnty, read_ptr_fn, call_args, 1, MakeCStr(''));
+    loaded := LLVMBuildLoad2(builder, i64ty, tmp64, MakeCStr(''));
+    loaded := LLVMBuildIntToPtr(builder, loaded, i8ptrty, MakeCStr(''));
+    LLVMBuildStore(builder, loaded, addr);
   END
   ELSE
     AbortWith('codegen: unsupported program-parameter type');
@@ -4065,7 +4237,7 @@ PROCEDURE CodegenReadArgs(args: ADRMEM; is_readln: BOOLEAN);
 VAR
   nargs, i, symi: INTEGER32;
   start_idx: INTEGER32;
-  arg0, argnode, addr, fcb_ptr, tmp32, loaded, call_args, buf_i8, cap: ADRMEM;
+  arg0, argnode, addr, fcb_ptr, tmp32, loaded, call_args, buf_i8, cap, tmp64: ADRMEM;
   tid: INTEGER;
   using_file: BOOLEAN;
 BEGIN
@@ -4217,6 +4389,75 @@ BEGIN
         SetPtrArrayElem(call_args, 1, cap);
         loaded := LLVMBuildCall2(builder, read_string_fnty, read_string_fn, call_args, 2, MakeCStr(''));
       END;
+    END
+    ELSE IF TypeKind(tid) = TK_ENUM THEN
+    BEGIN
+      { Enumerated values read as a numeric ordinal (manual 13610-13618);
+        i32 storage matches the reader's output width. }
+      tmp32 := EntryAlloca(i32ty, '');
+      IF using_file THEN
+      BEGIN
+        call_args := AllocPtrArray(2);
+        SetPtrArrayElem(call_args, 0, fcb_ptr);
+        SetPtrArrayElem(call_args, 1, tmp32);
+        loaded := LLVMBuildCall2(builder, fread_int_fnty, fread_int_fn, call_args, 2, MakeCStr(''));
+      END
+      ELSE
+      BEGIN
+        call_args := AllocPtrArray(1);
+        SetPtrArrayElem(call_args, 0, tmp32);
+        loaded := LLVMBuildCall2(builder, read_int_fnty, read_int_fn, call_args, 1, MakeCStr(''));
+      END;
+      loaded := LLVMBuildLoad2(builder, i32ty, tmp32, MakeCStr(''));
+      LLVMBuildStore(builder, loaded, addr);
+    END
+    ELSE IF TypeKind(tid) = TK_BOOLEAN THEN
+    BEGIN
+      { Number-or-name BOOLEAN read (manual 13610-13618), file and stdin
+        forms alike. }
+      tmp32 := EntryAlloca(i32ty, '');
+      IF using_file THEN
+      BEGIN
+        call_args := AllocPtrArray(4);
+        SetPtrArrayElem(call_args, 0, fcb_ptr);
+        SetPtrArrayElem(call_args, 1, tmp32);
+        SetPtrArrayElem(call_args, 2, BoolNameTable);
+        SetPtrArrayElem(call_args, 3, LLVMConstInt(i32ty, 2, 0));
+        loaded := LLVMBuildCall2(builder, fread_enum_name_fnty, fread_enum_name_fn, call_args, 4, MakeCStr(''));
+      END
+      ELSE
+      BEGIN
+        call_args := AllocPtrArray(3);
+        SetPtrArrayElem(call_args, 0, tmp32);
+        SetPtrArrayElem(call_args, 1, BoolNameTable);
+        SetPtrArrayElem(call_args, 2, LLVMConstInt(i32ty, 2, 0));
+        loaded := LLVMBuildCall2(builder, read_enum_name_fnty, read_enum_name_fn, call_args, 3, MakeCStr(''));
+      END;
+      loaded := LLVMBuildLoad2(builder, i32ty, tmp32, MakeCStr(''));
+      loaded := LLVMBuildTrunc(builder, loaded, i1ty, MakeCStr(''));
+      LLVMBuildStore(builder, loaded, addr);
+    END
+    ELSE IF TypeKind(tid) = TK_POINTER THEN
+    BEGIN
+      { Pointer-as-number read, round-tripping WRITE's unsigned-decimal
+        pointer format (manual 13620-13623). }
+      tmp64 := EntryAlloca(i64ty, '');
+      IF using_file THEN
+      BEGIN
+        call_args := AllocPtrArray(2);
+        SetPtrArrayElem(call_args, 0, fcb_ptr);
+        SetPtrArrayElem(call_args, 1, tmp64);
+        loaded := LLVMBuildCall2(builder, fread_ptr_fnty, fread_ptr_fn, call_args, 2, MakeCStr(''));
+      END
+      ELSE
+      BEGIN
+        call_args := AllocPtrArray(1);
+        SetPtrArrayElem(call_args, 0, tmp64);
+        loaded := LLVMBuildCall2(builder, read_ptr_fnty, read_ptr_fn, call_args, 1, MakeCStr(''));
+      END;
+      loaded := LLVMBuildLoad2(builder, i64ty, tmp64, MakeCStr(''));
+      loaded := LLVMBuildIntToPtr(builder, loaded, i8ptrty, MakeCStr(''));
+      LLVMBuildStore(builder, loaded, addr);
     END
     ELSE
       AbortWith('codegen: unsupported READ argument type');
@@ -4784,8 +5025,8 @@ BEGIN
   IF symi = 0 THEN
     AbortWith2('codegen: undefined FOR loop variable: ', var_name);
   var_tk := symbols[symi].tk;
-  IF NOT IsIntegerFamilyTk(var_tk) THEN
-    AbortWith('codegen: FOR loop variable must be an integer-family type');
+  IF NOT IsIntegerFamilyTk(var_tk) AND (TypeKind(var_tk) <> TK_ENUM) THEN
+    AbortWith('codegen: FOR loop variable must be an integer-family or enumerated type');
   var_llty := LLVMTypeForTk(var_tk);
 
   start_node := GetObj(stmt, 'start');
@@ -7474,6 +7715,20 @@ BEGIN
 
   param_arr := AllocPtrArray(2);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  SetPtrArrayElem(param_arr, 1, LLVMPointerType(i64ty, 0));
+  fread_ptr_fnty := LLVMFunctionType(i32ty, param_arr, 2, 0);
+  fread_ptr_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_ptr'), fread_ptr_fnty);
+
+  param_arr := AllocPtrArray(4);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  SetPtrArrayElem(param_arr, 1, LLVMPointerType(i32ty, 0));
+  SetPtrArrayElem(param_arr, 2, LLVMPointerType(i8ptrty, 0));
+  SetPtrArrayElem(param_arr, 3, i32ty);
+  fread_enum_name_fnty := LLVMFunctionType(i32ty, param_arr, 4, 0);
+  fread_enum_name_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_enum_name'), fread_enum_name_fnty);
+
+  param_arr := AllocPtrArray(2);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
   SetPtrArrayElem(param_arr, 1, LLVMPointerType(dblty, 0));
   fread_real_fnty := LLVMFunctionType(i32ty, param_arr, 2, 0);
   fread_real_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_real'), fread_real_fnty);
@@ -7520,6 +7775,18 @@ BEGIN
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(i16ty, 0));
   read_word_fnty := LLVMFunctionType(i32ty, param_arr, 1, 0);
   read_word_fn := LLVMAddFunction(modl, MakeCStr('pas_read_word'), read_word_fnty);
+
+  param_arr := AllocPtrArray(1);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(i64ty, 0));
+  read_ptr_fnty := LLVMFunctionType(i32ty, param_arr, 1, 0);
+  read_ptr_fn := LLVMAddFunction(modl, MakeCStr('pas_read_ptr'), read_ptr_fnty);
+
+  param_arr := AllocPtrArray(3);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(i32ty, 0));
+  SetPtrArrayElem(param_arr, 1, LLVMPointerType(i8ptrty, 0));
+  SetPtrArrayElem(param_arr, 2, i32ty);
+  read_enum_name_fnty := LLVMFunctionType(i32ty, param_arr, 3, 0);
+  read_enum_name_fn := LLVMAddFunction(modl, MakeCStr('pas_read_enum_name'), read_enum_name_fnty);
 
   param_arr := AllocPtrArray(1);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(dblty, 0));

@@ -589,6 +589,23 @@ int pas_fread_word(struct pas_file_fcb *f, uint16_t *out)
     return 0;
 }
 
+/* File counterpart of pas_read_ptr (see readq.c for the format). */
+int pas_fread_ptr(struct pas_file_fcb *f, uint64_t *out)
+{
+    FILE *h = stream_for(f, 0);
+    int ch = fcb_skip_ws_except_nl(f, h);
+    if (ch == EOF)
+        die("runtime error: unexpected EOF while reading pointer");
+    ungetc(ch, h);
+    long long v;
+    if (fscanf(h, "%lli", &v) != 1) {
+        if (io_error(f, 14, "runtime error: malformed pointer input"))
+            return -1;
+    }
+    *out = (uint64_t) v;
+    return 0;
+}
+
 int pas_fread_enum_name(struct pas_file_fcb *f, int32_t *out, const char **names, int count)
 {
     FILE *h = stream_for(f, 0);

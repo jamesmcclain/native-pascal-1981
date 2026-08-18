@@ -128,6 +128,25 @@ int pas_read_word(uint16_t *out)
     return 0;
 }
 
+/* Read a pointer value as a number -- the manual's READFN allows pointer
+ * program parameters and reads them "as a WORD" in an implementation-defined
+ * way such that writing then reading preserves the value (13620-13623).
+ * Pointers here are 64-bit, so our implementation-defined format is a plain
+ * integer constant with strtoll's base conventions (decimal, 0x hex, 0
+ * octal), matching what WRITE emits for a pointer (unsigned decimal). */
+int pas_read_ptr(uint64_t *out)
+{
+    int ch = skip_ws_except_nl();
+    if (ch == EOF)
+        die("unexpected EOF while reading pointer");
+    unread(ch);
+    long long v;
+    if (scanf("%lli", &v) != 1)
+        die("malformed pointer input");
+    *out = (uint64_t) v;
+    return 0;
+}
+
 int pas_read_real(double *out)
 {
     int ch = skip_ws_except_nl();
