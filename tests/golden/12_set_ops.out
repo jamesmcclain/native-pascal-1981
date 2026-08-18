@@ -1,0 +1,10 @@
+union ok
+intersection ok
+difference ok
+eq ok
+neq ok
+le ok
+ge ok
+lt ok
+gt ok
+char set ok

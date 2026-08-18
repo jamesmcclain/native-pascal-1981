@@ -106,6 +106,10 @@ CONST
     (the predeclared TEXT type), matching codegen.pas's own FILE
     representation so the two files agree on what "is a TEXT file"
     means. }
+  TK_SET      = 12; { aux holds the base ordinal type's TK (TK_INTEGER,
+    TK_CHAR, TK_WORD, or TK_BOOLEAN), mirroring codegen.pas's own SET
+    representation, minus the exact lo/hi bounds this coarse v1 model
+    doesn't need to track for element/IN/set-operator checking. }
 
   MAX_SYMBOLS = 2000;
   MAX_TYPES   = 500;
@@ -392,6 +396,41 @@ BEGIN
     END;
     tk := TK_RECORD;
     aux := rid;
+  END
+  ELSE IF (nt = 'SubrangeType') OR (nt = 'BuiltinType') THEN
+  BEGIN
+    { Only reachable today from a SetType's `base` field (ParseSetBase's own
+      output shapes) -- SubrangeType elsewhere (e.g. an ARRAY index range)
+      is read directly by its own caller, not through ResolveTypeExpr. A
+      SubrangeType base's ordinal kind follows its low bound's literal kind
+      (CharLiteral -> TK_CHAR, BoolLiteral -> TK_BOOLEAN, else TK_INTEGER);
+      a BuiltinType base is a reserved-word ordinal type name. }
+    IF nt = 'SubrangeType' THEN
+    BEGIN
+      IF NodeType(GetObj(node, 'low')) = 'CharLiteral' THEN tk := TK_CHAR
+      ELSE IF NodeType(GetObj(node, 'low')) = 'BoolLiteral' THEN tk := TK_BOOLEAN
+      ELSE tk := TK_INTEGER;
+    END
+    ELSE BEGIN
+      name := GetStr(node, 'name');
+      IF name = 'CHAR' THEN tk := TK_CHAR
+      ELSE IF name = 'BOOLEAN' THEN tk := TK_BOOLEAN
+      ELSE IF name = 'WORD' THEN tk := TK_WORD
+      ELSE IF name = 'INTEGER' THEN tk := TK_INTEGER
+      ELSE BEGIN
+        AddError('SET OF <base> requires an ordinal base type');
+        tk := TK_UNKNOWN;
+      END;
+    END;
+  END
+  ELSE IF nt = 'SetType' THEN
+  BEGIN
+    base_node := GetObj(node, 'base');
+    ResolveTypeExpr(base_node, inner_tk, inner_aux, inner_aux2, inner_idx);
+    IF NOT IsOrdinal(inner_tk) THEN
+      AddError('SET OF <base> requires an ordinal base type');
+    tk := TK_SET;
+    aux := inner_tk;
   END;
 END;
 
@@ -761,6 +800,8 @@ VAR
   left_node, right_node, operand_node, type_node: ADRMEM;
   lt, rt, ot, op_kind, aux, aux2, idx_tk: INTEGER;
   op: Str255;
+  elems_arr, elem_node: ADRMEM;
+  n_elems, ei: INTEGER32;
 BEGIN
   nt := NodeType(node);
   IF nt = 'IntLiteral' THEN
@@ -805,6 +846,36 @@ BEGIN
     ELSE
       CheckExpr := symbols[si].tk;
   END
+  ELSE IF nt = 'SetConstructor' THEN
+  BEGIN
+    { Element/range-bound ordinal checking only; this v1 type-kind model has
+      no way to carry a SET's declared base ordinal kind through CheckExpr's
+      bare-tk return value (unlike codegen.pas's richer type table), so a
+      mismatched base across elements (e.g. mixing CHAR and INTEGER) is not
+      caught here -- codegen.pas is the enforcement backstop for that, same
+      division of labor as elsewhere in this file (see the header comment). }
+    elems_arr := GetObj(node, 'elements');
+    n_elems := cJSON_GetArraySize(elems_arr);
+    FOR ei := 0 TO n_elems - 1 DO
+    BEGIN
+      elem_node := cJSON_GetArrayItem(elems_arr, ei);
+      IF NodeType(elem_node) = 'RangeExpr' THEN
+      BEGIN
+        lt := CheckExpr(GetObj(elem_node, 'low'));
+        rt := CheckExpr(GetObj(elem_node, 'high'));
+        IF (lt <> TK_UNKNOWN) AND NOT IsOrdinal(lt) THEN
+          AddError('Set range bound must be an ordinal type');
+        IF (rt <> TK_UNKNOWN) AND NOT IsOrdinal(rt) THEN
+          AddError('Set range bound must be an ordinal type');
+      END
+      ELSE BEGIN
+        ot := CheckExpr(elem_node);
+        IF (ot <> TK_UNKNOWN) AND NOT IsOrdinal(ot) THEN
+          AddError('Set element must be an ordinal type');
+      END;
+    END;
+    CheckExpr := TK_SET;
+  END
   ELSE IF nt = 'Designator' THEN
     CheckExpr := CheckDesignator(node)
   ELSE IF nt = 'FuncCall' THEN
@@ -844,6 +915,33 @@ BEGIN
       IF NOT (IsNumeric(lt) AND IsNumeric(rt)) AND (lt <> rt) THEN
         AddError('Comparison operands are not comparable');
       CheckExpr := TK_BOOLEAN;
+    END
+    ELSE IF op = 'IN' THEN
+    BEGIN
+      IF NOT IsOrdinal(lt) THEN
+        AddError('IN requires an ordinal left operand');
+      IF rt <> TK_SET THEN
+        AddError('IN requires a SET right operand');
+      CheckExpr := TK_BOOLEAN;
+    END
+    ELSE IF (lt = TK_SET) OR (rt = TK_SET) THEN
+    BEGIN
+      { Set union/intersection/difference (PLUS/MINUS/MUL): both operands
+        must be SET. Base-kind mismatch (e.g. SET OF CHAR + SET OF INTEGER)
+        is not caught here -- see the SetConstructor case's comment on why
+        this coarse model can't carry a SET's base ordinal kind. }
+      IF (lt <> TK_SET) OR (rt <> TK_SET) THEN
+      BEGIN
+        AddError('Set operator requires SET operands');
+        CheckExpr := TK_UNKNOWN;
+      END
+      ELSE IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') THEN
+        CheckExpr := TK_SET
+      ELSE
+      BEGIN
+        AddError('Unsupported SET operator');
+        CheckExpr := TK_UNKNOWN;
+      END;
     END
     ELSE BEGIN
       { arithmetic: PLUS/MINUS/TIMES/DIVIDE/DIV/MOD. Pointer arithmetic
@@ -1068,6 +1166,49 @@ BEGIN
         cond_tk := CheckExpr(cJSON_GetArrayItem(args_arr, 1));
         IF (cond_tk <> TK_STRING) AND (cond_tk <> TK_CHAR) AND (cond_tk <> TK_UNKNOWN) THEN
           AddError('ASSIGN argument 2 must be STRING, LSTRING, or CHAR');
+      END;
+    END
+    ELSE IF pname = 'READSET' THEN
+    BEGIN
+      { READSET([file,] dest, set_of_char): manual-documented extended I/O
+        builtin (djvu.txt), reads from `file` (INPUT if omitted) into `dest`
+        until a delimiter char in `set_of_char` is seen. Mirrors the
+        WRITE/READ file-selector detection above; dest is required to be
+        assignable and LSTRING-shaped -- this coarse model conflates
+        STRING/LSTRING into TK_STRING (see ResolveTypeExpr's NamedType
+        case), so both are accepted here the same way ASSIGN's second
+        argument already is. }
+      IF (nargs <> 2) AND (nargs <> 3) THEN
+        AddError('READSET expects 2 or 3 arguments')
+      ELSE BEGIN
+        start_arg := 0;
+        IF nargs = 3 THEN
+        BEGIN
+          warg := cJSON_GetArrayItem(args_arr, 0);
+          IF NodeType(warg) <> 'Identifier' THEN
+            AddError('READSET file argument must be a bare file variable')
+          ELSE BEGIN
+            si := LookupSymbol(GetStr(warg, 'name'));
+            IF si = 0 THEN
+              AddError('Undefined identifier')
+            ELSE IF (symbols[si].tk <> TK_FILE) OR (symbols[si].aux <> TK_CHAR) OR (symbols[si].aux2 <> 1) THEN
+              AddError('READSET file argument must be a TEXT file');
+          END;
+          start_arg := 1;
+        END;
+        warg := cJSON_GetArrayItem(args_arr, start_arg);
+        IF NodeType(warg) <> 'Identifier' THEN
+          AddError('READSET destination must be a bare LSTRING variable')
+        ELSE BEGIN
+          si := LookupSymbol(GetStr(warg, 'name'));
+          IF si = 0 THEN
+            AddError('Undefined identifier')
+          ELSE IF symbols[si].tk <> TK_STRING THEN
+            AddError('READSET destination must be STRING or LSTRING');
+        END;
+        cond_tk := CheckExpr(cJSON_GetArrayItem(args_arr, start_arg + 1));
+        IF cond_tk <> TK_SET THEN
+          AddError('READSET set argument must be a SET OF CHAR value');
       END;
     END
     ELSE IF (pname = 'NEW') OR (pname = 'DISPOSE') THEN

@@ -514,6 +514,7 @@ VAR
   fread_lstring_fnty, fread_lstring_fn: ADRMEM;
   fread_string_fnty, fread_string_fn: ADRMEM;
   freadln_skip_fnty, freadln_skip_fn: ADRMEM;
+  freadset_fnty, freadset_fn: ADRMEM; { pas_freadset(fcb*, lstr*, cap, set_words*) }
   read_int_fnty, read_int_fn: ADRMEM; { stdin counterparts (readq.c), used by
     a bare READ/READLN with no leading file argument. }
   read_word_fnty, read_word_fn: ADRMEM;
@@ -1519,13 +1520,36 @@ BEGIN
       representation regardless of declared base range (matching the Python
       reference's set_llvm_type) -- only the base's low/high are kept, and
       only to know the ordinal's legal range, not to size the storage.
-      Scoped to a SubrangeType base (SET OF lo..hi); a bare enum/named-type
-      base is not yet supported. }
-    IF NodeType(GetObj(te, 'base')) <> 'SubrangeType' THEN
-      AbortWith('codegen: SET OF <base> is only supported over a lo..hi subrange');
-    lo := ResolveIntLiteral(GetObj(GetObj(te, 'base'), 'low'));
-    hi := ResolveIntLiteral(GetObj(GetObj(te, 'base'), 'high'));
-    tid := RegisterType(TK_SET, TK_INTEGER, lo, hi, setty);
+      Two base shapes: a SubrangeType (SET OF lo..hi, always an INTEGER
+      ordinal here since this dialect only lexes plain-integer subrange
+      bounds in this position) or a bare ordinal type name -- CHAR, WORD,
+      BOOLEAN, or INTEGER -- parsed by ParseSetBase as either a NamedType
+      (e.g. a bare identifier) or a BuiltinType node (a reserved-word type
+      name). The manual's own worked example (djvu.txt:7107-7126) is
+      `SET OF CHAR`, so this case has to exist, not just SubrangeType. }
+    IF NodeType(GetObj(te, 'base')) = 'SubrangeType' THEN
+    BEGIN
+      lo := ResolveIntLiteral(GetObj(GetObj(te, 'base'), 'low'));
+      hi := ResolveIntLiteral(GetObj(GetObj(te, 'base'), 'high'));
+      tid := RegisterType(TK_SET, TK_INTEGER, lo, hi, setty);
+    END
+    ELSE IF (NodeType(GetObj(te, 'base')) = 'NamedType') OR (NodeType(GetObj(te, 'base')) = 'BuiltinType') THEN
+    BEGIN
+      nm := GetStr(GetObj(te, 'base'), 'name');
+      IF nm = 'CHAR' THEN tid := RegisterType(TK_SET, TK_CHAR, 0, 255, setty)
+      ELSE IF nm = 'BOOLEAN' THEN tid := RegisterType(TK_SET, TK_BOOLEAN, 0, 1, setty)
+      ELSE IF (nm = 'INTEGER') OR (nm = 'WORD') THEN tid := RegisterType(TK_SET, TK_INTEGER, 0, 255, setty)
+      ELSE
+      BEGIN
+        AbortWith2('codegen: SET OF <base> requires an ordinal base type (INTEGER subrange, CHAR, WORD, or BOOLEAN), got: ', nm);
+        tid := TK_UNKNOWN;
+      END;
+    END
+    ELSE
+    BEGIN
+      AbortWith('codegen: SET OF <base> is only supported over a lo..hi subrange or an ordinal named type');
+      tid := TK_UNKNOWN;
+    END;
   END
   ELSE
   BEGIN
@@ -1683,9 +1707,11 @@ VAR
   cur_i, cmp_val, next_i: ADRMEM;
 BEGIN
   low_val := CodegenExpr(low_node);
-  IF last_val_tk <> TK_INTEGER THEN AbortWith('codegen: a set range bound must be INTEGER');
+  IF last_val_tk = TK_CHAR THEN low_val := LLVMBuildZExt(builder, low_val, i16ty, MakeCStr(''))
+  ELSE IF last_val_tk <> TK_INTEGER THEN AbortWith('codegen: a set range bound must be INTEGER or CHAR');
   high_val := CodegenExpr(high_node);
-  IF last_val_tk <> TK_INTEGER THEN AbortWith('codegen: a set range bound must be INTEGER');
+  IF last_val_tk = TK_CHAR THEN high_val := LLVMBuildZExt(builder, high_val, i16ty, MakeCStr(''))
+  ELSE IF last_val_tk <> TK_INTEGER THEN AbortWith('codegen: a set range bound must be INTEGER or CHAR');
 
   i_slot := EntryAlloca(i16ty, '');
   LLVMBuildStore(builder, low_val, i_slot);
@@ -1729,8 +1755,10 @@ BEGIN
     ELSE
     BEGIN
       ordv := CodegenExpr(el);
-      IF last_val_tk <> TK_INTEGER THEN
-        AbortWith('codegen: a set element must be INTEGER');
+      IF last_val_tk = TK_CHAR THEN
+        ordv := LLVMBuildZExt(builder, ordv, i16ty, MakeCStr(''))
+      ELSE IF last_val_tk <> TK_INTEGER THEN
+        AbortWith('codegen: a set element must be INTEGER or CHAR');
       SetRuntimeBit(slot, ordv);
     END;
   END;
@@ -2214,8 +2242,9 @@ BEGIN
   END
   ELSE IF op = 'IN' THEN
   BEGIN
-    IF ltk <> TK_INTEGER THEN
-      AbortWith('codegen: IN requires an INTEGER left operand');
+    IF ltk = TK_CHAR THEN lval := LLVMBuildZExt(builder, lval, i16ty, MakeCStr(''))
+    ELSE IF ltk <> TK_INTEGER THEN
+      AbortWith('codegen: IN requires an INTEGER or CHAR left operand');
     IF TypeKind(rtk) <> TK_SET THEN
       AbortWith('codegen: IN requires a SET right operand');
     res := CodegenSetMember(lval, rval);
@@ -4042,6 +4071,59 @@ BEGIN
   END;
 END;
 
+PROCEDURE CodegenReadSet(args: ADRMEM);
+{ READSET([file,] dest, set_of_char): manual-documented extended I/O builtin
+  (djvu.txt:9047-9081-adjacent), lowered straight to the runtime's existing
+  pas_freadset (runtime/fileops.c) -- no runtime changes needed, only this
+  call-site wiring, mirroring the reference's builtin_readset. Scoped to the
+  3-argument (explicit TEXT file) form: pas_freadset always requires a real
+  FCB* and this compiler has no INPUT-stream FCB binding of its own (unlike
+  the Python reference, which lazily attaches a predeclared INPUT global via
+  pas_file_attach_std) -- a real, stated gap rather than a silent one. }
+VAR
+  nargs, start_idx: INTEGER32;
+  arg0, dest_node, set_node: ADRMEM;
+  fcb_ptr: ADRMEM;
+  symi: INTEGER32;
+  addr, buf_i8, cap, set_val, set_slot, gep_idx, words_ptr, call_args, discard: ADRMEM;
+  tid: INTEGER;
+BEGIN
+  nargs := ArrSize(args);
+  IF nargs <> 3 THEN
+    AbortWith('codegen: READSET without an explicit TEXT file argument is not yet supported (no native INPUT stream FCB binding)');
+  arg0 := ArrItem(args, 0);
+  fcb_ptr := LoadFileFcbPtr(GetStr(arg0, 'name'));
+  start_idx := 1;
+
+  dest_node := ArrItem(args, start_idx);
+  symi := LookupSym(GetStr(dest_node, 'name'));
+  IF symi = 0 THEN AbortWith2('codegen: undefined variable: ', GetStr(dest_node, 'name'));
+  tid := symbols[symi].tk;
+  IF TypeKind(tid) <> TK_LSTRING THEN
+    AbortWith('codegen: READSET destination must be LSTRING');
+  addr := symbols[symi].llvm_val;
+  buf_i8 := LLVMBuildBitCast(builder, addr, i8ptrty, MakeCStr(''));
+  cap := LLVMConstInt(i32ty, types[tid].hi, 0);
+
+  set_node := ArrItem(args, start_idx + 1);
+  set_val := CodegenExpr(set_node);
+  IF TypeKind(last_val_tk) <> TK_SET THEN
+    AbortWith('codegen: READSET set argument must be SET OF CHAR');
+  set_slot := EntryAlloca(setty, '');
+  LLVMBuildStore(builder, set_val, set_slot);
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
+  words_ptr := LLVMBuildGEP2(builder, setty, set_slot, gep_idx, 2, MakeCStr(''));
+
+  call_args := AllocPtrArray(4);
+  SetPtrArrayElem(call_args, 0, fcb_ptr);
+  SetPtrArrayElem(call_args, 1, buf_i8);
+  SetPtrArrayElem(call_args, 2, cap);
+  SetPtrArrayElem(call_args, 3, words_ptr);
+  discard := LLVMBuildCall2(builder, freadset_fnty, freadset_fn, call_args, 4, MakeCStr(''));
+END;
+
 { ============================== statements ================================ }
 
 PROCEDURE CodegenStmt(stmt: ADRMEM); FORWARD;
@@ -5462,6 +5544,8 @@ BEGIN
     CodegenReadArgs(GetObj(stmt, 'args'), TRUE)
   ELSE IF (name = 'READ') THEN
     CodegenReadArgs(GetObj(stmt, 'args'), FALSE)
+  ELSE IF (name = 'READSET') THEN
+    CodegenReadSet(GetObj(stmt, 'args'))
   ELSE IF (name = 'RESET') OR (name = 'REWRITE') OR (name = 'GET') OR
           (name = 'PUT') OR (name = 'CLOSE') OR (name = 'DISCARD') THEN
   BEGIN
@@ -6942,6 +7026,14 @@ BEGIN
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
   freadln_skip_fnty := LLVMFunctionType(voidty, param_arr, 1, 0);
   freadln_skip_fn := LLVMAddFunction(modl, MakeCStr('pas_freadln_skip'), freadln_skip_fnty);
+
+  param_arr := AllocPtrArray(4);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  SetPtrArrayElem(param_arr, 1, i8ptrty);
+  SetPtrArrayElem(param_arr, 2, i32ty);
+  SetPtrArrayElem(param_arr, 3, LLVMPointerType(i64ty, 0));
+  freadset_fnty := LLVMFunctionType(voidty, param_arr, 4, 0);
+  freadset_fn := LLVMAddFunction(modl, MakeCStr('pas_freadset'), freadset_fnty);
 
   param_arr := AllocPtrArray(1);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(i32ty, 0));
