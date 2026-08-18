@@ -341,6 +341,10 @@ CONST
   MAX_SYMBOLS = 500;
   MAX_SCOPES = 64;
   MAX_PARAMS = 16;
+  MAX_SYSV_LEAVES = 32; { Upper bound on the scalar leaves of an aggregate the
+    SysV classifier ever walks: it only runs on types of at most 16 bytes and
+    the smallest leaf is 1 byte, so 16 is the true maximum; 32 leaves headroom
+    and the walker aborts loudly rather than truncating if it is ever hit. }
   MAX_ROUTINES = 384;
   MAX_TYPES = 200;
   MAX_FIELDS = 500;
@@ -431,6 +435,15 @@ TYPE
   ParamNameArr = ARRAY [1..MAX_PARAMS] OF Str255;
   ParamTkArr = ARRAY [1..MAX_PARAMS] OF INTEGER;
   ParamVarArr = ARRAY [1..MAX_PARAMS] OF BOOLEAN;
+
+  { SysV AMD64 aggregate classification working/result storage. An aggregate
+    that is not MEMORY class is at most 16 bytes, i.e. at most two eightbytes,
+    so the per-eightbyte result arrays have exactly two slots. }
+  SysVPieceArr = ARRAY [1..2] OF INTEGER;
+  SysVPieceSzArr = ARRAY [1..2] OF INTEGER32;
+  SysVFlagArr = ARRAY [1..2] OF BOOLEAN;
+  SysVLeafOffArr = ARRAY [1..MAX_SYSV_LEAVES] OF INTEGER32;
+  SysVLeafTidArr = ARRAY [1..MAX_SYSV_LEAVES] OF INTEGER;
 
   RoutineRec = RECORD
     name: Str255;
@@ -6711,29 +6724,223 @@ END;
 
 CONST
   SYSV_CLASS_MEMORY = 1;
-  SYSV_CLASS_UNIMPLEMENTED = 2; { <=16-byte register-class aggregates: the
-    full eightbyte INTEGER/SSE classifier is planned future SysV work. None of
-    the five self-hosting sources hit this today, so it aborts loudly rather
-    than emitting something silently wrong. }
+  SYSV_CLASS_COERCED = 2; { <=16-byte aggregate whose eightbytes all classify
+    INTEGER and/or SSE: passed/returned in one or two registers, each register
+    holding one "piece" (see SYSV_PIECE_* below). }
+
+  { Eightbyte classes, the NONE/INTEGER/SSE/MEMORY lattice merged by
+    SysVMergeClass below. }
+  SYSV_EB_NONE = 0;
+  SYSV_EB_INTEGER = 1;
+  SYSV_EB_SSE = 2;
+  SYSV_EB_MEMORY = 3;
+
+  { Per-eightbyte register piece kinds for a COERCED aggregate. The byte width
+    that goes with a piece is reported separately: it is meaningful only for
+    SYSV_PIECE_INTEGER (an integer of that many bytes); the float/double/vector
+    kinds have their width implied (4/8/8). }
+  SYSV_PIECE_INTEGER = 1;
+  SYSV_PIECE_FLOAT = 2;
+  SYSV_PIECE_DOUBLE = 3;
+  SYSV_PIECE_SSEVEC = 4; { two packed floats, i.e. <2 x float> }
+
+FUNCTION SysVMergeClass(a: INTEGER; b: INTEGER): INTEGER;
+{ The System V AMD64 class-merge lattice. }
+BEGIN
+  IF a = b THEN SysVMergeClass := a
+  ELSE IF a = SYSV_EB_NONE THEN SysVMergeClass := b
+  ELSE IF b = SYSV_EB_NONE THEN SysVMergeClass := a
+  ELSE IF (a = SYSV_EB_MEMORY) OR (b = SYSV_EB_MEMORY) THEN SysVMergeClass := SYSV_EB_MEMORY
+  ELSE IF (a = SYSV_EB_INTEGER) OR (b = SYSV_EB_INTEGER) THEN SysVMergeClass := SYSV_EB_INTEGER
+  ELSE SysVMergeClass := SYSV_EB_SSE;
+END;
+
+FUNCTION IsSysVLeafTid(tid: INTEGER): BOOLEAN;
+{ TRUE for exactly the scalar types TypeSizeBytes/TypeAlignBytes handle
+  without recursing -- the leaves of the walk below. }
+BEGIN
+  IsSysVLeafTid := (tid = TK_INTEGER) OR (tid = TK_WORD) OR (tid = TK_INTEGER8)
+                OR (tid = TK_WORD8) OR (tid = TK_BOOLEAN) OR (tid = TK_CHAR)
+                OR (tid = TK_INTEGER32) OR (tid = TK_WORD32) OR (tid = TK_REAL32)
+                OR (tid = TK_INTEGER64) OR (tid = TK_WORD64) OR (tid = TK_REAL)
+                OR (tid = TK_ADRMEM) OR (TypeKind(tid) = TK_POINTER);
+END;
+
+PROCEDURE WalkTypeLeaves(tid: INTEGER; base_off: INTEGER32; VAR nleaves: INTEGER32;
+                          VAR leaf_off: SysVLeafOffArr; VAR leaf_tid: SysVLeafTidArr);
+{ Append (absolute byte offset, scalar leaf tid) for every scalar leaf of tid
+  to the caller's arrays, recursing through RECORD fields and ARRAY elements.
+  Pascal has no generators, so the flat result is accumulated into fixed-size
+  VAR arrays instead of being yielded lazily. RECORD field offsets come
+  straight from fields[].byte_offset (already the natural-alignment layout);
+  ARRAY elements use the same stride TypeSizeBytes uses for the array's own
+  size, so the two can never disagree. }
+VAR
+  i: INTEGER;
+  stride: INTEGER32;
+  k, n: INTEGER32;
+BEGIN
+  IF IsSysVLeafTid(tid) THEN
+  BEGIN
+    IF nleaves >= MAX_SYSV_LEAVES THEN
+      AbortWith('codegen: WalkTypeLeaves: too many scalar leaves in aggregate');
+    nleaves := nleaves + 1;
+    leaf_off[nleaves] := base_off;
+    leaf_tid[nleaves] := tid;
+  END
+  ELSE IF TypeKind(tid) = TK_ARRAY THEN
+  BEGIN
+    stride := RoundUpBytes(TypeSizeBytes(types[tid].elem_tid), TypeAlignBytes(types[tid].elem_tid));
+    n := types[tid].hi - types[tid].lo + 1;
+    FOR k := 0 TO n - 1 DO
+      WalkTypeLeaves(types[tid].elem_tid, base_off + k * stride, nleaves, leaf_off, leaf_tid);
+  END
+  ELSE IF TypeKind(tid) = TK_RECORD THEN
+  BEGIN
+    FOR i := 1 TO nfields DO
+      IF fields[i].rec_tid = tid THEN
+        WalkTypeLeaves(fields[i].field_tid, base_off + fields[i].byte_offset,
+                       nleaves, leaf_off, leaf_tid);
+  END
+  ELSE
+    AbortWith('codegen: WalkTypeLeaves: unsupported type in C aggregate');
+END;
+
+PROCEDURE ClassifyAggregate(tk: INTEGER; VAR agg_class: INTEGER; VAR n_pieces: INTEGER;
+                             VAR piece_kind: SysVPieceArr; VAR piece_bytes: SysVPieceSzArr);
+{ The full System V AMD64 aggregate classifier. Splits an aggregate of at most
+  16 bytes into one or two eightbytes, merges every scalar leaf's class into
+  the eightbyte it lands in, and reports either MEMORY (passed in memory) or
+  COERCED plus the register piece each eightbyte is passed in.
+
+  Worked examples (byte offsets / eightbyte index / merged class):
+    RECORD a, b: INTEGER32 END -- size 8, leaves 0:i32, 4:i32, both eightbyte
+      0, INTEGER+INTEGER = INTEGER, end = 8 -> COERCED, 1 integer piece of
+      8 bytes.
+    RECORD a: REAL END -- size 8, leaf 0:REAL -> eightbyte 0 SSE with a
+      double leaf -> COERCED, 1 double piece.
+    RECORD a, b: REAL32 END -- size 8, leaves 0:f32, 4:f32 -> eightbyte 0 SSE,
+      no double, sse_end 8 > 4 -> COERCED, 1 two-float-vector piece.
+    ARRAY [1..3] OF INTEGER32 -- size 12, leaves 0, 4, 8; eightbyte 0 gets
+      offsets 0 and 4 (end 8, used 8), eightbyte 1 gets offset 8 (end 12,
+      used 4) -> COERCED, pieces integer/8 bytes and integer/4 bytes.
+    Anything over 16 bytes, or of size 0 -> MEMORY, no pieces. }
+VAR
+  size, used: INTEGER32;
+  nleaves, li, lsz, lend: INTEGER32;
+  leaf_off: SysVLeafOffArr;
+  leaf_tid: SysVLeafTidArr;
+  eb, n_eb, leaf_cls, i: INTEGER;
+  cls: SysVPieceArr;
+  eb_end: SysVPieceSzArr;
+  sse_end: SysVPieceSzArr;
+  sse_dbl: SysVFlagArr;
+BEGIN
+  n_pieces := 0;
+  size := TypeSizeBytes(tk);
+  IF (size = 0) OR (size > 16) THEN
+  BEGIN
+    agg_class := SYSV_CLASS_MEMORY;
+    RETURN;
+  END;
+
+  { (size + 7) DIV 8, spelled out so the eightbyte index stays a plain
+    INTEGER rather than an INTEGER32: size is at most 16 here. }
+  IF size > 8 THEN n_eb := 2 ELSE n_eb := 1;
+  FOR i := 1 TO 2 DO
+  BEGIN
+    cls[i] := SYSV_EB_NONE;
+    eb_end[i] := 0;
+    sse_end[i] := 0;
+    sse_dbl[i] := FALSE;
+  END;
+
+  nleaves := 0;
+  WalkTypeLeaves(tk, 0, nleaves, leaf_off, leaf_tid);
+
+  FOR li := 1 TO nleaves DO
+  BEGIN
+    lsz := TypeSizeBytes(leaf_tid[li]);
+    { Eightbyte index, 1-based here (the reference's 0-based off DIV 8). A
+      leaf can only land past the second eightbyte in a malformed layout, and
+      such a leaf is skipped, exactly as the reference skips eb >= n_eb. }
+    IF leaf_off[li] >= 8 THEN eb := 2 ELSE eb := 1;
+    IF (eb <= n_eb) AND (leaf_off[li] < 16) THEN
+    BEGIN
+      IF (leaf_tid[li] = TK_REAL) OR (leaf_tid[li] = TK_REAL32) THEN
+        leaf_cls := SYSV_EB_SSE
+      ELSE
+        leaf_cls := SYSV_EB_INTEGER;
+      cls[eb] := SysVMergeClass(cls[eb], leaf_cls);
+      { Last occupied byte within this eightbyte, clamped to its end. }
+      lend := leaf_off[li] + lsz;
+      IF lend > eb * 8 THEN lend := eb * 8;
+      IF lend > eb_end[eb] THEN eb_end[eb] := lend;
+      IF leaf_cls = SYSV_EB_SSE THEN
+      BEGIN
+        IF lend > sse_end[eb] THEN sse_end[eb] := lend;
+        IF leaf_tid[li] = TK_REAL THEN sse_dbl[eb] := TRUE;
+      END;
+    END;
+  END;
+
+  FOR eb := 1 TO n_eb DO
+    IF cls[eb] = SYSV_EB_MEMORY THEN
+    BEGIN
+      agg_class := SYSV_CLASS_MEMORY;
+      n_pieces := 0;
+      RETURN;
+    END;
+
+  agg_class := SYSV_CLASS_COERCED;
+  n_pieces := n_eb;
+  FOR eb := 1 TO n_eb DO
+  BEGIN
+    used := eb_end[eb] - (eb - 1) * 8;
+    IF cls[eb] = SYSV_EB_SSE THEN
+    BEGIN
+      IF sse_dbl[eb] THEN
+      BEGIN
+        piece_kind[eb] := SYSV_PIECE_DOUBLE;
+        piece_bytes[eb] := 8;
+      END
+      ELSE IF (sse_end[eb] - (eb - 1) * 8) > 4 THEN
+      BEGIN
+        piece_kind[eb] := SYSV_PIECE_SSEVEC;
+        piece_bytes[eb] := 8;
+      END
+      ELSE
+      BEGIN
+        piece_kind[eb] := SYSV_PIECE_FLOAT;
+        piece_bytes[eb] := 4;
+      END;
+    END
+    ELSE
+    BEGIN
+      { INTEGER, and also the INTEGER+SSE merge result. The reference builds
+        an integer of max(8, used * 8) *bits*, i.e. at least one byte wide;
+        the equivalent byte width is what is reported here. }
+      piece_kind[eb] := SYSV_PIECE_INTEGER;
+      IF used > 1 THEN piece_bytes[eb] := used ELSE piece_bytes[eb] := 1;
+    END;
+  END;
+END;
 
 FUNCTION SysVAggClass(tk: INTEGER): INTEGER;
-{ Single landing point for the (currently MEMORY-only) SysV AMD64 aggregate
-  classifier, mirroring where c_abi.py's classify_aggregate sits -- a later
-  full eightbyte INTEGER/SSE/MEMORY classifier replaces just this function's
-  body, not any of its callers. Returns plain INTEGER (not INTEGER32),
+{ Memory-vs-register answer only, for callers that do not need the per-piece
+  breakdown ClassifyAggregate reports. Returns plain INTEGER (not INTEGER32),
   matching TypeKind's own return type -- the native typechecker's
   CheckExpr/IsNumeric treats INTEGER and INTEGER32 as distinct,
   non-interchangeable comparison operand kinds, and every caller here
   compares the result against an INTEGER-typed CONST (SYSV_CLASS_MEMORY /
-  SYSV_CLASS_UNIMPLEMENTED). }
+  SYSV_CLASS_COERCED). }
 VAR
-  sz: INTEGER32;
+  agg_class, n_pieces: INTEGER;
+  piece_kind: SysVPieceArr;
+  piece_bytes: SysVPieceSzArr;
 BEGIN
-  sz := TypeSizeBytes(tk);
-  IF (sz = 0) OR (sz > 16) THEN
-    SysVAggClass := SYSV_CLASS_MEMORY
-  ELSE
-    SysVAggClass := SYSV_CLASS_UNIMPLEMENTED;
+  ClassifyAggregate(tk, agg_class, n_pieces, piece_kind, piece_bytes);
+  SysVAggClass := agg_class;
 END;
 
 PROCEDURE FlattenParams(params_arr: ADRMEM; VAR n: INTEGER32; VAR names: ParamNameArr;
@@ -7225,11 +7432,13 @@ BEGIN
           byval, matching c_abi.py -- a pointer to a private per-call copy,
           with the byval(ty)/align attributes attached below once `fn`
           exists. Only MEMORY class (>16 bytes, or 0) is implemented; a
-          <=16-byte aggregate would need the eightbyte register-class
-          coercion this self-hosting subset doesn't implement (SysVAggClass). }
-        IF SysVAggClass(tks[i]) <> SYSV_CLASS_MEMORY THEN
-          AbortWith2('codegen: [C] FOREIGN aggregate parameter <=16 bytes needs SysV register-class coercion, not yet implemented, for: ', name);
-        SetPtrArrayElem(param_llvm_types, i - 1, LLVMPointerType(LLVMTypeForTk(tks[i]), 0));
+          COERCED-class aggregate (<=16 bytes, all eightbytes INTEGER/SSE)
+          instead needs the eightbyte register coercion this subset doesn't
+          implement yet, so it aborts loudly (SysVAggClass). }
+        IF SysVAggClass(tks[i]) = SYSV_CLASS_MEMORY THEN
+          SetPtrArrayElem(param_llvm_types, i - 1, LLVMPointerType(LLVMTypeForTk(tks[i]), 0))
+        ELSE
+          AbortWith2('codegen: [C] FOREIGN COERCED aggregate parameter needs SysV register-class coercion, not yet implemented, for: ', name);
       END
       ELSE
         { needs_copy[i] (value-mode ARRAY/RECORD/LSTRING/STRING aggregate)
