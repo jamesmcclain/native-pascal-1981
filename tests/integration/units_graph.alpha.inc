@@ -1,0 +1,4 @@
+INTERFACE;
+UNIT alpha (BaseValue);
+FUNCTION BaseValue: INTEGER;
+END;

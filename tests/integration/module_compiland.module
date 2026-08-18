@@ -1,0 +1,6 @@
+MODULE modulemath;
+FUNCTION Triple(x: INTEGER): INTEGER;
+BEGIN
+  Triple := x * 3;
+END;
+END.

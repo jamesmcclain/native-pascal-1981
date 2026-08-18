@@ -1,0 +1,8 @@
+(*$INCLUDE:'units_graph.alpha.inc'*)
+IMPLEMENTATION OF alpha;
+FUNCTION BaseValue: INTEGER;
+BEGIN
+  BaseValue := 40;
+END;
+BEGIN
+END.
