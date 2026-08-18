@@ -391,7 +391,7 @@ int main(int argc, char **argv)
         close(extra_fd);
         snprintf(extra_objects[extra_object_count], PATH_MAX, "%s", extra_ll);
         size_t extra_len = strlen(extra_objects[extra_object_count]);
-        strcpy(extra_objects[extra_object_count] + extra_len - 2, "o");
+        strcpy(extra_objects[extra_object_count] + extra_len - 3, ".o");
 
         char extra_cmd[16384];
         snprintf(extra_cmd, sizeof(extra_cmd),
