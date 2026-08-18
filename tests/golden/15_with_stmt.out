@@ -1,0 +1,5 @@
+p1 = (10, 20)
+shadowed x = 2
+nested x = 100
+p1.y after nested = 201
+pp^ = (7, 8)
