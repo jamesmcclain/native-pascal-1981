@@ -205,17 +205,58 @@ class HostUsesDeviceInterfaceTests(unittest.TestCase):
         self.assertIn("spliced INTERFACE header",
                       result.stderr + result.stdout)
 
-    def test_renaming_uses_imports_are_reported_rather_than_misbound(self):
-        # `USES bumpu (nudge)` would bind the local name `nudge` to the
-        # exported `bump`.  Native codegen does not implement that pairing, so
-        # it must say so instead of binding the call to whatever else matches.
+    def test_renaming_uses_imports_adds_an_alias_without_hiding_the_original(
+            self):
+        # `USES bumpu (nudge)` binds the additional local name `nudge` to
+        # the exported `bump`, alongside `bump` itself -- native codegen
+        # registers every local_interfaces declaration under its own real
+        # name unconditionally (that's what keeps a separately linked
+        # unit's actual symbol resolvable), then layers renaming aliases on
+        # top rather than hiding the original. So a LAUNCH still spelled
+        # `bump` (unedited here) keeps compiling and dispatches the same
+        # kernel a `nudge`-spelled LAUNCH would.
         def rename_import(tree):
             tree["uses"][0]["imports"][0] = "nudge"
 
         result = self._codegen_ast(self._edited_ast("host.pas", rename_import))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("renaming USES imports are not supported",
-                      result.stderr + result.stdout)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("declare void @bump(ptr, i32)", result.stdout)
+        self.assertIn("define internal void @__pas_klaunch_bump(",
+                      result.stdout)
+
+    def test_renaming_uses_imports_is_honored_end_to_end(self):
+        # The consistent case: both the import list and the call site are
+        # rewritten to the alias, matching what the real front end would
+        # produce for `USES bumpu (nudge); ... LAUNCH(nudge, ...)`.
+        def rename_import_and_call_site(tree):
+            tree["uses"][0]["imports"][0] = "nudge"
+
+            def rename_launch_kernel(node):
+                if isinstance(node, dict):
+                    if (node.get("__node_type__") == "ProcCallStmt"
+                            and node.get("name") == "LAUNCH"):
+                        kernel_arg = node["args"][0]
+                        if kernel_arg.get("name") == "bump":
+                            kernel_arg["name"] = "nudge"
+                    for v in node.values():
+                        rename_launch_kernel(v)
+                elif isinstance(node, list):
+                    for v in node:
+                        rename_launch_kernel(v)
+
+            rename_launch_kernel(tree)
+
+        result = self._codegen_ast(
+            self._edited_ast("host.pas", rename_import_and_call_site))
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        # The real, separately-linked symbol keeps its true spelling --
+        # renaming an import must not break linking against the kernel
+        # object, which still only defines `bump`.
+        self.assertIn("declare void @bump(ptr, i32)", result.stdout)
+        self.assertEqual(result.stdout.count("call void @bump("), 1)
+        # ...only the *local* alias (registry name and thunk) is renamed.
+        self.assertIn("define internal void @__pas_klaunch_nudge(",
+                      result.stdout)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,5 @@
+INTERFACE;
+UNIT circb (BVal);
+USES circa;
+FUNCTION BVal: INTEGER;
+END;

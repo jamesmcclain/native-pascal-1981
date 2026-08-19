@@ -266,6 +266,7 @@ FUNCTION cJSON_GetStringValue(item: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_IsNull(item: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_IsNumber(item: ADRMEM): CINT [C]; EXTERN;
 
+
 { SysV MEMORY-class byval/align attribute emission for [C] FOREIGN aggregate
   parameters (see EmitByvalAttrsForParam / SysVAggClass below). Modern LLVM
   requires a *typed* byval attribute, hence LLVMCreateTypeAttribute rather
@@ -362,6 +363,10 @@ CONST
     MAX_STMT_DEPTH=256 nesting ceiling bounds how many LabelStmts a routine
     body could plausibly contain. }
   MAX_CONSTS = 200;
+  MAX_UNITS = 64; { distinct spliced INTERFACE headers (local_interfaces
+    entries) reachable from one compiland's USES graph -- generous against
+    any real program while keeping unit-graph traversal a fixed array walk,
+    consistent with MAX_LABELS/MAX_ROUTINES/etc. above. }
   MAX_DEV_ROUTINES = 128; { device routines registered for the kernel-entry
     readonly summary below -- a separate, smaller table than `routines`
     because it holds AST declaration nodes (needed before any of them is
@@ -728,6 +733,17 @@ VAR
                           recently codegen'd expression is communicated back
                           through this global rather than threaded as a var
                           parameter through every call site. }
+
+  { Unit dependency graph: built once per compiland by BuildUnitInitOrder
+    from local_interfaces (each spliced INTERFACE header's own 'uses'
+    clause), consumed both for cycle diagnostics (CheckUsesClauses) and to
+    drive dependency-ordered pascal_init_<unit> calls out of a PROGRAM's
+    main (CodegenProgramUnitInits). A post-order DFS visit sequence is
+    already a dependency-before-dependent order, so no separate reversal
+    step is needed. }
+  unit_order: ARRAY [1..MAX_UNITS] OF Str255; { topo order, deps before dependents }
+  n_unit_order: INTEGER32;
+  unit_visit_state: ARRAY [1..MAX_UNITS] OF INTEGER32; { 0=unvisited, 1=in-progress (on DFS stack), 2=done }
 
 { ============================== utilities ============================== }
 
@@ -6982,19 +6998,206 @@ BEGIN
   SameIdentifier := la = lb;
 END;
 
-PROCEDURE CheckUsesClauses(root, local_ifaces: ADRMEM);
-{ Reconcile the root's USES clauses against the INTERFACE headers spliced into
-  the same source file. The declarations themselves are lowered by walking
-  local_interfaces, so this adds no symbols; it exists so the two ways a USES
-  can fail to be honored -- no spliced header for the named unit, and a
-  renaming import list, which native codegen does not implement -- report
-  themselves instead of surfacing later as "unknown routine" at the call site
-  or, worse, binding a call to the wrong exported symbol. }
+FUNCTION FindUnitIndex(local_ifaces: ADRMEM; unit_name: Str255): INTEGER32;
+{ 1-based index of unit_name within local_ifaces (case-insensitive), or 0. }
 VAR
-  uses_arr, clause, imports_arr: ADRMEM;
-  nclauses, ci, nimports, ii, nifaces, fi: INTEGER32;
-  unit_name, alias: Str255;
+  nifaces, fi: INTEGER32;
+BEGIN
+  FindUnitIndex := 0;
+  IF local_ifaces <> NIL THEN
+  BEGIN
+    nifaces := ArrSize(local_ifaces);
+    FOR fi := 0 TO nifaces - 1 DO
+      IF SameIdentifier(GetStr(ArrItem(local_ifaces, fi), 'name'), unit_name) THEN
+        FindUnitIndex := fi + 1;
+  END;
+END;
+
+PROCEDURE DFSVisitUnit(local_ifaces: ADRMEM; idx: INTEGER32);
+{ Post-order DFS over the USES graph rooted at local_ifaces[idx-1], recording
+  a dependency-before-dependent visit order into unit_order and detecting
+  cycles via unit_visit_state (0=unvisited, 1=in progress/on the current DFS
+  path, 2=finished). A cycle is a USES edge back to an in-progress unit --
+  reported by name rather than left to surface as a duplicate-symbol splice
+  failure or (for a genuinely self-referential include graph) an infinite
+  splice loop. }
+VAR
+  iface, uses_arr, clause: ADRMEM;
+  nu, ui, dep_idx: INTEGER32;
+  dep_name, this_name: Str255;
+BEGIN
+  IF unit_visit_state[idx] <> 2 THEN
+  BEGIN
+    this_name := GetStr(ArrItem(local_ifaces, idx - 1), 'name');
+    IF unit_visit_state[idx] = 1 THEN
+      AbortWith2('codegen: circular USES dependency detected involving unit: ', this_name);
+    unit_visit_state[idx] := 1;
+
+    iface := ArrItem(local_ifaces, idx - 1);
+    uses_arr := GetObj(iface, 'uses');
+    IF uses_arr <> NIL THEN
+    BEGIN
+      nu := ArrSize(uses_arr);
+      FOR ui := 0 TO nu - 1 DO
+      BEGIN
+        clause := ArrItem(uses_arr, ui);
+        dep_name := GetStr(clause, 'name');
+        dep_idx := FindUnitIndex(local_ifaces, dep_name);
+        { A dependency with no spliced header of its own is reported by
+          CheckUsesClauses's own direct-USES check below; nothing further to
+          traverse here. }
+        IF dep_idx <> 0 THEN
+          DFSVisitUnit(local_ifaces, dep_idx);
+      END;
+    END;
+
+    unit_visit_state[idx] := 2;
+    { A DEVICE unit never gets a pascal_init_<name> (see codegen's own
+      is_device_root guard around the ImplementationUnit/ModuleUnit init
+      emission): its dependencies are still walked above for cycle
+      detection, but it has nothing EmitUnitInitCalls could safely call, so
+      it's left out of unit_order entirely rather than becoming a call to
+      an undefined symbol. }
+    IF NOT GetBool(iface, 'is_device') THEN
+    BEGIN
+      IF n_unit_order >= MAX_UNITS THEN
+        AbortWith('codegen: too many units in one USES dependency graph');
+      n_unit_order := n_unit_order + 1;
+      unit_order[n_unit_order] := this_name;
+    END;
+  END;
+END;
+
+PROCEDURE BuildUnitInitOrder(root, local_ifaces: ADRMEM);
+{ Populates unit_order[1..n_unit_order] with every unit transitively reached
+  from root's own USES clauses, dependencies before dependents, each named
+  exactly once -- consumed by CodegenProgramUnitInits to call each unit's
+  pascal_init_<name> in a safe order, and doubles as the cycle-detection pass
+  for CheckUsesClauses. }
+VAR
+  uses_arr, clause: ADRMEM;
+  nclauses, ci, idx, nifaces, i: INTEGER32;
+  unit_name: Str255;
+BEGIN
+  n_unit_order := 0;
+  IF local_ifaces <> NIL THEN
+  BEGIN
+    nifaces := ArrSize(local_ifaces);
+    FOR i := 1 TO nifaces DO unit_visit_state[i] := 0;
+  END;
+  uses_arr := GetObj(root, 'uses');
+  IF uses_arr <> NIL THEN
+  BEGIN
+    nclauses := ArrSize(uses_arr);
+    FOR ci := 0 TO nclauses - 1 DO
+    BEGIN
+      clause := ArrItem(uses_arr, ci);
+      unit_name := GetStr(clause, 'name');
+      idx := FindUnitIndex(local_ifaces, unit_name);
+      IF idx <> 0 THEN DFSVisitUnit(local_ifaces, idx);
+    END;
+  END;
+END;
+
+PROCEDURE EmitUnitInitCalls;
+{ Emits a call to pascal_init_<name>() for every unit in unit_order (built
+  by BuildUnitInitOrder/DFSVisitUnit from this PROGRAM's own USES graph),
+  dependencies before dependents, each exactly once -- only a PROGRAM's own
+  main walks the whole graph this way; a MODULE/IMPLEMENTATION compiland
+  that itself USES other units does not call their inits on its own behalf,
+  since that would call some units' inits more than once across a multi-unit
+  link. Declares each pascal_init_<name> fresh here rather than reusing any
+  existing extern: the target is defined in a *separately compiled* object
+  (the unit's own IMPLEMENTATION, which -- see the is_implementation case
+  below -- now always emits this function, even with an empty body, so the
+  call here always has something real to link against). }
+VAR
+  i, j, len: INTEGER32;
+  init_name, uname: Str255;
+  init_fnty, init_fn, callres: ADRMEM;
+BEGIN
+  FOR i := 1 TO n_unit_order DO
+  BEGIN
+    uname := unit_order[i];
+    len := ORD(uname[0]);
+    FOR j := 1 TO len DO
+      IF (uname[j] >= 'A') AND (uname[j] <= 'Z') THEN uname[j] := CHR(ORD(uname[j]) + 32);
+    init_name := 'pascal_init_';
+    CONCAT(init_name, uname);
+    init_fnty := LLVMFunctionType(i32ty, NIL, 0, 0);
+    init_fn := LLVMAddFunction(modl, MakeCStr(init_name), init_fnty);
+    callres := LLVMBuildCall2(builder, init_fnty, init_fn, NIL, 0, MakeCStr(''));
+  END;
+END;
+
+PROCEDURE BindUsesAlias(alias, ename: Str255);
+{ `USES unit(alias)` binds alias to whatever ename (the export at that
+  position in the unit's own heading) already resolved to when its real
+  declaration was lowered under its own name a moment ago -- an *additional*
+  routine-table/symbol-table entry sharing the same underlying LLVMValueRef,
+  not a rename of the original. Renaming the original's own LLVM symbol
+  would break linking: a UNIT's real exported symbol (the one its separately
+  compiled IMPLEMENTATION object actually defines) has to keep its true
+  spelling for `clang`/`ld` to resolve it, no matter what a given importer
+  chooses to call it locally. Only PROCEDURE/FUNCTION and VAR exports can be
+  aliased this way; TYPE/CONST renaming is not implemented (neither has a
+  runtime symbol, so nothing stops a caller writing one, but no current
+  fixture or Python-reference behavior needs it, and guessing at the right
+  shape without one risks a silent gap of its own). }
+VAR
+  ri, si, i: INTEGER32;
+BEGIN
+  ri := LookupRoutine(ename);
+  IF ri <> 0 THEN
+  BEGIN
+    IF nroutines >= MAX_ROUTINES THEN AbortWith('codegen: too many routines');
+    nroutines := nroutines + 1;
+    routines[nroutines].name := alias;
+    routines[nroutines].is_func := routines[ri].is_func;
+    routines[nroutines].fn := routines[ri].fn;
+    routines[nroutines].fnty := routines[ri].fnty;
+    routines[nroutines].ret_tk := routines[ri].ret_tk;
+    routines[nroutines].nparams := routines[ri].nparams;
+    FOR i := 1 TO routines[ri].nparams DO
+    BEGIN
+      routines[nroutines].param_tk[i] := routines[ri].param_tk[i];
+      routines[nroutines].param_is_var[i] := routines[ri].param_is_var[i];
+      routines[nroutines].param_needs_copy[i] := routines[ri].param_needs_copy[i];
+    END;
+    routines[nroutines].has_body := routines[ri].has_body;
+    routines[nroutines].is_c := routines[ri].is_c;
+    routines[nroutines].is_vararg := routines[ri].is_vararg;
+  END
+  ELSE
+  BEGIN
+    si := LookupSym(ename);
+    IF si <> 0 THEN
+    BEGIN
+      IF nsymbols >= MAX_SYMBOLS THEN AbortWith('codegen: too many symbols');
+      nsymbols := nsymbols + 1;
+      symbols[nsymbols].name := alias;
+      symbols[nsymbols].tk := symbols[si].tk;
+      symbols[nsymbols].llvm_val := symbols[si].llvm_val;
+    END
+    ELSE
+      AbortWith2('codegen: USES import renames an export this compiler cannot alias (only PROCEDURE/FUNCTION/VAR are supported): ', ename);
+  END;
+END;
+
+PROCEDURE CheckUsesClauses(root, local_ifaces: ADRMEM);
+{ Reconcile the root's USES clauses against the INTERFACE headers spliced
+  into the same source file, and (for a renaming clause) bind each alias via
+  BindUsesAlias now that every local_interfaces declaration has already been
+  lowered under its own real name. Also reports the other ways a USES clause
+  can fail to be honored -- no spliced header for the named unit, and a
+  circular USES graph -- instead of surfacing later as "unknown routine" at
+  the call site or a duplicate-symbol splice failure. }
+VAR
+  uses_arr, clause, imports_arr, params_arr: ADRMEM;
+  nclauses, ci, nifaces, fi, nimports, ii, nparams: INTEGER32;
+  unit_name, alias, ename: Str255;
   found: BOOLEAN;
+  matched_iface: ADRMEM;
 BEGIN
   uses_arr := GetObj(root, 'uses');
   IF uses_arr <> NIL THEN
@@ -7005,28 +7208,41 @@ BEGIN
       clause := ArrItem(uses_arr, ci);
       unit_name := GetStr(clause, 'name');
       found := FALSE;
+      matched_iface := NIL;
       IF local_ifaces <> NIL THEN
       BEGIN
         nifaces := ArrSize(local_ifaces);
         FOR fi := 0 TO nifaces - 1 DO
           IF SameIdentifier(GetStr(ArrItem(local_ifaces, fi), 'name'), unit_name) THEN
+          BEGIN
             found := TRUE;
+            matched_iface := ArrItem(local_ifaces, fi);
+          END;
       END;
       IF NOT found THEN
         AbortWith2('codegen: USES unit needs a spliced INTERFACE header: ', unit_name);
-      imports_arr := GetObj(clause, 'imports');
+      imports_arr := GetObjOrNil(clause, 'imports');
       IF imports_arr <> NIL THEN
       BEGIN
+        params_arr := GetObj(matched_iface, 'params');
+        nparams := ArrSize(params_arr);
         nimports := ArrSize(imports_arr);
+        IF nimports > nparams THEN
+          AbortWith('codegen: USES import list renames more names than the unit exports');
         FOR ii := 0 TO nimports - 1 DO
         BEGIN
           alias := CStrToStr255(cJSON_GetStringValue(ArrItem(imports_arr, ii)));
-          IF LookupRoutine(alias) = 0 THEN
-            AbortWith2('codegen: renaming USES imports are not supported: ', alias);
+          ename := CStrToStr255(cJSON_GetStringValue(ArrItem(params_arr, ii)));
+          BindUsesAlias(alias, ename);
         END;
       END;
     END;
   END;
+  { Also walks the full transitive graph (not just root's direct clauses) so
+    a cycle two or more hops away from root -- e.g. root USES beta USES
+    alpha USES beta -- is still caught here rather than only when something
+    downstream happens to walk that far. }
+  BuildUnitInitOrder(root, local_ifaces);
 END;
 
 FUNCTION UpperStr(s: Str255): Str255;
@@ -8710,6 +8926,7 @@ BEGIN
       AbortWith('codegen: expected Block under ProgramUnit');
 
     CodegenDeclList(GetObj(block, 'decls'));
+    EmitUnitInitCalls;
     CodegenProgramParameters(root);
 
     body := GetObj(block, 'body');
@@ -8732,14 +8949,24 @@ BEGIN
     IF is_nvptx_device THEN RegisterDevRoutines(unit_decls);
     CodegenDeclList(unit_decls);
 
-    { Only an ordinary IMPLEMENTATION has startup code. DEVICE units have no
-      host startup context; reject an initializer rather than emitting a host
-      function into a device object. }
+    { Every ordinary IMPLEMENTATION *and* MODULE compiland now emits its
+      pascal_init_<name> unconditionally, with an empty (just `RETURN 0`)
+      body when it has no init_body of its own (a MODULE has no init syntax
+      at all, so its own emitted body is always empty) -- EmitUnitInitCalls
+      (see the is_program branch above) calls every USES'd unit's init
+      unconditionally too, without knowing from the importer's side alone
+      whether the exporting compiland was spelled MODULE or IMPLEMENTATION
+      OF, so the target has to always exist as a real symbol to link
+      against either way. DEVICE units have no host startup context at
+      all: reject an initializer rather than emitting a host function into
+      a device object, and skip emitting pascal_init_ for them entirely,
+      since nothing ever calls a device unit's init this way. }
     init_body := GetObj(root, 'init_body');
-    IF is_implementation AND (init_body <> NIL) AND (ArrSize(init_body) > 0) THEN
+    IF is_implementation AND is_device_root AND
+       (init_body <> NIL) AND (ArrSize(init_body) > 0) THEN
+      AbortWith('codegen: DEVICE IMPLEMENTATION units cannot have initialization bodies');
+    IF (is_implementation OR (root_nt = 'ModuleUnit')) AND NOT is_device_root THEN
     BEGIN
-      IF is_device_root THEN
-        AbortWith('codegen: DEVICE IMPLEMENTATION units cannot have initialization bodies');
       init_name := 'pascal_init_';
       unit_name := GetStr(root, 'name');
       { LLVM symbol spelling is case-sensitive; use the same lower-case
@@ -8755,8 +8982,11 @@ BEGIN
       LLVMPositionBuilderAtEnd(builder, init_bb);
       cur_fn := init_fn;
       cur_func_name := '';
-      SetupFunctionLabels(init_body);
-      CodegenStmtArray(init_body);
+      IF (init_body <> NIL) AND (ArrSize(init_body) > 0) THEN
+      BEGIN
+        SetupFunctionLabels(init_body);
+        CodegenStmtArray(init_body);
+      END;
       IF LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder)) = NIL THEN
         ret_val := LLVMBuildRet(builder, LLVMConstInt(i32ty, 0, 0));
     END;

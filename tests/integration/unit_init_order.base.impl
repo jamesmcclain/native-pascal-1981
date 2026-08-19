@@ -1,0 +1,11 @@
+(*$INCLUDE:'unit_init_order.base.inc'*)
+IMPLEMENTATION OF base;
+
+FUNCTION BaseValue: INTEGER;
+BEGIN
+  BaseValue := 1;
+END;
+
+BEGIN
+  WRITELN('base');
+END.

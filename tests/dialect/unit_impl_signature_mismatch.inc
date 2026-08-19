@@ -1,0 +1,6 @@
+INTERFACE;
+UNIT badsig (Bump);
+
+FUNCTION Bump(x: INTEGER; step: INTEGER): INTEGER;
+
+END;

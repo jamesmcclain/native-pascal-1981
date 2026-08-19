@@ -1,0 +1,13 @@
+(*$INCLUDE:'unit_init_order.base.inc'*)
+(*$INCLUDE:'unit_init_order.mid.inc'*)
+IMPLEMENTATION OF mid;
+USES base;
+
+FUNCTION MidValue: INTEGER;
+BEGIN
+  MidValue := BaseValue + 1;
+END;
+
+BEGIN
+  WRITELN('mid');
+END.

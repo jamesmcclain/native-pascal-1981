@@ -86,6 +86,7 @@ FUNCTION cJSON_GetArrayItem(arr: ADRMEM; index: CINT): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateObject: ADRMEM [C]; EXTERN;
 FUNCTION cJSON_Print(item: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_GetStringValue(item: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION cJSON_IsNull(item: ADRMEM): CINT [C]; EXTERN;
 FUNCTION puts(str: ADRMEM): CINT [C]; EXTERN;
 PROCEDURE exit(code: CINT) [C]; EXTERN;
 
@@ -1582,6 +1583,270 @@ BEGIN
   CheckStmtList(body_arr);
 END;
 
+FUNCTION SameIdentifier(a, b: Str255): BOOLEAN;
+{ Case-insensitive identifier comparison -- a USES clause is matched against
+  a UNIT heading written in a different file, where the two spellings
+  routinely differ in case, matching codegen.pas's own SameIdentifier. }
+VAR
+  la, lb: Str255;
+  i, n: INTEGER;
+BEGIN
+  la := a;
+  lb := b;
+  n := ORD(la[0]);
+  FOR i := 1 TO n DO
+    IF (la[i] >= 'A') AND (la[i] <= 'Z') THEN la[i] := CHR(ORD(la[i]) + 32);
+  n := ORD(lb[0]);
+  FOR i := 1 TO n DO
+    IF (lb[i] >= 'A') AND (lb[i] <= 'Z') THEN lb[i] := CHR(ORD(lb[i]) + 32);
+  SameIdentifier := la = lb;
+END;
+
+FUNCTION FindUnitIface(ifaces: ADRMEM; unit_name: Str255): ADRMEM;
+{ The local_interfaces entry named unit_name (case-insensitive), or NIL. }
+VAR
+  n, i: INTEGER32;
+  found: ADRMEM;
+BEGIN
+  found := NIL;
+  IF ifaces <> NIL THEN
+  BEGIN
+    n := cJSON_GetArraySize(ifaces);
+    FOR i := 0 TO n - 1 DO
+      IF SameIdentifier(GetStr(cJSON_GetArrayItem(ifaces, i), 'name'), unit_name) THEN
+        found := cJSON_GetArrayItem(ifaces, i);
+  END;
+  FindUnitIface := found;
+END;
+
+VAR
+  rs_is_func: BOOLEAN; { scratch result cells for ResolveRoutineSignature,
+    read immediately by its caller before the next call overwrites them --
+    avoids needing a VAR array parameter (this dialect has no named array
+    type to pass MAX_PARAMS-sized param_tk by reference with). }
+  rs_nparams: INTEGER32;
+  rs_param_tk: ARRAY [1..MAX_PARAMS] OF INTEGER;
+  rs_ret_tk: INTEGER;
+  rs_is_vararg: BOOLEAN;
+
+PROCEDURE ResolveRoutineSignature(decl: ADRMEM);
+{ Extracts a ProcDecl/FuncDecl's signature (kind, parameter types in
+  declaration order, return type, VARARGS-ness) into the rs_* scratch cells
+  -- the same resolution CheckDecl's own ProcDecl/FuncDecl case performs
+  when registering a symbol, factored out so an interface declaration and
+  its implementation counterpart can each be resolved and compared without
+  registering either as a symbol. }
+VAR
+  params_arr, param, pnames, ret_type_node, attrs_arr, attr_item: ADRMEM;
+  np, pi, ppi, pn, pj, nattrs, ai: INTEGER32;
+  ptk, paux, paux2, pidx, aux, aux2, idx_tk: INTEGER;
+BEGIN
+  rs_is_func := NodeType(decl) = 'FuncDecl';
+  params_arr := GetObj(decl, 'params');
+  np := cJSON_GetArraySize(params_arr);
+  IF rs_is_func THEN
+  BEGIN
+    ret_type_node := GetObj(decl, 'return_type');
+    ResolveTypeExpr(ret_type_node, rs_ret_tk, aux, aux2, idx_tk);
+  END
+  ELSE
+    rs_ret_tk := TK_VOID;
+  ppi := 0;
+  FOR pi := 0 TO np - 1 DO
+  BEGIN
+    param := cJSON_GetArrayItem(params_arr, pi);
+    ResolveTypeExpr(GetObj(param, 'type_expr'), ptk, paux, paux2, pidx);
+    pnames := GetObj(param, 'names');
+    pn := cJSON_GetArraySize(pnames);
+    FOR pj := 0 TO pn - 1 DO
+    BEGIN
+      ppi := ppi + 1;
+      IF ppi <= MAX_PARAMS THEN rs_param_tk[ppi] := ptk;
+    END;
+  END;
+  rs_nparams := ppi;
+  rs_is_vararg := FALSE;
+  attrs_arr := GetObj(decl, 'attributes');
+  nattrs := cJSON_GetArraySize(attrs_arr);
+  FOR ai := 0 TO nattrs - 1 DO
+  BEGIN
+    attr_item := cJSON_GetArrayItem(attrs_arr, ai);
+    IF GetStr(attr_item, 'name') = 'VARARGS' THEN rs_is_vararg := TRUE;
+  END;
+END;
+
+FUNCTION FindProcFuncDeclByName(decls_arr: ADRMEM; name: Str255): ADRMEM;
+VAR
+  n, i: INTEGER32;
+  decl: ADRMEM;
+  nt: Str255;
+  found: ADRMEM;
+BEGIN
+  found := NIL;
+  n := cJSON_GetArraySize(decls_arr);
+  FOR i := 0 TO n - 1 DO
+  BEGIN
+    decl := cJSON_GetArrayItem(decls_arr, i);
+    nt := NodeType(decl);
+    IF ((nt = 'ProcDecl') OR (nt = 'FuncDecl')) AND (GetStr(decl, 'name') = name) THEN
+      found := decl;
+  END;
+  FindProcFuncDeclByName := found;
+END;
+
+FUNCTION FindVarDeclContainingName(decls_arr: ADRMEM; name: Str255): ADRMEM;
+VAR
+  n, i, m, j: INTEGER32;
+  decl, names_arr: ADRMEM;
+  found: ADRMEM;
+BEGIN
+  found := NIL;
+  n := cJSON_GetArraySize(decls_arr);
+  FOR i := 0 TO n - 1 DO
+  BEGIN
+    decl := cJSON_GetArrayItem(decls_arr, i);
+    IF NodeType(decl) = 'VarDecl' THEN
+    BEGIN
+      names_arr := GetObj(decl, 'names');
+      m := cJSON_GetArraySize(names_arr);
+      FOR j := 0 TO m - 1 DO
+        IF CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, j))) = name THEN
+          found := decl;
+    END;
+  END;
+  FindVarDeclContainingName := found;
+END;
+
+PROCEDURE ValidateRoutineExport(iface_decl, impl_decls: ADRMEM; name: Str255);
+{ An exported PROCEDURE/FUNCTION needs a same-named, same-shaped definition
+  in the IMPLEMENTATION -- missing entirely, or present with a different
+  parameter count/type, return type, or VARARGS-ness, both compile clean
+  through every earlier native stage and previously only surfaced (if at
+  all) as a clang/linker error or a silently wrong ABI. Parameter *mode*
+  (VAR/CONST/value) is deliberately not compared: this typechecker's own
+  symbol table has never tracked per-parameter mode (see CheckDecl's
+  ProcDecl/FuncDecl case), so there is nothing here to compare it against
+  without extending SymRec for a dimension nothing else needs yet. }
+VAR
+  a_is_func, b_is_vararg: BOOLEAN;
+  a_nparams: INTEGER32;
+  a_param_tk: ARRAY [1..MAX_PARAMS] OF INTEGER;
+  a_ret_tk: INTEGER;
+  a_is_vararg: BOOLEAN;
+  impl_decl: ADRMEM;
+  k: INTEGER32;
+  mismatch: BOOLEAN;
+  msg: Str255;
+BEGIN
+  ResolveRoutineSignature(iface_decl);
+  a_is_func := rs_is_func;
+  a_nparams := rs_nparams;
+  FOR k := 1 TO rs_nparams DO
+    IF k <= MAX_PARAMS THEN a_param_tk[k] := rs_param_tk[k];
+  a_ret_tk := rs_ret_tk;
+  a_is_vararg := rs_is_vararg;
+
+  impl_decl := FindProcFuncDeclByName(impl_decls, name);
+  IF impl_decl = NIL THEN
+  BEGIN
+    msg := 'missing implementation for exported routine: ';
+    CONCAT(msg, name);
+    AddError(msg);
+  END
+  ELSE
+  BEGIN
+    ResolveRoutineSignature(impl_decl);
+    mismatch := FALSE;
+    IF rs_is_func <> a_is_func THEN mismatch := TRUE;
+    IF rs_nparams <> a_nparams THEN
+      mismatch := TRUE
+    ELSE
+      FOR k := 1 TO a_nparams DO
+        IF (k <= MAX_PARAMS) AND (rs_param_tk[k] <> a_param_tk[k]) THEN mismatch := TRUE;
+    IF rs_ret_tk <> a_ret_tk THEN mismatch := TRUE;
+    IF rs_is_vararg <> a_is_vararg THEN mismatch := TRUE;
+    IF mismatch THEN
+    BEGIN
+      msg := 'implementation signature does not match its interface declaration for: ';
+      CONCAT(msg, name);
+      AddError(msg);
+    END;
+  END;
+END;
+
+PROCEDURE ValidateVarExport(iface_type_expr, impl_decls: ADRMEM; name: Str255);
+{ An exported VAR needs its own matching definition in the IMPLEMENTATION
+  too (unlike TYPE/CONST, which are shared by reference from the spliced
+  interface and never redeclared -- see jsonutil.pas, which never
+  redeclares its own interface's Str255/CharBuf256/PCharBuf TYPEs): each
+  compiland's `Counter` is its own global storage, and the two need to
+  agree on its type for the extern declaration codegen emits in an
+  importer to actually match what this compiland defines. }
+VAR
+  a_tk, a_aux, a_aux2, a_idx_tk: INTEGER;
+  b_tk, b_aux, b_aux2, b_idx_tk: INTEGER;
+  impl_decl: ADRMEM;
+  msg: Str255;
+BEGIN
+  ResolveTypeExpr(iface_type_expr, a_tk, a_aux, a_aux2, a_idx_tk);
+  impl_decl := FindVarDeclContainingName(impl_decls, name);
+  IF impl_decl = NIL THEN
+  BEGIN
+    msg := 'missing implementation for exported VAR: ';
+    CONCAT(msg, name);
+    AddError(msg);
+  END
+  ELSE
+  BEGIN
+    ResolveTypeExpr(GetObj(impl_decl, 'type_expr'), b_tk, b_aux, b_aux2, b_idx_tk);
+    IF (b_tk <> a_tk) OR (b_aux <> a_aux) OR (b_aux2 <> a_aux2) OR (b_idx_tk <> a_idx_tk) THEN
+    BEGIN
+      msg := 'implementation type does not match its interface declaration for: ';
+      CONCAT(msg, name);
+      AddError(msg);
+    END;
+  END;
+END;
+
+PROCEDURE ValidateImplementationContract(root, own_iface: ADRMEM);
+{ own_iface is the spliced INTERFACE header matching this ImplementationUnit
+  by name (found via FindUnitIface), or NIL for an IMPLEMENTATION with no
+  matching spliced header at all -- codegen.pas's CheckUsesClauses-adjacent
+  "needs a spliced INTERFACE header" diagnostic covers that gap already, so
+  there is nothing further to validate here in that case. Every exported
+  PROCEDURE/FUNCTION/VAR must have a matching, conformant declaration in
+  root's own decls; TYPE/CONST are shared by reference from the splice and
+  are deliberately not required to be redeclared (see ValidateVarExport). }
+VAR
+  iface_decls, impl_decls, decl, names_arr: ADRMEM;
+  n, i, m, j: INTEGER32;
+  dnt, nm: Str255;
+BEGIN
+  IF own_iface <> NIL THEN
+  BEGIN
+    iface_decls := GetObj(own_iface, 'decls');
+    impl_decls := GetObj(root, 'decls');
+    n := cJSON_GetArraySize(iface_decls);
+    FOR i := 0 TO n - 1 DO
+    BEGIN
+      decl := cJSON_GetArrayItem(iface_decls, i);
+      dnt := NodeType(decl);
+      IF (dnt = 'ProcDecl') OR (dnt = 'FuncDecl') THEN
+        ValidateRoutineExport(decl, impl_decls, GetStr(decl, 'name'))
+      ELSE IF dnt = 'VarDecl' THEN
+      BEGIN
+        names_arr := GetObj(decl, 'names');
+        m := cJSON_GetArraySize(names_arr);
+        FOR j := 0 TO m - 1 DO
+        BEGIN
+          nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, j)));
+          ValidateVarExport(GetObj(decl, 'type_expr'), impl_decls, nm);
+        END;
+      END;
+    END;
+  END;
+END;
+
 PROCEDURE CheckUnit(root: ADRMEM);
 { Only ProgramUnit nests its decls/body inside a 'block' object -- see
   ast_nodes.py's ProgramUnit vs ModuleUnit/InterfaceUnit/ImplementationUnit:
@@ -1608,6 +1873,8 @@ BEGIN
       CheckDecl(cJSON_GetArrayItem(decls_arr, i));
     IF nt = 'ImplementationUnit' THEN
     BEGIN
+      ValidateImplementationContract(root,
+        FindUnitIface(GetObj(root, 'local_interfaces'), GetStr(root, 'name')));
       init_body := GetObj(root, 'init_body');
       IF init_body <> NIL THEN CheckStmtList(init_body);
     END;
@@ -1617,13 +1884,93 @@ END;
 { ============================== I/O driver =============================== }
 { ReadAllStdin now lives in jsonutil. }
 
+FUNCTION GetObjOrNil(obj: ADRMEM; key: Str255): ADRMEM;
+{ GetObj, but folding a "present but JSON null" field (e.g. an unparenthesized
+  `USES unit;`'s 'imports', serialized as null rather than omitted) down to
+  NIL too -- matches codegen.pas's own GetObjOrNil, needed here for the same
+  reason: a bare GetObj<>NIL check would otherwise treat "no imports" as "an
+  empty, non-NIL imports list" and filter every declaration out. }
+VAR
+  v: ADRMEM;
+BEGIN
+  v := GetObj(obj, key);
+  IF (v <> NIL) AND (cJSON_IsNull(v) <> 0) THEN v := NIL;
+  GetObjOrNil := v;
+END;
+
+PROCEDURE BindUsesAlias(alias, ename: Str255);
+{ `USES unit(alias)` binds alias to whatever ename (the export at that
+  position in the unit's own heading) already resolved to when its real
+  declaration was registered under its own name a moment ago -- see
+  codegen.pas's own BindUsesAlias for why this is an *additional* symbol
+  entry sharing the original's type info, not a rename of the original:
+  the original name still has to typecheck too, since codegen still lowers
+  every local_interfaces declaration under its real spelling. }
+VAR
+  si, ai, pi: INTEGER32;
+BEGIN
+  si := LookupSymbol(ename);
+  IF si = 0 THEN
+    AddError('USES import renames an export with no matching declaration')
+  ELSE
+  BEGIN
+    ai := DefineSymbol(alias, symbols[si].kind, symbols[si].tk,
+      symbols[si].aux, symbols[si].aux2, symbols[si].idx_tk);
+    symbols[ai].nparams := symbols[si].nparams;
+    FOR pi := 1 TO symbols[si].nparams DO
+      symbols[ai].param_tk[pi] := symbols[si].param_tk[pi];
+    symbols[ai].ret_tk := symbols[si].ret_tk;
+    symbols[ai].is_vararg := symbols[si].is_vararg;
+  END;
+END;
+
+PROCEDURE CheckLocalInterfaceUses(root, ifaces: ADRMEM);
+{ Once every local_interfaces declaration has been registered under its own
+  real name (CheckLocalInterfaces below), bind any renaming USES import's
+  alias -- mirrors codegen.pas's own CheckUsesClauses imports handling, run
+  at the equivalent point in the typechecker's own pass. }
+VAR
+  uses_arr, clause, imports_arr, params_arr: ADRMEM;
+  nclauses, ci, nimports, ii, nparams: INTEGER32;
+  unit_name, alias, ename: Str255;
+BEGIN
+  uses_arr := GetObj(root, 'uses');
+  IF uses_arr <> NIL THEN
+  BEGIN
+    nclauses := cJSON_GetArraySize(uses_arr);
+    FOR ci := 0 TO nclauses - 1 DO
+    BEGIN
+      clause := cJSON_GetArrayItem(uses_arr, ci);
+      imports_arr := GetObjOrNil(clause, 'imports');
+      IF imports_arr <> NIL THEN
+      BEGIN
+        unit_name := GetStr(clause, 'name');
+        params_arr := GetObj(FindUnitIface(ifaces, unit_name), 'params');
+        nparams := cJSON_GetArraySize(params_arr);
+        nimports := cJSON_GetArraySize(imports_arr);
+        IF nimports > nparams THEN
+          AddError('USES import list renames more names than the unit exports')
+        ELSE
+          FOR ii := 0 TO nimports - 1 DO
+          BEGIN
+            alias := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(imports_arr, ii)));
+            ename := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(params_arr, ii)));
+            BindUsesAlias(alias, ename);
+          END;
+      END;
+    END;
+  END;
+END;
+
 PROCEDURE CheckLocalInterfaces(root: ADRMEM);
 { USES X splices X's INTERFACE into this file's local_interfaces list (see
   units.py's check_program_unit): each entry's decls are signature-only (no
   body -- the real IMPLEMENTATION is a separately-compiled/linked object), so
   running them through the ordinary CheckDecl dispatch registers their TYPEs
   and PROC/FUNC signatures as callable symbols exactly like an EXTERN decl,
-  with no body to check. }
+  with no body to check. A renaming USES clause (`USES unit(alias, ...)`) is
+  additionally honored by CheckLocalInterfaceUses, once every real name here
+  is registered. }
 VAR
   ifaces, decls_arr: ADRMEM;
   n, ni, m, di: INTEGER32;
@@ -1664,6 +2011,7 @@ BEGIN
 
   root := ReadAllStdin;
   CheckLocalInterfaces(root);
+  CheckLocalInterfaceUses(root, GetObj(root, 'local_interfaces'));
   CheckUnit(root);
 
   IF nerrors > 0 THEN
