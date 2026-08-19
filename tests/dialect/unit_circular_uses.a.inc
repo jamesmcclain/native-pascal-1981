@@ -1,0 +1,5 @@
+INTERFACE;
+UNIT circa (AVal);
+USES circb;
+FUNCTION AVal: INTEGER;
+END;
