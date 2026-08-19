@@ -1,0 +1,5 @@
+INTERFACE;
+UNIT top (TopValue);
+USES mid;
+FUNCTION TopValue: INTEGER;
+END;

@@ -1,0 +1,5 @@
+INTERFACE;
+UNIT mid (MidValue);
+USES base;
+FUNCTION MidValue: INTEGER;
+END;

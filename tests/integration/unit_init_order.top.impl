@@ -1,0 +1,13 @@
+(*$INCLUDE:'unit_init_order.mid.inc'*)
+(*$INCLUDE:'unit_init_order.top.inc'*)
+IMPLEMENTATION OF top;
+USES mid;
+
+FUNCTION TopValue: INTEGER;
+BEGIN
+  TopValue := MidValue + 1;
+END;
+
+BEGIN
+  WRITELN('top');
+END.

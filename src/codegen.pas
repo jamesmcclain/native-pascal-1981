@@ -7052,10 +7052,19 @@ BEGIN
     END;
 
     unit_visit_state[idx] := 2;
-    IF n_unit_order >= MAX_UNITS THEN
-      AbortWith('codegen: too many units in one USES dependency graph');
-    n_unit_order := n_unit_order + 1;
-    unit_order[n_unit_order] := this_name;
+    { A DEVICE unit never gets a pascal_init_<name> (see codegen's own
+      is_device_root guard around the ImplementationUnit/ModuleUnit init
+      emission): its dependencies are still walked above for cycle
+      detection, but it has nothing EmitUnitInitCalls could safely call, so
+      it's left out of unit_order entirely rather than becoming a call to
+      an undefined symbol. }
+    IF NOT GetBool(iface, 'is_device') THEN
+    BEGIN
+      IF n_unit_order >= MAX_UNITS THEN
+        AbortWith('codegen: too many units in one USES dependency graph');
+      n_unit_order := n_unit_order + 1;
+      unit_order[n_unit_order] := this_name;
+    END;
   END;
 END;
 
@@ -7087,6 +7096,37 @@ BEGIN
       idx := FindUnitIndex(local_ifaces, unit_name);
       IF idx <> 0 THEN DFSVisitUnit(local_ifaces, idx);
     END;
+  END;
+END;
+
+PROCEDURE EmitUnitInitCalls;
+{ Emits a call to pascal_init_<name>() for every unit in unit_order (built
+  by BuildUnitInitOrder/DFSVisitUnit from this PROGRAM's own USES graph),
+  dependencies before dependents, each exactly once -- only a PROGRAM's own
+  main walks the whole graph this way; a MODULE/IMPLEMENTATION compiland
+  that itself USES other units does not call their inits on its own behalf,
+  since that would call some units' inits more than once across a multi-unit
+  link. Declares each pascal_init_<name> fresh here rather than reusing any
+  existing extern: the target is defined in a *separately compiled* object
+  (the unit's own IMPLEMENTATION, which -- see the is_implementation case
+  below -- now always emits this function, even with an empty body, so the
+  call here always has something real to link against). }
+VAR
+  i, j, len: INTEGER32;
+  init_name, uname: Str255;
+  init_fnty, init_fn, callres: ADRMEM;
+BEGIN
+  FOR i := 1 TO n_unit_order DO
+  BEGIN
+    uname := unit_order[i];
+    len := ORD(uname[0]);
+    FOR j := 1 TO len DO
+      IF (uname[j] >= 'A') AND (uname[j] <= 'Z') THEN uname[j] := CHR(ORD(uname[j]) + 32);
+    init_name := 'pascal_init_';
+    CONCAT(init_name, uname);
+    init_fnty := LLVMFunctionType(i32ty, NIL, 0, 0);
+    init_fn := LLVMAddFunction(modl, MakeCStr(init_name), init_fnty);
+    callres := LLVMBuildCall2(builder, init_fnty, init_fn, NIL, 0, MakeCStr(''));
   END;
 END;
 
@@ -8886,6 +8926,7 @@ BEGIN
       AbortWith('codegen: expected Block under ProgramUnit');
 
     CodegenDeclList(GetObj(block, 'decls'));
+    EmitUnitInitCalls;
     CodegenProgramParameters(root);
 
     body := GetObj(block, 'body');
@@ -8908,14 +8949,24 @@ BEGIN
     IF is_nvptx_device THEN RegisterDevRoutines(unit_decls);
     CodegenDeclList(unit_decls);
 
-    { Only an ordinary IMPLEMENTATION has startup code. DEVICE units have no
-      host startup context; reject an initializer rather than emitting a host
-      function into a device object. }
+    { Every ordinary IMPLEMENTATION *and* MODULE compiland now emits its
+      pascal_init_<name> unconditionally, with an empty (just `RETURN 0`)
+      body when it has no init_body of its own (a MODULE has no init syntax
+      at all, so its own emitted body is always empty) -- EmitUnitInitCalls
+      (see the is_program branch above) calls every USES'd unit's init
+      unconditionally too, without knowing from the importer's side alone
+      whether the exporting compiland was spelled MODULE or IMPLEMENTATION
+      OF, so the target has to always exist as a real symbol to link
+      against either way. DEVICE units have no host startup context at
+      all: reject an initializer rather than emitting a host function into
+      a device object, and skip emitting pascal_init_ for them entirely,
+      since nothing ever calls a device unit's init this way. }
     init_body := GetObj(root, 'init_body');
-    IF is_implementation AND (init_body <> NIL) AND (ArrSize(init_body) > 0) THEN
+    IF is_implementation AND is_device_root AND
+       (init_body <> NIL) AND (ArrSize(init_body) > 0) THEN
+      AbortWith('codegen: DEVICE IMPLEMENTATION units cannot have initialization bodies');
+    IF (is_implementation OR (root_nt = 'ModuleUnit')) AND NOT is_device_root THEN
     BEGIN
-      IF is_device_root THEN
-        AbortWith('codegen: DEVICE IMPLEMENTATION units cannot have initialization bodies');
       init_name := 'pascal_init_';
       unit_name := GetStr(root, 'name');
       { LLVM symbol spelling is case-sensitive; use the same lower-case
@@ -8931,8 +8982,11 @@ BEGIN
       LLVMPositionBuilderAtEnd(builder, init_bb);
       cur_fn := init_fn;
       cur_func_name := '';
-      SetupFunctionLabels(init_body);
-      CodegenStmtArray(init_body);
+      IF (init_body <> NIL) AND (ArrSize(init_body) > 0) THEN
+      BEGIN
+        SetupFunctionLabels(init_body);
+        CodegenStmtArray(init_body);
+      END;
       IF LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder)) = NIL THEN
         ret_val := LLVMBuildRet(builder, LLVMConstInt(i32ty, 0, 0));
     END;
