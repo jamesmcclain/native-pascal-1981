@@ -1,0 +1,7 @@
+INTERFACE;
+UNIT mathutil (Square, Cube);
+
+FUNCTION Square(x: INTEGER): INTEGER;
+FUNCTION Cube(x: INTEGER): INTEGER;
+
+END;

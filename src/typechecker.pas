@@ -86,6 +86,7 @@ FUNCTION cJSON_GetArrayItem(arr: ADRMEM; index: CINT): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateObject: ADRMEM [C]; EXTERN;
 FUNCTION cJSON_Print(item: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_GetStringValue(item: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION cJSON_IsNull(item: ADRMEM): CINT [C]; EXTERN;
 FUNCTION puts(str: ADRMEM): CINT [C]; EXTERN;
 PROCEDURE exit(code: CINT) [C]; EXTERN;
 
@@ -1617,13 +1618,129 @@ END;
 { ============================== I/O driver =============================== }
 { ReadAllStdin now lives in jsonutil. }
 
+FUNCTION SameIdentifier(a, b: Str255): BOOLEAN;
+{ Case-insensitive identifier comparison -- a USES clause is matched against
+  a UNIT heading written in a different file, where the two spellings
+  routinely differ in case, matching codegen.pas's own SameIdentifier. }
+VAR
+  la, lb: Str255;
+  i, n: INTEGER;
+BEGIN
+  la := a;
+  lb := b;
+  n := ORD(la[0]);
+  FOR i := 1 TO n DO
+    IF (la[i] >= 'A') AND (la[i] <= 'Z') THEN la[i] := CHR(ORD(la[i]) + 32);
+  n := ORD(lb[0]);
+  FOR i := 1 TO n DO
+    IF (lb[i] >= 'A') AND (lb[i] <= 'Z') THEN lb[i] := CHR(ORD(lb[i]) + 32);
+  SameIdentifier := la = lb;
+END;
+
+FUNCTION GetObjOrNil(obj: ADRMEM; key: Str255): ADRMEM;
+{ GetObj, but folding a "present but JSON null" field (e.g. an unparenthesized
+  `USES unit;`'s 'imports', serialized as null rather than omitted) down to
+  NIL too -- matches codegen.pas's own GetObjOrNil, needed here for the same
+  reason: a bare GetObj<>NIL check would otherwise treat "no imports" as "an
+  empty, non-NIL imports list" and filter every declaration out. }
+VAR
+  v: ADRMEM;
+BEGIN
+  v := GetObj(obj, key);
+  IF (v <> NIL) AND (cJSON_IsNull(v) <> 0) THEN v := NIL;
+  GetObjOrNil := v;
+END;
+
+PROCEDURE BindUsesAlias(alias, ename: Str255);
+{ `USES unit(alias)` binds alias to whatever ename (the export at that
+  position in the unit's own heading) already resolved to when its real
+  declaration was registered under its own name a moment ago -- see
+  codegen.pas's own BindUsesAlias for why this is an *additional* symbol
+  entry sharing the original's type info, not a rename of the original:
+  the original name still has to typecheck too, since codegen still lowers
+  every local_interfaces declaration under its real spelling. }
+VAR
+  si, ai, pi: INTEGER32;
+BEGIN
+  si := LookupSymbol(ename);
+  IF si = 0 THEN
+    AddError('USES import renames an export with no matching declaration')
+  ELSE
+  BEGIN
+    ai := DefineSymbol(alias, symbols[si].kind, symbols[si].tk,
+      symbols[si].aux, symbols[si].aux2, symbols[si].idx_tk);
+    symbols[ai].nparams := symbols[si].nparams;
+    FOR pi := 1 TO symbols[si].nparams DO
+      symbols[ai].param_tk[pi] := symbols[si].param_tk[pi];
+    symbols[ai].ret_tk := symbols[si].ret_tk;
+    symbols[ai].is_vararg := symbols[si].is_vararg;
+  END;
+END;
+
+FUNCTION FindUnitIface(ifaces: ADRMEM; unit_name: Str255): ADRMEM;
+{ The local_interfaces entry named unit_name (case-insensitive), or NIL. }
+VAR
+  n, i: INTEGER32;
+  found: ADRMEM;
+BEGIN
+  found := NIL;
+  IF ifaces <> NIL THEN
+  BEGIN
+    n := cJSON_GetArraySize(ifaces);
+    FOR i := 0 TO n - 1 DO
+      IF SameIdentifier(GetStr(cJSON_GetArrayItem(ifaces, i), 'name'), unit_name) THEN
+        found := cJSON_GetArrayItem(ifaces, i);
+  END;
+  FindUnitIface := found;
+END;
+
+PROCEDURE CheckLocalInterfaceUses(root, ifaces: ADRMEM);
+{ Once every local_interfaces declaration has been registered under its own
+  real name (CheckLocalInterfaces below), bind any renaming USES import's
+  alias -- mirrors codegen.pas's own CheckUsesClauses imports handling, run
+  at the equivalent point in the typechecker's own pass. }
+VAR
+  uses_arr, clause, imports_arr, params_arr: ADRMEM;
+  nclauses, ci, nimports, ii, nparams: INTEGER32;
+  unit_name, alias, ename: Str255;
+BEGIN
+  uses_arr := GetObj(root, 'uses');
+  IF uses_arr <> NIL THEN
+  BEGIN
+    nclauses := cJSON_GetArraySize(uses_arr);
+    FOR ci := 0 TO nclauses - 1 DO
+    BEGIN
+      clause := cJSON_GetArrayItem(uses_arr, ci);
+      imports_arr := GetObjOrNil(clause, 'imports');
+      IF imports_arr <> NIL THEN
+      BEGIN
+        unit_name := GetStr(clause, 'name');
+        params_arr := GetObj(FindUnitIface(ifaces, unit_name), 'params');
+        nparams := cJSON_GetArraySize(params_arr);
+        nimports := cJSON_GetArraySize(imports_arr);
+        IF nimports > nparams THEN
+          AddError('USES import list renames more names than the unit exports')
+        ELSE
+          FOR ii := 0 TO nimports - 1 DO
+          BEGIN
+            alias := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(imports_arr, ii)));
+            ename := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(params_arr, ii)));
+            BindUsesAlias(alias, ename);
+          END;
+      END;
+    END;
+  END;
+END;
+
 PROCEDURE CheckLocalInterfaces(root: ADRMEM);
 { USES X splices X's INTERFACE into this file's local_interfaces list (see
   units.py's check_program_unit): each entry's decls are signature-only (no
   body -- the real IMPLEMENTATION is a separately-compiled/linked object), so
   running them through the ordinary CheckDecl dispatch registers their TYPEs
   and PROC/FUNC signatures as callable symbols exactly like an EXTERN decl,
-  with no body to check. }
+  with no body to check. A renaming USES clause (`USES unit(alias, ...)`) is
+  additionally honored by CheckLocalInterfaceUses, once every real name here
+  is registered. }
 VAR
   ifaces, decls_arr: ADRMEM;
   n, ni, m, di: INTEGER32;
@@ -1664,6 +1781,7 @@ BEGIN
 
   root := ReadAllStdin;
   CheckLocalInterfaces(root);
+  CheckLocalInterfaceUses(root, GetObj(root, 'local_interfaces'));
   CheckUnit(root);
 
   IF nerrors > 0 THEN

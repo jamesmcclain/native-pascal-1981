@@ -266,6 +266,7 @@ FUNCTION cJSON_GetStringValue(item: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_IsNull(item: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_IsNumber(item: ADRMEM): CINT [C]; EXTERN;
 
+
 { SysV MEMORY-class byval/align attribute emission for [C] FOREIGN aggregate
   parameters (see EmitByvalAttrsForParam / SysVAggClass below). Modern LLVM
   requires a *typed* byval attribute, hence LLVMCreateTypeAttribute rather
@@ -7089,20 +7090,74 @@ BEGIN
   END;
 END;
 
-PROCEDURE CheckUsesClauses(root, local_ifaces: ADRMEM);
-{ Reconcile the root's USES clauses against the INTERFACE headers spliced into
-  the same source file. The declarations themselves are lowered by walking
-  local_interfaces, so this adds no symbols; it exists so the ways a USES can
-  fail to be honored -- no spliced header for the named unit, a circular USES
-  graph, and a renaming import list, which native codegen does not implement
-  -- report themselves instead of surfacing later as "unknown routine" at the
-  call site, a duplicate-symbol splice failure, or (worse) binding a call to
-  the wrong exported symbol. }
+PROCEDURE BindUsesAlias(alias, ename: Str255);
+{ `USES unit(alias)` binds alias to whatever ename (the export at that
+  position in the unit's own heading) already resolved to when its real
+  declaration was lowered under its own name a moment ago -- an *additional*
+  routine-table/symbol-table entry sharing the same underlying LLVMValueRef,
+  not a rename of the original. Renaming the original's own LLVM symbol
+  would break linking: a UNIT's real exported symbol (the one its separately
+  compiled IMPLEMENTATION object actually defines) has to keep its true
+  spelling for `clang`/`ld` to resolve it, no matter what a given importer
+  chooses to call it locally. Only PROCEDURE/FUNCTION and VAR exports can be
+  aliased this way; TYPE/CONST renaming is not implemented (neither has a
+  runtime symbol, so nothing stops a caller writing one, but no current
+  fixture or Python-reference behavior needs it, and guessing at the right
+  shape without one risks a silent gap of its own). }
 VAR
-  uses_arr, clause, imports_arr: ADRMEM;
-  nclauses, ci, nimports, ii, nifaces, fi: INTEGER32;
-  unit_name, alias: Str255;
+  ri, si, i: INTEGER32;
+BEGIN
+  ri := LookupRoutine(ename);
+  IF ri <> 0 THEN
+  BEGIN
+    IF nroutines >= MAX_ROUTINES THEN AbortWith('codegen: too many routines');
+    nroutines := nroutines + 1;
+    routines[nroutines].name := alias;
+    routines[nroutines].is_func := routines[ri].is_func;
+    routines[nroutines].fn := routines[ri].fn;
+    routines[nroutines].fnty := routines[ri].fnty;
+    routines[nroutines].ret_tk := routines[ri].ret_tk;
+    routines[nroutines].nparams := routines[ri].nparams;
+    FOR i := 1 TO routines[ri].nparams DO
+    BEGIN
+      routines[nroutines].param_tk[i] := routines[ri].param_tk[i];
+      routines[nroutines].param_is_var[i] := routines[ri].param_is_var[i];
+      routines[nroutines].param_needs_copy[i] := routines[ri].param_needs_copy[i];
+    END;
+    routines[nroutines].has_body := routines[ri].has_body;
+    routines[nroutines].is_c := routines[ri].is_c;
+    routines[nroutines].is_vararg := routines[ri].is_vararg;
+  END
+  ELSE
+  BEGIN
+    si := LookupSym(ename);
+    IF si <> 0 THEN
+    BEGIN
+      IF nsymbols >= MAX_SYMBOLS THEN AbortWith('codegen: too many symbols');
+      nsymbols := nsymbols + 1;
+      symbols[nsymbols].name := alias;
+      symbols[nsymbols].tk := symbols[si].tk;
+      symbols[nsymbols].llvm_val := symbols[si].llvm_val;
+    END
+    ELSE
+      AbortWith2('codegen: USES import renames an export this compiler cannot alias (only PROCEDURE/FUNCTION/VAR are supported): ', ename);
+  END;
+END;
+
+PROCEDURE CheckUsesClauses(root, local_ifaces: ADRMEM);
+{ Reconcile the root's USES clauses against the INTERFACE headers spliced
+  into the same source file, and (for a renaming clause) bind each alias via
+  BindUsesAlias now that every local_interfaces declaration has already been
+  lowered under its own real name. Also reports the other ways a USES clause
+  can fail to be honored -- no spliced header for the named unit, and a
+  circular USES graph -- instead of surfacing later as "unknown routine" at
+  the call site or a duplicate-symbol splice failure. }
+VAR
+  uses_arr, clause, imports_arr, params_arr: ADRMEM;
+  nclauses, ci, nifaces, fi, nimports, ii, nparams: INTEGER32;
+  unit_name, alias, ename: Str255;
   found: BOOLEAN;
+  matched_iface: ADRMEM;
 BEGIN
   uses_arr := GetObj(root, 'uses');
   IF uses_arr <> NIL THEN
@@ -7113,24 +7168,32 @@ BEGIN
       clause := ArrItem(uses_arr, ci);
       unit_name := GetStr(clause, 'name');
       found := FALSE;
+      matched_iface := NIL;
       IF local_ifaces <> NIL THEN
       BEGIN
         nifaces := ArrSize(local_ifaces);
         FOR fi := 0 TO nifaces - 1 DO
           IF SameIdentifier(GetStr(ArrItem(local_ifaces, fi), 'name'), unit_name) THEN
+          BEGIN
             found := TRUE;
+            matched_iface := ArrItem(local_ifaces, fi);
+          END;
       END;
       IF NOT found THEN
         AbortWith2('codegen: USES unit needs a spliced INTERFACE header: ', unit_name);
-      imports_arr := GetObj(clause, 'imports');
+      imports_arr := GetObjOrNil(clause, 'imports');
       IF imports_arr <> NIL THEN
       BEGIN
+        params_arr := GetObj(matched_iface, 'params');
+        nparams := ArrSize(params_arr);
         nimports := ArrSize(imports_arr);
+        IF nimports > nparams THEN
+          AbortWith('codegen: USES import list renames more names than the unit exports');
         FOR ii := 0 TO nimports - 1 DO
         BEGIN
           alias := CStrToStr255(cJSON_GetStringValue(ArrItem(imports_arr, ii)));
-          IF LookupRoutine(alias) = 0 THEN
-            AbortWith2('codegen: renaming USES imports are not supported: ', alias);
+          ename := CStrToStr255(cJSON_GetStringValue(ArrItem(params_arr, ii)));
+          BindUsesAlias(alias, ename);
         END;
       END;
     END;
