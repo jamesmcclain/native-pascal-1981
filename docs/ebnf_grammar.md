@@ -35,6 +35,7 @@ compound_statement = "BEGIN" { statement [ ";" ] } "END" ;
 statement = assignment | procedure_call | compound_statement | if_statement | for_statement
           | repeat_statement | while_statement | case_statement | with_statement | goto_statement
           | label_statement | "RETURN" | ( "BREAK" | "CYCLE" ) [ label ] | empty ;
+empty = ;
 assignment = designator ( ":=" | "=" ) expression ;
 procedure_call = ( "WRITE" | "WRITELN" ) [ "(" write_argument { "," write_argument } ")" ]
                | identifier [ "(" [ expression_list ] ")" ] ;
@@ -76,7 +77,7 @@ record_type = "RECORD" { field_declaration ";" } [ field_declaration ] [ variant
 field_declaration = identifier_list ":" type ;
 variant_part = "CASE" [ identifier ":" ] type "OF" { variant_arm ";" } [ variant_arm ] ;
 variant_arm = case_constant_list ":" "(" { field_declaration [ ";" ] } ")" ;
-set_type = "SET" "OF" ( type | index_range ) ;
+set_type = "SET" "OF" ( type | fixed_index_range ) ;
 file_type = "FILE" "OF" type ;
 enum_type = "(" identifier_list ")" ;
 lstring_type = "LSTRING" "(" constant ")" ;
@@ -99,7 +100,6 @@ integer_literal = digit { digit } [ "#" radix_digit { radix_digit } ] ;
 real_literal = digit { digit } "." digit { digit } [ ( "E" | "e" ) [ "+" | "-" ] digit { digit } ] ;
 char_literal = "'" character "'" ;
 string_literal = "'" { character | "''" } "'" ;
+character = ? any character except "'" ? ;
 boolean_literal = "TRUE" | "FALSE" ;
 ```
-
-Keywords and identifiers are case-insensitive. Whitespace, `{ ... }` comments, and `(* ... *)` comments separate tokens. `{$INCLUDE:'file'}` and `(*$INCLUDE:'file'*)` splice the named file before parsing.
