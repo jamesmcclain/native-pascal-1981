@@ -25,7 +25,7 @@ GEN4_BINS := $(addprefix $(BUILD_DIR)/gen4/,$(STAGES))
 BOOTSTRAP_BINS := $(addprefix $(BIN_DIR)/,$(STAGES))
 FIXED_POINT := $(BUILD_DIR)/.fixed-point-verified
 
-.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-native test-bootstrap
+.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-driver test-native test-bootstrap
 
 all: runtime driver bootstrap
 
@@ -36,8 +36,8 @@ $(RUNTIME_LIB): $(RUNTIME_SRCS)
 
 driver: $(DRIVER_BIN)
 
-$(DRIVER_BIN): driver/main.c | $(BIN_DIR)
-	$(CC) $(CFLAGS) driver/main.c -o $@
+$(DRIVER_BIN): src/driver.pas src/jsonutil.pas scripts/build-stage.sh $(GEN4_BINS) $(FIXED_POINT) $(RUNTIME_LIB) | $(BIN_DIR)
+	NATIVE_LEXER="$(abspath $(BUILD_DIR)/gen4/lexer)" NATIVE_PARSER="$(abspath $(BUILD_DIR)/gen4/parser)" NATIVE_TYPECHECKER="$(abspath $(BUILD_DIR)/gen4/typechecker)" NATIVE_CODEGEN="$(abspath $(BUILD_DIR)/gen4/codegen)" ./scripts/build-stage.sh $< $@
 	ln -sf pascal1981-native $(DRIVER_ALIAS)
 
 $(BIN_DIR):
@@ -87,13 +87,17 @@ cleanest: cleaner
 	rm -rf .pytest_cache
 
 test: $(DRIVER_BIN)
+	./tests/driver.sh
 	./tests/run.sh
 	./tests/checklit.sh
 	PYTHONPATH=. $(PYTHON) -m pytest tests/parity/
 
-# The zero-Python subset of `test`: golden-file behavioral tests plus
-# IR/PTX-text directive assertions, no pytest/Python involved at all.
-test-native: $(DRIVER_BIN)
+# The zero-Python subset of `test`: driver, golden-file behavioral, and
+# IR/PTX-text directive tests. It does not run pytest or Python.
+test-driver: $(DRIVER_BIN)
+	./tests/driver.sh
+
+test-native: test-driver
 	./tests/run.sh
 	./tests/checklit.sh
 

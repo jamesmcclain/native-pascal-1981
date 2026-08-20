@@ -110,6 +110,12 @@ void  pas_freadset(struct pas_file_fcb *src,
 void  pas_fread_filename(struct pas_file_fcb *src,
                          struct pas_file_fcb *target);
 
+/* ---- Process command-line arguments (cmdline.c) ---- */
+
+int         pas_arg_count(void);
+const char *pas_arg_value(int index);
+char       *pas_toolchain_root(void);
+
 /* ---- stdin READ / READLN (readq.c) ---- */
 
 int   pas_read_int(int32_t *out);

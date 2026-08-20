@@ -19,6 +19,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
+#include <unistd.h>
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
 static int g_argc = 0;
 static char **g_argv = NULL;
@@ -32,6 +38,58 @@ void pas_args_init(int argc, char **argv)
 {
     g_argc = argc;
     g_argv = argv;
+}
+
+int pas_arg_count(void)
+{
+    return g_argc;
+}
+
+const char *pas_arg_value(int index)
+{
+    if (index < 0 || index >= g_argc || !g_argv) {
+        return NULL;
+    }
+    return g_argv[index];
+}
+
+/* Return an allocated toolchain root path. Linux uses /proc/self/exe when it
+ * is available. Other systems fall back to argv[0], then the current directory.
+ * This function returns path data only; the Pascal driver selects stage paths. */
+char *pas_toolchain_root(void)
+{
+    char path[PATH_MAX];
+    char *slash;
+    size_t length;
+
+#ifdef __linux__
+    ssize_t read_length = readlink("/proc/self/exe", path, sizeof(path) - 1);
+    if (read_length > 0) {
+        path[read_length] = '\0';
+    } else
+#endif
+    {
+        const char *argv0 = pas_arg_value(0);
+        if (argv0 && strchr(argv0, '/')) {
+            strncpy(path, argv0, sizeof(path) - 1);
+            path[sizeof(path) - 1] = '\0';
+        } else if (!getcwd(path, sizeof(path))) {
+            return strdup(".");
+        } else {
+            return strdup(path);
+        }
+    }
+
+    slash = strrchr(path, '/');
+    if (!slash) {
+        return strdup(".");
+    }
+    *slash = '\0';
+    length = strlen(path);
+    if (length >= 4 && strcmp(path + length - 4, "/bin") == 0) {
+        path[length - 4] = '\0';
+    }
+    return strdup(path[0] ? path : "/");
 }
 
 /* Begin reading program parameter `param_index` (0-based; argv slot is

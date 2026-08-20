@@ -5,8 +5,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Format C sources in runtime and driver
-VERSION_CONTROL=none find runtime driver -name '*.c' -exec indent -kr -nut -l180 {} +
+# Format C runtime sources. The compiler driver is Pascal.
+VERSION_CONTROL=none find runtime -name '*.c' -exec indent -kr -nut -l180 {} +
 
 # Format Python test files if present
 if find tests -name '*.py' 2>/dev/null | grep -q .; then
