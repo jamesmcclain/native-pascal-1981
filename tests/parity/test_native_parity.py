@@ -41,21 +41,23 @@ HAS_NATIVE_PIPELINE = all(path and os.access(path, os.X_OK)
                           for path in NATIVE.values())
 
 
-def _run(command, stdin=""):
+def _run(command, stdin="", cwd=ROOT):
     """Run one pipeline stage and retain stderr for useful parity failures."""
     return subprocess.run(
         command,
         input=stdin,
-        cwd=ROOT,
+        cwd=cwd,
         text=True,
         capture_output=True,
         timeout=30,
     )
 
 
-def _python_pipeline(source, stages):
+def _python_pipeline(source, stages, cwd=ROOT):
     """Run the reference stages with precisely the stdin/stdout stage protocol."""
-    result = _run([sys.executable, "-m", "pascal1981.cli_lex", str(source)])
+    result = _run([sys.executable, "-m", "pascal1981.cli_lex",
+                   str(source)],
+                  cwd=cwd)
     if result.returncode or stages == 1:
         return result
     result = _run([
@@ -66,7 +68,7 @@ def _python_pipeline(source, stages):
         str(source),
         "--dialect",
         "extended",
-    ], result.stdout)
+    ], result.stdout, cwd)
     if result.returncode or stages == 2:
         return result
     result = _run([
@@ -77,7 +79,7 @@ def _python_pipeline(source, stages):
         str(source),
         "--dialect",
         "extended",
-    ], result.stdout)
+    ], result.stdout, cwd)
     if result.returncode or stages == 3:
         return result
     return _run([
@@ -88,16 +90,16 @@ def _python_pipeline(source, stages):
         str(source),
         "--dialect",
         "extended",
-    ], result.stdout)
+    ], result.stdout, cwd)
 
 
-def _native_pipeline(source, stages):
+def _native_pipeline(source, stages, cwd=ROOT):
     """Run native stages, feeding each stage's stdout into the next one."""
-    result = _run([NATIVE["lexer"]], source.read_text())
+    result = _run([NATIVE["lexer"]], source.read_text(), cwd)
     for stage in ("parser", "typechecker", "codegen")[:stages - 1]:
         if result.returncode:
             return result
-        result = _run([NATIVE[stage]], result.stdout)
+        result = _run([NATIVE[stage]], result.stdout, cwd)
     return result
 
 
@@ -123,9 +125,10 @@ class TestNativeFixtureParity(unittest.TestCase):
     def _assert_json_equal(self,
                            source,
                            stages,
-                           normalizer=lambda value: value):
-        python = _python_pipeline(source, stages)
-        native = _native_pipeline(source, stages)
+                           normalizer=lambda value: value,
+                           cwd=ROOT):
+        python = _python_pipeline(source, stages, cwd)
+        native = _native_pipeline(source, stages, cwd)
         self.assertEqual(python.returncode, 0,
                          f"Python rejected {source}:\n{python.stderr}")
         self.assertEqual(native.returncode, 0,
@@ -181,6 +184,36 @@ class TestNativeFixtureParity(unittest.TestCase):
             (FIXTURES / "typecheck" / "should_fail").glob("*.pas")):
             with self.subTest(source=source.name):
                 self._assert_same_acceptance(source, stages=3)
+
+    def test_self_hosting_sources_have_canonical_stage_output(self):
+        """Diff the shared self-hosting sources without comparing LLVM text."""
+        for name in ("lexer.pas", "parser.pas", "typechecker.pas",
+                     "codegen.pas", "jsonutil.pas"):
+            source = ROOT / "src" / name
+            with self.subTest(source=name, stage="parser"):
+                self._assert_json_equal(source, stages=2, cwd=source.parent)
+            with self.subTest(source=name, stage="typechecker"):
+                self._assert_json_equal(source,
+                                        stages=3,
+                                        normalizer=_without_resolved_type,
+                                        cwd=source.parent)
+            with self.subTest(source=name, stage="codegen"):
+                for label, result in (("Python",
+                                       _python_pipeline(
+                                           source, 4, source.parent)),
+                                      ("native",
+                                       _native_pipeline(
+                                           source, 4, source.parent))):
+                    self.assertEqual(
+                        result.returncode, 0,
+                        f"{label} codegen rejected {source}:\n{result.stderr}")
+                    assembled = _run(
+                        ["clang", "-x", "ir", "-c", "-o", os.devnull, "-"],
+                        result.stdout)
+                    self.assertEqual(
+                        assembled.returncode, 0,
+                        f"{label} emitted invalid LLVM for {source}:\n{assembled.stderr}"
+                    )
 
     @unittest.skipUnless(shutil.which("clang"),
                          "requires clang to verify LLVM assembly")
