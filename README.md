@@ -20,9 +20,8 @@ Install these packages before you build the toolchain (for example, on Debian or
 
 ## Repository Layout
 
-- `src/`: Native compiler stages in Pascal (`lexer.pas`, `parser.pas`, `typechecker.pas`, `codegen.pas`, `jsonutil.pas`, `jsonutil.inc`).
+- `src/`: Native compiler stages and driver in Pascal (`lexer.pas`, `parser.pas`, `typechecker.pas`, `codegen.pas`, `driver.pas`, `jsonutil.pas`, `jsonutil.inc`).
 - `runtime/`: C runtime static library and headers (`libpascalrt.a`, `pascalrt.h`).
-- `driver/`: Native compiler driver in C (`main.c`).
 - `bin/`: Compiler driver (`pascal1981-native`, alias `pascal1981`) and stage binaries (`lexer`, `parser`, `typechecker`, `codegen`).
 - `scripts/`: Build scripts (`build-stage.sh`), formatting scripts (`beautify.sh`), and git hooks (run `git config core.hooksPath scripts/hooks` once per clone to enable the pre-commit formatting hook — it's local config, so a fresh checkout won't run it until you do). The multi-generation bootstrap itself is driven by the root `Makefile`'s `bootstrap` target, not a standalone script.
 - `tests/`: Test suites (golden files, unit tests, integration tests, dialect fixtures).
@@ -43,11 +42,20 @@ You can also override the C compiler/linker (default `clang`) with `CC`:
 CC=clang-20 make
 ```
 
+To rebuild only the four compiler stages, run:
+```bash
+make bootstrap
+```
+Then build the installed Pascal driver from the fixed-point stages:
+```bash
+make driver
+```
+
 The bootstrap process is composed of four steps:
 1. **Generation 1 (Hybrid)**: Builds the native compiler stages with the Python reference compiler (`pascal1981`).
 2. **Generation 2 (Self-hosted)**: Recompiles all native compiler stages with the Generation 1 binaries.
 3. **Generation 3 (Self-hosted)**: Recompiles all native compiler stages with the Generation 2 binaries.
-4. **Generation 4 (Fixed Point)**: Recompiles all native compiler stages with the Generation 3 binaries, verifies binary identity (`cmp`), and installs the binaries to `bin/`.
+4. **Generation 4 (Fixed Point)**: Recompiles all native compiler stages with the Generation 3 binaries and verifies binary identity (`cmp`). `make driver` then compiles `src/driver.pas` with those stages and installs it as `bin/pascal1981-native` (with `bin/pascal1981` as its alias).
 
 ### Compiling a Program
 To compile a Pascal program with the native compiler, run:
