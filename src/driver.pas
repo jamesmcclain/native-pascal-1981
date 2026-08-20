@@ -8,6 +8,7 @@ USES jsonutil;
 FUNCTION pas_arg_count: CINT [C]; EXTERN;
 FUNCTION pas_arg_value(index: CINT): ADRMEM [C]; EXTERN;
 FUNCTION getenv(name: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION pas_toolchain_root: ADRMEM [C]; EXTERN;
 FUNCTION open(path: ADRMEM; flags: CINT; mode: CINT): CINT [C]; EXTERN;
 FUNCTION close(fd: CINT): CINT [C]; EXTERN;
 FUNCTION pipe(fds: ADRMEM): CINT [C]; EXTERN;
@@ -27,7 +28,7 @@ VAR
   inputs: RawArgArray;
   input_count, i: CINT;
   current, output_file: ADRMEM;
-  lexer_bin, parser_bin, typechecker_bin, codegen_bin: ADRMEM;
+  root_dir, lexer_bin, parser_bin, typechecker_bin, codegen_bin: ADRMEM;
   in_fd, out_fd: CINT;
   p1, p2, p3: ARRAY[0..1] OF CINT;
   pid1, pid2, pid3, pid4: CINT;
@@ -177,13 +178,15 @@ BEGIN
     Fail('error: driver pipeline is not complete');
   IF output_file = NIL THEN
     Fail('error: output file is required until default output names are implemented');
+  root_dir := pas_toolchain_root;
   lexer_bin := getenv(MakeCStr('PASCAL1981_LEXER'));
   parser_bin := getenv(MakeCStr('PASCAL1981_PARSER'));
   typechecker_bin := getenv(MakeCStr('PASCAL1981_TYPECHECKER'));
   codegen_bin := getenv(MakeCStr('PASCAL1981_CODEGEN'));
-  IF (lexer_bin = NIL) OR (parser_bin = NIL) OR (typechecker_bin = NIL) OR
-     (codegen_bin = NIL) THEN
-    Fail('error: compiler stage binaries not found in bin/. Please run make bootstrap first.');
+  IF lexer_bin = NIL THEN lexer_bin := MakeCStr(Join(CStrToStr255(root_dir), '/bin/lexer'));
+  IF parser_bin = NIL THEN parser_bin := MakeCStr(Join(CStrToStr255(root_dir), '/bin/parser'));
+  IF typechecker_bin = NIL THEN typechecker_bin := MakeCStr(Join(CStrToStr255(root_dir), '/bin/typechecker'));
+  IF codegen_bin = NIL THEN codegen_bin := MakeCStr(Join(CStrToStr255(root_dir), '/bin/codegen'));
   in_fd := open(inputs[0], 0, 0);
   IF in_fd < 0 THEN Fail('error: opening input file failed');
   out_fd := open(output_file, 577, 420);

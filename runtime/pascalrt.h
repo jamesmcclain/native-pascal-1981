@@ -114,6 +114,7 @@ void  pas_fread_filename(struct pas_file_fcb *src,
 
 int         pas_arg_count(void);
 const char *pas_arg_value(int index);
+char       *pas_toolchain_root(void);
 
 /* ---- stdin READ / READLN (readq.c) ---- */
 
