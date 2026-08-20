@@ -29,6 +29,14 @@ exit 23
 EOF
 chmod +x "$stage_dir/fail-stage"
 
+cat > "$stage_dir/fake-clang" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '--- clang invocation ---' >> "$PASCAL1981_FAKE_CLANG_LOG"
+printf '%s\n' "$@" >> "$PASCAL1981_FAKE_CLANG_LOG"
+exit "${PASCAL1981_FAKE_CLANG_STATUS:-0}"
+EOF
+chmod +x "$stage_dir/fake-clang"
+
 pass=0
 fail=0
 
@@ -92,6 +100,35 @@ expect_stderr 'error: -c and -S require exactly one input file'
 fail_env=("${stage_env[@]}")
 fail_env[3]="PASCAL1981_CODEGEN=$stage_dir/fail-stage"
 expect_status 23 env "${fail_env[@]}" "$DRIVER" -S "$source_file" -o "$work_dir/failed.ll"
+
+expect_status 1 env "${stage_env[@]}" "$DRIVER" -S "$work_dir/no-such-source.pas" -o "$work_dir/missing.ll"
+mkdir "$work_dir/not-a-source.pas"
+expect_status 1 env "${stage_env[@]}" "$DRIVER" -S "$work_dir/not-a-source.pas" -o "$work_dir/directory.ll"
+absent_env=("${stage_env[@]}")
+absent_env[0]="PASCAL1981_LEXER=$stage_dir/no-such-stage"
+expect_status 127 env "${absent_env[@]}" "$DRIVER" -S "$source_file" -o "$work_dir/absent-stage.ll"
+
+clang_log="$work_dir/clang.log"
+expect_status 37 env "${stage_env[@]}" "PASCAL1981_CC=$stage_dir/fake-clang" "PASCAL1981_FAKE_CLANG_LOG=$clang_log" "PASCAL1981_FAKE_CLANG_STATUS=37" "$DRIVER" -c "$source_file" -o "$work_dir/source.o"
+
+(
+  cd "$work_dir"
+  expect_status 0 env "${stage_env[@]}" "$DRIVER" -S "$(basename "$source_file")"
+)
+if [ ! -f "${source_file%.pas}.ll" ]; then
+  echo 'FAIL: default -S output name was not created' >&2
+  fail=$((fail + 1))
+fi
+
+: > "$clang_log"
+second_source="$work_dir/second source.pas"
+printf 'second input\n' > "$second_source"
+expect_status 0 env "${stage_env[@]}" "PASCAL1981_CC=$stage_dir/fake-clang" "PASCAL1981_FAKE_CLANG_LOG=$clang_log" "$DRIVER" "$source_file" "$second_source" -o "$work_dir/multi"
+if [ "$(grep -cF -- '--- clang invocation ---' "$clang_log")" -ne 2 ]; then
+  echo 'FAIL: multi-file link did not invoke clang once per extra object and once for the final link' >&2
+  cat "$clang_log" >&2
+  fail=$((fail + 1))
+fi
 
 if [ "$fail" -ne 0 ]; then
   echo "Driver contract results: $pass passed, $fail failed" >&2

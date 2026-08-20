@@ -6,7 +6,7 @@ This directory contains the automated test suites for the native Pascal 1981 com
 
 ### 1. Driver Contract Test Suite (`tests/driver.sh`)
 - **Runner**: [`tests/driver.sh`](./driver.sh)
-- **Description**: Checks the public driver CLI without a bootstrap build. The runner uses temporary stage programs to check option errors, stage failures, and literal source and output paths.
+- **Description**: Checks the public driver CLI without a bootstrap build. The runner uses temporary stage programs to check option errors, missing sources and stages, failed stages and `clang`, literal source and output paths, default IR output, and multi-file linking.
 - **Running**:
   ```bash
   make test-driver
