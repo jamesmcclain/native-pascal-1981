@@ -28,11 +28,12 @@ TYPE
   RawArgArray = ARRAY[0..255] OF ADRMEM;
 
 VAR
-  inputs, extra_clang_args: RawArgArray;
-  input_count, extra_clang_argc, i: CINT;
+  inputs, extra_clang_args, extra_objects: RawArgArray;
+  input_count, extra_clang_argc, extra_object_count, i: CINT;
   current, output_file: ADRMEM;
   root_dir, lexer_bin, parser_bin, typechecker_bin, codegen_bin: ADRMEM;
-  runtime_lib, cc_bin, opt_level, temp_ll: ADRMEM;
+  runtime_lib, cc_bin, opt_level, temp_ll, extra_ll, primary_ll, primary_output: ADRMEM;
+  primary_compile_only: BOOLEAN;
   emit_ptx, device_triple, ptx_cpu, device_backend: ADRMEM;
   in_fd, out_fd: CINT;
   p1, p2, p3: ARRAY[0..1] OF CINT;
@@ -116,6 +117,41 @@ BEGIN
   exit(127);
 END;
 
+FUNCTION RunPipeline(source_name, ir_name: ADRMEM): CINT;
+BEGIN
+  in_fd := open(source_name, 0, 0);
+  IF in_fd < 0 THEN BEGIN RunPipeline := 1; END
+  ELSE
+  BEGIN
+    out_fd := open(ir_name, 577, 420);
+    IF out_fd < 0 THEN BEGIN close(in_fd); RunPipeline := 1; END
+    ELSE
+    BEGIN
+      IF (pipe(ADR p1) <> 0) OR (pipe(ADR p2) <> 0) OR (pipe(ADR p3) <> 0) THEN
+        RunPipeline := 1
+      ELSE
+      BEGIN
+        pid1 := fork;
+        IF pid1 = 0 THEN ExecStage(lexer_bin, MakeCStr('lexer'), in_fd, p1[1]);
+        pid2 := fork;
+        IF pid2 = 0 THEN ExecStage(parser_bin, MakeCStr('parser'), p1[0], p2[1]);
+        pid3 := fork;
+        IF pid3 = 0 THEN ExecStage(typechecker_bin, MakeCStr('typechecker'), p2[0], p3[1]);
+        pid4 := fork;
+        IF pid4 = 0 THEN ExecStage(codegen_bin, MakeCStr('codegen'), p3[0], out_fd);
+        close(in_fd); close(out_fd); ClosePipes;
+        waitpid(pid1, ADR status1, 0); waitpid(pid2, ADR status2, 0);
+        waitpid(pid3, ADR status3, 0); waitpid(pid4, ADR status4, 0);
+        RunPipeline := 0;
+        IF (status1 DIV 256) <> 0 THEN RunPipeline := status1 DIV 256
+        ELSE IF (status2 DIV 256) <> 0 THEN RunPipeline := status2 DIV 256
+        ELSE IF (status3 DIV 256) <> 0 THEN RunPipeline := status3 DIV 256
+        ELSE IF (status4 DIV 256) <> 0 THEN RunPipeline := status4 DIV 256;
+      END;
+    END;
+  END;
+END;
+
 PROCEDURE ExecClang;
 VAR
   args: ARRAY[0..270] OF ADRMEM;
@@ -137,6 +173,11 @@ BEGIN
     arg_count := arg_count + 1;
     args[arg_count] := MakeCStr('-lcjson');
     arg_count := arg_count + 1;
+    FOR i := 0 TO extra_object_count - 1 DO
+    BEGIN
+      args[arg_count] := extra_objects[i];
+      arg_count := arg_count + 1;
+    END;
   END;
   FOR i := 0 TO extra_clang_argc - 1 DO
   BEGIN
@@ -261,36 +302,16 @@ BEGIN
   IF device_triple <> NIL THEN setenv(MakeCStr('PASCAL_DEVICE_TRIPLE'), device_triple, 1);
   IF ptx_cpu <> NIL THEN setenv(MakeCStr('PASCAL_PTX_CPU'), ptx_cpu, 1);
   IF device_backend <> NIL THEN setenv(MakeCStr('PASCAL_DEVICE_BACKEND'), device_backend, 1);
-  in_fd := open(inputs[0], 0, 0);
-  IF in_fd < 0 THEN Fail('error: opening input file failed');
   IF ir_only THEN
-    out_fd := open(output_file, 577, 420)
+    temp_ll := output_file
   ELSE
   BEGIN
     temp_ll := MakeCStr('/tmp/pascal1981_XXXXXX.ll');
     out_fd := mkstemps(temp_ll, 3);
+    IF out_fd < 0 THEN Fail('error: opening output file for IR failed');
+    close(out_fd);
   END;
-  IF out_fd < 0 THEN Fail('error: opening output file for IR failed');
-  IF (pipe(ADR p1) <> 0) OR (pipe(ADR p2) <> 0) OR (pipe(ADR p3) <> 0) THEN
-    Fail('error: pipe creation failed');
-  pid1 := fork;
-  IF pid1 = 0 THEN ExecStage(lexer_bin, MakeCStr('lexer'), in_fd, p1[1]);
-  pid2 := fork;
-  IF pid2 = 0 THEN ExecStage(parser_bin, MakeCStr('parser'), p1[0], p2[1]);
-  pid3 := fork;
-  IF pid3 = 0 THEN ExecStage(typechecker_bin, MakeCStr('typechecker'), p2[0], p3[1]);
-  pid4 := fork;
-  IF pid4 = 0 THEN ExecStage(codegen_bin, MakeCStr('codegen'), p3[0], out_fd);
-  close(in_fd); close(out_fd); ClosePipes;
-  waitpid(pid1, ADR status1, 0);
-  waitpid(pid2, ADR status2, 0);
-  waitpid(pid3, ADR status3, 0);
-  waitpid(pid4, ADR status4, 0);
-  fail_code := 0;
-  IF (status1 DIV 256) <> 0 THEN fail_code := status1 DIV 256
-  ELSE IF (status2 DIV 256) <> 0 THEN fail_code := status2 DIV 256
-  ELSE IF (status3 DIV 256) <> 0 THEN fail_code := status3 DIV 256
-  ELSE IF (status4 DIV 256) <> 0 THEN fail_code := status4 DIV 256;
+  fail_code := RunPipeline(inputs[0], temp_ll);
   IF fail_code <> 0 THEN
   BEGIN
     IF NOT ir_only THEN unlink(temp_ll);
@@ -302,6 +323,39 @@ BEGIN
   END
   ELSE
   BEGIN
+    primary_ll := temp_ll;
+    primary_output := output_file;
+    primary_compile_only := compile_only;
+    extra_object_count := 0;
+    FOR i := 1 TO input_count - 1 DO
+    BEGIN
+      extra_ll := MakeCStr('/tmp/pascal1981_XXXXXX.ll');
+      out_fd := mkstemps(extra_ll, 3);
+      IF out_fd < 0 THEN Fail('error: creating temporary IR file failed');
+      close(out_fd);
+      fail_code := RunPipeline(inputs[i], extra_ll);
+      IF fail_code <> 0 THEN BEGIN unlink(extra_ll); exit(fail_code); END;
+      extra_objects[extra_object_count] := MakeCStr('/tmp/pascal1981_XXXXXX.o');
+      out_fd := mkstemps(extra_objects[extra_object_count], 2);
+      IF out_fd < 0 THEN Fail('error: creating temporary object file failed');
+      close(out_fd);
+      temp_ll := extra_ll;
+      output_file := extra_objects[extra_object_count];
+      compile_only := TRUE;
+      runtime_lib := NIL;
+      cc_bin := getenv(MakeCStr('PASCAL1981_CC'));
+      IF cc_bin = NIL THEN cc_bin := getenv(MakeCStr('CC'));
+      IF cc_bin = NIL THEN cc_bin := MakeCStr('clang');
+      pid1 := fork;
+      IF pid1 = 0 THEN ExecClang;
+      waitpid(pid1, ADR clang_status, 0);
+      unlink(extra_ll);
+      IF (clang_status DIV 256) <> 0 THEN exit(clang_status DIV 256);
+      extra_object_count := extra_object_count + 1;
+    END;
+    temp_ll := primary_ll;
+    output_file := primary_output;
+    compile_only := primary_compile_only;
     runtime_lib := getenv(MakeCStr('PASCAL1981_RUNTIME_LIB'));
     IF runtime_lib = NIL THEN runtime_lib := MakeCStr(Join(CStrToStr255(root_dir), '/runtime/build/libpascalrt.a'));
     cc_bin := getenv(MakeCStr('PASCAL1981_CC'));
@@ -311,6 +365,7 @@ BEGIN
     IF pid1 = 0 THEN ExecClang;
     waitpid(pid1, ADR clang_status, 0);
     unlink(temp_ll);
+    FOR i := 0 TO extra_object_count - 1 DO unlink(extra_objects[i]);
     IF (clang_status DIV 256) <> 0 THEN exit(clang_status DIV 256);
   END;
 END.
