@@ -16,6 +16,8 @@ FUNCTION fork: CINT [C]; EXTERN;
 FUNCTION dup2(old_fd: CINT; new_fd: CINT): CINT [C]; EXTERN;
 FUNCTION waitpid(pid: CINT; status: ADRMEM; options: CINT): CINT [C]; EXTERN;
 FUNCTION execvp(file_name: ADRMEM; args: ADRMEM): CINT [C]; EXTERN;
+FUNCTION mkstemps(template_name: ADRMEM; suffix_length: CINT): CINT [C]; EXTERN;
+FUNCTION unlink(path: ADRMEM): CINT [C]; EXTERN;
 PROCEDURE exit(status: CINT) [C]; EXTERN;
 
 CONST
@@ -29,10 +31,11 @@ VAR
   input_count, i: CINT;
   current, output_file: ADRMEM;
   root_dir, lexer_bin, parser_bin, typechecker_bin, codegen_bin: ADRMEM;
+  runtime_lib, cc_bin, opt_level, temp_ll: ADRMEM;
   in_fd, out_fd: CINT;
   p1, p2, p3: ARRAY[0..1] OF CINT;
   pid1, pid2, pid3, pid4: CINT;
-  status1, status2, status3, status4, fail_code: CINT;
+  status1, status2, status3, status4, clang_status, fail_code: CINT;
   option: Str255;
   compile_only, ir_only, verbose: BOOLEAN;
 
@@ -77,6 +80,19 @@ BEGIN
   WRITELN('pascal1981-native (Native Pascal Compiler Driver) 0.1.0');
 END;
 
+FUNCTION DefaultOutput(input_name: ADRMEM; suffix: Str255): ADRMEM;
+VAR
+  base: Str255;
+  length: INTEGER;
+BEGIN
+  base := CStrToStr255(input_name);
+  length := ORD(base[0]);
+  IF (length >= 4) AND (base[length - 3] = '.') AND (base[length - 2] = 'p') AND
+     (base[length - 1] = 'a') AND (base[length] = 's') THEN
+    base[0] := CHR(length - 4);
+  DefaultOutput := MakeCStr(Join(base, suffix));
+END;
+
 PROCEDURE ClosePipes;
 BEGIN
   close(p1[0]); close(p1[1]);
@@ -98,12 +114,40 @@ BEGIN
   exit(127);
 END;
 
+PROCEDURE ExecClang;
+VAR
+  args: ARRAY[0..7] OF ADRMEM;
+BEGIN
+  args[0] := cc_bin;
+  args[1] := opt_level;
+  IF compile_only THEN
+  BEGIN
+    args[2] := MakeCStr('-c');
+    args[3] := temp_ll;
+    args[4] := MakeCStr('-o');
+    args[5] := output_file;
+    args[6] := NIL;
+  END
+  ELSE
+  BEGIN
+    args[2] := temp_ll;
+    args[3] := runtime_lib;
+    args[4] := MakeCStr('-lcjson');
+    args[5] := MakeCStr('-o');
+    args[6] := output_file;
+    args[7] := NIL;
+  END;
+  execvp(cc_bin, ADR args);
+  exit(127);
+END;
+
 BEGIN
   input_count := 0;
   output_file := NIL;
   compile_only := FALSE;
   ir_only := FALSE;
   verbose := FALSE;
+  opt_level := MakeCStr('-O1');
   i := 1;
   WHILE i < pas_arg_count DO
   BEGIN
@@ -151,13 +195,15 @@ BEGIN
       i := i + 1;
       IF i >= pas_arg_count THEN Fail('error: --device-backend requires an argument');
     END
-    ELSE IF (option = '--emit-ptx') OR (option = '-O0') OR (option = '-O1') OR
-            (option = '-O2') OR (option = '-O3') OR (option[1] = '-') THEN
+    ELSE IF (option = '-O0') OR (option = '-O1') OR (option = '-O2') OR
+            (option = '-O3') THEN
+      opt_level := current
+    ELSE IF (option = '--emit-ptx') OR (option = '-I') OR (option = '-L') OR
+            (option = '-l') THEN
     BEGIN
-      IF (option[1] = '-') AND (option <> '-I') AND (option <> '-L') AND
-         (option <> '-l') AND (option[2] <> 'O') THEN
-        Fail(Join('error: unrecognized command line option: ', option));
     END
+    ELSE IF option[1] = '-' THEN
+      Fail(Join('error: unrecognized command line option: ', option))
     ELSE
     BEGIN
       IF input_count >= MAX_INPUT_FILES THEN Fail('error: too many input files');
@@ -174,10 +220,12 @@ BEGIN
   END;
   IF (input_count > 1) AND (compile_only OR ir_only) THEN
     Fail('error: -c and -S require exactly one input file');
-  IF NOT ir_only THEN
-    Fail('error: driver pipeline is not complete');
   IF output_file = NIL THEN
-    Fail('error: output file is required until default output names are implemented');
+  BEGIN
+    IF ir_only THEN output_file := DefaultOutput(inputs[0], '.ll')
+    ELSE IF compile_only THEN output_file := DefaultOutput(inputs[0], '.o')
+    ELSE output_file := DefaultOutput(inputs[0], '');
+  END;
   root_dir := pas_toolchain_root;
   lexer_bin := getenv(MakeCStr('PASCAL1981_LEXER'));
   parser_bin := getenv(MakeCStr('PASCAL1981_PARSER'));
@@ -189,7 +237,13 @@ BEGIN
   IF codegen_bin = NIL THEN codegen_bin := MakeCStr(Join(CStrToStr255(root_dir), '/bin/codegen'));
   in_fd := open(inputs[0], 0, 0);
   IF in_fd < 0 THEN Fail('error: opening input file failed');
-  out_fd := open(output_file, 577, 420);
+  IF ir_only THEN
+    out_fd := open(output_file, 577, 420)
+  ELSE
+  BEGIN
+    temp_ll := MakeCStr('/tmp/pascal1981_XXXXXX.ll');
+    out_fd := mkstemps(temp_ll, 3);
+  END;
   IF out_fd < 0 THEN Fail('error: opening output file for IR failed');
   IF (pipe(ADR p1) <> 0) OR (pipe(ADR p2) <> 0) OR (pipe(ADR p3) <> 0) THEN
     Fail('error: pipe creation failed');
@@ -211,6 +265,26 @@ BEGIN
   ELSE IF (status2 DIV 256) <> 0 THEN fail_code := status2 DIV 256
   ELSE IF (status3 DIV 256) <> 0 THEN fail_code := status3 DIV 256
   ELSE IF (status4 DIV 256) <> 0 THEN fail_code := status4 DIV 256;
-  IF fail_code <> 0 THEN exit(fail_code);
-  IF verbose THEN EPrint('[driver] Emitted IR');
+  IF fail_code <> 0 THEN
+  BEGIN
+    IF NOT ir_only THEN unlink(temp_ll);
+    exit(fail_code);
+  END;
+  IF ir_only THEN
+  BEGIN
+    IF verbose THEN EPrint('[driver] Emitted IR');
+  END
+  ELSE
+  BEGIN
+    runtime_lib := getenv(MakeCStr('PASCAL1981_RUNTIME_LIB'));
+    IF runtime_lib = NIL THEN runtime_lib := MakeCStr(Join(CStrToStr255(root_dir), '/runtime/build/libpascalrt.a'));
+    cc_bin := getenv(MakeCStr('PASCAL1981_CC'));
+    IF cc_bin = NIL THEN cc_bin := getenv(MakeCStr('CC'));
+    IF cc_bin = NIL THEN cc_bin := MakeCStr('clang');
+    pid1 := fork;
+    IF pid1 = 0 THEN ExecClang;
+    waitpid(pid1, ADR clang_status, 0);
+    unlink(temp_ll);
+    IF (clang_status DIV 256) <> 0 THEN exit(clang_status DIV 256);
+  END;
 END.
