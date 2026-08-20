@@ -8,6 +8,7 @@ USES jsonutil;
 FUNCTION pas_arg_count: CINT [C]; EXTERN;
 FUNCTION pas_arg_value(index: CINT): ADRMEM [C]; EXTERN;
 FUNCTION getenv(name: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION setenv(name: ADRMEM; new_value: ADRMEM; replace: CINT): CINT [C]; EXTERN;
 FUNCTION pas_toolchain_root: ADRMEM [C]; EXTERN;
 FUNCTION open(path: ADRMEM; flags: CINT; mode: CINT): CINT [C]; EXTERN;
 FUNCTION close(fd: CINT): CINT [C]; EXTERN;
@@ -27,11 +28,12 @@ TYPE
   RawArgArray = ARRAY[0..255] OF ADRMEM;
 
 VAR
-  inputs: RawArgArray;
-  input_count, i: CINT;
+  inputs, extra_clang_args: RawArgArray;
+  input_count, extra_clang_argc, i: CINT;
   current, output_file: ADRMEM;
   root_dir, lexer_bin, parser_bin, typechecker_bin, codegen_bin: ADRMEM;
   runtime_lib, cc_bin, opt_level, temp_ll: ADRMEM;
+  emit_ptx, device_triple, ptx_cpu, device_backend: ADRMEM;
   in_fd, out_fd: CINT;
   p1, p2, p3: ARRAY[0..1] OF CINT;
   pid1, pid2, pid3, pid4: CINT;
@@ -116,34 +118,46 @@ END;
 
 PROCEDURE ExecClang;
 VAR
-  args: ARRAY[0..7] OF ADRMEM;
+  args: ARRAY[0..270] OF ADRMEM;
+  arg_count, i: CINT;
 BEGIN
   args[0] := cc_bin;
   args[1] := opt_level;
+  arg_count := 2;
   IF compile_only THEN
   BEGIN
-    args[2] := MakeCStr('-c');
-    args[3] := temp_ll;
-    args[4] := MakeCStr('-o');
-    args[5] := output_file;
-    args[6] := NIL;
-  END
-  ELSE
-  BEGIN
-    args[2] := temp_ll;
-    args[3] := runtime_lib;
-    args[4] := MakeCStr('-lcjson');
-    args[5] := MakeCStr('-o');
-    args[6] := output_file;
-    args[7] := NIL;
+    args[arg_count] := MakeCStr('-c');
+    arg_count := arg_count + 1;
   END;
+  args[arg_count] := temp_ll;
+  arg_count := arg_count + 1;
+  IF NOT compile_only THEN
+  BEGIN
+    args[arg_count] := runtime_lib;
+    arg_count := arg_count + 1;
+    args[arg_count] := MakeCStr('-lcjson');
+    arg_count := arg_count + 1;
+  END;
+  FOR i := 0 TO extra_clang_argc - 1 DO
+  BEGIN
+    args[arg_count] := extra_clang_args[i];
+    arg_count := arg_count + 1;
+  END;
+  args[arg_count] := MakeCStr('-o');
+  args[arg_count + 1] := output_file;
+  args[arg_count + 2] := NIL;
   execvp(cc_bin, ADR args);
   exit(127);
 END;
 
 BEGIN
   input_count := 0;
+  extra_clang_argc := 0;
   output_file := NIL;
+  emit_ptx := NIL;
+  device_triple := NIL;
+  ptx_cpu := NIL;
+  device_backend := NIL;
   compile_only := FALSE;
   ir_only := FALSE;
   verbose := FALSE;
@@ -184,23 +198,31 @@ BEGIN
     BEGIN
       i := i + 1;
       IF i >= pas_arg_count THEN Fail('error: --device-triple requires an argument');
+      device_triple := pas_arg_value(i);
     END
     ELSE IF option = '--ptx-cpu' THEN
     BEGIN
       i := i + 1;
       IF i >= pas_arg_count THEN Fail('error: --ptx-cpu requires an argument');
+      ptx_cpu := pas_arg_value(i);
     END
     ELSE IF option = '--device-backend' THEN
     BEGIN
       i := i + 1;
       IF i >= pas_arg_count THEN Fail('error: --device-backend requires an argument');
+      device_backend := pas_arg_value(i);
     END
     ELSE IF (option = '-O0') OR (option = '-O1') OR (option = '-O2') OR
             (option = '-O3') THEN
       opt_level := current
-    ELSE IF (option = '--emit-ptx') OR (option = '-I') OR (option = '-L') OR
-            (option = '-l') THEN
+    ELSE IF option = '--emit-ptx' THEN
+      emit_ptx := MakeCStr('true')
+    ELSE IF (option[1] = '-') AND ((option[2] = 'I') OR (option[2] = 'L') OR
+            (option[2] = 'l')) THEN
     BEGIN
+      IF extra_clang_argc >= MAX_INPUT_FILES THEN Fail('error: too many clang arguments');
+      extra_clang_args[extra_clang_argc] := current;
+      extra_clang_argc := extra_clang_argc + 1;
     END
     ELSE IF option[1] = '-' THEN
       Fail(Join('error: unrecognized command line option: ', option))
@@ -235,6 +257,10 @@ BEGIN
   IF parser_bin = NIL THEN parser_bin := MakeCStr(Join(CStrToStr255(root_dir), '/bin/parser'));
   IF typechecker_bin = NIL THEN typechecker_bin := MakeCStr(Join(CStrToStr255(root_dir), '/bin/typechecker'));
   IF codegen_bin = NIL THEN codegen_bin := MakeCStr(Join(CStrToStr255(root_dir), '/bin/codegen'));
+  IF emit_ptx <> NIL THEN setenv(MakeCStr('PASCAL_EMIT_PTX'), emit_ptx, 1);
+  IF device_triple <> NIL THEN setenv(MakeCStr('PASCAL_DEVICE_TRIPLE'), device_triple, 1);
+  IF ptx_cpu <> NIL THEN setenv(MakeCStr('PASCAL_PTX_CPU'), ptx_cpu, 1);
+  IF device_backend <> NIL THEN setenv(MakeCStr('PASCAL_DEVICE_BACKEND'), device_backend, 1);
   in_fd := open(inputs[0], 0, 0);
   IF in_fd < 0 THEN Fail('error: opening input file failed');
   IF ir_only THEN
