@@ -4724,6 +4724,13 @@ VAR
 BEGIN
   params := GetObj(root, 'params');
   nparams := ArrSize(params);
+  { Initialize the runtime for every PROGRAM. Native programs can use the
+    raw command-line interface even when the heading has only INPUT/OUTPUT. }
+  call_args := AllocPtrArray(2);
+  SetPtrArrayElem(call_args, 0, main_argc_val);
+  SetPtrArrayElem(call_args, 1, main_argv_val);
+  discard := LLVMBuildCall2(builder, args_init_fnty, args_init_fn, call_args, 2, MakeCStr(''));
+
   bindable := FALSE;
   FOR pi := 0 TO nparams - 1 DO
   BEGIN
@@ -4732,11 +4739,6 @@ BEGIN
     IF (upname <> 'INPUT') AND (upname <> 'OUTPUT') THEN bindable := TRUE;
   END;
   IF NOT bindable THEN RETURN;
-
-  call_args := AllocPtrArray(2);
-  SetPtrArrayElem(call_args, 0, main_argc_val);
-  SetPtrArrayElem(call_args, 1, main_argv_val);
-  discard := LLVMBuildCall2(builder, args_init_fnty, args_init_fn, call_args, 2, MakeCStr(''));
 
   position := 0;
   FOR pi := 0 TO nparams - 1 DO

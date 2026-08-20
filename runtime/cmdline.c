@@ -34,6 +34,19 @@ void pas_args_init(int argc, char **argv)
     g_argv = argv;
 }
 
+int pas_arg_count(void)
+{
+    return g_argc;
+}
+
+const char *pas_arg_value(int index)
+{
+    if (index < 0 || index >= g_argc || !g_argv) {
+        return NULL;
+    }
+    return g_argv[index];
+}
+
 /* Begin reading program parameter `param_index` (0-based; argv slot is
  * param_index + 1). If a command-line token is present, stdin is redirected to
  * it and 1 is returned. Otherwise a prompt is written to stdout and 0 is
