@@ -33,7 +33,7 @@ This directory contains the automated test suites for the native Pascal 1981 com
   ```
 - **Why this stays Python-based**: this suite's job is to diff native output against the Python reference compiler as the correctness oracle. That comparison is a semantic requirement, not a legacy shortcut -- a Python-free tool can't perform it without reimplementing the reference compiler. Contrast with the checklit suite below.
 
-### 4. Checklit Directive Suite (`tests/checklit/)
+### 4. Checklit Directive Suite (`tests/checklit/)`
 - **Runner**: [`tests/checklit.sh`](./checklit.sh)
 - **Description**: Zero-dependency, zero-Python assertions on emitted LLVM IR / PTX text, in the spirit of LLVM's `lit`/`FileCheck` but minimal (unordered substring matching, no DAG/COUNT vocabulary). This is the native-runner path for the class of test that otherwise lives only in `tests/parity/` as a Python string assertion on codegen output (kernel launch ABI, attribute placement, PTX directives) -- coverage that doesn't need the Python reference as an oracle, it just needs to inspect what native codegen emitted. New coverage of that shape can go here without adding a Python dependency; existing `tests/parity/` coverage of the same shape hasn't been migrated away, to avoid losing anything mid-transition.
 - **Fixture format**: a `.pas` file with `{ CHECK: <substring> }` directive comments (and optional `{ CHECK-ENV: NAME=value }` for codegen env vars like `PASCAL_EMIT_PTX=1`); see `tests/checklit/byval_c_aggregate.pas`.
