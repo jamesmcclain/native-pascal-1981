@@ -3241,6 +3241,15 @@ BEGIN
         IF agg_class = SYSV_CLASS_MEMORY THEN
         BEGIN
           bv_temp := EntryAlloca(LLVMTypeForTk(routines[ri].param_tk[i + 1]), '');
+          { The call-site byval attribute below promises SysVByvalAlign(...)
+            (min 8) to the callee. LLVM's default alloca alignment for the
+            aggregate's IR type is not guaranteed to meet that -- force it
+            explicitly, matching every other slot whose alignment a byval/
+            sret attribute makes a promise about (sret_temp, cur_func_ret_slot,
+            the COERCED prologue palloca). Leaving this unset lets the
+            backend trust the attribute's alignment for wide/vectorized
+            copies against memory that isn't actually that aligned. }
+          LLVMSetAlignment(bv_temp, SysVByvalAlign(routines[ri].param_tk[i + 1]));
           EmitBlockCopy(bv_temp, v, TypeSizeBytes(routines[ri].param_tk[i + 1]));
           v := bv_temp;
         END
