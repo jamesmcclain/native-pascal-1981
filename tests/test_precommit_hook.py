@@ -325,14 +325,17 @@ class BeautifyPreflightTests(unittest.TestCase):
     def test_missing_isort_and_yapf_is_not_fatal(self):
         # The key design difference from pascal-1981: absence (not
         # brokenness) of optional Python tooling must still silently skip.
-        isort_abs = shutil.which('isort')
-        yapf_abs = shutil.which('yapf')
+        # PATH commonly lists both /bin and /usr/bin (often the same
+        # directory via a merged-usr symlink, but two distinct PATH
+        # entries) -- strip every directory that resolves isort/yapf, not
+        # just the first one shutil.which happens to report.
         env = dict(os.environ)
-        strip_dirs = {os.path.dirname(p) for p in (isort_abs, yapf_abs) if p}
-        parts = [
-            p for p in env.get('PATH', '').split(os.pathsep)
-            if p not in strip_dirs
-        ]
+        parts = env.get('PATH', '').split(os.pathsep)
+        for tool in ('isort', 'yapf'):
+            while shutil.which(tool, path=os.pathsep.join(parts)):
+                hit = os.path.dirname(
+                    shutil.which(tool, path=os.pathsep.join(parts)))
+                parts = [p for p in parts if p != hit]
         env['PATH'] = os.pathsep.join(parts)
         r = self._run(env)
 
