@@ -573,6 +573,7 @@ VAR
   fread_string_fnty, fread_string_fn: ADRMEM;
   freadln_skip_fnty, freadln_skip_fn: ADRMEM;
   freadset_fnty, freadset_fn: ADRMEM; { pas_freadset(fcb*, lstr*, cap, set_words*) }
+  file_attach_std_fnty, file_attach_std_fn: ADRMEM; { pas_file_attach_std(in_fcb*, out_fcb*) }
   read_int_fnty, read_int_fn: ADRMEM; { stdin counterparts (readq.c), used by
     a bare READ/READLN with no leading file argument. }
   read_word_fnty, read_word_fn: ADRMEM;
@@ -2233,22 +2234,21 @@ BEGIN
     RoutineIsFunc := routines[routi].is_func;
 END;
 
-FUNCTION CFuncRetAggClass(routi: INTEGER32): INTEGER;
-{ SYSV_CLASS_MEMORY / SYSV_CLASS_COERCED for a [C] FOREIGN FUNCTION that
-  returns an aggregate by value, and 0 for everything else (a PROCEDURE, a
-  scalar-returning function, or any plain-Pascal routine -- those keep the
-  first-class-LLVM-aggregate return convention untouched). Recomputed from
-  ret_tk on demand rather than cached in RoutineRec, exactly as the
+FUNCTION FuncRetAggClass(routi: INTEGER32): INTEGER;
+{ SYSV_CLASS_MEMORY / SYSV_CLASS_COERCED for any FUNCTION (plain Pascal or
+  [C] FOREIGN alike) that returns an aggregate by value, and 0 for
+  everything else (a PROCEDURE or a scalar-returning function). Recomputed
+  from ret_tk on demand rather than cached in RoutineRec, exactly as the
   parameter side recomputes ClassifyAggregate at each of its sites, so the
   declaration and the call site can never disagree about the shape.
   routi = 0 ("not found") is guarded here for the same non-short-circuit-AND
   reason RoutineIsFunc documents. }
 BEGIN
-  CFuncRetAggClass := 0;
+  FuncRetAggClass := 0;
   IF routi <> 0 THEN
-    IF routines[routi].is_c AND routines[routi].is_func THEN
+    IF routines[routi].is_func THEN
       IF IsAggregateTk(routines[routi].ret_tk) THEN
-        CFuncRetAggClass := SysVAggClass(routines[routi].ret_tk);
+        FuncRetAggClass := SysVAggClass(routines[routi].ret_tk);
 END;
 
 { ============================== expressions =============================== }
@@ -3066,7 +3066,7 @@ VAR
   ri: INTEGER32;
   nargs, i: INTEGER32;
   call_args: ADRMEM;
-  arg_node, v: ADRMEM;
+  arg_node, v, v_tmp: ADRMEM;
   arg_nm: Str255;
   symi: INTEGER32;
   arg_routi: INTEGER32;
@@ -3106,7 +3106,7 @@ BEGIN
       prepends -- which is also why the array is sized nargs * 2 + 1 rather
       than nargs * 2 (an sret call with no real arguments at all still needs
       one slot). }
-    ret_class := CFuncRetAggClass(ri);
+    ret_class := FuncRetAggClass(ri);
     IF ret_class <> 0 THEN
       ClassifyAggregate(routines[ri].ret_tk, ret_class, ret_npieces, ret_pk, ret_pb);
     call_args := AllocPtrArray(nargs * 2 + 1);
@@ -3175,20 +3175,19 @@ BEGIN
           v := NIL;
         END;
       END
-      ELSE IF routines[ri].param_needs_copy[i + 1] AND routines[ri].is_c THEN
+      ELSE IF routines[ri].param_needs_copy[i + 1] THEN
       BEGIN
-        { [C] FOREIGN routine, value-mode aggregate param: SysV MEMORY-class
-          byval -- compute the source's address (same sub-cases as the
-          plain-aggregate branch below, but stopping at the address rather
-          than loading), then ALWAYS copy it into a fresh per-call temp via
-          EmitBlockCopy and pass that temp's address. Never pass caller
-          storage raw: even though nothing else could presently alias e.g. a
-          StringLiteral's own already-fresh temp, doing this unconditionally
-          keeps one predictable shape matching c_abi.py's caller-side
-          marshalling, and is what makes byval's callee-private-copy
-          guarantee actually hold for the Identifier/Designator cases that
-          DO name caller-owned storage. The byval(ty)/align call-site
-          attributes are attached after LLVMBuildCall2 below. }
+        { Value-mode aggregate param, plain Pascal and [C] FOREIGN alike:
+          SysV MEMORY-class byval -- compute the source's address, then
+          ALWAYS copy it into a fresh per-call temp via EmitBlockCopy and
+          pass that temp's address. Never pass caller storage raw: even
+          though nothing else could presently alias e.g. a StringLiteral's
+          own already-fresh temp, doing this unconditionally keeps one
+          predictable shape matching c_abi.py's caller-side marshalling,
+          and is what makes byval's callee-private-copy guarantee actually
+          hold for the Identifier/Designator cases that DO name
+          caller-owned storage. The byval(ty)/align call-site attributes
+          are attached after LLVMBuildCall2 below. }
         IF NodeType(arg_node) = 'Identifier' THEN
         BEGIN
           arg_nm := GetStr(arg_node, 'name');
@@ -3231,13 +3230,26 @@ BEGIN
         END
         ELSE
         BEGIN
-          AbortWith2('codegen: a value-aggregate argument must be an lvalue or call, calling: ', name);
-          v := NIL;
+          { Any other value-mode aggregate-shaped expression: CodegenExpr
+            produces it as an SSA value, so materialize it into a fresh temp
+            to get an address to classify/copy from. }
+          v_tmp := CodegenExpr(arg_node);
+          v := EntryAlloca(LLVMTypeForTk(routines[ri].param_tk[i + 1]), '');
+          LLVMBuildStore(builder, v_tmp, v);
         END;
         ClassifyAggregate(routines[ri].param_tk[i + 1], agg_class, n_pieces, piece_kind, piece_bytes);
         IF agg_class = SYSV_CLASS_MEMORY THEN
         BEGIN
           bv_temp := EntryAlloca(LLVMTypeForTk(routines[ri].param_tk[i + 1]), '');
+          { The call-site byval attribute below promises SysVByvalAlign(...)
+            (min 8) to the callee. LLVM's default alloca alignment for the
+            aggregate's IR type is not guaranteed to meet that -- force it
+            explicitly, matching every other slot whose alignment a byval/
+            sret attribute makes a promise about (sret_temp, cur_func_ret_slot,
+            the COERCED prologue palloca). Leaving this unset lets the
+            backend trust the attribute's alignment for wide/vectorized
+            copies against memory that isn't actually that aligned. }
+          LLVMSetAlignment(bv_temp, SysVByvalAlign(routines[ri].param_tk[i + 1]));
           EmitBlockCopy(bv_temp, v, TypeSizeBytes(routines[ri].param_tk[i + 1]));
           v := bv_temp;
         END
@@ -3265,64 +3277,6 @@ BEGIN
           pieces_emitted := TRUE;
         END;
       END
-      ELSE IF routines[ri].param_needs_copy[i + 1] THEN
-      BEGIN
-        { Value-mode ARRAY/RECORD/LSTRING/STRING aggregate parameter on a
-          plain (non-[C]) routine: the callee now expects a first-class
-          LLVM aggregate value (matching the Python reference), not an
-          address -- see CodegenRoutineDecl's signature/prologue above.
-          Every sub-case below produces that SSA aggregate value instead of
-          a pointer to one. }
-        IF NodeType(arg_node) = 'Identifier' THEN
-        BEGIN
-          arg_nm := GetStr(arg_node, 'name');
-          symi := LookupSym(arg_nm);
-          arg_routi := LookupRoutine(arg_nm);
-          is_bare_niladic_call := (symi = 0) AND RoutineIsFunc(arg_routi);
-          IF is_bare_niladic_call THEN
-            { A bare niladic-call Identifier (e.g. an aggregate-returning
-              FUNCTION called without parens) already produces its result
-              as an SSA aggregate value -- pass it straight through. }
-            v := CodegenCallCommon(arg_nm, NIL)
-          ELSE
-          BEGIN
-            IF symi = 0 THEN
-              AbortWith2('codegen: undefined variable: ', arg_nm);
-            IF symbols[symi].tk <> routines[ri].param_tk[i + 1] THEN
-              AbortWith2('codegen: value-aggregate argument type mismatch calling: ', name);
-            v := LLVMBuildLoad2(builder, LLVMTypeForTk(symbols[symi].tk), symbols[symi].llvm_val, MakeCStr(''));
-          END;
-        END
-        ELSE IF NodeType(arg_node) = 'Designator' THEN
-        BEGIN
-          v := ComputeDesignatorAddress(arg_node);
-          IF last_val_tk <> routines[ri].param_tk[i + 1] THEN
-            AbortWith2('codegen: value-aggregate argument type mismatch calling: ', name);
-          v := LLVMBuildLoad2(builder, LLVMTypeForTk(last_val_tk), v, MakeCStr(''));
-        END
-        ELSE IF (NodeType(arg_node) = 'StringLiteral')
-            AND ((TypeKind(routines[ri].param_tk[i + 1]) = TK_LSTRING) OR (TypeKind(routines[ri].param_tk[i + 1]) = TK_STRING)) THEN
-        BEGIN
-          { A bare string-literal argument to a value-mode LSTRING/STRING
-            parameter (e.g. StartsWithLit('*)')) has no existing storage to
-            load from. Build the proper wire format (length-prefix for
-            LSTRING, blank-padded chars for STRING) into a fresh stack
-            temporary, matching the reference's literal-into-aggregate-param
-            coercion, then load the temporary into an SSA value. }
-          v := EntryAlloca(LLVMTypeForTk(routines[ri].param_tk[i + 1]), '');
-          IF TypeKind(routines[ri].param_tk[i + 1]) = TK_LSTRING THEN
-            CodegenLStringLiteralAssign(v, routines[ri].param_tk[i + 1], DecodeStringLiteral(GetStr(arg_node, 'value')))
-          ELSE
-            CodegenStringLiteralAssign(v, routines[ri].param_tk[i + 1], DecodeStringLiteral(GetStr(arg_node, 'value')));
-          v := LLVMBuildLoad2(builder, LLVMTypeForTk(routines[ri].param_tk[i + 1]), v, MakeCStr(''));
-        END
-        ELSE
-          { Any other value-mode aggregate-shaped expression (a FuncCall,
-            or anything else CodegenExpr can produce) is already an SSA
-            aggregate value -- no address needed at all, unlike the old
-            pointer-passing convention. }
-          v := CodegenExpr(arg_node);
-      END
       ELSE
       BEGIN
         v := CodegenExpr(arg_node);
@@ -3339,56 +3293,57 @@ BEGIN
       END;
     END;
     res := LLVMBuildCall2(builder, routines[ri].fnty, routines[ri].fn, call_args, llvm_ai, MakeCStr(''));
-    IF routines[ri].is_c THEN
+    { Attach byval(ty)/align (and sret(ty)/noalias/align for a MEMORY-class
+      return) at the CALL SITE too, matching clang's own lowering
+      (verification step 7) -- the declaration side alone
+      (CodegenRoutineDecl) isn't enough; LLVM expects both. Applies to
+      plain-Pascal routines exactly like [C] FOREIGN ones, via the same
+      FuncRetAggClass/ClassifyAggregate calls both sides use. Walked with
+      its own LLVM argument index (attribute indices are 1-based over LLVM
+      parameters, 0 being the return), since a COERCED aggregate argument
+      occupies one slot per eightbyte -- and carries no parameter attribute
+      at all:
+      byval/align describe a pointer to memory, which a register-passed
+      aggregate never has. }
+    llvm_ai := 0;
+    IF ret_class = SYSV_CLASS_MEMORY THEN
     BEGIN
-      { Attach byval(ty)/align at the CALL SITE too, matching clang's own
-        lowering (verification step 7) -- the declaration side alone
-        (CodegenRoutineDecl) isn't enough; LLVM expects both. }
-      { Walked with its own LLVM argument index (attribute indices are
-        1-based over LLVM parameters, 0 being the return), since a COERCED
-        aggregate argument occupies one slot per eightbyte -- and carries no
-        parameter attribute at all: byval/align describe a pointer to
-        memory, which a register-passed aggregate never has. }
-      llvm_ai := 0;
-      IF ret_class = SYSV_CLASS_MEMORY THEN
+      { The hidden result pointer occupies LLVM argument 0, attribute
+        index 1 -- same sret(ty)/noalias/align shape the declaration side
+        attaches, since LLVM wants parameter attributes on both. }
+      sret_attr := LLVMCreateTypeAttribute(ctx, sret_kind_id, LLVMTypeForTk(routines[ri].ret_tk));
+      align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, SysVByvalAlign(routines[ri].ret_tk));
+      LLVMAddCallSiteAttribute(res, 1, sret_attr);
+      LLVMAddCallSiteAttribute(res, 1, align_attr);
+      IF noalias_kind_id <> 0 THEN
       BEGIN
-        { The hidden result pointer occupies LLVM argument 0, attribute
-          index 1 -- same sret(ty)/noalias/align shape the declaration side
-          attaches, since LLVM wants parameter attributes on both. }
-        sret_attr := LLVMCreateTypeAttribute(ctx, sret_kind_id, LLVMTypeForTk(routines[ri].ret_tk));
-        align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, SysVByvalAlign(routines[ri].ret_tk));
-        LLVMAddCallSiteAttribute(res, 1, sret_attr);
-        LLVMAddCallSiteAttribute(res, 1, align_attr);
-        IF noalias_kind_id <> 0 THEN
-        BEGIN
-          noalias_attr := LLVMCreateEnumAttribute(ctx, noalias_kind_id, 0);
-          LLVMAddCallSiteAttribute(res, 1, noalias_attr);
-        END;
-        llvm_ai := 1;
+        noalias_attr := LLVMCreateEnumAttribute(ctx, noalias_kind_id, 0);
+        LLVMAddCallSiteAttribute(res, 1, noalias_attr);
       END;
-      FOR i := 0 TO nargs - 1 DO
+      llvm_ai := 1;
+    END;
+    FOR i := 0 TO nargs - 1 DO
+    BEGIN
+      { A variadic tail argument has no formal, so it is always exactly
+        one plain LLVM argument and carries no parameter attribute. }
+      IF i >= routines[ri].nparams THEN
+        llvm_ai := llvm_ai + 1
+      ELSE IF routines[ri].param_needs_copy[i + 1] THEN
       BEGIN
-        { A variadic tail argument has no formal, so it is always exactly
-          one plain LLVM argument and carries no parameter attribute. }
-        IF i >= routines[ri].nparams THEN
-          llvm_ai := llvm_ai + 1
-        ELSE IF routines[ri].param_needs_copy[i + 1] THEN
+        ClassifyAggregate(routines[ri].param_tk[i + 1], agg_class, n_pieces, piece_kind, piece_bytes);
+        IF agg_class = SYSV_CLASS_MEMORY THEN
         BEGIN
-          ClassifyAggregate(routines[ri].param_tk[i + 1], agg_class, n_pieces, piece_kind, piece_bytes);
-          IF agg_class = SYSV_CLASS_MEMORY THEN
-          BEGIN
-            byval_attr := LLVMCreateTypeAttribute(ctx, byval_kind_id, LLVMTypeForTk(routines[ri].param_tk[i + 1]));
-            align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, SysVByvalAlign(routines[ri].param_tk[i + 1]));
-            LLVMAddCallSiteAttribute(res, llvm_ai + 1, byval_attr);
-            LLVMAddCallSiteAttribute(res, llvm_ai + 1, align_attr);
-            llvm_ai := llvm_ai + 1;
-          END
-          ELSE
-            llvm_ai := llvm_ai + n_pieces;
+          byval_attr := LLVMCreateTypeAttribute(ctx, byval_kind_id, LLVMTypeForTk(routines[ri].param_tk[i + 1]));
+          align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, SysVByvalAlign(routines[ri].param_tk[i + 1]));
+          LLVMAddCallSiteAttribute(res, llvm_ai + 1, byval_attr);
+          LLVMAddCallSiteAttribute(res, llvm_ai + 1, align_attr);
+          llvm_ai := llvm_ai + 1;
         END
         ELSE
-          llvm_ai := llvm_ai + 1;
-      END;
+          llvm_ai := llvm_ai + n_pieces;
+      END
+      ELSE
+        llvm_ai := llvm_ai + 1;
     END;
     { Turn a [C] aggregate return back into the plain SSA aggregate value
       every caller of this function expects, so the sret/coerced lowering
@@ -4419,6 +4374,23 @@ BEGIN
   LoadFileFcbPtr := LLVMBuildBitCast(builder, handle, LLVMPointerType(filefcbty, 0), MakeCStr(''));
 END;
 
+FUNCTION GetDefaultInputFcbPtr: ADRMEM;
+{ Loads the predeclared INPUT/OUTPUT FCBs (registered unconditionally for
+  every PROGRAM by RegisterPredeclaredFiles) and lazily binds them to real
+  stdin/stdout via pas_file_attach_std, mirroring the reference's
+  _file_selector_fcb attach-on-first-use behavior. Returns the INPUT FCB*. }
+VAR
+  in_fcb, out_fcb, call_args, discard: ADRMEM;
+BEGIN
+  in_fcb := LoadFileFcbPtr('INPUT');
+  out_fcb := LoadFileFcbPtr('OUTPUT');
+  call_args := AllocPtrArray(2);
+  SetPtrArrayElem(call_args, 0, in_fcb);
+  SetPtrArrayElem(call_args, 1, out_fcb);
+  discard := LLVMBuildCall2(builder, file_attach_std_fnty, file_attach_std_fn, call_args, 2, MakeCStr(''));
+  GetDefaultInputFcbPtr := in_fcb;
+END;
+
 PROCEDURE CodegenWriteArgs(args: ADRMEM; newline: BOOLEAN);
 VAR
   nargs, i, start_idx: INTEGER32;
@@ -5022,11 +4994,11 @@ PROCEDURE CodegenReadSet(args: ADRMEM);
 { READSET([file,] dest, set_of_char): manual-documented extended I/O builtin
   (djvu.txt:9047-9081-adjacent), lowered straight to the runtime's existing
   pas_freadset (runtime/fileops.c) -- no runtime changes needed, only this
-  call-site wiring, mirroring the reference's builtin_readset. Scoped to the
-  3-argument (explicit TEXT file) form: pas_freadset always requires a real
-  FCB* and this compiler has no INPUT-stream FCB binding of its own (unlike
-  the Python reference, which lazily attaches a predeclared INPUT global via
-  pas_file_attach_std) -- a real, stated gap rather than a silent one. }
+  call-site wiring, mirroring the reference's builtin_readset. The 2-argument
+  form (implicit INPUT) routes through GetDefaultInputFcbPtr, which lazily
+  attaches the predeclared INPUT/OUTPUT FCBs (RegisterPredeclaredFiles) to
+  real stdin/stdout via pas_file_attach_std -- mirroring the reference's
+  own lazy-attach-on-first-use behavior. }
 VAR
   nargs, start_idx: INTEGER32;
   arg0, dest_node, set_node: ADRMEM;
@@ -5036,11 +5008,19 @@ VAR
   tid: INTEGER;
 BEGIN
   nargs := ArrSize(args);
-  IF nargs <> 3 THEN
-    AbortWith('codegen: READSET without an explicit TEXT file argument is not yet supported (no native INPUT stream FCB binding)');
-  arg0 := ArrItem(args, 0);
-  fcb_ptr := LoadFileFcbPtr(GetStr(arg0, 'name'));
-  start_idx := 1;
+  IF (nargs <> 2) AND (nargs <> 3) THEN
+    AbortWith('codegen: READSET expects 2 or 3 arguments');
+  IF nargs = 3 THEN
+  BEGIN
+    arg0 := ArrItem(args, 0);
+    fcb_ptr := LoadFileFcbPtr(GetStr(arg0, 'name'));
+    start_idx := 1;
+  END
+  ELSE
+  BEGIN
+    fcb_ptr := GetDefaultInputFcbPtr;
+    start_idx := 0;
+  END;
 
   dest_node := ArrItem(args, start_idx);
   symi := LookupSym(GetStr(dest_node, 'name'));
@@ -6787,13 +6767,38 @@ PROCEDURE CodegenReturnStmt(stmt: ADRMEM);
   loads) -- it does not reset the result to a fixed constant. }
 VAR
   ret_load: ADRMEM;
+  ret_class, n_pieces: INTEGER;
+  piece_kind: SysVPieceArr;
+  piece_bytes: SysVPieceSzArr;
+  cstruct_ty, cptr: ADRMEM;
 BEGIN
   IF cur_func_name = '' THEN
     LLVMBuildRetVoid(builder)
   ELSE
   BEGIN
-    ret_load := LLVMBuildLoad2(builder, LLVMTypeForTk(cur_func_ret_tk), cur_func_ret_slot, MakeCStr(''));
-    ret_load := LLVMBuildRet(builder, ret_load);
+    { Aggregate returns are classified on demand from cur_func_ret_tk, same
+      idiom as FuncRetAggClass -- so this can never disagree with the
+      classification CodegenRoutineDecl already applied to cur_func_ret_slot
+      itself (the sret pointer for MEMORY, or the over-aligned aggregate
+      alloca for COERCED). Mirrors that procedure's own epilogue exactly. }
+    ret_class := 0;
+    IF IsAggregateTk(cur_func_ret_tk) THEN
+      ClassifyAggregate(cur_func_ret_tk, ret_class, n_pieces, piece_kind, piece_bytes);
+    IF ret_class = SYSV_CLASS_MEMORY THEN
+      LLVMBuildRetVoid(builder)
+    ELSE IF ret_class = SYSV_CLASS_COERCED THEN
+    BEGIN
+      cstruct_ty := SysVCoercedRetType(n_pieces, piece_kind, piece_bytes);
+      cptr := LLVMBuildBitCast(builder, cur_func_ret_slot, LLVMPointerType(cstruct_ty, 0), MakeCStr(''));
+      ret_load := LLVMBuildLoad2(builder, cstruct_ty, cptr, MakeCStr(''));
+      LLVMSetAlignment(ret_load, 8);
+      ret_load := LLVMBuildRet(builder, ret_load);
+    END
+    ELSE
+    BEGIN
+      ret_load := LLVMBuildLoad2(builder, LLVMTypeForTk(cur_func_ret_tk), cur_func_ret_slot, MakeCStr(''));
+      ret_load := LLVMBuildRet(builder, ret_load);
+    END;
   END;
 END;
 
@@ -7346,6 +7351,31 @@ BEGIN
   LLVMBuildStore(builder, LLVMConstInt(i32ty, 0, 0), field_ptr);
 
   LLVMBuildStore(builder, LLVMBuildBitCast(builder, fcb, i8ptrty, MakeCStr('')), slot);
+END;
+
+PROCEDURE RegisterPredeclaredFiles;
+{ Unconditionally declares INPUT/OUTPUT as TEXT-file symbols for the main
+  PROGRAM, mirroring the reference's _register_predeclared_files -- without
+  this, LoadFileFcbPtr('INPUT') aborts as undefined for any program that
+  doesn't itself write VAR INPUT: TEXT, which is exactly the case READSET's
+  2-argument implicit-INPUT form needs to cover. A no-op if the program
+  already declared its own INPUT/OUTPUT (e.g. as an explicit heading
+  parameter with its own VAR). }
+VAR
+  text_tid: INTEGER;
+BEGIN
+  IF LookupSym('INPUT') = 0 THEN
+  BEGIN
+    text_tid := RegisterType(TK_FILE, TK_CHAR, 0, 1, i8ptrty);
+    DeclareVar('INPUT', text_tid);
+    InitFileStorage(symbols[nsymbols].llvm_val, TK_CHAR, 1, 'INPUT');
+  END;
+  IF LookupSym('OUTPUT') = 0 THEN
+  BEGIN
+    text_tid := RegisterType(TK_FILE, TK_CHAR, 0, 1, i8ptrty);
+    DeclareVar('OUTPUT', text_tid);
+    InitFileStorage(symbols[nsymbols].llvm_val, TK_CHAR, 1, 'OUTPUT');
+  END;
 END;
 
 PROCEDURE CodegenVarDecl(decl: ADRMEM);
@@ -7963,18 +7993,35 @@ BEGIN
     routines[ridx].has_body := TRUE;
     is_c := routines[ridx].is_c; { source of truth once ridx is known -- see note above }
     is_vararg := routines[ridx].is_vararg; { likewise }
-    { The already-built fnty is reused verbatim here, so a [C] routine whose
-      aggregate return was lowered to sret/coerced below already has a
-      signature this branch cannot re-derive: its hidden result pointer
-      shifts every LLVMGetParam index in the prologue, and its LLVM return
-      type is no longer the aggregate cur_func_ret_slot/RETURN would store.
-      IsCForeignDecl only answers TRUE for an EXTERN declaration, so the
-      only way to reach this is an EXTERN [C] name later given a real body
-      in the same compiland -- refuse it loudly rather than emit a body
-      against the wrong convention. }
-    IF has_block_body AND is_c AND is_func THEN
+    { The already-built fnty is reused verbatim here, so it must already
+      reflect the same classification recomputed below -- true as long as
+      the placeholder that first declared this name (the fresh-declaration
+      ELSE branch, whether reached as a genuine FORWARD or as this same
+      branch's own first pass) applied the identical is_func/ret_tk-driven
+      classification, which it always does; ClassifyAggregate/FuncRetAggClass
+      are pure functions of ret_tk, so declaration and reuse can never
+      disagree (same idiom as the parameter side). A plain-Pascal FUNCTION
+      forward-declared through a spliced INTERFACE UNIT (e.g. jsonutil's
+      Str255-returning routines) legitimately reaches this path with an
+      aggregate return and a real body -- that is the normal case, not an
+      error. A [C] EXTERN aggregate-returning FUNCTION reaching here is
+      different: EXTERN promises the body lives elsewhere, so a real body
+      under the same name is a self-contradictory program, not a shape this
+      compiler can lower -- refuse it loudly rather than emit a body against
+      an EXTERN declaration. }
+    ret_class := 0;
+    IF is_func THEN
       IF IsAggregateTk(ret_tk) THEN
-        AbortWith2('codegen: [C] EXTERN routine with an aggregate return cannot be defined here: ', name);
+      BEGIN
+        IF has_block_body AND is_c THEN
+          AbortWith2('codegen: [C] EXTERN routine with an aggregate return cannot be defined here: ', name)
+        ELSE
+        BEGIN
+          ClassifyAggregate(ret_tk, ret_class, ret_npieces, ret_pk, ret_pb);
+          IF ret_class = SYSV_CLASS_MEMORY THEN ret_llvm_ty := voidty
+          ELSE ret_llvm_ty := SysVCoercedRetType(ret_npieces, ret_pk, ret_pb);
+        END;
+      END;
   END
   ELSE
   BEGIN
@@ -7993,16 +8040,16 @@ BEGIN
     END;
 
     { The return has to be classified BEFORE the parameter list is built: a
-      [C] FOREIGN FUNCTION returning a MEMORY-class aggregate returns void
-      and takes a hidden pointer to the caller's result storage as its FIRST
-      LLVM parameter, shifting every real parameter's LLVM index by one.
-      A COERCED-class aggregate return needs no hidden pointer -- it comes
-      back in one or two registers, i.e. as a plain non-aggregate LLVM
-      return type -- so it only rewrites ret_llvm_ty. Everything else
-      (PROCEDUREs, scalar returns, and every plain non-[C] routine, which
-      keeps returning a first-class LLVM aggregate) is untouched. }
+      FUNCTION (plain Pascal or [C] FOREIGN alike) returning a MEMORY-class
+      aggregate returns void and takes a hidden pointer to the caller's
+      result storage as its FIRST LLVM parameter, shifting every real
+      parameter's LLVM index by one. A COERCED-class aggregate return needs
+      no hidden pointer -- it comes back in one or two registers, i.e. as a
+      plain non-aggregate LLVM return type -- so it only rewrites
+      ret_llvm_ty. Everything else (PROCEDUREs and scalar returns) is
+      untouched. }
     ret_class := 0;
-    IF is_c AND is_func THEN
+    IF is_func THEN
       IF IsAggregateTk(ret_tk) THEN
       BEGIN
         ClassifyAggregate(ret_tk, ret_class, ret_npieces, ret_pk, ret_pb);
@@ -8030,11 +8077,12 @@ BEGIN
         SetPtrArrayElem(param_llvm_types, llvm_idx, LLVMPointerType(LLVMTypeForTk(tks[i]), 0));
         llvm_idx := llvm_idx + 1;
       END
-      ELSE IF needs_copy[i] AND is_c THEN
+      ELSE IF needs_copy[i] THEN
       BEGIN
-        { [C] FOREIGN routine, value-mode aggregate param, matching
-          c_abi.py: MEMORY class (>16 bytes, or 0) is a pointer to a
-          private per-call copy, with the byval(ty)/align attributes
+        { Value-mode aggregate param (ARRAY/RECORD/LSTRING/STRING), plain
+          Pascal and [C] FOREIGN alike -- explicit SysV classification,
+          matching c_abi.py: MEMORY class (>16 bytes, or 0) is a pointer to
+          a private per-call copy, with the byval(ty)/align attributes
           attached below once `fn` exists; COERCED class (<=16 bytes, all
           eightbytes INTEGER/SSE) is flattened into its register pieces
           instead, and gets no parameter attribute at all. }
@@ -8054,13 +8102,6 @@ BEGIN
       END
       ELSE
       BEGIN
-        { needs_copy[i] (value-mode ARRAY/RECORD/LSTRING/STRING aggregate)
-          on a plain (non-[C]) routine is passed as a first-class LLVM
-          aggregate value, matching the Python reference
-          (codegen/types_map.py) -- not a pointer. The incoming value
-          itself becomes the callee's private copy in the prologue below,
-          so Pascal by-value semantics still hold without any
-          caller-visible aliasing. }
         SetPtrArrayElem(param_llvm_types, llvm_idx, LLVMTypeForTk(tks[i]));
         llvm_idx := llvm_idx + 1;
       END;
@@ -8138,60 +8179,60 @@ BEGIN
     routines[ridx].is_c := is_c;
     routines[ridx].is_vararg := is_vararg;
 
-    IF is_c THEN
+    { Attach byval(ty)/align (and sret(ty)/noalias/align for a MEMORY-class
+      return) at the DECLARATION side too (not just the call site below) --
+      LLVM attaches parameter attributes to both the function
+      definition/declaration and each call site; clang emits both, and only
+      doing one leaves the IR inconsistent with what a real C compiler
+      produces for the same signature (verification step 7). Applies to
+      plain-Pascal routines exactly like [C] FOREIGN ones, via the same
+      FuncRetAggClass/ClassifyAggregate calls both sides use. Attribute
+      index is 1-based over LLVM parameters (0 is the return), which is why
+      it is walked with llvm_idx rather than the Pascal
+      parameter index: a COERCED aggregate parameter occupies one slot per
+      eightbyte and carries no attribute of its own -- byval and align
+      describe a pointer to memory, which a register-passed aggregate never
+      has. }
+    llvm_idx := 0;
+    IF ret_class = SYSV_CLASS_MEMORY THEN
     BEGIN
-      { Attach byval(ty)/align at the DECLARATION side too (not just the
-        call site below) -- LLVM attaches parameter attributes to both the
-        function definition/declaration and each call site; clang emits
-        both, and only doing one leaves the IR inconsistent with what a
-        real C compiler produces for the same signature (verification step
-        7). Attribute index is 1-based over LLVM parameters (0 is the
-        return), which is why it is walked with llvm_idx rather than the
-        Pascal parameter index: a COERCED aggregate parameter occupies one
-        slot per eightbyte and carries no attribute of its own -- byval and
-        align describe a pointer to memory, which a register-passed
-        aggregate never has. }
-      llvm_idx := 0;
-      IF ret_class = SYSV_CLASS_MEMORY THEN
+      { The hidden result pointer is LLVM parameter 0, i.e. attribute
+        index 1. `sret(ty)` names the pointee type the callee writes the
+        result through; `noalias` is the SysV promise that this storage is
+        the caller's fresh result temp and overlaps nothing else the call
+        can see; `align` matches what the byval path attaches, and what
+        the reference records alongside its own sret attributes. }
+      agg_llvm_ty := LLVMTypeForTk(ret_tk);
+      sret_attr := LLVMCreateTypeAttribute(ctx, sret_kind_id, agg_llvm_ty);
+      align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, SysVByvalAlign(ret_tk));
+      LLVMAddAttributeAtIndex(fn, 1, sret_attr);
+      LLVMAddAttributeAtIndex(fn, 1, align_attr);
+      IF noalias_kind_id <> 0 THEN
       BEGIN
-        { The hidden result pointer is LLVM parameter 0, i.e. attribute
-          index 1. `sret(ty)` names the pointee type the callee writes the
-          result through; `noalias` is the SysV promise that this storage is
-          the caller's fresh result temp and overlaps nothing else the call
-          can see; `align` matches what the byval path attaches, and what
-          the reference records alongside its own sret attributes. }
-        agg_llvm_ty := LLVMTypeForTk(ret_tk);
-        sret_attr := LLVMCreateTypeAttribute(ctx, sret_kind_id, agg_llvm_ty);
-        align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, SysVByvalAlign(ret_tk));
-        LLVMAddAttributeAtIndex(fn, 1, sret_attr);
-        LLVMAddAttributeAtIndex(fn, 1, align_attr);
-        IF noalias_kind_id <> 0 THEN
-        BEGIN
-          noalias_attr := LLVMCreateEnumAttribute(ctx, noalias_kind_id, 0);
-          LLVMAddAttributeAtIndex(fn, 1, noalias_attr);
-        END;
-        llvm_idx := 1;
+        noalias_attr := LLVMCreateEnumAttribute(ctx, noalias_kind_id, 0);
+        LLVMAddAttributeAtIndex(fn, 1, noalias_attr);
       END;
-      FOR i := 1 TO n DO
+      llvm_idx := 1;
+    END;
+    FOR i := 1 TO n DO
+    BEGIN
+      IF needs_copy[i] THEN
       BEGIN
-        IF needs_copy[i] THEN
+        ClassifyAggregate(tks[i], agg_class, n_pieces, piece_kind, piece_bytes);
+        IF agg_class = SYSV_CLASS_MEMORY THEN
         BEGIN
-          ClassifyAggregate(tks[i], agg_class, n_pieces, piece_kind, piece_bytes);
-          IF agg_class = SYSV_CLASS_MEMORY THEN
-          BEGIN
-            agg_llvm_ty := LLVMTypeForTk(tks[i]);
-            byval_attr := LLVMCreateTypeAttribute(ctx, byval_kind_id, agg_llvm_ty);
-            align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, SysVByvalAlign(tks[i]));
-            LLVMAddAttributeAtIndex(fn, llvm_idx + 1, byval_attr);
-            LLVMAddAttributeAtIndex(fn, llvm_idx + 1, align_attr);
-            llvm_idx := llvm_idx + 1;
-          END
-          ELSE
-            llvm_idx := llvm_idx + n_pieces;
+          agg_llvm_ty := LLVMTypeForTk(tks[i]);
+          byval_attr := LLVMCreateTypeAttribute(ctx, byval_kind_id, agg_llvm_ty);
+          align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, SysVByvalAlign(tks[i]));
+          LLVMAddAttributeAtIndex(fn, llvm_idx + 1, byval_attr);
+          LLVMAddAttributeAtIndex(fn, llvm_idx + 1, align_attr);
+          llvm_idx := llvm_idx + 1;
         END
         ELSE
-          llvm_idx := llvm_idx + 1;
-      END;
+          llvm_idx := llvm_idx + n_pieces;
+      END
+      ELSE
+        llvm_idx := llvm_idx + 1;
     END;
   END;
 
@@ -8222,33 +8263,59 @@ BEGIN
     BEGIN
       cur_func_name := name;
       cur_func_ret_tk := ret_tk;
-      cur_func_ret_slot := EntryAlloca(ret_llvm_ty, 'return_value');
-      IF (ret_tk = TK_REAL) OR (ret_tk = TK_REAL32) THEN LLVMBuildStore(builder, LLVMConstReal(ret_llvm_ty, 0.0), cur_func_ret_slot)
+      IF ret_class = SYSV_CLASS_MEMORY THEN
+        { The hidden sret pointer (LLVM parameter 0) already points at the
+          caller's own result storage -- use it directly, exactly like a
+          byval parameter uses its incoming pointer directly, so every
+          RETURN/function-name-assignment site (which always addresses
+          cur_func_ret_slot via cur_func_ret_tk, the real Pascal type, not
+          ret_llvm_ty) stores straight into the caller's buffer with no
+          extra copy, and the epilogue below needs no load/ret of the LLVM
+          return type at all (which is void here). }
+        cur_func_ret_slot := LLVMGetParam(fn, 0)
+      ELSE IF ret_class = SYSV_CLASS_COERCED THEN
+      BEGIN
+        { Real aggregate-typed storage, over-aligned to a full eightbyte so
+          the epilogue's coerced-type reload can view it as the (possibly
+          wider) coerced register layout -- mirrors the COERCED parameter
+          prologue's own over-aligned slot. }
+        cur_func_ret_slot := EntryAlloca(LLVMTypeForTk(ret_tk), 'return_value');
+        LLVMSetAlignment(cur_func_ret_slot, 8);
+      END
+      ELSE
+        cur_func_ret_slot := EntryAlloca(ret_llvm_ty, 'return_value');
+      IF (ret_tk = TK_REAL) OR (ret_tk = TK_REAL32) THEN LLVMBuildStore(builder, LLVMConstReal(LLVMTypeForTk(ret_tk), 0.0), cur_func_ret_slot)
       ELSE IF (ret_tk = TK_BOOLEAN) OR (ret_tk = TK_CHAR) OR IsIntegerFamilyTk(ret_tk) THEN
-        LLVMBuildStore(builder, LLVMConstInt(ret_llvm_ty, 0, 0), cur_func_ret_slot)
+        LLVMBuildStore(builder, LLVMConstInt(LLVMTypeForTk(ret_tk), 0, 0), cur_func_ret_slot)
       ELSE
         { ADRMEM/POINTER, or an aggregate (LSTRING/STRING/ARRAY/RECORD)
           return type -- neither fits LLVMConstInt (not an integer LLVM
           type), so zero it via LLVMConstNull instead, matching the
-          reference's own all-zero default-return initialization. }
-        LLVMBuildStore(builder, LLVMConstNull(ret_llvm_ty), cur_func_ret_slot);
+          reference's own all-zero default-return initialization. Typed by
+          the real Pascal return type (cur_func_ret_slot's own storage
+          type), not ret_llvm_ty, which for a MEMORY/COERCED aggregate
+          return no longer matches that storage's type. }
+        LLVMBuildStore(builder, LLVMConstNull(LLVMTypeForTk(ret_tk)), cur_func_ret_slot);
     END
     ELSE
       cur_func_name := '';
 
-    { llvm_idx is the running LLVM parameter index: it only tracks the
-      Pascal parameter index while no COERCED [C] aggregate parameter has
-      been seen, since such a parameter arrives as one LLVM parameter per
-      eightbyte (at most two). }
-    llvm_idx := 0;
+    { llvm_idx is the running LLVM parameter index: it starts at 1 instead
+      of 0 when a hidden sret result pointer occupies LLVM parameter 0 (see
+      the matching seed in the signature-building and attribute-attachment
+      code above), and from there only tracks the Pascal parameter index
+      while no COERCED aggregate parameter has been seen, since such a
+      parameter arrives as one LLVM parameter per eightbyte (at most two). }
+    IF ret_class = SYSV_CLASS_MEMORY THEN llvm_idx := 1 ELSE llvm_idx := 0;
     FOR i := 1 TO n DO
     BEGIN
       param_val := LLVMGetParam(fn, llvm_idx);
       llvm_idx := llvm_idx + 1;
       IF isvar[i] THEN
         palloca := param_val { the incoming pointer already IS the storage }
-      ELSE IF needs_copy[i] AND is_c THEN
+      ELSE IF needs_copy[i] THEN
       BEGIN
+        { Value-mode aggregate param, plain Pascal and [C] FOREIGN alike. }
         ClassifyAggregate(tks[i], agg_class, n_pieces, piece_kind, piece_bytes);
         IF agg_class = SYSV_CLASS_MEMORY THEN
           { SysV byval: the incoming pointer already refers to a private
@@ -8284,17 +8351,6 @@ BEGIN
           END;
         END;
       END
-      ELSE IF needs_copy[i] THEN
-      BEGIN
-        { Value-mode aggregate on a plain (non-[C]) routine: param_val is
-          the first-class LLVM aggregate value itself (see the signature
-          construction above), not a pointer -- matching the Python
-          reference. Storing it into a fresh local alloca IS the callee's
-          private copy; identical shape to the plain scalar ELSE branch
-          below. }
-        palloca := EntryAlloca(LLVMTypeForTk(tks[i]), names[i]);
-        LLVMBuildStore(builder, param_val, palloca);
-      END
       ELSE
       BEGIN
         palloca := EntryAlloca(LLVMTypeForTk(tks[i]), names[i]);
@@ -8313,8 +8369,30 @@ BEGIN
 
     IF is_func THEN
     BEGIN
-      ret_load := LLVMBuildLoad2(builder, ret_llvm_ty, cur_func_ret_slot, MakeCStr(''));
-      ret_load := LLVMBuildRet(builder, ret_load);
+      IF ret_class = SYSV_CLASS_MEMORY THEN
+        { Every RETURN/function-name-assignment already stored straight
+          into the caller's sret buffer (cur_func_ret_slot IS that pointer)
+          -- nothing left to load, and this function's LLVM return type is
+          void. }
+        LLVMBuildRetVoid(builder)
+      ELSE IF ret_class = SYSV_CLASS_COERCED THEN
+      BEGIN
+        { Reverse of the COERCED parameter prologue: view the (over-aligned)
+          aggregate storage as the coerced register layout and read that
+          layout back out as one value, ready to `ret` in one or two
+          registers -- mirrors the caller side's own coerced-return
+          reconstruction (CodegenCallCommon) in the opposite direction. }
+        cstruct_ty := SysVCoercedRetType(ret_npieces, ret_pk, ret_pb);
+        cptr := LLVMBuildBitCast(builder, cur_func_ret_slot, LLVMPointerType(cstruct_ty, 0), MakeCStr(''));
+        ret_load := LLVMBuildLoad2(builder, cstruct_ty, cptr, MakeCStr(''));
+        LLVMSetAlignment(ret_load, 8);
+        ret_load := LLVMBuildRet(builder, ret_load);
+      END
+      ELSE
+      BEGIN
+        ret_load := LLVMBuildLoad2(builder, ret_llvm_ty, cur_func_ret_slot, MakeCStr(''));
+        ret_load := LLVMBuildRet(builder, ret_load);
+      END;
     END
     ELSE
       LLVMBuildRetVoid(builder);
@@ -8657,6 +8735,12 @@ BEGIN
   freadset_fnty := LLVMFunctionType(voidty, param_arr, 4, 0);
   freadset_fn := LLVMAddFunction(modl, MakeCStr('pas_freadset'), freadset_fnty);
 
+  param_arr := AllocPtrArray(2);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  SetPtrArrayElem(param_arr, 1, LLVMPointerType(filefcbty, 0));
+  file_attach_std_fnty := LLVMFunctionType(voidty, param_arr, 2, 0);
+  file_attach_std_fn := LLVMAddFunction(modl, MakeCStr('pas_file_attach_std'), file_attach_std_fnty);
+
   param_arr := AllocPtrArray(1);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(i32ty, 0));
   read_int_fnty := LLVMFunctionType(i32ty, param_arr, 1, 0);
@@ -8928,6 +9012,7 @@ BEGIN
       AbortWith('codegen: expected Block under ProgramUnit');
 
     CodegenDeclList(GetObj(block, 'decls'));
+    IF NOT is_device_compiland THEN RegisterPredeclaredFiles;
     EmitUnitInitCalls;
     CodegenProgramParameters(root);
 

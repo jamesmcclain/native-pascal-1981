@@ -90,7 +90,7 @@ test: $(DRIVER_BIN)
 	./tests/driver.sh
 	./tests/run.sh
 	./tests/checklit.sh
-	PYTHONPATH=. $(PYTHON) -m pytest tests/parity/
+	PYTHONPATH=. $(PYTHON) -m pytest tests/parity/ tests/test_precommit_hook.py
 
 # The zero-Python subset of `test`: driver, golden-file behavioral, and
 # IR/PTX-text directive tests. It does not run pytest or Python.

@@ -22,7 +22,14 @@ root="$(git rev-parse --show-toplevel)"
 cd "$root"
 
 # Paths staged for this commit. Deletions (D) are excluded: nothing to format.
-mapfile -t -d '' staged < <(git diff --cached --name-only --diff-filter=ACMR -z)
+# `read -d ''` (not `mapfile -d ''`) deliberately: mapfile's -d delimiter
+# option was only added in bash 4.4 (2016), and this hook runs under
+# whatever `bash` a clone's PATH resolves first -- macOS still ships 3.2.57
+# as /bin/bash, where `mapfile -t -d ''` is an invalid option that aborts
+# the whole script under `set -e` before even reaching the empty-stage
+# check below. `read -d ''` has been portable since long before bash 3.2.
+staged=()
+while IFS= read -r -d '' f; do staged+=("$f"); done < <(git diff --cached --name-only --diff-filter=ACMR -z)
 
 if [ ${#staged[@]} -eq 0 ]; then
     exec "$root/scripts/beautify.sh"
@@ -30,7 +37,8 @@ fi
 
 # Paths that also carry unstaged changes -- unsafe to re-add (see above).
 # Must be sampled before the formatter runs, since it dirties the worktree.
-mapfile -t -d '' unstaged < <(git diff --name-only -z)
+unstaged=()
+while IFS= read -r -d '' f; do unstaged+=("$f"); done < <(git diff --name-only -z)
 
 # Content hashes before formatting, so we can tell what the formatter touched.
 declare -A before=()
