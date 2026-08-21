@@ -2234,22 +2234,21 @@ BEGIN
     RoutineIsFunc := routines[routi].is_func;
 END;
 
-FUNCTION CFuncRetAggClass(routi: INTEGER32): INTEGER;
-{ SYSV_CLASS_MEMORY / SYSV_CLASS_COERCED for a [C] FOREIGN FUNCTION that
-  returns an aggregate by value, and 0 for everything else (a PROCEDURE, a
-  scalar-returning function, or any plain-Pascal routine -- those keep the
-  first-class-LLVM-aggregate return convention untouched). Recomputed from
-  ret_tk on demand rather than cached in RoutineRec, exactly as the
+FUNCTION FuncRetAggClass(routi: INTEGER32): INTEGER;
+{ SYSV_CLASS_MEMORY / SYSV_CLASS_COERCED for any FUNCTION (plain Pascal or
+  [C] FOREIGN alike) that returns an aggregate by value, and 0 for
+  everything else (a PROCEDURE or a scalar-returning function). Recomputed
+  from ret_tk on demand rather than cached in RoutineRec, exactly as the
   parameter side recomputes ClassifyAggregate at each of its sites, so the
   declaration and the call site can never disagree about the shape.
   routi = 0 ("not found") is guarded here for the same non-short-circuit-AND
   reason RoutineIsFunc documents. }
 BEGIN
-  CFuncRetAggClass := 0;
+  FuncRetAggClass := 0;
   IF routi <> 0 THEN
-    IF routines[routi].is_c AND routines[routi].is_func THEN
+    IF routines[routi].is_func THEN
       IF IsAggregateTk(routines[routi].ret_tk) THEN
-        CFuncRetAggClass := SysVAggClass(routines[routi].ret_tk);
+        FuncRetAggClass := SysVAggClass(routines[routi].ret_tk);
 END;
 
 { ============================== expressions =============================== }
@@ -3107,7 +3106,7 @@ BEGIN
       prepends -- which is also why the array is sized nargs * 2 + 1 rather
       than nargs * 2 (an sret call with no real arguments at all still needs
       one slot). }
-    ret_class := CFuncRetAggClass(ri);
+    ret_class := FuncRetAggClass(ri);
     IF ret_class <> 0 THEN
       ClassifyAggregate(routines[ri].ret_tk, ret_class, ret_npieces, ret_pk, ret_pb);
     call_args := AllocPtrArray(nargs * 2 + 1);
@@ -3285,15 +3284,16 @@ BEGIN
       END;
     END;
     res := LLVMBuildCall2(builder, routines[ri].fnty, routines[ri].fn, call_args, llvm_ai, MakeCStr(''));
-    { Attach byval(ty)/align at the CALL SITE too, matching clang's own
-      lowering (verification step 7) -- the declaration side alone
+    { Attach byval(ty)/align (and sret(ty)/noalias/align for a MEMORY-class
+      return) at the CALL SITE too, matching clang's own lowering
+      (verification step 7) -- the declaration side alone
       (CodegenRoutineDecl) isn't enough; LLVM expects both. Applies to
-      plain-Pascal routines exactly like [C] FOREIGN ones (ret_class is
-      still is_c-only for now, so the sret branch below stays a no-op for a
-      plain routine until that's converted too). Walked with its own LLVM
-      argument index (attribute indices are 1-based over LLVM parameters, 0
-      being the return), since a COERCED aggregate argument occupies one
-      slot per eightbyte -- and carries no parameter attribute at all:
+      plain-Pascal routines exactly like [C] FOREIGN ones, via the same
+      FuncRetAggClass/ClassifyAggregate calls both sides use. Walked with
+      its own LLVM argument index (attribute indices are 1-based over LLVM
+      parameters, 0 being the return), since a COERCED aggregate argument
+      occupies one slot per eightbyte -- and carries no parameter attribute
+      at all:
       byval/align describe a pointer to memory, which a register-passed
       aggregate never has. }
     llvm_ai := 0;
@@ -6758,13 +6758,38 @@ PROCEDURE CodegenReturnStmt(stmt: ADRMEM);
   loads) -- it does not reset the result to a fixed constant. }
 VAR
   ret_load: ADRMEM;
+  ret_class, n_pieces: INTEGER;
+  piece_kind: SysVPieceArr;
+  piece_bytes: SysVPieceSzArr;
+  cstruct_ty, cptr: ADRMEM;
 BEGIN
   IF cur_func_name = '' THEN
     LLVMBuildRetVoid(builder)
   ELSE
   BEGIN
-    ret_load := LLVMBuildLoad2(builder, LLVMTypeForTk(cur_func_ret_tk), cur_func_ret_slot, MakeCStr(''));
-    ret_load := LLVMBuildRet(builder, ret_load);
+    { Aggregate returns are classified on demand from cur_func_ret_tk, same
+      idiom as FuncRetAggClass -- so this can never disagree with the
+      classification CodegenRoutineDecl already applied to cur_func_ret_slot
+      itself (the sret pointer for MEMORY, or the over-aligned aggregate
+      alloca for COERCED). Mirrors that procedure's own epilogue exactly. }
+    ret_class := 0;
+    IF IsAggregateTk(cur_func_ret_tk) THEN
+      ClassifyAggregate(cur_func_ret_tk, ret_class, n_pieces, piece_kind, piece_bytes);
+    IF ret_class = SYSV_CLASS_MEMORY THEN
+      LLVMBuildRetVoid(builder)
+    ELSE IF ret_class = SYSV_CLASS_COERCED THEN
+    BEGIN
+      cstruct_ty := SysVCoercedRetType(n_pieces, piece_kind, piece_bytes);
+      cptr := LLVMBuildBitCast(builder, cur_func_ret_slot, LLVMPointerType(cstruct_ty, 0), MakeCStr(''));
+      ret_load := LLVMBuildLoad2(builder, cstruct_ty, cptr, MakeCStr(''));
+      LLVMSetAlignment(ret_load, 8);
+      ret_load := LLVMBuildRet(builder, ret_load);
+    END
+    ELSE
+    BEGIN
+      ret_load := LLVMBuildLoad2(builder, LLVMTypeForTk(cur_func_ret_tk), cur_func_ret_slot, MakeCStr(''));
+      ret_load := LLVMBuildRet(builder, ret_load);
+    END;
   END;
 END;
 
@@ -7959,18 +7984,35 @@ BEGIN
     routines[ridx].has_body := TRUE;
     is_c := routines[ridx].is_c; { source of truth once ridx is known -- see note above }
     is_vararg := routines[ridx].is_vararg; { likewise }
-    { The already-built fnty is reused verbatim here, so a [C] routine whose
-      aggregate return was lowered to sret/coerced below already has a
-      signature this branch cannot re-derive: its hidden result pointer
-      shifts every LLVMGetParam index in the prologue, and its LLVM return
-      type is no longer the aggregate cur_func_ret_slot/RETURN would store.
-      IsCForeignDecl only answers TRUE for an EXTERN declaration, so the
-      only way to reach this is an EXTERN [C] name later given a real body
-      in the same compiland -- refuse it loudly rather than emit a body
-      against the wrong convention. }
-    IF has_block_body AND is_c AND is_func THEN
+    { The already-built fnty is reused verbatim here, so it must already
+      reflect the same classification recomputed below -- true as long as
+      the placeholder that first declared this name (the fresh-declaration
+      ELSE branch, whether reached as a genuine FORWARD or as this same
+      branch's own first pass) applied the identical is_func/ret_tk-driven
+      classification, which it always does; ClassifyAggregate/FuncRetAggClass
+      are pure functions of ret_tk, so declaration and reuse can never
+      disagree (same idiom as the parameter side). A plain-Pascal FUNCTION
+      forward-declared through a spliced INTERFACE UNIT (e.g. jsonutil's
+      Str255-returning routines) legitimately reaches this path with an
+      aggregate return and a real body -- that is the normal case, not an
+      error. A [C] EXTERN aggregate-returning FUNCTION reaching here is
+      different: EXTERN promises the body lives elsewhere, so a real body
+      under the same name is a self-contradictory program, not a shape this
+      compiler can lower -- refuse it loudly rather than emit a body against
+      an EXTERN declaration. }
+    ret_class := 0;
+    IF is_func THEN
       IF IsAggregateTk(ret_tk) THEN
-        AbortWith2('codegen: [C] EXTERN routine with an aggregate return cannot be defined here: ', name);
+      BEGIN
+        IF has_block_body AND is_c THEN
+          AbortWith2('codegen: [C] EXTERN routine with an aggregate return cannot be defined here: ', name)
+        ELSE
+        BEGIN
+          ClassifyAggregate(ret_tk, ret_class, ret_npieces, ret_pk, ret_pb);
+          IF ret_class = SYSV_CLASS_MEMORY THEN ret_llvm_ty := voidty
+          ELSE ret_llvm_ty := SysVCoercedRetType(ret_npieces, ret_pk, ret_pb);
+        END;
+      END;
   END
   ELSE
   BEGIN
@@ -7989,16 +8031,16 @@ BEGIN
     END;
 
     { The return has to be classified BEFORE the parameter list is built: a
-      [C] FOREIGN FUNCTION returning a MEMORY-class aggregate returns void
-      and takes a hidden pointer to the caller's result storage as its FIRST
-      LLVM parameter, shifting every real parameter's LLVM index by one.
-      A COERCED-class aggregate return needs no hidden pointer -- it comes
-      back in one or two registers, i.e. as a plain non-aggregate LLVM
-      return type -- so it only rewrites ret_llvm_ty. Everything else
-      (PROCEDUREs, scalar returns, and every plain non-[C] routine, which
-      keeps returning a first-class LLVM aggregate) is untouched. }
+      FUNCTION (plain Pascal or [C] FOREIGN alike) returning a MEMORY-class
+      aggregate returns void and takes a hidden pointer to the caller's
+      result storage as its FIRST LLVM parameter, shifting every real
+      parameter's LLVM index by one. A COERCED-class aggregate return needs
+      no hidden pointer -- it comes back in one or two registers, i.e. as a
+      plain non-aggregate LLVM return type -- so it only rewrites
+      ret_llvm_ty. Everything else (PROCEDUREs and scalar returns) is
+      untouched. }
     ret_class := 0;
-    IF is_c AND is_func THEN
+    IF is_func THEN
       IF IsAggregateTk(ret_tk) THEN
       BEGIN
         ClassifyAggregate(ret_tk, ret_class, ret_npieces, ret_pk, ret_pb);
@@ -8128,16 +8170,16 @@ BEGIN
     routines[ridx].is_c := is_c;
     routines[ridx].is_vararg := is_vararg;
 
-    { Attach byval(ty)/align at the DECLARATION side too (not just the call
-      site below) -- LLVM attaches parameter attributes to both the function
+    { Attach byval(ty)/align (and sret(ty)/noalias/align for a MEMORY-class
+      return) at the DECLARATION side too (not just the call site below) --
+      LLVM attaches parameter attributes to both the function
       definition/declaration and each call site; clang emits both, and only
       doing one leaves the IR inconsistent with what a real C compiler
       produces for the same signature (verification step 7). Applies to
-      plain-Pascal routines exactly like [C] FOREIGN ones (ret_class is
-      still is_c-only for now -- see CFuncRetAggClass -- so the sret branch
-      below stays a no-op for a plain routine until that's converted too).
-      Attribute index is 1-based over LLVM parameters (0 is the return),
-      which is why it is walked with llvm_idx rather than the Pascal
+      plain-Pascal routines exactly like [C] FOREIGN ones, via the same
+      FuncRetAggClass/ClassifyAggregate calls both sides use. Attribute
+      index is 1-based over LLVM parameters (0 is the return), which is why
+      it is walked with llvm_idx rather than the Pascal
       parameter index: a COERCED aggregate parameter occupies one slot per
       eightbyte and carries no attribute of its own -- byval and align
       describe a pointer to memory, which a register-passed aggregate never
@@ -8212,25 +8254,50 @@ BEGIN
     BEGIN
       cur_func_name := name;
       cur_func_ret_tk := ret_tk;
-      cur_func_ret_slot := EntryAlloca(ret_llvm_ty, 'return_value');
-      IF (ret_tk = TK_REAL) OR (ret_tk = TK_REAL32) THEN LLVMBuildStore(builder, LLVMConstReal(ret_llvm_ty, 0.0), cur_func_ret_slot)
+      IF ret_class = SYSV_CLASS_MEMORY THEN
+        { The hidden sret pointer (LLVM parameter 0) already points at the
+          caller's own result storage -- use it directly, exactly like a
+          byval parameter uses its incoming pointer directly, so every
+          RETURN/function-name-assignment site (which always addresses
+          cur_func_ret_slot via cur_func_ret_tk, the real Pascal type, not
+          ret_llvm_ty) stores straight into the caller's buffer with no
+          extra copy, and the epilogue below needs no load/ret of the LLVM
+          return type at all (which is void here). }
+        cur_func_ret_slot := LLVMGetParam(fn, 0)
+      ELSE IF ret_class = SYSV_CLASS_COERCED THEN
+      BEGIN
+        { Real aggregate-typed storage, over-aligned to a full eightbyte so
+          the epilogue's coerced-type reload can view it as the (possibly
+          wider) coerced register layout -- mirrors the COERCED parameter
+          prologue's own over-aligned slot. }
+        cur_func_ret_slot := EntryAlloca(LLVMTypeForTk(ret_tk), 'return_value');
+        LLVMSetAlignment(cur_func_ret_slot, 8);
+      END
+      ELSE
+        cur_func_ret_slot := EntryAlloca(ret_llvm_ty, 'return_value');
+      IF (ret_tk = TK_REAL) OR (ret_tk = TK_REAL32) THEN LLVMBuildStore(builder, LLVMConstReal(LLVMTypeForTk(ret_tk), 0.0), cur_func_ret_slot)
       ELSE IF (ret_tk = TK_BOOLEAN) OR (ret_tk = TK_CHAR) OR IsIntegerFamilyTk(ret_tk) THEN
-        LLVMBuildStore(builder, LLVMConstInt(ret_llvm_ty, 0, 0), cur_func_ret_slot)
+        LLVMBuildStore(builder, LLVMConstInt(LLVMTypeForTk(ret_tk), 0, 0), cur_func_ret_slot)
       ELSE
         { ADRMEM/POINTER, or an aggregate (LSTRING/STRING/ARRAY/RECORD)
           return type -- neither fits LLVMConstInt (not an integer LLVM
           type), so zero it via LLVMConstNull instead, matching the
-          reference's own all-zero default-return initialization. }
-        LLVMBuildStore(builder, LLVMConstNull(ret_llvm_ty), cur_func_ret_slot);
+          reference's own all-zero default-return initialization. Typed by
+          the real Pascal return type (cur_func_ret_slot's own storage
+          type), not ret_llvm_ty, which for a MEMORY/COERCED aggregate
+          return no longer matches that storage's type. }
+        LLVMBuildStore(builder, LLVMConstNull(LLVMTypeForTk(ret_tk)), cur_func_ret_slot);
     END
     ELSE
       cur_func_name := '';
 
-    { llvm_idx is the running LLVM parameter index: it only tracks the
-      Pascal parameter index while no COERCED [C] aggregate parameter has
-      been seen, since such a parameter arrives as one LLVM parameter per
-      eightbyte (at most two). }
-    llvm_idx := 0;
+    { llvm_idx is the running LLVM parameter index: it starts at 1 instead
+      of 0 when a hidden sret result pointer occupies LLVM parameter 0 (see
+      the matching seed in the signature-building and attribute-attachment
+      code above), and from there only tracks the Pascal parameter index
+      while no COERCED aggregate parameter has been seen, since such a
+      parameter arrives as one LLVM parameter per eightbyte (at most two). }
+    IF ret_class = SYSV_CLASS_MEMORY THEN llvm_idx := 1 ELSE llvm_idx := 0;
     FOR i := 1 TO n DO
     BEGIN
       param_val := LLVMGetParam(fn, llvm_idx);
@@ -8293,8 +8360,30 @@ BEGIN
 
     IF is_func THEN
     BEGIN
-      ret_load := LLVMBuildLoad2(builder, ret_llvm_ty, cur_func_ret_slot, MakeCStr(''));
-      ret_load := LLVMBuildRet(builder, ret_load);
+      IF ret_class = SYSV_CLASS_MEMORY THEN
+        { Every RETURN/function-name-assignment already stored straight
+          into the caller's sret buffer (cur_func_ret_slot IS that pointer)
+          -- nothing left to load, and this function's LLVM return type is
+          void. }
+        LLVMBuildRetVoid(builder)
+      ELSE IF ret_class = SYSV_CLASS_COERCED THEN
+      BEGIN
+        { Reverse of the COERCED parameter prologue: view the (over-aligned)
+          aggregate storage as the coerced register layout and read that
+          layout back out as one value, ready to `ret` in one or two
+          registers -- mirrors the caller side's own coerced-return
+          reconstruction (CodegenCallCommon) in the opposite direction. }
+        cstruct_ty := SysVCoercedRetType(ret_npieces, ret_pk, ret_pb);
+        cptr := LLVMBuildBitCast(builder, cur_func_ret_slot, LLVMPointerType(cstruct_ty, 0), MakeCStr(''));
+        ret_load := LLVMBuildLoad2(builder, cstruct_ty, cptr, MakeCStr(''));
+        LLVMSetAlignment(ret_load, 8);
+        ret_load := LLVMBuildRet(builder, ret_load);
+      END
+      ELSE
+      BEGIN
+        ret_load := LLVMBuildLoad2(builder, ret_llvm_ty, cur_func_ret_slot, MakeCStr(''));
+        ret_load := LLVMBuildRet(builder, ret_load);
+      END;
     END
     ELSE
       LLVMBuildRetVoid(builder);
