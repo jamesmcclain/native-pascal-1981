@@ -573,6 +573,7 @@ VAR
   fread_string_fnty, fread_string_fn: ADRMEM;
   freadln_skip_fnty, freadln_skip_fn: ADRMEM;
   freadset_fnty, freadset_fn: ADRMEM; { pas_freadset(fcb*, lstr*, cap, set_words*) }
+  file_attach_std_fnty, file_attach_std_fn: ADRMEM; { pas_file_attach_std(in_fcb*, out_fcb*) }
   read_int_fnty, read_int_fn: ADRMEM; { stdin counterparts (readq.c), used by
     a bare READ/READLN with no leading file argument. }
   read_word_fnty, read_word_fn: ADRMEM;
@@ -4419,6 +4420,23 @@ BEGIN
   LoadFileFcbPtr := LLVMBuildBitCast(builder, handle, LLVMPointerType(filefcbty, 0), MakeCStr(''));
 END;
 
+FUNCTION GetDefaultInputFcbPtr: ADRMEM;
+{ Loads the predeclared INPUT/OUTPUT FCBs (registered unconditionally for
+  every PROGRAM by RegisterPredeclaredFiles) and lazily binds them to real
+  stdin/stdout via pas_file_attach_std, mirroring the reference's
+  _file_selector_fcb attach-on-first-use behavior. Returns the INPUT FCB*. }
+VAR
+  in_fcb, out_fcb, call_args, discard: ADRMEM;
+BEGIN
+  in_fcb := LoadFileFcbPtr('INPUT');
+  out_fcb := LoadFileFcbPtr('OUTPUT');
+  call_args := AllocPtrArray(2);
+  SetPtrArrayElem(call_args, 0, in_fcb);
+  SetPtrArrayElem(call_args, 1, out_fcb);
+  discard := LLVMBuildCall2(builder, file_attach_std_fnty, file_attach_std_fn, call_args, 2, MakeCStr(''));
+  GetDefaultInputFcbPtr := in_fcb;
+END;
+
 PROCEDURE CodegenWriteArgs(args: ADRMEM; newline: BOOLEAN);
 VAR
   nargs, i, start_idx: INTEGER32;
@@ -5022,11 +5040,11 @@ PROCEDURE CodegenReadSet(args: ADRMEM);
 { READSET([file,] dest, set_of_char): manual-documented extended I/O builtin
   (djvu.txt:9047-9081-adjacent), lowered straight to the runtime's existing
   pas_freadset (runtime/fileops.c) -- no runtime changes needed, only this
-  call-site wiring, mirroring the reference's builtin_readset. Scoped to the
-  3-argument (explicit TEXT file) form: pas_freadset always requires a real
-  FCB* and this compiler has no INPUT-stream FCB binding of its own (unlike
-  the Python reference, which lazily attaches a predeclared INPUT global via
-  pas_file_attach_std) -- a real, stated gap rather than a silent one. }
+  call-site wiring, mirroring the reference's builtin_readset. The 2-argument
+  form (implicit INPUT) routes through GetDefaultInputFcbPtr, which lazily
+  attaches the predeclared INPUT/OUTPUT FCBs (RegisterPredeclaredFiles) to
+  real stdin/stdout via pas_file_attach_std -- mirroring the reference's
+  own lazy-attach-on-first-use behavior. }
 VAR
   nargs, start_idx: INTEGER32;
   arg0, dest_node, set_node: ADRMEM;
@@ -5036,11 +5054,19 @@ VAR
   tid: INTEGER;
 BEGIN
   nargs := ArrSize(args);
-  IF nargs <> 3 THEN
-    AbortWith('codegen: READSET without an explicit TEXT file argument is not yet supported (no native INPUT stream FCB binding)');
-  arg0 := ArrItem(args, 0);
-  fcb_ptr := LoadFileFcbPtr(GetStr(arg0, 'name'));
-  start_idx := 1;
+  IF (nargs <> 2) AND (nargs <> 3) THEN
+    AbortWith('codegen: READSET expects 2 or 3 arguments');
+  IF nargs = 3 THEN
+  BEGIN
+    arg0 := ArrItem(args, 0);
+    fcb_ptr := LoadFileFcbPtr(GetStr(arg0, 'name'));
+    start_idx := 1;
+  END
+  ELSE
+  BEGIN
+    fcb_ptr := GetDefaultInputFcbPtr;
+    start_idx := 0;
+  END;
 
   dest_node := ArrItem(args, start_idx);
   symi := LookupSym(GetStr(dest_node, 'name'));
@@ -7348,6 +7374,31 @@ BEGIN
   LLVMBuildStore(builder, LLVMBuildBitCast(builder, fcb, i8ptrty, MakeCStr('')), slot);
 END;
 
+PROCEDURE RegisterPredeclaredFiles;
+{ Unconditionally declares INPUT/OUTPUT as TEXT-file symbols for the main
+  PROGRAM, mirroring the reference's _register_predeclared_files -- without
+  this, LoadFileFcbPtr('INPUT') aborts as undefined for any program that
+  doesn't itself write VAR INPUT: TEXT, which is exactly the case READSET's
+  2-argument implicit-INPUT form needs to cover. A no-op if the program
+  already declared its own INPUT/OUTPUT (e.g. as an explicit heading
+  parameter with its own VAR). }
+VAR
+  text_tid: INTEGER;
+BEGIN
+  IF LookupSym('INPUT') = 0 THEN
+  BEGIN
+    text_tid := RegisterType(TK_FILE, TK_CHAR, 0, 1, i8ptrty);
+    DeclareVar('INPUT', text_tid);
+    InitFileStorage(symbols[nsymbols].llvm_val, TK_CHAR, 1, 'INPUT');
+  END;
+  IF LookupSym('OUTPUT') = 0 THEN
+  BEGIN
+    text_tid := RegisterType(TK_FILE, TK_CHAR, 0, 1, i8ptrty);
+    DeclareVar('OUTPUT', text_tid);
+    InitFileStorage(symbols[nsymbols].llvm_val, TK_CHAR, 1, 'OUTPUT');
+  END;
+END;
+
 PROCEDURE CodegenVarDecl(decl: ADRMEM);
 VAR
   names: ADRMEM;
@@ -8657,6 +8708,12 @@ BEGIN
   freadset_fnty := LLVMFunctionType(voidty, param_arr, 4, 0);
   freadset_fn := LLVMAddFunction(modl, MakeCStr('pas_freadset'), freadset_fnty);
 
+  param_arr := AllocPtrArray(2);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  SetPtrArrayElem(param_arr, 1, LLVMPointerType(filefcbty, 0));
+  file_attach_std_fnty := LLVMFunctionType(voidty, param_arr, 2, 0);
+  file_attach_std_fn := LLVMAddFunction(modl, MakeCStr('pas_file_attach_std'), file_attach_std_fnty);
+
   param_arr := AllocPtrArray(1);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(i32ty, 0));
   read_int_fnty := LLVMFunctionType(i32ty, param_arr, 1, 0);
@@ -8928,6 +8985,7 @@ BEGIN
       AbortWith('codegen: expected Block under ProgramUnit');
 
     CodegenDeclList(GetObj(block, 'decls'));
+    IF NOT is_device_compiland THEN RegisterPredeclaredFiles;
     EmitUnitInitCalls;
     CodegenProgramParameters(root);
 
