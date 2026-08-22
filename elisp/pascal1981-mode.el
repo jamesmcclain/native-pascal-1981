@@ -65,6 +65,17 @@ Buffers larger than this are not sent; TAB falls back to
 indentation instead."
   :type 'integer :group 'pascal1981)
 
+(defun pascal1981-completion-toggle (&optional arg)
+  "Toggle `pascal1981-completion-enabled'.
+With prefix ARG, enable it if ARG is positive, disable otherwise."
+  (interactive "P")
+  (setq pascal1981-completion-enabled
+        (if arg
+            (> (prefix-numeric-value arg) 0)
+          (not pascal1981-completion-enabled)))
+  (message "pascal1981: LLM completion %s"
+           (if pascal1981-completion-enabled "enabled" "disabled")))
+
 (defvar pascal1981--token-cache nil
   "Buffer-local cache of last lexer output (vector of alists).")
 (make-variable-buffer-local 'pascal1981--token-cache)
