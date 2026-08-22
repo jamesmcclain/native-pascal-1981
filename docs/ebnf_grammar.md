@@ -10,6 +10,9 @@ implementation_unit = [ "DEVICE" ] "IMPLEMENTATION" "OF" identifier ";" { uses_c
                       { declaration } [ compound_statement ] "." ;
 uses_clause = "USES" uses_import { "," uses_import } ";" ;
 uses_import = identifier [ "(" identifier_list ")" ] ;
+(* DEVICE above is a contextual keyword, recognized by comparing the
+   current identifier's text, not a reserved lexer token like MODULE or
+   INTERFACE; it may still be used as an ordinary identifier elsewhere. *)
 
 block = { declaration } [ compound_statement ] ;
 declaration = const_section | type_section | var_section | label_section | procedure_declaration | function_declaration ;
@@ -24,6 +27,10 @@ function_declaration = function_header ";" ( routine_directive ";" | block ";" )
 procedure_header = "PROCEDURE" identifier [ "(" parameter_list ")" ] [ attributes ] ;
 function_header = "FUNCTION" identifier [ "(" parameter_list ")" ] ":" type [ attributes ] ;
 routine_directive = "EXTERN" | "EXTERNAL" | "FORWARD" ;
+(* VALUE, ORIGIN, OVERLAY, FORTRAN are reserved words (cannot be used as
+   identifiers) but have no grammar role in this toolchain's parser: they
+   are period-correct IBM Pascal keywords the lexer still reserves without
+   the parser implementing them. *)
 parameter_list = parameter_group { ";" parameter_group } [ ";" ] ;
 parameter_group = [ "VAR" | "VARS" | "CONST" | "CONSTS" ] identifier_list ":" type ;
 attributes = "[" [ attribute { "," attribute } ] "]" ;
@@ -102,4 +109,25 @@ char_literal = "'" character "'" ;
 string_literal = "'" { character | "''" } "'" ;
 character = ? any character except "'" ? ;
 boolean_literal = "TRUE" | "FALSE" ;
+
+(* Metacommand directives: a `$`-prefixed sublanguage recognized inside
+   comments, i.e. within "(* ... *)" or "{ ... }", where "..." matches
+   metacommand_list below. Several forms affect parsing itself: $IF/$ELSE/
+   $END drive conditional compilation (skipping source text), and $UNROLL
+   must immediately precede a FOR, WHILE, or REPEAT statement. *)
+metacommand_list = "$" metacommand { "," metacommand } ;
+metacommand = conditional_directive | "PUSH" | "POP" | message_directive
+            | include_directive | inconst_directive | unroll_directive
+            | flag_directive ;
+conditional_directive = "IF" meta_condition [ "$" "THEN" ]
+                       | "ELSE" | "END" ;
+meta_condition = integer_literal | "-" integer_literal | identifier ;
+message_directive = "MESSAGE" [ ":" ] string_literal ;
+include_directive = "INCLUDE" ":" string_literal ;
+inconst_directive = "INCONST" [ ":" ] identifier ;
+unroll_directive = "UNROLL" [ ":" ] ( integer_literal | identifier ) ;
+flag_directive = flag_name ( "+" | "-" | ":" [ "+" | "-" ] integer_literal ) ;
+flag_name = "BRAVE" | "DEBUG" | "ENTRY" | "GOTO" | "INDEXCK" | "INITCK"
+          | "LINE" | "LIST" | "MATHCK" | "NILCK" | "OCODE" | "RANGECK"
+          | "RUNTIME" | "STACKCK" | "SYMTAB" | "WARN" ;
 ```
