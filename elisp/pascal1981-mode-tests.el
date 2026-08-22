@@ -762,6 +762,98 @@ the request was sent."
               #'pascal1981-indent-or-complete)))
 
 ;; -------------------------------------------------------------------
+;; LLM completion: real key dispatch through the command loop
+;; -------------------------------------------------------------------
+;;
+;; Every test above calls elisp functions (`pascal1981-indent-or-complete',
+;; `pascal1981-completion-cycle-next', etc.) directly -- which never
+;; exercises `set-transient-map's own machinery. `set-transient-map'
+;; evaluates its KEEP-PRED (and, when that says "don't keep", calls
+;; ON-EXIT) from `pre-command-hook', which runs BEFORE the command bound
+;; to the triggering key is actually invoked. A bug where TAB's bound
+;; command reads state that a blanket on-exit dismissal already cleared
+;; is invisible to direct function calls -- it only shows up when TAB is
+;; actually pressed. These tests drive real key sequences through
+;; `execute-kbd-macro' against a genuinely selected buffer (not a
+;; `with-temp-buffer', which is never "selected" and so does not reliably
+;; stay current through real command dispatch in batch mode) to catch
+;; exactly that class of bug.
+
+(defmacro pascal1981-tests--with-selected-buffer (name &rest body)
+  "Run BODY in a new, selected buffer named NAME. Buffer is killed after."
+  (declare (indent 1))
+  `(let ((pascal1981-tests--buf (generate-new-buffer ,name)))
+     (unwind-protect
+         (progn
+           (switch-to-buffer pascal1981-tests--buf)
+           ,@body)
+       (kill-buffer pascal1981-tests--buf))))
+
+(ert-deftest pascal1981-tests-real-tab-accepts-live-preview ()
+  "A real TAB keypress, not a direct function call, materializes the
+candidate currently shown by a live preview."
+  (pascal1981-tests--with-selected-buffer "pascal1981-tests-real-tab"
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (insert "x := ")
+    (pascal1981--completion-show-ghost '("1;"))
+    (execute-kbd-macro (kbd "TAB"))
+    (should (equal (buffer-string) "x := 1;"))
+    (should-not pascal1981--completion-overlay)))
+
+(ert-deftest pascal1981-tests-real-tab-releases-map-after-accept ()
+  "After a real TAB accepts a preview, a later TAB is not still captured
+by a leftover transient map -- it dispatches normally again."
+  (pascal1981-tests--with-selected-buffer "pascal1981-tests-real-tab-release"
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (insert "x := ")
+    (pascal1981--completion-show-ghost '("1;"))
+    (execute-kbd-macro (kbd "TAB"))
+    (setq pascal1981-completion-enabled nil)
+    (insert "\n  y")
+    (cl-letf (((symbol-function 'pascal1981-indent-line)
+               (lambda () (insert "<INDENTED>"))))
+      (execute-kbd-macro (kbd "TAB")))
+    (should (equal (buffer-string) "x := 1;\n  y<INDENTED>"))))
+
+(ert-deftest pascal1981-tests-real-m-n-cycles-and-real-tab-accepts-shown-one ()
+  "Real M-n keypresses advance the shown candidate; a real TAB after that
+materializes whichever one is currently shown, not the first."
+  (pascal1981-tests--with-selected-buffer "pascal1981-tests-real-cycle"
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (insert "x := ")
+    (pascal1981--completion-show-ghost '("1;" "2;" "3;"))
+    (execute-kbd-macro (kbd "M-n"))
+    (execute-kbd-macro (kbd "M-n"))
+    (execute-kbd-macro (kbd "TAB"))
+    (should (equal (buffer-string) "x := 3;"))))
+
+(ert-deftest pascal1981-tests-real-c-g-dismisses-without-inserting ()
+  "A real C-g dismisses the preview and inserts nothing."
+  (pascal1981-tests--with-selected-buffer "pascal1981-tests-real-c-g"
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (insert "x := ")
+    (pascal1981--completion-show-ghost '("1;"))
+    (execute-kbd-macro (kbd "C-g"))
+    (should (equal (buffer-string) "x := "))
+    (should-not pascal1981--completion-overlay)))
+
+(ert-deftest pascal1981-tests-real-typing-dismisses-preview ()
+  "Typing a real character dismisses the preview; the ghost text is
+never inserted, only the typed character is."
+  (pascal1981-tests--with-selected-buffer "pascal1981-tests-real-typing"
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (insert "x := ")
+    (pascal1981--completion-show-ghost '("1;"))
+    (execute-kbd-macro (kbd "9"))
+    (should (equal (buffer-string) "x := 9"))
+    (should-not pascal1981--completion-overlay)))
+
+;; -------------------------------------------------------------------
 ;; LLM completion: end-to-end against a local fake proxy
 ;; -------------------------------------------------------------------
 ;;
@@ -820,13 +912,14 @@ server is torn down after BODY runs."
       (accept-process-output nil 0.05))))
 
 (ert-deftest pascal1981-tests-end-to-end-fake-proxy-shows-and-accepts-completion ()
-  "A real HTTP round trip against a local fake proxy shows a preview; TAB
-materializes it into the buffer."
+  "A real HTTP round trip against a local fake proxy shows a preview; a
+real TAB keypress (not a direct function call) materializes it into
+the buffer."
   (pascal1981-tests--with-fake-proxy
       (pascal1981-tests--http-json-response
        200 '((completions . ["TO 10 DO"]) (model . "test-model")
              (request_id . "e2e-1")))
-    (with-temp-buffer
+    (pascal1981-tests--with-selected-buffer "pascal1981-tests-e2e-accept"
       (pascal1981-mode)
       (setq pascal1981-completion-enabled t
             pascal1981-completion-timeout 5)
@@ -836,7 +929,7 @@ materializes it into the buffer."
        (lambda () (not pascal1981--completion-pending-id)) 5)
       (should (equal (buffer-string) "FOR i := 1 "))
       (should (pascal1981--completion-overlay-live-p))
-      (pascal1981-indent-or-complete)
+      (execute-kbd-macro (kbd "TAB"))
       (should (equal (buffer-string) "FOR i := 1 TO 10 DO")))))
 
 (ert-deftest pascal1981-tests-end-to-end-fake-proxy-http-error-no-preview ()

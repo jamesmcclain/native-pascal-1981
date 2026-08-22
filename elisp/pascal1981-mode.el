@@ -514,11 +514,40 @@ decodes on the way back."
 (defun pascal1981--completion-dismiss ()
   "Remove the completion preview overlay and clear its state.
 Safe to call when no preview is showing."
+  (interactive)
   (when pascal1981--completion-overlay
     (delete-overlay pascal1981--completion-overlay))
   (setq pascal1981--completion-overlay nil
         pascal1981--completion-candidate-list nil
         pascal1981--completion-candidate-index 0))
+
+(defun pascal1981--completion-do-accept ()
+  "Materialize the currently shown candidate at point, if any.
+Inserted as a single atomic undo step via `pascal1981--completion-insert'.
+
+This is called from the completion-preview transient map's on-exit
+handler (see `pascal1981--completion-show-ghost'), not run directly as
+the command TAB is bound to. `set-transient-map' evaluates its
+KEEP-PRED, and therefore calls ON-EXIT when the map is not kept, from
+`pre-command-hook' -- which runs BEFORE the triggering command itself
+is invoked. A command bound to TAB that tried to do this work in its
+own body would see the overlay and candidate list already cleared by
+a naively unconditional on-exit dismiss; doing the real work from
+inside on-exit itself, while the state is still live, avoids that
+race entirely."
+  (when (pascal1981--completion-overlay-live-p)
+    (let ((text (nth pascal1981--completion-candidate-index
+                      pascal1981--completion-candidate-list)))
+      (pascal1981--completion-dismiss)
+      (pascal1981--completion-insert text))))
+
+(defun pascal1981--completion-accept ()
+  "Bound to TAB in the completion-preview transient map.
+Intentionally a no-op: the actual materialization happens in
+`pascal1981--completion-do-accept', run from the transient map's
+on-exit handler instead of from this command's own body -- see that
+function's docstring for why."
+  (interactive))
 
 (defun pascal1981--completion-show-ghost (candidates)
   "Show CANDIDATES (a list of strings) as a cycling preview at point."
@@ -537,17 +566,10 @@ Safe to call when no preview is showing."
      map)
    (lambda () (memq this-command '(pascal1981-completion-cycle-next
                                     pascal1981-completion-cycle-previous)))
-   #'pascal1981--completion-dismiss))
-
-(defun pascal1981--completion-accept ()
-  "Materialize the currently shown candidate at point.
-Inserted as a single atomic undo step via `pascal1981--completion-insert'."
-  (interactive)
-  (when (pascal1981--completion-overlay-live-p)
-    (let ((text (nth pascal1981--completion-candidate-index
-                      pascal1981--completion-candidate-list)))
-      (pascal1981--completion-dismiss)
-      (pascal1981--completion-insert text))))
+   (lambda ()
+     (if (eq this-command #'pascal1981--completion-accept)
+         (pascal1981--completion-do-accept)
+       (pascal1981--completion-dismiss)))))
 
 (defun pascal1981-completion-cycle-next ()
   "Show the next candidate in the current completion preview."
@@ -713,7 +735,7 @@ Bound in place of `indent-for-tab-command' (see the
 `[remap indent-for-tab-command]' binding in `pascal1981-mode-map',
 set up below `pascal1981-mode's definition). If a completion preview
 is already showing at point, TAB accepts it (see
-`pascal1981--completion-accept'). Otherwise it requests a completion
+`pascal1981--completion-do-accept'). Otherwise it requests a completion
 only when `pascal1981-completion-enabled' is non-nil, point is
 eligible per `pascal1981--completion-allowed-at-point-p', and the
 buffer does not exceed `pascal1981-completion-buffer-limit'; in every
@@ -724,7 +746,7 @@ proxy never costs TAB its normal behavior."
   (interactive)
   (cond
    ((pascal1981--completion-overlay-live-p)
-    (pascal1981--completion-accept))
+    (pascal1981--completion-do-accept))
    ((and pascal1981-completion-enabled
          (pascal1981--completion-allowed-at-point-p)
          (<= (buffer-size) pascal1981-completion-buffer-limit))
