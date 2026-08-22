@@ -37,7 +37,8 @@ Emacs uses `pascal1981-mode` for `.pas` buffers.
 | Font lock fallback | Elisp keywords, if the lexer is not available |
 | Indentation | Token kinds such as `BEGIN`, `END`, `THEN`, and `DO` |
 | Imenu | Parser AST decls, mapped to token positions |
-| `pascal1981-check-buffer` | `lexer \| parser`. The function returns parser stderr |
+| `M-x pascal1981-refresh` | Re-run `lexer` and `parser` on the buffer. Then apply faces |
+| `M-x pascal1981-check-buffer` | `lexer \| parser`. Shows parser stderr, or `No parser errors` |
 | Flycheck | Optional. The mode registers a checker only if flycheck is loaded |
 
 The idle delay is `pascal1981-idle-delay` (0.4 s by default).

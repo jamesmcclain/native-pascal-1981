@@ -110,6 +110,15 @@ from the parser's stderr (e.g. \"Parser Error: ...\")."
       (let ((ast (pascal1981-parse-tokens-json (json-serialize (cdr lex)))))
         (setq pascal1981--ast-cache (when (eq (car ast) 'ok) (cdr ast)))))))
 
+(defun pascal1981-refresh ()
+  "Re-lex and re-parse the current buffer, then reapply token faces."
+  (interactive)
+  (pascal1981--refresh-caches)
+  (pascal1981--apply-token-highlighting)
+  (message "pascal1981: %s tokens%s"
+           (if pascal1981--token-cache (length pascal1981--token-cache) 0)
+           (if pascal1981--ast-cache ", AST ok" "")))
+
 ;; -------------------------------------------------------------------
 ;; Token -> face mapping (lexer-driven highlighting)
 ;; -------------------------------------------------------------------
@@ -337,8 +346,13 @@ simple syntactic guess.  Result is a column (multiple of
 (defun pascal1981-check-buffer ()
   "Check current buffer via lexer | parser pipeline.
 Return nil on success, or an error string on failure."
-  (let ((res (pascal1981-parse-string (buffer-substring-no-properties (point-min) (point-max)))))
-    (when (eq (car res) 'error) (cdr res))))
+  (interactive)
+  (let* ((res (pascal1981-parse-string
+               (buffer-substring-no-properties (point-min) (point-max))))
+         (err (when (eq (car res) 'error) (cdr res))))
+    (when (called-interactively-p 'interactive)
+      (message "%s" (or err "No parser errors")))
+    err))
 
 (defun pascal1981--flycheck-start (checker callback)
   "Flycheck start function for `pascal1981'.
