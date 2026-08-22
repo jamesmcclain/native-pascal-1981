@@ -152,7 +152,7 @@ Other knobs: `pascal1981-completion-goal` (the instruction sent with every
 request), `pascal1981-completion-timeout` (seconds to wait before giving
 up, default 8), `pascal1981-completion-buffer-limit` (buffers larger than
 this, in characters, are never sent), `pascal1981-completion-candidates`
-(how many candidates to request, default 1 — more candidates cost more
+(how many candidates to request, default 3 — more candidates cost more
 upstream tokens and latency).
 
 Multiple candidates are requested as one round trip: the proxy asks the

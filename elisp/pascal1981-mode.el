@@ -65,7 +65,7 @@ Buffers larger than this are not sent; TAB falls back to
 indentation instead."
   :type 'integer :group 'pascal1981)
 
-(defcustom pascal1981-completion-candidates 1
+(defcustom pascal1981-completion-candidates 3
   "How many candidate completions to request from the proxy.
 Sent as \"n\" in the request payload. More candidates cost more
 upstream tokens and latency; cycle between them with `M-n'/`M-p'
