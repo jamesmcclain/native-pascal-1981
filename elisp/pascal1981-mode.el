@@ -491,6 +491,8 @@ CHECKER and CALLBACK are the flycheck start-function arguments."
 
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.pas\\'" . pascal1981-mode))
+;;;###autoload
+(add-to-list 'auto-mode-alist '("\\.inc\\'" . pascal1981-mode))
 
 (provide 'pascal1981-mode)
 ;;; pascal1981-mode.el ends here

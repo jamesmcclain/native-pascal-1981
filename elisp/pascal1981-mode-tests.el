@@ -91,7 +91,8 @@
 
 (ert-deftest pascal1981-tests-auto-mode ()
   "`.pas' files map to `pascal1981-mode'."
-  (should (eq (cdr (assoc "\\.pas\\'" auto-mode-alist)) 'pascal1981-mode)))
+  (should (eq (cdr (assoc "\\.pas\\'" auto-mode-alist)) 'pascal1981-mode))
+  (should (eq (cdr (assoc "\\.inc\\'" auto-mode-alist)) 'pascal1981-mode)))
 
 (ert-deftest pascal1981-tests-paren-star-comment-closes ()
   "A (* ... *) comment must not swallow the rest of the buffer."

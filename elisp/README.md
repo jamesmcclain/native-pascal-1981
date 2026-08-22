@@ -27,7 +27,10 @@ There is no install target. Add the `elisp/` directory to
 (require 'pascal1981-mode)
 ```
 
-Emacs uses `pascal1981-mode` for `.pas` buffers.
+Emacs uses `pascal1981-mode` for `.pas` and `.inc` buffers. The
+`.inc` suffix is the include file of this dialect. An include file
+is often not a complete compilation unit. Font lock and indent still
+work. `pascal1981-check-buffer` and imenu can fail on that file.
 
 ## What the mode does
 
