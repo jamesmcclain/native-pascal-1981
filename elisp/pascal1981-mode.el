@@ -156,17 +156,24 @@ Highlighting does not wait for the parser."
      ((member kind '("LINE_COMMENT" "BLOCK_COMMENT")) 'font-lock-comment-face)
      (t nil))))
 
+(defun pascal1981--line-col-pos (line col)
+  "Buffer position of 1-based LINE and 1-based character column COL.
+The lexer counts a TAB as one column, so this walks characters.
+`move-to-column' would count a TAB as its display width instead.
+The position is clamped to the end of LINE."
+  (save-excursion
+    (goto-char (point-min))
+    (forward-line (1- line))
+    (goto-char (min (line-end-position) (+ (point) (max 0 (1- col)))))
+    (point)))
+
 (defun pascal1981--token-bounds (tok)
   "Return (BEG . END) for token alist TOK, or nil if it is off-buffer."
   (let* ((line (alist-get 'line tok))
          (col  (alist-get 'column tok))
          (lex  (or (alist-get 'lexeme tok) "")))
     (when (and line col (> (length lex) 0))
-      (let* ((beg (save-excursion
-                    (goto-char (point-min))
-                    (forward-line (1- line))
-                    (move-to-column (1- col))
-                    (point)))
+      (let* ((beg (pascal1981--line-col-pos line col))
              (end (+ beg (length lex))))
         (when (and (>= beg (point-min)) (<= end (point-max)))
           (cons beg end))))))
@@ -403,11 +410,7 @@ to the first identifier of that section."
     (let* ((line (alist-get 'line tok))
            (col  (alist-get 'column tok)))
       (when (and line col)
-        (save-excursion
-          (goto-char (point-min))
-          (forward-line (1- line))
-          (move-to-column (1- col))
-          (point))))))
+        (pascal1981--line-col-pos line col)))))
 
 (defun pascal1981--name-pos (name)
   "Position of the first IDENTIFIER token whose lexeme is NAME."

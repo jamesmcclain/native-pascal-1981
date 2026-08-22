@@ -227,5 +227,29 @@
     (should (string-match-p comment-start-skip "{ brace }"))
     (should (string-match-p comment-start-skip "(* paren star *)"))))
 
+(defconst pascal1981-tests--tabbed
+  "PROGRAM P;\nVAR X: INTEGER;\nBEGIN\n\tX := 1;\nEND.\n"
+  "Mini program whose assignment line is indented with a TAB.")
+
+(ert-deftest pascal1981-tests-token-bounds-with-tabs ()
+  "Token bounds cover the token text on a TAB-indented line.
+The lexer counts a TAB as one column.  `move-to-column' counts it as
+its display width, which shifted every token after the TAB."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas pascal1981-tests--tabbed
+    (let ((seen nil))
+      (cl-loop for tok across pascal1981--token-cache
+               when (and (= (alist-get 'line tok) 4)
+                         (> (length (or (alist-get 'lexeme tok) "")) 0))
+               do (let ((lex (alist-get 'lexeme tok))
+                        (bounds (pascal1981--token-bounds tok)))
+                    (push lex seen)
+                    (should bounds)
+                    (should (equal (buffer-substring-no-properties
+                                    (car bounds) (cdr bounds))
+                                   lex))))
+      ;; All four tokens of the TAB-indented line were checked.
+      (should (equal (nreverse seen) '("X" ":=" "1" ";"))))))
+
 (provide 'pascal1981-mode-tests)
 ;;; pascal1981-mode-tests.el ends here
