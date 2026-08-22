@@ -18,6 +18,19 @@
 (add-to-list 'load-path pascal1981-tests--dir)
 (require 'pascal1981-mode)
 
+(defmacro pascal1981-tests--with-selected-buffer (name &rest body)
+  "Run BODY in a new, selected buffer named NAME. Buffer is killed after.
+Needed wherever a test drives real key dispatch via `execute-kbd-macro':
+a `with-temp-buffer' buffer is never \"selected\", and so does not
+reliably stay current through real command dispatch in batch mode."
+  (declare (indent 1))
+  `(let ((pascal1981-tests--buf (generate-new-buffer ,name)))
+     (unwind-protect
+         (progn
+           (switch-to-buffer pascal1981-tests--buf)
+           ,@body)
+       (kill-buffer pascal1981-tests--buf))))
+
 (defconst pascal1981-tests--repo
   (expand-file-name ".." pascal1981-tests--dir))
 
@@ -304,6 +317,65 @@ of the PROCEDURE declaration must count parenthesis depth."
         (buffer-string))
     (let ((positions (mapcar #'cdr (pascal1981-imenu-index))))
       (should (equal positions (sort (copy-sequence positions) #'<))))))
+
+;; -------------------------------------------------------------------
+;; LLM completion: toggle command
+;; -------------------------------------------------------------------
+
+(ert-deftest pascal1981-tests-toggle-no-prefix-flips-enabled ()
+  "No prefix arg: toggles `pascal1981-completion-enabled', leaves the
+candidate count alone."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled nil
+          pascal1981-completion-candidates 1)
+    (pascal1981-completion-toggle)
+    (should pascal1981-completion-enabled)
+    (should (= pascal1981-completion-candidates 1))
+    (pascal1981-completion-toggle)
+    (should-not pascal1981-completion-enabled)
+    (should (= pascal1981-completion-candidates 1))))
+
+(ert-deftest pascal1981-tests-toggle-numeric-prefix-sets-candidate-count ()
+  "A numeric prefix (e.g. `C-u 5') sets the candidate count and enables."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled nil
+          pascal1981-completion-candidates 1)
+    (pascal1981-completion-toggle 5)
+    (should pascal1981-completion-enabled)
+    (should (= pascal1981-completion-candidates 5))))
+
+(ert-deftest pascal1981-tests-toggle-bare-c-u-defaults-to-three ()
+  "A bare `C-u' (raw arg is the list (4)) sets the candidate count to 3."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled nil
+          pascal1981-completion-candidates 1)
+    (pascal1981-completion-toggle '(4))
+    (should pascal1981-completion-enabled)
+    (should (= pascal1981-completion-candidates 3))))
+
+(ert-deftest pascal1981-tests-toggle-numeric-prefix-clamped-to-at-least-one ()
+  "A non-positive numeric prefix still leaves at least 1 candidate."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (setq pascal1981-completion-candidates 5)
+    (pascal1981-completion-toggle 0)
+    (should (= pascal1981-completion-candidates 1))
+    (pascal1981-completion-toggle -3)
+    (should (= pascal1981-completion-candidates 1))))
+
+(ert-deftest pascal1981-tests-real-c-u-5-m-x-toggle-sets-candidates ()
+  "A real `C-u 5 M-x pascal1981-completion-toggle' keypress sequence, not a
+direct function call, sets the candidate count."
+  (pascal1981-tests--with-selected-buffer "pascal1981-tests-real-toggle"
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled nil
+          pascal1981-completion-candidates 1)
+    (execute-kbd-macro (kbd "C-u 5 M-x pascal1981-completion-toggle RET"))
+    (should pascal1981-completion-enabled)
+    (should (= pascal1981-completion-candidates 5))))
 
 ;; -------------------------------------------------------------------
 ;; LLM completion: eligibility predicate
@@ -778,16 +850,6 @@ the request was sent."
 ;; `with-temp-buffer', which is never "selected" and so does not reliably
 ;; stay current through real command dispatch in batch mode) to catch
 ;; exactly that class of bug.
-
-(defmacro pascal1981-tests--with-selected-buffer (name &rest body)
-  "Run BODY in a new, selected buffer named NAME. Buffer is killed after."
-  (declare (indent 1))
-  `(let ((pascal1981-tests--buf (generate-new-buffer ,name)))
-     (unwind-protect
-         (progn
-           (switch-to-buffer pascal1981-tests--buf)
-           ,@body)
-       (kill-buffer pascal1981-tests--buf))))
 
 (ert-deftest pascal1981-tests-real-tab-accepts-live-preview ()
   "A real TAB keypress, not a direct function call, materializes the

@@ -138,12 +138,31 @@ listening at `pascal1981-completion-proxy-url`.
 ;; (setq pascal1981-completion-proxy-url "http://127.0.0.1:8790/complete")
 ```
 
+Or interactively, `M-x pascal1981-completion-toggle`:
+
+- With no prefix argument, it just toggles `pascal1981-completion-enabled`
+  on or off, leaving the candidate count alone.
+- With a numeric prefix argument (`C-u 5 M-x pascal1981-completion-toggle`,
+  or `C-5 M-x pascal1981-completion-toggle`), it sets
+  `pascal1981-completion-candidates` to that many and enables completion.
+- With a bare `C-u` (no digits), it sets the candidate count to 3 — a
+  reasonable default for turning on cycling without picking a number.
+
 Other knobs: `pascal1981-completion-goal` (the instruction sent with every
 request), `pascal1981-completion-timeout` (seconds to wait before giving
 up, default 8), `pascal1981-completion-buffer-limit` (buffers larger than
 this, in characters, are never sent), `pascal1981-completion-candidates`
 (how many candidates to request, default 1 — more candidates cost more
 upstream tokens and latency).
+
+Multiple candidates are requested as one round trip: the proxy asks the
+model for a single JSON object holding all of them, rather than relying on
+the backend's own multi-sample support. This was a deliberate choice, not
+an accident — verified live that backend-level sampling (`"n"` on
+`/chat/completions`) is not reliably usable: one backend silently ignores
+it and returns a single choice regardless, another hard-rejects any value
+other than 1. A single JSON-formatted request avoids depending on that
+support at all.
 
 ### TAB behavior
 

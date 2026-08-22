@@ -358,29 +358,6 @@ class SanitizeCompletionTests(unittest.TestCase):
         self.assertEqual(proxy.sanitize_completion(''), '')
 
 
-def multi_chat_response(contents,
-                        model='test-model',
-                        request_id='abc123',
-                        finish_reasons=None):
-    """Build a /chat/completions-shaped body with one choice per CONTENTS
-    entry. FINISH_REASONS, if given, is a parallel list; defaults to 'stop'
-    for every choice."""
-    finish_reasons = finish_reasons or ['stop'] * len(contents)
-    return {
-        'id':
-        request_id,
-        'model':
-        model,
-        'choices': [{
-            'message': {
-                'role': 'assistant',
-                'content': content
-            },
-            'finish_reason': reason,
-        } for content, reason in zip(contents, finish_reasons)],
-    }
-
-
 class ExtractCompletionsTests(unittest.TestCase):
 
     def test_extracts_text_model_and_id(self):
@@ -419,25 +396,48 @@ class ExtractCompletionsTests(unittest.TestCase):
             chat_response('', finish_reason='stop'))
         self.assertEqual(texts, [''])
 
-    def test_multiple_choices_all_returned_in_order(self):
-        texts, _model, _id = proxy.extract_completions(
-            multi_chat_response([' one', ' two', ' three']))
+    def test_multi_candidate_parses_json_dict_from_single_choice(self):
+        response = chat_response('{"0": " one", "1": " two", "2": " three"}')
+        texts, _model, _id = proxy.extract_completions(response, n=3)
         self.assertEqual(texts, [' one', ' two', ' three'])
 
-    def test_one_exhausted_choice_dropped_others_kept(self):
-        response = multi_chat_response(
-            [' ok', '', ' also ok'], finish_reasons=['stop', 'length', 'stop'])
-        response['choices'][1]['message']['reasoning_content'] = '...'
-        texts, _model, _id = proxy.extract_completions(response)
-        self.assertEqual(texts, [' ok', ' also ok'])
+    def test_multi_candidate_strips_markdown_code_fence(self):
+        response = chat_response('```json\n{"0": " one", "1": " two"}\n```')
+        texts, _model, _id = proxy.extract_completions(response, n=2)
+        self.assertEqual(texts, [' one', ' two'])
 
-    def test_all_choices_exhausted_raises_upstream_error(self):
-        response = multi_chat_response(['', ''],
-                                       finish_reasons=['length', 'length'])
-        for choice in response['choices']:
-            choice['message']['reasoning_content'] = '...'
+    def test_multi_candidate_skips_missing_or_non_string_keys(self):
+        response = chat_response('{"0": " one", "1": 42, "2": " three"}')
+        texts, _model, _id = proxy.extract_completions(response, n=3)
+        self.assertEqual(texts, [' one', ' three'])
+
+    def test_multi_candidate_ignores_keys_outside_requested_range(self):
+        response = chat_response(
+            '{"0": " one", "1": " two", "2": " three", "3": " four"}')
+        texts, _model, _id = proxy.extract_completions(response, n=2)
+        self.assertEqual(texts, [' one', ' two'])
+
+    def test_multi_candidate_non_json_raises_upstream_error(self):
+        response = chat_response('not json at all')
         with self.assertRaises(proxy.UpstreamError):
-            proxy.extract_completions(response)
+            proxy.extract_completions(response, n=3)
+
+    def test_multi_candidate_json_array_raises_upstream_error(self):
+        response = chat_response('["one", "two"]')
+        with self.assertRaises(proxy.UpstreamError):
+            proxy.extract_completions(response, n=2)
+
+    def test_multi_candidate_no_usable_strings_raises_upstream_error(self):
+        response = chat_response('{"0": 1, "1": 2}')
+        with self.assertRaises(proxy.UpstreamError):
+            proxy.extract_completions(response, n=2)
+
+    def test_multi_candidate_exhausted_reasoning_budget_raises(self):
+        response = chat_response('',
+                                 finish_reason='length',
+                                 reasoning_content='...thinking...')
+        with self.assertRaises(proxy.UpstreamError):
+            proxy.extract_completions(response, n=3)
 
 
 class PingUpstreamTests(unittest.TestCase):
@@ -807,8 +807,9 @@ class EndToEndTests(unittest.TestCase):
         return status, data
 
     def test_successful_completion_round_trip(self):
-        proxy.call_upstream = lambda prompt, config, n=None: chat_response(
-            ' := 42;', model='test-model', request_id='req-1')
+        proxy.call_upstream = (
+            lambda prompt, config, max_tokens=None, system_prompt=None:
+            chat_response(' := 42;', model='test-model', request_id='req-1'))
         status, data = self._post({
             'goal': '',
             'buffer': 'x',
@@ -828,9 +829,13 @@ class EndToEndTests(unittest.TestCase):
     def test_multiple_candidates_returned_as_a_list(self):
         captured = {}
 
-        def fake_call_upstream(prompt, config, n=None):
-            captured['n'] = n
-            return multi_chat_response([' a', ' b', ' c'])
+        def fake_call_upstream(prompt,
+                               config,
+                               max_tokens=None,
+                               system_prompt=None):
+            captured['max_tokens'] = max_tokens
+            captured['system_prompt'] = system_prompt
+            return chat_response('{"0": " a", "1": " b", "2": " c"}')
 
         proxy.call_upstream = fake_call_upstream
         status, data = self._post({
@@ -843,17 +848,25 @@ class EndToEndTests(unittest.TestCase):
         })
         self.assertEqual(status, 200)
         self.assertEqual(data['completions'], [' a', ' b', ' c'])
-        self.assertEqual(captured['n'], 3)
+        # A multi-candidate request uses the JSON-dict system prompt, not
+        # the plain single-completion one, and a scaled-up token budget so
+        # the JSON has room to hold all N candidates.
+        self.assertEqual(captured['system_prompt'],
+                         proxy.multi_system_prompt(3))
+        self.assertEqual(captured['max_tokens'], self.config.max_tokens * 3)
 
     def test_n_omitted_from_request_defaults_to_one(self):
         captured = {}
 
-        def fake_call_upstream(prompt, config, n=None):
-            captured['n'] = n
+        def fake_call_upstream(prompt,
+                               config,
+                               max_tokens=None,
+                               system_prompt=None):
+            captured['system_prompt'] = system_prompt
             return chat_response(' ok')
 
         proxy.call_upstream = fake_call_upstream
-        status, _data = self._post({
+        status, data = self._post({
             'buffer': 'x',
             'cursor': {
                 'line': 1,
@@ -861,11 +874,12 @@ class EndToEndTests(unittest.TestCase):
             },
         })
         self.assertEqual(status, 200)
-        self.assertEqual(captured['n'], 1)
+        self.assertEqual(data['completions'], [' ok'])
+        self.assertEqual(captured['system_prompt'], proxy.SYSTEM_PROMPT)
 
     def test_upstream_error_returns_502_and_leaves_body_generic(self):
 
-        def boom(prompt, config, n=None):
+        def boom(prompt, config, max_tokens=None, system_prompt=None):
             raise proxy.UpstreamError('could not reach upstream: refused')
 
         proxy.call_upstream = boom
@@ -875,6 +889,24 @@ class EndToEndTests(unittest.TestCase):
                 'line': 1,
                 'column': 1
             },
+        })
+        self.assertEqual(status, 502)
+        self.assertIn('error', data)
+
+    def test_multi_candidate_upstream_json_failure_returns_502(self):
+        # The upstream call itself succeeds, but its content isn't the
+        # JSON the multi-candidate prompt asked for -- extract_completions
+        # raises UpstreamError, which do_POST must still turn into a 502,
+        # not a 200 with a garbled completions list.
+        proxy.call_upstream = (lambda prompt, config, max_tokens=None,
+                               system_prompt=None: chat_response('not json'))
+        status, data = self._post({
+            'buffer': 'x',
+            'cursor': {
+                'line': 1,
+                'column': 1
+            },
+            'n': 3,
         })
         self.assertEqual(status, 502)
         self.assertIn('error', data)
@@ -906,8 +938,9 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(status, 404)
 
     def test_empty_completion_from_upstream_is_returned_as_empty_string(self):
-        proxy.call_upstream = lambda prompt, config, n=None: chat_response(
-            '', model='', request_id='')
+        proxy.call_upstream = (
+            lambda prompt, config, max_tokens=None, system_prompt=None:
+            chat_response('', model='', request_id=''))
         status, data = self._post({
             'buffer': 'x',
             'cursor': {
@@ -957,8 +990,9 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(status, 404)
 
     def test_multiline_upstream_text_is_truncated_to_first_line(self):
-        proxy.call_upstream = lambda prompt, config, n=None: chat_response(
-            'first\nsecond')
+        proxy.call_upstream = (
+            lambda prompt, config, max_tokens=None, system_prompt=None:
+            chat_response('first\nsecond'))
         status, data = self._post({
             'buffer': 'x',
             'cursor': {

@@ -16,6 +16,13 @@ Protocol (see pascal-completion-plan.md):
 "n" is optional (default 1, clamped to [1, 5]): how many candidate
 completions to request. "completions" is always a list, even when n is 1.
 
+n > 1 is implemented via a prompt asking the model for a JSON object of
+completions in a single request, not the OpenAI /chat/completions "n"
+field -- verified live that backend-level "n" is not reliably usable: LM
+Studio silently ignores it (always returns one choice), and llama.cpp
+hard-rejects any value other than 1 with an HTTP 400. See
+`multi_system_prompt` and `extract_completions`.
+
 Configuration is by CLI flag (run --help for the full list), not
 environment variables -- the one exception is LLM_API_KEY, which stays
 environment-only because a secret does not belong on a command line
@@ -283,16 +290,40 @@ SYSTEM_PROMPT = (
     'completes the line, respond with an empty string.')
 
 
+def multi_system_prompt(n: int) -> str:
+    """System prompt for a multi-candidate (N > 1) request.
+
+    Asks for N distinct single-line completions packed into one JSON
+    object instead of the single bare string SYSTEM_PROMPT asks for --
+    see `call_upstream' and `extract_completions' for why (backend-level
+    "n" sampling turned out not to be reliable across backends). The
+    response is read back by `_parse_multi_completions'.
+    """
+    keys = ', '.join(f'"{i}"' for i in range(n))
+    return (
+        'You are an inline code-completion engine for the 1981 IBM Pascal '
+        'dialect. You are given Pascal source code ending exactly at the '
+        f'insertion point. Produce {n} distinct plausible completions of '
+        'the exact text to insert there to continue the current line. '
+        'Respond with ONLY a JSON object -- no explanation, no markdown, '
+        f'no code fences -- whose keys are the strings {keys} and whose '
+        'values are the completion strings. Each value follows the same '
+        'rules as a single completion would: no repeated source, and never '
+        'a newline within a value. If you cannot think of N distinct '
+        'completions, still respond with a JSON object containing as many '
+        'as you can.')
+
+
 def call_upstream(prompt: str,
                    config: Config,
                    max_tokens: int | None = None,
                    temperature: float | None = None,
                    reasoning_effort: str | None = None,
-                   n: int | None = None) -> dict:
+                   system_prompt: str | None = None) -> dict:
     """POST PROMPT (the user-message content from `build_prompt`) to the
-    configured /chat/completions endpoint, alongside SYSTEM_PROMPT. Return
-    the parsed JSON response. Raise UpstreamError on any transport, timeout,
-    HTTP, or JSON failure.
+    configured /chat/completions endpoint, alongside a system message.
+    Return the parsed JSON response. Raise UpstreamError on any transport,
+    timeout, HTTP, or JSON failure.
 
     MAX_TOKENS / TEMPERATURE / REASONING_EFFORT default to CONFIG's values;
     callers that want to probe a value without touching the configured
@@ -301,9 +332,15 @@ def call_upstream(prompt: str,
     convention: '' omits the field, and the sentinel 'auto' is never valid
     here -- calibrate_reasoning_effort is what resolves 'auto' into a real
     value or '', so if it somehow still reaches this function it is treated
-    the same as '' (omit) rather than sent upstream literally. N (candidate
-    count) is omitted from the payload when 1 or unset, to stay minimally
-    invasive for backends that choke on an unfamiliar field.
+    the same as '' (omit) rather than sent upstream literally. SYSTEM_PROMPT
+    defaults to the module-level `SYSTEM_PROMPT` constant when omitted;
+    callers requesting more than one candidate pass `multi_system_prompt(n)`
+    instead (see that function and `extract_completions`) -- there is
+    deliberately no "n" field sent upstream at all: verified live, one
+    backend (LM Studio) silently ignores "n" and returns a single choice,
+    and another (llama.cpp) hard-rejects any "n" other than 1 with an HTTP
+    400, so multiple candidates are requested via prompt + JSON output
+    instead of relying on backend-level sampling support.
     """
     payload = {
         'model':
@@ -311,7 +348,8 @@ def call_upstream(prompt: str,
         'messages': [
             {
                 'role': 'system',
-                'content': SYSTEM_PROMPT
+                'content': system_prompt if system_prompt is not None else
+                SYSTEM_PROMPT
             },
             {
                 'role': 'user',
@@ -323,8 +361,6 @@ def call_upstream(prompt: str,
         'temperature':
             config.temperature if temperature is None else temperature,
     }
-    if n is not None and n > 1:
-        payload['n'] = n
     # Deliberately no "stop": ["\n"] here. Observed live: at least one
     # backend applies `stop` to the raw underlying token stream, which
     # includes a reasoning model's `reasoning_content` -- and reasoning text
@@ -491,31 +527,77 @@ def _extract_choice_text(choice: dict) -> str:
     return text
 
 
-def extract_completions(
-        upstream_response: dict) -> tuple[list[str], str, str]:
-    """Pull (completions, model, request_id) out of a /chat/completions JSON
-    body: one entry per choices[i].message.content.
+def _strip_code_fence(text: str) -> str:
+    """Strip a leading/trailing markdown code fence if present.
 
-    A single choice that exhausted its reasoning budget
-    (ReasoningBudgetExhausted) is dropped rather than failing the whole
-    request, as long as at least one other choice succeeds -- raise only
-    when every choice fails, or the response has no choices at all.
+    `multi_system_prompt' explicitly asks for no code fences, but models
+    wrap JSON output in ```json ... ``` fences often enough in practice
+    that stripping one defensively is worth it before attempting to parse.
+    """
+    stripped = text.strip()
+    if not stripped.startswith('```'):
+        return stripped
+    first_newline = stripped.find('\n')
+    if first_newline == -1:
+        return stripped
+    body = stripped[first_newline + 1:]
+    if body.rstrip().endswith('```'):
+        body = body.rstrip()[:-3]
+    return body.strip()
+
+
+def _parse_multi_completions(text: str, n: int) -> list[str]:
+    """Parse TEXT as the JSON object `multi_system_prompt(n)' asked for:
+    keys "0" through str(n - 1), string values.
+
+    Tolerant by design: a missing key or a non-string value for some index
+    is skipped rather than failing the whole request, and extra keys
+    outside [0, n) are ignored. Only raises UpstreamError when TEXT is not
+    parseable as a JSON object at all, or when no usable string survives
+    for any expected index -- a completion response with nothing useful in
+    it is exactly as bad as one that failed to parse.
+    """
+    try:
+        parsed = json.loads(_strip_code_fence(text))
+    except json.JSONDecodeError as exc:
+        raise UpstreamError(
+            'upstream did not return valid JSON for a multi-candidate '
+            'request') from exc
+    if not isinstance(parsed, dict):
+        raise UpstreamError('upstream JSON for a multi-candidate request '
+                            'was not an object')
+    texts = [
+        parsed[key] for key in (str(i) for i in range(n))
+        if isinstance(parsed.get(key), str)
+    ]
+    if not texts:
+        raise UpstreamError(
+            'upstream JSON had no usable candidate strings')
+    return texts
+
+
+def extract_completions(upstream_response: dict,
+                        n: int = 1) -> tuple[list[str], str, str]:
+    """Pull (completions, model, request_id) out of a /chat/completions JSON
+    body's single choice.
+
+    For N == 1, COMPLETIONS is a single-element list holding
+    choices[0].message.content verbatim -- the plain single-line-completion
+    contract, unchanged from before multi-candidate support existed.
+
+    For N > 1, the backend was asked (via `multi_system_prompt') to pack N
+    completions into that same content field as a JSON object; see
+    `_parse_multi_completions' for how that is read back. There is
+    deliberately only ever one choice to look at -- see `call_upstream' for
+    why multiple candidates are requested this way instead of via
+    backend-level "n" sampling.
     """
     choices = upstream_response.get('choices')
     if not isinstance(choices, list) or not choices:
         raise UpstreamError('upstream response had no choices')
-
-    texts: list[str] = []
-    last_error: UpstreamError | None = None
-    for choice in choices:
-        if not isinstance(choice, dict):
-            continue
-        try:
-            texts.append(_extract_choice_text(choice))
-        except UpstreamError as exc:
-            last_error = exc
-    if not texts:
-        raise last_error or UpstreamError('upstream response had no choices')
+    choice = choices[0] if isinstance(choices[0], dict) else {}
+    text = _extract_choice_text(choice)
+    texts = [text] if n <= 1 else _parse_multi_completions(text, n)
 
     model = upstream_response.get('model', '')
     request_id = upstream_response.get('id', '')
@@ -623,8 +705,14 @@ class CompletionHandler(BaseHTTPRequestHandler):
         prompt = build_prompt(goal, prefix, self.config.grammar_text)
 
         try:
-            upstream_response = call_upstream(prompt, self.config, n=n)
-            texts, model, request_id = extract_completions(upstream_response)
+            upstream_response = call_upstream(
+                prompt,
+                self.config,
+                max_tokens=self.config.max_tokens * n,
+                system_prompt=(SYSTEM_PROMPT
+                              if n <= 1 else multi_system_prompt(n)))
+            texts, model, request_id = extract_completions(upstream_response,
+                                                            n=n)
         except UpstreamError as exc:
             self._send_json(502, {'error': str(exc)})
             return

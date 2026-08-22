@@ -72,16 +72,35 @@ upstream tokens and latency; cycle between them with `M-n'/`M-p'
 while a completion preview is showing."
   :type 'integer :group 'pascal1981)
 
+(defconst pascal1981--completion-default-candidate-count 3
+  "Candidate count `pascal1981-completion-toggle' uses for a bare `C-u'.")
+
 (defun pascal1981-completion-toggle (&optional arg)
-  "Toggle `pascal1981-completion-enabled'.
-With prefix ARG, enable it if ARG is positive, disable otherwise."
+  "Toggle `pascal1981-completion-enabled', or set the candidate count.
+
+With a numeric prefix ARG (e.g. `C-u 5 M-x pascal1981-completion-toggle',
+or `C-5 M-x pascal1981-completion-toggle'), set
+`pascal1981-completion-candidates' to that many (minimum 1) and enable
+completion. With a bare `C-u' (no digits, ARG is then the list `(4)'),
+set the candidate count to `pascal1981--completion-default-candidate-count'
+\(3\) instead, since a bare `C-u' carries no useful number of its own.
+With no prefix ARG at all, just toggle `pascal1981-completion-enabled',
+leaving `pascal1981-completion-candidates' unchanged."
   (interactive "P")
-  (setq pascal1981-completion-enabled
-        (if arg
-            (> (prefix-numeric-value arg) 0)
-          (not pascal1981-completion-enabled)))
-  (message "pascal1981: LLM completion %s"
-           (if pascal1981-completion-enabled "enabled" "disabled")))
+  (if (null arg)
+      (progn
+        (setq pascal1981-completion-enabled
+              (not pascal1981-completion-enabled))
+        (message "pascal1981: LLM completion %s"
+                 (if pascal1981-completion-enabled "enabled" "disabled")))
+    (setq pascal1981-completion-candidates
+          (max 1 (if (consp arg)
+                     pascal1981--completion-default-candidate-count
+                   (prefix-numeric-value arg)))
+          pascal1981-completion-enabled t)
+    (message "pascal1981: LLM completion enabled, requesting %d candidate%s"
+             pascal1981-completion-candidates
+             (if (= pascal1981-completion-candidates 1) "" "s"))))
 
 (defvar pascal1981--token-cache nil
   "Buffer-local cache of last lexer output (vector of alists).")
