@@ -254,17 +254,38 @@ point to LIMIT after the tokens are painted."
   "Indentation width for `pascal1981-mode'."
   :type 'integer :group 'pascal1981)
 
-(defconst pascal1981--indent-openers
-  '("BEGIN" "RECORD" "CASE" "REPEAT" "THEN" "DO" "OF" "ELSE")
-  "Keywords that open an indented block.")
+(defconst pascal1981--indent-block-openers
+  '("BEGIN" "RECORD" "REPEAT")
+  "Keywords that open a block until END or UNTIL.")
 
-(defconst pascal1981--indent-closers
+(defconst pascal1981--indent-block-closers
   '("END" "UNTIL")
-  "Keywords that close an indented block.")
+  "Keywords that close a BEGIN/RECORD/REPEAT/CASE block.")
 
-(defconst pascal1981--indent-both
-  '("ELSE")
-  "Keywords that both close and open (dedent then indent).")
+(defconst pascal1981--indent-hangers
+  '("THEN" "DO" "ELSE")
+  "Keywords that indent the next line only, and only if they end the line.")
+
+(defconst pascal1981--indent-comment-kinds
+  '("LINE_COMMENT" "BLOCK_COMMENT")
+  "Token kinds ignored when computing indent.")
+
+(defconst pascal1981--indent-decl-starters
+  '("CONST" "TYPE" "VAR" "VALUE" "LABEL")
+  "Declaration-section keywords.  A following identifier sets the align column.")
+
+(defconst pascal1981--indent-decl-breakers
+  '("PROCEDURE" "FUNCTION" "BEGIN" "END" "PROGRAM" "MODULE"
+    "INTERFACE" "IMPLEMENTATION")
+  "Keywords that leave a declaration section.")
+
+(defun pascal1981--token-kind (tok)
+  "Return the kind string of TOK."
+  (alist-get 'kind tok))
+
+(defun pascal1981--significant-p (tok)
+  "Non-nil when TOK is not a comment."
+  (not (member (pascal1981--token-kind tok) pascal1981--indent-comment-kinds)))
 
 (defun pascal1981--tokens-before-line (line)
   "Return list of tokens strictly before LINE from `pascal1981--token-cache'."
@@ -273,26 +294,75 @@ point to LIMIT after the tokens are painted."
              when (< (alist-get 'line tok) line)
              collect tok)))
 
+(defun pascal1981--tokens-on-line (line)
+  "Return list of tokens on LINE from `pascal1981--token-cache'."
+  (when pascal1981--token-cache
+    (cl-loop for tok across pascal1981--token-cache
+             when (= (alist-get 'line tok) line)
+             collect tok)))
+
+(defun pascal1981--last-significant (toks)
+  "Last non-comment token in TOKS, or nil."
+  (car (last (cl-remove-if-not #'pascal1981--significant-p toks))))
+
+(defun pascal1981--first-significant (toks)
+  "First non-comment token in TOKS, or nil."
+  (cl-find-if #'pascal1981--significant-p toks))
+
 (defun pascal1981--compute-indent (line)
   "Compute desired indentation for LINE (1-indexed).
-Uses token stream when available, otherwise falls back to a
-simple syntactic guess.  Result is a column (multiple of
-`pascal1981-indent-width')."
+Block depth comes from BEGIN/RECORD/REPEAT and from CASE...OF.
+THEN/DO/ELSE indent the next line only when they end that line.
+SET OF / ARRAY OF do not indent.  Names after VAR/CONST/TYPE align
+to the first identifier of that section."
   (if (null pascal1981--token-cache)
       0
-    (let ((depth 0))
+    (let ((depth 0)
+          (case-pending nil)
+          (decl-align nil))
       (dolist (tok (pascal1981--tokens-before-line line))
-        (let ((k (alist-get 'kind tok)))
-          (cond ((member k pascal1981--indent-both) nil)
-                ((member k pascal1981--indent-openers) (cl-incf depth))
-                ((member k pascal1981--indent-closers) (cl-decf depth)))))
-      (let* ((first-tok
-              (cl-find-if (lambda (tok) (= (alist-get 'line tok) line))
-                          (append pascal1981--token-cache nil)))
-             (first-kind (and first-tok (alist-get 'kind first-tok))))
-        (when (member first-kind pascal1981--indent-closers) (cl-decf depth))
-        (when (member first-kind pascal1981--indent-both) (cl-decf depth)))
-      (max 0 (* depth pascal1981-indent-width)))))
+        (when (pascal1981--significant-p tok)
+          (let ((k (pascal1981--token-kind tok)))
+            (cond
+             ((member k pascal1981--indent-decl-starters)
+              (setq decl-align 'pending))
+             ((and (eq decl-align 'pending) (equal k "IDENTIFIER"))
+              (setq decl-align (1- (alist-get 'column tok))))
+             ((member k pascal1981--indent-decl-breakers)
+              (setq decl-align nil)))
+            (cond
+             ((equal k "CASE")
+              (setq case-pending t))
+             ((equal k "OF")
+              (when case-pending
+                (cl-incf depth)
+                (setq case-pending nil)))
+             ((member k pascal1981--indent-block-openers)
+              (cl-incf depth)
+              (setq case-pending nil))
+             ((member k pascal1981--indent-block-closers)
+              (cl-decf depth)
+              (setq case-pending nil))))))
+      (let* ((here (pascal1981--tokens-on-line line))
+             (first (pascal1981--first-significant here))
+             (first-kind (and first (pascal1981--token-kind first)))
+             (prev (pascal1981--last-significant
+                    (pascal1981--tokens-on-line (1- line))))
+             (prev-kind (and prev (pascal1981--token-kind prev)))
+             (hang (and (member prev-kind pascal1981--indent-hangers)
+                        (not (member first-kind
+                                     (append pascal1981--indent-block-openers
+                                             pascal1981--indent-block-closers
+                                             '("ELSE")))))))
+        (when (member first-kind pascal1981--indent-block-closers)
+          (cl-decf depth))
+        (cond
+         ((member first-kind (append pascal1981--indent-decl-starters
+                                     pascal1981--indent-decl-breakers))
+          (max 0 (* depth pascal1981-indent-width)))
+         ((and (numberp decl-align) (not hang))
+          decl-align)
+         (t (max 0 (* (+ depth (if hang 1 0)) pascal1981-indent-width))))))))
 
 (defun pascal1981-indent-line ()
   "Indent current line as Pascal 1981 code."

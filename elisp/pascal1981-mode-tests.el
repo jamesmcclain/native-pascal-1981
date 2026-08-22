@@ -132,16 +132,26 @@
                   'font-lock-constant-face)))))
 
 (ert-deftest pascal1981-tests-indent-nested ()
-  "THEN and BEGIN each add one indent width."
+  "BEGIN opens a block. THEN does not stack when the next line is BEGIN."
   (skip-unless (pascal1981-tests--have-binaries))
   (let ((src "PROGRAM P;\nBEGIN\nIF TRUE THEN\nBEGIN END\nEND.\n"))
     (pascal1981-tests--with-pas src
       (should (= (pascal1981--compute-indent 1) 0))
       (should (= (pascal1981--compute-indent 2) 0))
       (should (= (pascal1981--compute-indent 3) pascal1981-indent-width))
-      (should (= (pascal1981--compute-indent 4)
-                 (* 2 pascal1981-indent-width)))
-      (should (= (pascal1981--compute-indent 5) pascal1981-indent-width)))))
+      (should (= (pascal1981--compute-indent 4) pascal1981-indent-width))
+      (should (= (pascal1981--compute-indent 5) 0)))))
+
+(ert-deftest pascal1981-tests-indent-kitchen ()
+  "Kitchen sink `indent-region' matches the fixture layout."
+  (skip-unless (and (pascal1981-tests--have-binaries)
+                    (file-readable-p pascal1981-tests--kitchen)))
+  (let ((want (with-temp-buffer
+                (insert-file-contents pascal1981-tests--kitchen)
+                (buffer-string))))
+    (pascal1981-tests--with-pas want
+      (indent-region (point-min) (point-max))
+      (should (equal (buffer-string) want)))))
 
 (ert-deftest pascal1981-tests-indent-region ()
   "`indent-region' uses `pascal1981-indent-line' on each line."
@@ -154,12 +164,12 @@
     (should (= (current-indentation) 0))
     (forward-line 2)                        ; IF TRUE THEN
     (should (= (current-indentation) pascal1981-indent-width))
-    (forward-line 1)                        ; BEGIN
-    (should (= (current-indentation) (* 2 pascal1981-indent-width)))
+    (forward-line 1)                        ; BEGIN (does not stack on THEN)
+    (should (= (current-indentation) pascal1981-indent-width))
     (forward-line 1)                        ; X := 1
-    (should (= (current-indentation) (* 3 pascal1981-indent-width)))
+    (should (= (current-indentation) (* 2 pascal1981-indent-width)))
     (forward-line 1)                        ; END
-    (should (= (current-indentation) (* 2 pascal1981-indent-width)))))
+    (should (= (current-indentation) pascal1981-indent-width))))
 
 (ert-deftest pascal1981-tests-imenu-kitchen ()
   "Kitchen sink imenu lists N, I, S, BUMP at identifier positions."

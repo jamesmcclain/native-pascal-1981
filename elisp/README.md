@@ -48,6 +48,13 @@ The indent width is `pascal1981-indent-width` (2 by default).
 sets `indent-line-function` to `pascal1981-indent-line`. Emacs then
 calls that function once per line.
 
+Indent uses the lexer token stream. The parser AST has no source
+spans, and the parser fails on half-typed buffers. `BEGIN`, `RECORD`,
+and `REPEAT` open a block. `CASE ... OF` opens a block. `THEN`, `DO`,
+and `ELSE` indent the next line only when they end that line. `SET OF`
+and `ARRAY OF` do not indent. Names after `VAR`, `CONST`, or `TYPE`
+align to the first identifier of that section.
+
 ## Tests
 
 Put `bin/` on `PATH`. Then run ERT from the repo root:
