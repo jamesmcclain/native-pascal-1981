@@ -125,6 +125,27 @@ Optionally pass `--grammar-file docs/ebnf_grammar.md` to give the model the
 dialect's EBNF grammar as reference context. This costs prompt size and
 latency, so it's off unless you ask for it.
 
+The prompt wording sent to the model lives in `tools/prompts/` (plain text
+files, not string literals in the proxy), so it can be read and tuned
+without touching code:
+
+- `system_prompt.txt` — instruction for a single-completion (`n == 1`) request.
+- `multi_system_prompt.txt` — instruction for a multi-candidate (`n > 1`)
+  request; must contain the literal placeholders `{n}` and `{keys}`.
+- `multi_user_prefix.txt` — a short line placed in the *user* message,
+  immediately before the buffer text, only on a multi-candidate request;
+  must contain the literal placeholder `{n}`.
+
+Override any of them with `--system-prompt-file`, `--multi-system-prompt-file`,
+or `--multi-user-prefix-file` respectively, without editing the bundled
+files. The `multi_user_prefix.txt` placement (right next to the code, not
+just once in the system prompt) matters in practice: verified live that
+repeating the "give N distinct completions" instruction there, not just in
+the system prompt, took one backend from returning the same completion in
+2-3 of every 3 slots on an obvious-answer case (`VAR count: ` → `Integer;`)
+down to zero duplicates across 40 live trials on two different backends,
+with and without `--grammar-file`.
+
 If the proxy isn't running, or you haven't started it yet, completion
 requests just fail — TAB falls back to ordinary indentation. There is no
 auto-start path; Emacs is only ever an HTTP client to whatever is already

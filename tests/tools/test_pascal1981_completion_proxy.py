@@ -263,6 +263,28 @@ class BuildPromptTests(unittest.TestCase):
         self.assertEqual(proxy.build_prompt('line one\nline two', 'p'),
                          '{ line one line two }\np')
 
+    def test_multi_prefix_placed_immediately_before_goal_and_prefix(self):
+        result = proxy.build_prompt('finish it',
+                                    'p',
+                                    multi_prefix='Give 3 distinct:')
+        self.assertEqual(result, 'Give 3 distinct:\n{ finish it }\np')
+
+    def test_multi_prefix_placed_immediately_before_bare_prefix(self):
+        result = proxy.build_prompt('', 'p', multi_prefix='Give 3 distinct:')
+        self.assertEqual(result, 'Give 3 distinct:\np')
+
+    def test_multi_prefix_absent_by_default(self):
+        self.assertEqual(proxy.build_prompt('', 'p'), 'p')
+
+    def test_multi_prefix_comes_after_grammar_block(self):
+        result = proxy.build_prompt('',
+                                    'p',
+                                    grammar='g = "z" ;',
+                                    multi_prefix='Give 3 distinct:')
+        self.assertTrue(result.endswith('Give 3 distinct:\np'))
+        self.assertLess(result.index(proxy._GRAMMAR_HEADER),
+                        result.index('Give 3 distinct:'))
+
 
 class GrammarContextTests(unittest.TestCase):
 
@@ -454,7 +476,8 @@ class PingUpstreamTests(unittest.TestCase):
         def fake_call_upstream(prompt,
                                config,
                                max_tokens=None,
-                               temperature=None):
+                               temperature=None,
+                               system_prompt=None):
             captured['max_tokens'] = max_tokens
             captured['temperature'] = temperature
             return chat_response('ok')
@@ -471,7 +494,11 @@ class PingUpstreamTests(unittest.TestCase):
 
     def test_propagates_upstream_error(self):
 
-        def boom(prompt, config, max_tokens=None, temperature=None):
+        def boom(prompt,
+                 config,
+                 max_tokens=None,
+                 temperature=None,
+                 system_prompt=None):
             raise proxy.UpstreamError('could not reach upstream: refused')
 
         proxy.call_upstream = boom
@@ -494,7 +521,8 @@ class CalibrateReasoningEffortTests(unittest.TestCase):
                                config,
                                max_tokens=None,
                                temperature=None,
-                               reasoning_effort=None):
+                               reasoning_effort=None,
+                               system_prompt=None):
             attempted.append(reasoning_effort)
             if reasoning_effort == 'none':
                 raise proxy.ReasoningBudgetExhausted('exhausted')
@@ -512,7 +540,8 @@ class CalibrateReasoningEffortTests(unittest.TestCase):
                                config,
                                max_tokens=None,
                                temperature=None,
-                               reasoning_effort=None):
+                               reasoning_effort=None,
+                               system_prompt=None):
             attempted.append(reasoning_effort)
             return chat_response('ok')
 
@@ -527,7 +556,8 @@ class CalibrateReasoningEffortTests(unittest.TestCase):
                                config,
                                max_tokens=None,
                                temperature=None,
-                               reasoning_effort=None):
+                               reasoning_effort=None,
+                               system_prompt=None):
             raise proxy.ReasoningBudgetExhausted('exhausted')
 
         proxy.call_upstream = fake_call_upstream
@@ -541,7 +571,8 @@ class CalibrateReasoningEffortTests(unittest.TestCase):
                                config,
                                max_tokens=None,
                                temperature=None,
-                               reasoning_effort=None):
+                               reasoning_effort=None,
+                               system_prompt=None):
             attempted.append(reasoning_effort)
             raise proxy.ReasoningBudgetExhausted('exhausted')
 
@@ -560,7 +591,8 @@ class CalibrateReasoningEffortTests(unittest.TestCase):
                                config,
                                max_tokens=None,
                                temperature=None,
-                               reasoning_effort=None):
+                               reasoning_effort=None,
+                               system_prompt=None):
             attempted.append(reasoning_effort)
             raise proxy.UpstreamError('could not reach upstream: refused')
 
@@ -576,7 +608,8 @@ class CalibrateReasoningEffortTests(unittest.TestCase):
                                config,
                                max_tokens=None,
                                temperature=None,
-                               reasoning_effort=None):
+                               reasoning_effort=None,
+                               system_prompt=None):
             if reasoning_effort == 'none':
                 raise proxy.ReasoningBudgetExhausted('exhausted')
             return chat_response('ok')
@@ -617,6 +650,64 @@ class ConfigTests(unittest.TestCase):
     def test_reasoning_effort_can_be_disabled_for_strict_backends(self):
         config = proxy.Config(reasoning_effort='')
         self.assertEqual(config.reasoning_effort, '')
+
+    def test_system_prompt_defaults_to_bundled_file(self):
+        config = proxy.Config()
+        self.assertEqual(config.system_prompt, proxy.SYSTEM_PROMPT)
+
+    def test_multi_system_prompt_template_defaults_to_bundled_file(self):
+        config = proxy.Config()
+        self.assertEqual(config.multi_system_prompt_template,
+                         proxy._MULTI_SYSTEM_PROMPT_TEMPLATE)
+
+    def test_system_prompt_explicit_arg_overrides_default(self):
+        config = proxy.Config(system_prompt='custom system prompt')
+        self.assertEqual(config.system_prompt, 'custom system prompt')
+
+    def test_multi_system_prompt_template_explicit_arg_overrides_default(self):
+        config = proxy.Config(multi_system_prompt_template='custom {n} {keys}')
+        self.assertEqual(config.multi_system_prompt_template,
+                         'custom {n} {keys}')
+
+    def test_multi_user_prefix_template_defaults_to_bundled_file(self):
+        config = proxy.Config()
+        self.assertEqual(config.multi_user_prefix_template,
+                         proxy._MULTI_USER_PREFIX_TEMPLATE)
+
+    def test_multi_user_prefix_template_explicit_arg_overrides_default(self):
+        config = proxy.Config(multi_user_prefix_template='custom {n}')
+        self.assertEqual(config.multi_user_prefix_template, 'custom {n}')
+
+
+class PromptFileLoadingTests(unittest.TestCase):
+
+    def test_load_prompt_text_reads_bundled_file(self):
+        text = proxy.load_prompt_text('system_prompt.txt')
+        self.assertTrue(text)
+        self.assertFalse(text.endswith('\n'))
+
+    def test_load_prompt_override_reads_arbitrary_path(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile('w', suffix='.txt',
+                                         delete=False) as handle:
+            handle.write('override text\n')
+            path = handle.name
+        try:
+            self.assertEqual(proxy.load_prompt_override(path), 'override text')
+        finally:
+            os.remove(path)
+
+    def test_load_prompt_override_missing_file_raises(self):
+        with self.assertRaises(OSError):
+            proxy.load_prompt_override('/nonexistent/path/to/prompt.txt')
+
+    def test_multi_system_prompt_uses_bundled_template_by_default(self):
+        result = proxy.multi_system_prompt(2)
+        self.assertIn('"0", "1"', result)
+
+    def test_multi_system_prompt_uses_explicit_template_override(self):
+        result = proxy.multi_system_prompt(2, template='n={n} keys={keys}')
+        self.assertEqual(result, 'n=2 keys="0", "1"')
 
 
 class CallUpstreamPayloadTests(unittest.TestCase):
@@ -855,6 +946,95 @@ class EndToEndTests(unittest.TestCase):
                          proxy.multi_system_prompt(3))
         self.assertEqual(captured['max_tokens'], self.config.max_tokens * 3)
 
+    def test_custom_system_prompts_reach_call_upstream(self):
+        # Overriding Config.system_prompt / .multi_system_prompt_template
+        # (as --system-prompt-file / --multi-system-prompt-file do) must
+        # actually be what reaches call_upstream, for both the n == 1 and
+        # n > 1 paths -- not just the bundled defaults.
+        self.config.system_prompt = 'CUSTOM SINGLE'
+        self.config.multi_system_prompt_template = 'CUSTOM MULTI {n} {keys}'
+        captured = []
+
+        def fake_call_upstream(prompt,
+                               config,
+                               max_tokens=None,
+                               system_prompt=None):
+            captured.append(system_prompt)
+            return chat_response('{"0": " a", "1": " b"}')
+
+        proxy.call_upstream = fake_call_upstream
+        status, _data = self._post({
+            'buffer': 'x',
+            'cursor': {
+                'line': 1,
+                'column': 1
+            },
+            'n': 2,
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(captured, ['CUSTOM MULTI 2 "0", "1"'])
+
+        captured.clear()
+        proxy.call_upstream = (
+            lambda prompt, config, max_tokens=None, system_prompt=None:
+            (captured.append(system_prompt), chat_response(' ok'))[1])
+        status, _data = self._post({
+            'buffer': 'x',
+            'cursor': {
+                'line': 1,
+                'column': 1
+            },
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(captured, ['CUSTOM SINGLE'])
+
+    def test_custom_multi_user_prefix_reaches_the_prompt_body(self):
+        # multi_user_prefix_template belongs in the *user* message content,
+        # immediately before the buffer prefix -- not in system_prompt.
+        self.config.multi_user_prefix_template = 'GIVE {n} NOW:'
+        captured = []
+
+        def fake_call_upstream(prompt,
+                               config,
+                               max_tokens=None,
+                               system_prompt=None):
+            captured.append(prompt)
+            return chat_response('{"0": " a", "1": " b"}')
+
+        proxy.call_upstream = fake_call_upstream
+        status, _data = self._post({
+            'buffer': 'x',
+            'cursor': {
+                'line': 1,
+                'column': 2
+            },
+            'n': 2,
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(captured, ['GIVE 2 NOW:\nx'])
+
+    def test_multi_user_prefix_absent_when_n_is_one(self):
+        self.config.multi_user_prefix_template = 'GIVE {n} NOW:'
+        captured = []
+
+        def fake_call_upstream(prompt,
+                               config,
+                               max_tokens=None,
+                               system_prompt=None):
+            captured.append(prompt)
+            return chat_response(' ok')
+
+        proxy.call_upstream = fake_call_upstream
+        status, _data = self._post({
+            'buffer': 'x',
+            'cursor': {
+                'line': 1,
+                'column': 2
+            },
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(captured, ['x'])
+
     def test_n_omitted_from_request_defaults_to_one(self):
         captured = {}
 
@@ -961,8 +1141,9 @@ class EndToEndTests(unittest.TestCase):
         return status, data
 
     def test_health_ok_when_upstream_responds(self):
-        proxy.call_upstream = lambda prompt, config, max_tokens=None, \
-            temperature=None: chat_response('pong', model='test-model')
+        proxy.call_upstream = (
+            lambda prompt, config, max_tokens=None, temperature=None,
+            system_prompt=None: chat_response('pong', model='test-model'))
         status, data = self._get('/health')
         self.assertEqual(status, 200)
         self.assertEqual(data['status'], 'ok')
@@ -976,7 +1157,11 @@ class EndToEndTests(unittest.TestCase):
 
     def test_health_503_when_upstream_unreachable(self):
 
-        def boom(prompt, config, max_tokens=None, temperature=None):
+        def boom(prompt,
+                 config,
+                 max_tokens=None,
+                 temperature=None,
+                 system_prompt=None):
             raise proxy.UpstreamError('could not reach upstream: refused')
 
         proxy.call_upstream = boom

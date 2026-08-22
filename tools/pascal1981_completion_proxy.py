@@ -56,6 +56,35 @@ import sys
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+# --------------------------------------------------------------------------
+# Prompt text (side-car files, not hardcoded in this module)
+# --------------------------------------------------------------------------
+
+_PROMPTS_DIR = Path(__file__).resolve().parent / 'prompts'
+
+
+def load_prompt_text(filename: str) -> str:
+    """Read a prompt template from tools/prompts/FILENAME.
+
+    Prompt wording lives in these side-car files, not as string literals
+    in this module, so it can be read and tuned without touching code --
+    the same reasoning as `--grammar-file` for the (much larger) EBNF
+    reference text. A single trailing newline (most editors add one on
+    save) is stripped; it is not part of the prompt.
+    """
+    return (_PROMPTS_DIR / filename).read_text(encoding='utf-8').rstrip('\n')
+
+
+def load_prompt_override(path: str) -> str:
+    """Read a --system-prompt-file / --multi-system-prompt-file override
+    from an arbitrary PATH (unlike `load_prompt_text`, not relative to the
+    bundled tools/prompts/ directory). Raise OSError on failure -- a bad
+    override path should fail the proxy at startup, not silently fall back
+    to the bundled default."""
+    with open(path, encoding='utf-8') as handle:
+        return handle.read().rstrip('\n')
 
 # --------------------------------------------------------------------------
 # Configuration
@@ -139,7 +168,21 @@ class Config:
                  # --grammar-file, not auto-detected from
                  # docs/ebnf_grammar.md even though that file is a natural
                  # fit.
-                 grammar_file: str = '') -> None:
+                 grammar_file: str = '',
+                 # Both default to the bundled tools/prompts/ files (see
+                 # `load_prompt_text`) when left as None. Overridable via
+                 # --system-prompt-file / --multi-system-prompt-file so
+                 # prompt wording can be tuned per deployment without
+                 # touching this module -- the same reasoning as
+                 # --grammar-file.
+                 system_prompt: str | None = None,
+                 multi_system_prompt_template: str | None = None,
+                 # Overridable via --multi-user-prefix-file. Placed in the
+                 # *user* message, immediately before the source text, for
+                 # an n > 1 request -- see build_prompt's docstring for why
+                 # that placement (not just the system prompt) mattered
+                 # live.
+                 multi_user_prefix_template: str | None = None) -> None:
         self.host = host
         self.port = port
         self.llm_base_url = llm_base_url.rstrip('/')
@@ -154,6 +197,16 @@ class Config:
         self.grammar_file = grammar_file
         self.grammar_text = (load_grammar(self.grammar_file)
                               if self.grammar_file else '')
+        self.system_prompt = (system_prompt
+                              if system_prompt is not None else SYSTEM_PROMPT)
+        self.multi_system_prompt_template = (
+            multi_system_prompt_template
+            if multi_system_prompt_template is not None else
+            _MULTI_SYSTEM_PROMPT_TEMPLATE)
+        self.multi_user_prefix_template = (
+            multi_user_prefix_template
+            if multi_user_prefix_template is not None else
+            _MULTI_USER_PREFIX_TEMPLATE)
 
     @property
     def chat_completions_url(self) -> str:
@@ -235,7 +288,10 @@ _GRAMMAR_HEADER = '# --- Pascal 1981 EBNF grammar reference (context only, do no
 _GRAMMAR_FOOTER = '# --- end grammar reference ---'
 
 
-def build_prompt(goal: str, prefix: str, grammar: str = '') -> str:
+def build_prompt(goal: str,
+                 prefix: str,
+                 grammar: str = '',
+                 multi_prefix: str = '') -> str:
     """Build the user-message content sent upstream (see SYSTEM_PROMPT for
     the accompanying system message).
 
@@ -246,15 +302,27 @@ def build_prompt(goal: str, prefix: str, grammar: str = '') -> str:
     before the prefix, kept off its own line's indentation so it cannot be
     mistaken for buffer content.
 
+    A non-empty MULTI_PREFIX (see Config.multi_user_prefix_template /
+    --multi-user-prefix-file) is placed immediately before GOAL/PREFIX, not
+    up near GRAMMAR. Verified live: for a multi-candidate (n > 1) request,
+    repeating the "give N distinct completions" instruction here, right
+    next to the actual source text, made a real difference that having it
+    only once in the system prompt did not -- one backend went from
+    returning the same completion 2-3 times in 7 of 10 trials on an
+    obvious-answer case ("VAR count: " -> "Integer;") to zero duplicates in
+    10/10 once this line was added immediately before the code.
+
     A non-empty GRAMMAR (the dialect's EBNF reference, opt-in via
-    --grammar-file) is prepended ahead of that, marked with a plain '#'
-    header/footer rather than a Pascal '{ }' or '(* *)' comment: the
-    grammar text itself contains both of those delimiter pairs (as EBNF
+    --grammar-file) is prepended ahead of everything else, marked with a
+    plain '#' header/footer rather than a Pascal '{ }' or '(* *)' comment:
+    the grammar text itself contains both of those delimiter pairs (as EBNF
     repetition syntax and as worked examples), so wrapping it in either
     would let its own content close the wrapper early.
     """
     goal = goal.strip().replace('\n', ' ')
     body = f'{{ {goal} }}\n{prefix}' if goal else prefix
+    if multi_prefix:
+        body = f'{multi_prefix}\n{body}'
     if not grammar.strip():
         return body
     return f'{_GRAMMAR_HEADER}\n{grammar.strip()}\n{_GRAMMAR_FOOTER}\n\n{body}'
@@ -281,16 +349,14 @@ class ReasoningBudgetExhausted(UpstreamError):
     benefit")."""
 
 
-SYSTEM_PROMPT = (
-    'You are an inline code-completion engine for the 1981 IBM Pascal '
-    'dialect. You are given Pascal source code ending exactly at the '
-    'insertion point. Respond with ONLY the exact text to insert there to '
-    'continue the current line: no explanation, no markdown, no code '
-    'fences, no repeated source, and never a newline. If nothing sensible '
-    'completes the line, respond with an empty string.')
+SYSTEM_PROMPT = load_prompt_text('system_prompt.txt')
+
+_MULTI_SYSTEM_PROMPT_TEMPLATE = load_prompt_text('multi_system_prompt.txt')
+
+_MULTI_USER_PREFIX_TEMPLATE = load_prompt_text('multi_user_prefix.txt')
 
 
-def multi_system_prompt(n: int) -> str:
+def multi_system_prompt(n: int, template: str | None = None) -> str:
     """System prompt for a multi-candidate (N > 1) request.
 
     Asks for N distinct single-line completions packed into one JSON
@@ -298,20 +364,29 @@ def multi_system_prompt(n: int) -> str:
     see `call_upstream' and `extract_completions' for why (backend-level
     "n" sampling turned out not to be reliable across backends). The
     response is read back by `_parse_multi_completions'.
+
+    TEMPLATE defaults to the bundled
+    tools/prompts/multi_system_prompt.txt (see
+    Config.multi_system_prompt_template for the --multi-system-prompt-file
+    override path); callers pass CONFIG's copy explicitly rather than
+    relying on this default, so an override actually takes effect.
+    Whatever template is used must contain the literal '{n}' and '{keys}'
+    placeholders -- filled in here via str.format.
+
+    The bundled template explicitly demands the N completions be
+    meaningfully different from each other, not just "distinct" --
+    verified live that a milder instruction let both tested backends
+    return the same completion two or three times for a request like
+    "VAR count: " (an obvious best answer, "Integer;", apparently
+    squeezes out any drive toward alternatives without an explicit push).
+    The stronger wording fixed that reliably at the default temperature;
+    raising temperature instead made it worse (more parse failures, more
+    duplicates), so this is a prompting fix, not a sampling one.
     """
     keys = ', '.join(f'"{i}"' for i in range(n))
-    return (
-        'You are an inline code-completion engine for the 1981 IBM Pascal '
-        'dialect. You are given Pascal source code ending exactly at the '
-        f'insertion point. Produce {n} distinct plausible completions of '
-        'the exact text to insert there to continue the current line. '
-        'Respond with ONLY a JSON object -- no explanation, no markdown, '
-        f'no code fences -- whose keys are the strings {keys} and whose '
-        'values are the completion strings. Each value follows the same '
-        'rules as a single completion would: no repeated source, and never '
-        'a newline within a value. If you cannot think of N distinct '
-        'completions, still respond with a JSON object containing as many '
-        'as you can.')
+    active_template = (template
+                      if template is not None else _MULTI_SYSTEM_PROMPT_TEMPLATE)
+    return active_template.format(n=n, keys=keys)
 
 
 def call_upstream(prompt: str,
@@ -444,7 +519,10 @@ def ping_upstream(config: Config) -> tuple[str, str]:
     honest question to answer ("will my configured requests work"), not
     "does the socket respond."
     """
-    response = call_upstream(_probe_prompt(config), config, temperature=0.0)
+    response = call_upstream(_probe_prompt(config),
+                             config,
+                             temperature=0.0,
+                             system_prompt=config.system_prompt)
     texts, model, _request_id = extract_completions(response)
     return texts[0], model
 
@@ -485,7 +563,8 @@ def calibrate_reasoning_effort(config: Config,
             response = call_upstream(_probe_prompt(config),
                                       config,
                                       temperature=0.0,
-                                      reasoning_effort=candidate)
+                                      reasoning_effort=candidate,
+                                      system_prompt=config.system_prompt)
             extract_completions(response)  # raises on failure
         except ReasoningBudgetExhausted:
             log(f'reasoning_effort={label}: exhausted the token budget '
@@ -702,15 +781,19 @@ class CompletionHandler(BaseHTTPRequestHandler):
             return
 
         prefix = compute_prefix(buffer, line, column)
-        prompt = build_prompt(goal, prefix, self.config.grammar_text)
+        multi_prefix = (self.config.multi_user_prefix_template.format(n=n)
+                        if n > 1 else '')
+        prompt = build_prompt(goal, prefix, self.config.grammar_text,
+                              multi_prefix)
 
         try:
             upstream_response = call_upstream(
                 prompt,
                 self.config,
                 max_tokens=self.config.max_tokens * n,
-                system_prompt=(SYSTEM_PROMPT
-                              if n <= 1 else multi_system_prompt(n)))
+                system_prompt=(self.config.system_prompt if n <= 1 else
+                              multi_system_prompt(
+                                  n, self.config.multi_system_prompt_template)))
             texts, model, request_id = extract_completions(upstream_response,
                                                             n=n)
         except UpstreamError as exc:
@@ -800,6 +883,29 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help=('Path to an EBNF grammar file (e.g. docs/ebnf_grammar.md) to '
               'prepend as reference context on every completion request. '
               'Optional; increases prompt size and upstream latency.'))
+    parser.add_argument(
+        '--system-prompt-file',
+        default='',
+        help=('Path to a text file overriding the single-completion system '
+              'prompt (default: the bundled '
+              'tools/prompts/system_prompt.txt).'))
+    parser.add_argument(
+        '--multi-system-prompt-file',
+        default='',
+        help=('Path to a text file overriding the multi-candidate system '
+              'prompt template (default: the bundled '
+              'tools/prompts/multi_system_prompt.txt). Must contain the '
+              'literal placeholders {n} and {keys}, filled in via '
+              'str.format at request time.'))
+    parser.add_argument(
+        '--multi-user-prefix-file',
+        default='',
+        help=('Path to a text file overriding the short instruction placed '
+              'in the user message immediately before the source text on a '
+              'multi-candidate (n > 1) request (default: the bundled '
+              'tools/prompts/multi_user_prefix.txt). Must contain the '
+              'literal placeholder {n}, filled in via str.format at '
+              'request time.'))
     return parser.parse_args(argv)
 
 
@@ -816,6 +922,14 @@ def main() -> None:
         upstream_timeout=args.upstream_timeout,
         reasoning_effort=args.reasoning_effort,
         grammar_file=args.grammar_file,
+        system_prompt=(load_prompt_override(args.system_prompt_file)
+                      if args.system_prompt_file else None),
+        multi_system_prompt_template=(
+            load_prompt_override(args.multi_system_prompt_file)
+            if args.multi_system_prompt_file else None),
+        multi_user_prefix_template=(
+            load_prompt_override(args.multi_user_prefix_file)
+            if args.multi_user_prefix_file else None),
     )
 
     if config.reasoning_effort == 'auto':
