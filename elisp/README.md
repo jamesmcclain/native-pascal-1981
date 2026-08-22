@@ -35,7 +35,7 @@ Emacs uses `pascal1981-mode` for `.pas` buffers.
 | --- | --- |
 | Font lock after idle time | Token stream from `lexer` |
 | Font lock fallback | Elisp keywords, if the lexer is not available |
-| Indentation | Token kinds such as `BEGIN`, `END`, `THEN`, and `DO` |
+| Indentation | Token kinds such as `BEGIN`, `END`, `THEN`, and `DO`. `TAB` and `indent-region` both use this |
 | Imenu | Parser AST decls, mapped to token positions |
 | `M-x pascal1981-refresh` | Re-run `lexer` and `parser` on the buffer. Then apply faces |
 | `M-x pascal1981-check-buffer` | `lexer \| parser`. Shows parser stderr, or `No parser errors` |
@@ -43,6 +43,20 @@ Emacs uses `pascal1981-mode` for `.pas` buffers.
 
 The idle delay is `pascal1981-idle-delay` (0.4 s by default).
 The indent width is `pascal1981-indent-width` (2 by default).
+
+`C-M-\\` (`indent-region`) indents each line in the region. The mode
+sets `indent-line-function` to `pascal1981-indent-line`. Emacs then
+calls that function once per line.
+
+## Tests
+
+Put `bin/` on `PATH`. Then run ERT from the repo root:
+
+```sh
+PATH="$PWD/bin:$PATH" emacs -Q --batch -L elisp \
+  -l elisp/pascal1981-mode-tests.el \
+  -f ert-run-tests-batch-and-exit
+```
 
 ## I/O contract
 
