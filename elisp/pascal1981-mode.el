@@ -480,7 +480,7 @@ CHECKER and CALLBACK are the flycheck start-function arguments."
   :syntax-table pascal1981-mode-syntax-table
   (setq-local comment-start "{"
                 comment-end "}"
-                comment-start-skip "{\\|\\\\(\\\\*"
+                comment-start-skip "{\\|(\\*"
                 font-lock-defaults '(pascal1981--font-lock-keywords)
                 indent-line-function #'pascal1981-indent-line
                 imenu-create-index-function #'pascal1981-imenu-index)

@@ -221,5 +221,11 @@
                    "ProgramUnit"))
     (should (null (pascal1981-check-buffer)))))
 
+(ert-deftest pascal1981-tests-comment-start-skip ()
+  "`comment-start-skip' matches both comment openers of the dialect."
+  (pascal1981-tests--with-pas pascal1981-tests--mini
+    (should (string-match-p comment-start-skip "{ brace }"))
+    (should (string-match-p comment-start-skip "(* paren star *)"))))
+
 (provide 'pascal1981-mode-tests)
 ;;; pascal1981-mode-tests.el ends here
