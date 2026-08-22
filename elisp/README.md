@@ -71,7 +71,20 @@ name declared in a nested body can still shadow.
 
 ## Tests
 
-Put `bin/` on `PATH`. Then run ERT from the repo root:
+Run the ERT suite with make, from any directory:
+
+```sh
+make -C elisp test
+```
+
+The target puts `bin/` on `PATH` for you. It fails first if `lexer`
+or `parser` is not built, because most tests carry `skip-unless` and
+report success when the binaries are absent.
+
+The top-level `make test` does not run this target. The compiler does
+not need Emacs.
+
+To run ERT directly, put `bin/` on `PATH` and run from the repo root:
 
 ```sh
 PATH="$PWD/bin:$PATH" emacs -Q --batch -L elisp \
