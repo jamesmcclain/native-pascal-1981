@@ -8,9 +8,13 @@ ever an HTTP client of whatever is already listening on --host:--port.
 Protocol (see pascal-completion-plan.md):
 
     POST /complete
-    {"goal": "...", "buffer": "...", "cursor": {"line": N, "column": N}}
+    {"goal": "...", "buffer": "...", "cursor": {"line": N, "column": N},
+     "n": N}
     ->
-    {"completion": "...", "model": "...", "request_id": "..."}
+    {"completions": ["...", ...], "model": "...", "request_id": "..."}
+
+"n" is optional (default 1, clamped to [1, 5]): how many candidate
+completions to request. "completions" is always a list, even when n is 1.
 
 Configuration is by CLI flag (run --help for the full list), not
 environment variables -- the one exception is LLM_API_KEY, which stays
@@ -158,11 +162,19 @@ class RequestError(Exception):
     """Malformed /complete request. Message is safe to return to the client."""
 
 
-def validate_request(payload: object, buffer_limit: int) -> tuple[str, str, int, int]:
+_MAX_CANDIDATES = 5
+
+
+def validate_request(
+        payload: object,
+        buffer_limit: int) -> tuple[str, str, int, int, int]:
     """Validate a decoded /complete JSON body.
 
-    Return (goal, buffer, line, column) on success. Raise RequestError with
-    a client-safe message otherwise.
+    Return (goal, buffer, line, column, n) on success. Raise RequestError
+    with a client-safe message otherwise. "n" (candidate count) is optional
+    and clamped into [1, _MAX_CANDIDATES] rather than rejected outright --
+    an out-of-range value is a client quirk, not a protocol violation worth
+    failing the request over.
     """
     if not isinstance(payload, dict):
         raise RequestError('request body must be a JSON object')
@@ -188,7 +200,12 @@ def validate_request(payload: object, buffer_limit: int) -> tuple[str, str, int,
     if not isinstance(column, int) or isinstance(column, bool) or column < 1:
         raise RequestError('"cursor.column" must be a positive integer')
 
-    return goal, buffer, line, column
+    n = payload.get('n', 1)
+    if not isinstance(n, int) or isinstance(n, bool):
+        n = 1
+    n = min(max(n, 1), _MAX_CANDIDATES)
+
+    return goal, buffer, line, column, n
 
 
 def compute_prefix(buffer: str, line: int, column: int) -> str:
@@ -270,7 +287,8 @@ def call_upstream(prompt: str,
                    config: Config,
                    max_tokens: int | None = None,
                    temperature: float | None = None,
-                   reasoning_effort: str | None = None) -> dict:
+                   reasoning_effort: str | None = None,
+                   n: int | None = None) -> dict:
     """POST PROMPT (the user-message content from `build_prompt`) to the
     configured /chat/completions endpoint, alongside SYSTEM_PROMPT. Return
     the parsed JSON response. Raise UpstreamError on any transport, timeout,
@@ -283,7 +301,9 @@ def call_upstream(prompt: str,
     convention: '' omits the field, and the sentinel 'auto' is never valid
     here -- calibrate_reasoning_effort is what resolves 'auto' into a real
     value or '', so if it somehow still reaches this function it is treated
-    the same as '' (omit) rather than sent upstream literally.
+    the same as '' (omit) rather than sent upstream literally. N (candidate
+    count) is omitted from the payload when 1 or unset, to stay minimally
+    invasive for backends that choke on an unfamiliar field.
     """
     payload = {
         'model':
@@ -303,6 +323,8 @@ def call_upstream(prompt: str,
         'temperature':
             config.temperature if temperature is None else temperature,
     }
+    if n is not None and n > 1:
+        payload['n'] = n
     # Deliberately no "stop": ["\n"] here. Observed live: at least one
     # backend applies `stop` to the raw underlying token stream, which
     # includes a reasoning model's `reasoning_content` -- and reasoning text
@@ -387,8 +409,8 @@ def ping_upstream(config: Config) -> tuple[str, str]:
     "does the socket respond."
     """
     response = call_upstream(_probe_prompt(config), config, temperature=0.0)
-    text, model, _request_id = extract_completion(response)
-    return text, model
+    texts, model, _request_id = extract_completions(response)
+    return texts[0], model
 
 
 # Tried in this order: cheapest/most-likely-to-just-work first. '' (omit the
@@ -428,7 +450,7 @@ def calibrate_reasoning_effort(config: Config,
                                       config,
                                       temperature=0.0,
                                       reasoning_effort=candidate)
-            extract_completion(response)  # raises on failure
+            extract_completions(response)  # raises on failure
         except ReasoningBudgetExhausted:
             log(f'reasoning_effort={label}: exhausted the token budget '
                 'without answering, trying next')
@@ -446,21 +468,16 @@ def calibrate_reasoning_effort(config: Config,
     return 'none'
 
 
-def extract_completion(upstream_response: dict) -> tuple[str, str, str]:
-    """Pull (completion, model, request_id) out of a /chat/completions JSON
-    body: choices[0].message.content.
+def _extract_choice_text(choice: dict) -> str:
+    """Pull message.content out of one /chat/completions choice.
 
-    Raise UpstreamError if the response does not have the expected shape,
+    Raise UpstreamError if the choice does not have the expected shape,
     including the reasoning-model case where content is empty because the
     hidden reasoning pass consumed the whole token budget (finish_reason
     "length" with an empty content and non-empty reasoning_content) -- that
     is a distinguishable, actionable failure, not silently returned as an
     empty completion.
     """
-    choices = upstream_response.get('choices')
-    if not isinstance(choices, list) or not choices:
-        raise UpstreamError('upstream response had no choices')
-    choice = choices[0] if isinstance(choices[0], dict) else {}
     message = choice.get('message')
     text = message.get('content') if isinstance(message, dict) else None
     if not isinstance(text, str):
@@ -471,9 +488,38 @@ def extract_completion(upstream_response: dict) -> tuple[str, str, str]:
             'upstream spent its whole token budget on hidden reasoning '
             'and never answered; increase max_tokens or check '
             'reasoning_effort')
+    return text
+
+
+def extract_completions(
+        upstream_response: dict) -> tuple[list[str], str, str]:
+    """Pull (completions, model, request_id) out of a /chat/completions JSON
+    body: one entry per choices[i].message.content.
+
+    A single choice that exhausted its reasoning budget
+    (ReasoningBudgetExhausted) is dropped rather than failing the whole
+    request, as long as at least one other choice succeeds -- raise only
+    when every choice fails, or the response has no choices at all.
+    """
+    choices = upstream_response.get('choices')
+    if not isinstance(choices, list) or not choices:
+        raise UpstreamError('upstream response had no choices')
+
+    texts: list[str] = []
+    last_error: UpstreamError | None = None
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        try:
+            texts.append(_extract_choice_text(choice))
+        except UpstreamError as exc:
+            last_error = exc
+    if not texts:
+        raise last_error or UpstreamError('upstream response had no choices')
+
     model = upstream_response.get('model', '')
     request_id = upstream_response.get('id', '')
-    return text, model if isinstance(model, str) else '', (
+    return texts, model if isinstance(model, str) else '', (
         request_id if isinstance(request_id, str) else '')
 
 
@@ -567,7 +613,7 @@ class CompletionHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            goal, buffer, line, column = validate_request(
+            goal, buffer, line, column, n = validate_request(
                 payload, self.config.buffer_limit)
         except RequestError as exc:
             self._send_json(400, {'error': str(exc)})
@@ -577,16 +623,17 @@ class CompletionHandler(BaseHTTPRequestHandler):
         prompt = build_prompt(goal, prefix, self.config.grammar_text)
 
         try:
-            upstream_response = call_upstream(prompt, self.config)
-            text, model, request_id = extract_completion(upstream_response)
+            upstream_response = call_upstream(prompt, self.config, n=n)
+            texts, model, request_id = extract_completions(upstream_response)
         except UpstreamError as exc:
             self._send_json(502, {'error': str(exc)})
             return
 
-        completion = sanitize_completion(text)
+        completions = [sanitize_completion(t) for t in texts]
+
         self._send_json(
             200, {
-                'completion': completion,
+                'completions': completions,
                 'model': model or self.config.llm_model,
                 'request_id': request_id,
             })

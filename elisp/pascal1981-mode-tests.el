@@ -386,8 +386,8 @@ the callback itself decides which buffer is \"the response\" from
       (pascal1981-complete-line))
     (should (equal (buffer-string) "x := 1"))))
 
-(ert-deftest pascal1981-tests-completion-inserts-at-point ()
-  "A well-formed 200 response is inserted exactly at point."
+(ert-deftest pascal1981-tests-completion-shows-ghost-at-point ()
+  "A well-formed 200 response shows a ghost-text preview, not an insert."
   (with-temp-buffer
     (pascal1981-mode)
     (setq pascal1981-completion-enabled t)
@@ -397,14 +397,149 @@ the callback itself decides which buffer is \"the response\" from
            (tick (buffer-modified-tick))
            (pt (point))
            (response (pascal1981-tests--fake-response-buffer
-                      200 '((completion . "1;") (model . "test-model")
+                      200 '((completions . ["1;"]) (model . "test-model")
                             (request_id . "abc")))))
       (setq pascal1981--completion-pending-id request-id)
       (pascal1981-tests--completion-respond source response request-id pt tick))
-    (should (equal (buffer-string) "x := 1;"))))
+    (should (equal (buffer-string) "x := "))
+    (should (pascal1981--completion-overlay-live-p))
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "1;"))))
+
+(ert-deftest pascal1981-tests-completion-single-candidate-no-index-suffix ()
+  "A single candidate shows no \"[i/N]\" suffix."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (insert "x := ")
+    (let* ((source (current-buffer))
+           (request-id 1)
+           (tick (buffer-modified-tick))
+           (pt (point))
+           (response (pascal1981-tests--fake-response-buffer
+                      200 '((completions . ["1;"])))))
+      (setq pascal1981--completion-pending-id request-id)
+      (pascal1981-tests--completion-respond source response request-id pt tick))
+    (should-not (string-match-p "\\["
+                                (overlay-get pascal1981--completion-overlay
+                                             'after-string)))))
+
+(ert-deftest pascal1981-tests-completion-multi-candidate-shows-index-suffix ()
+  "Multiple candidates show a \"[1/N]\" suffix on the first one shown."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (insert "x := ")
+    (let* ((source (current-buffer))
+           (request-id 1)
+           (tick (buffer-modified-tick))
+           (pt (point))
+           (response (pascal1981-tests--fake-response-buffer
+                      200 '((completions . ["1;" "2;" "3;"])))))
+      (setq pascal1981--completion-pending-id request-id)
+      (pascal1981-tests--completion-respond source response request-id pt tick))
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "1; [1/3]"))))
+
+(ert-deftest pascal1981-tests-completion-accept-materializes-into-buffer ()
+  "TAB, dispatched while a preview is showing, inserts the shown candidate."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (insert "x := ")
+    (let* ((source (current-buffer))
+           (request-id 1)
+           (tick (buffer-modified-tick))
+           (pt (point))
+           (response (pascal1981-tests--fake-response-buffer
+                      200 '((completions . ["1;"])))))
+      (setq pascal1981--completion-pending-id request-id)
+      (pascal1981-tests--completion-respond source response request-id pt tick))
+    (pascal1981-indent-or-complete)
+    (should (equal (buffer-string) "x := 1;"))
+    (should-not pascal1981--completion-overlay)))
+
+(ert-deftest pascal1981-tests-completion-cycle-wraps-forward ()
+  "`M-n' cycling wraps back to the first candidate after the last."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (insert "x := ")
+    (let* ((source (current-buffer))
+           (request-id 1)
+           (tick (buffer-modified-tick))
+           (pt (point))
+           (response (pascal1981-tests--fake-response-buffer
+                      200 '((completions . ["1;" "2;" "3;"])))))
+      (setq pascal1981--completion-pending-id request-id)
+      (pascal1981-tests--completion-respond source response request-id pt tick))
+    (pascal1981-completion-cycle-next)
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "2; [2/3]"))
+    (pascal1981-completion-cycle-next)
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "3; [3/3]"))
+    (pascal1981-completion-cycle-next)
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "1; [1/3]"))))
+
+(ert-deftest pascal1981-tests-completion-cycle-wraps-backward ()
+  "`M-p' cycling wraps to the last candidate from the first."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (insert "x := ")
+    (let* ((source (current-buffer))
+           (request-id 1)
+           (tick (buffer-modified-tick))
+           (pt (point))
+           (response (pascal1981-tests--fake-response-buffer
+                      200 '((completions . ["1;" "2;" "3;"])))))
+      (setq pascal1981--completion-pending-id request-id)
+      (pascal1981-tests--completion-respond source response request-id pt tick))
+    (pascal1981-completion-cycle-previous)
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "3; [3/3]"))))
+
+(ert-deftest pascal1981-tests-completion-not-live-after-point-moves ()
+  "The preview stops being \"live\" once point moves away from it."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (insert "x := ")
+    (let* ((source (current-buffer))
+           (request-id 1)
+           (tick (buffer-modified-tick))
+           (pt (point))
+           (response (pascal1981-tests--fake-response-buffer
+                      200 '((completions . ["1;"])))))
+      (setq pascal1981--completion-pending-id request-id)
+      (pascal1981-tests--completion-respond source response request-id pt tick))
+    (should (pascal1981--completion-overlay-live-p))
+    (goto-char (point-min))
+    (should-not (pascal1981--completion-overlay-live-p))))
+
+(ert-deftest pascal1981-tests-completion-dismiss-clears-overlay-and-state ()
+  "`pascal1981--completion-dismiss' tears the preview down completely."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (insert "x := ")
+    (let* ((source (current-buffer))
+           (request-id 1)
+           (tick (buffer-modified-tick))
+           (pt (point))
+           (response (pascal1981-tests--fake-response-buffer
+                      200 '((completions . ["1;"])))))
+      (setq pascal1981--completion-pending-id request-id)
+      (pascal1981-tests--completion-respond source response request-id pt tick))
+    (pascal1981--completion-dismiss)
+    (should-not pascal1981--completion-overlay)
+    (should-not pascal1981--completion-candidate-list)
+    (should (equal (buffer-string) "x := "))))
 
 (ert-deftest pascal1981-tests-completion-preserves-right-hand-text ()
-  "Insertion never overwrites trailing whitespace to the right of point.
+  "A preview still shows when whitespace (not just EOL) follows point.
 \(Non-whitespace to the right is covered separately: it fails the
 eligibility check before a request would ever be sent.\)"
   (with-temp-buffer
@@ -417,13 +552,14 @@ eligibility check before a request would ever be sent.\)"
            (tick (buffer-modified-tick))
            (pt (point))
            (response (pascal1981-tests--fake-response-buffer
-                      200 '((completion . "1;")))))
+                      200 '((completions . ["1;"])))))
       (setq pascal1981--completion-pending-id request-id)
       (pascal1981-tests--completion-respond source response request-id pt tick))
-    (should (equal (buffer-string) "x := 1;   "))))
+    (should (equal (buffer-string) "x :=    "))
+    (should (pascal1981--completion-overlay-live-p))))
 
-(ert-deftest pascal1981-tests-completion-transport-error-unchanged ()
-  "A `:error' status leaves the buffer untouched."
+(ert-deftest pascal1981-tests-completion-transport-error-no-preview ()
+  "A `:error' status shows no preview and leaves the buffer untouched."
   (with-temp-buffer
     (pascal1981-mode)
     (setq pascal1981-completion-enabled t)
@@ -437,10 +573,11 @@ eligibility check before a request would ever be sent.\)"
       (pascal1981-tests--completion-respond
        source response request-id pt tick
        (list :error '(error connection-refused))))
-    (should (equal (buffer-string) "x := "))))
+    (should (equal (buffer-string) "x := "))
+    (should-not pascal1981--completion-overlay)))
 
-(ert-deftest pascal1981-tests-completion-http-error-unchanged ()
-  "A non-200 status leaves the buffer untouched."
+(ert-deftest pascal1981-tests-completion-http-error-no-preview ()
+  "A non-200 status shows no preview and leaves the buffer untouched."
   (with-temp-buffer
     (pascal1981-mode)
     (setq pascal1981-completion-enabled t)
@@ -452,10 +589,11 @@ eligibility check before a request would ever be sent.\)"
            (response (pascal1981-tests--fake-response-buffer 500 nil)))
       (setq pascal1981--completion-pending-id request-id)
       (pascal1981-tests--completion-respond source response request-id pt tick))
-    (should (equal (buffer-string) "x := "))))
+    (should (equal (buffer-string) "x := "))
+    (should-not pascal1981--completion-overlay)))
 
-(ert-deftest pascal1981-tests-completion-malformed-json-unchanged ()
-  "A body that isn't JSON leaves the buffer untouched."
+(ert-deftest pascal1981-tests-completion-malformed-json-no-preview ()
+  "A body that isn't JSON shows no preview and leaves the buffer untouched."
   (with-temp-buffer
     (pascal1981-mode)
     (setq pascal1981-completion-enabled t)
@@ -472,10 +610,11 @@ eligibility check before a request would ever be sent.\)"
         (insert "not json"))
       (setq pascal1981--completion-pending-id request-id)
       (pascal1981-tests--completion-respond source response request-id pt tick))
-    (should (equal (buffer-string) "x := "))))
+    (should (equal (buffer-string) "x := "))
+    (should-not pascal1981--completion-overlay)))
 
-(ert-deftest pascal1981-tests-completion-empty-completion-unchanged ()
-  "An empty \"completion\" field leaves the buffer untouched."
+(ert-deftest pascal1981-tests-completion-empty-completions-list-no-preview ()
+  "An empty \"completions\" list shows no preview and leaves the buffer alone."
   (with-temp-buffer
     (pascal1981-mode)
     (setq pascal1981-completion-enabled t)
@@ -485,13 +624,14 @@ eligibility check before a request would ever be sent.\)"
            (tick (buffer-modified-tick))
            (pt (point))
            (response (pascal1981-tests--fake-response-buffer
-                      200 '((completion . "")))))
+                      200 '((completions . [])))))
       (setq pascal1981--completion-pending-id request-id)
       (pascal1981-tests--completion-respond source response request-id pt tick))
-    (should (equal (buffer-string) "x := "))))
+    (should (equal (buffer-string) "x := "))
+    (should-not pascal1981--completion-overlay)))
 
 (ert-deftest pascal1981-tests-completion-stale-response-discarded ()
-  "A response for a superseded request id is discarded, not inserted."
+  "A response for a superseded request id is discarded, no preview shown."
   (with-temp-buffer
     (pascal1981-mode)
     (setq pascal1981-completion-enabled t)
@@ -501,14 +641,16 @@ eligibility check before a request would ever be sent.\)"
            (tick (buffer-modified-tick))
            (pt (point))
            (response (pascal1981-tests--fake-response-buffer
-                      200 '((completion . "1;")))))
+                      200 '((completions . ["1;"])))))
       ;; A newer request superseded this one before the response arrived.
       (setq pascal1981--completion-pending-id 2)
       (pascal1981-tests--completion-respond source response request-id pt tick))
-    (should (equal (buffer-string) "x := "))))
+    (should (equal (buffer-string) "x := "))
+    (should-not pascal1981--completion-overlay)))
 
 (ert-deftest pascal1981-tests-completion-buffer-changed-since-request-discarded ()
-  "A response is discarded if the buffer changed since the request was sent."
+  "A response is discarded, no preview shown, if the buffer changed since
+the request was sent."
   (with-temp-buffer
     (pascal1981-mode)
     (setq pascal1981-completion-enabled t)
@@ -518,19 +660,20 @@ eligibility check before a request would ever be sent.\)"
            (tick (buffer-modified-tick))
            (pt (point))
            (response (pascal1981-tests--fake-response-buffer
-                      200 '((completion . "1;")))))
+                      200 '((completions . ["1;"])))))
       (setq pascal1981--completion-pending-id request-id)
       ;; The buffer changes after the request was sent, before it answers.
       (insert "y")
       (pascal1981-tests--completion-respond source response request-id pt tick))
-    (should (equal (buffer-string) "x := y"))))
+    (should (equal (buffer-string) "x := y"))
+    (should-not pascal1981--completion-overlay)))
 
 ;; -------------------------------------------------------------------
 ;; LLM completion: TAB dispatcher
 ;; -------------------------------------------------------------------
 
 (ert-deftest pascal1981-tests-indent-or-complete-dispatches-to-completion ()
-  "Enabled and eligible: TAB requests completion, not indentation."
+  "Enabled and eligible, no preview showing: TAB requests, doesn't indent."
   (with-temp-buffer
     (pascal1981-mode)
     (setq pascal1981-completion-enabled t)
@@ -543,6 +686,27 @@ eligibility check before a request would ever be sent.\)"
         (pascal1981-indent-or-complete))
       (should sent)
       (should-not indented))))
+
+(ert-deftest pascal1981-tests-indent-or-complete-accepts-live-preview ()
+  "A preview already showing at point: TAB accepts it, doesn't re-request."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (insert "x := ")
+    (let* ((source (current-buffer))
+           (request-id 1)
+           (tick (buffer-modified-tick))
+           (pt (point))
+           (response (pascal1981-tests--fake-response-buffer
+                      200 '((completions . ["1;"])))))
+      (setq pascal1981--completion-pending-id request-id)
+      (pascal1981-tests--completion-respond source response request-id pt tick))
+    (let (sent)
+      (cl-letf (((symbol-function 'pascal1981--completion-send)
+                 (lambda () (setq sent t))))
+        (pascal1981-indent-or-complete))
+      (should-not sent)
+      (should (equal (buffer-string) "x := 1;")))))
 
 (ert-deftest pascal1981-tests-indent-or-complete-falls-back-mid-line ()
   "Mid-line point falls back to ordinary indentation, never completion."
@@ -655,11 +819,12 @@ server is torn down after BODY runs."
     (while (and (< (float-time) deadline) (not (funcall predicate)))
       (accept-process-output nil 0.05))))
 
-(ert-deftest pascal1981-tests-end-to-end-fake-proxy-inserts-completion ()
-  "A real HTTP round trip against a local fake proxy inserts the completion."
+(ert-deftest pascal1981-tests-end-to-end-fake-proxy-shows-and-accepts-completion ()
+  "A real HTTP round trip against a local fake proxy shows a preview; TAB
+materializes it into the buffer."
   (pascal1981-tests--with-fake-proxy
       (pascal1981-tests--http-json-response
-       200 '((completion . "TO 10 DO") (model . "test-model")
+       200 '((completions . ["TO 10 DO"]) (model . "test-model")
              (request_id . "e2e-1")))
     (with-temp-buffer
       (pascal1981-mode)
@@ -669,10 +834,14 @@ server is torn down after BODY runs."
       (pascal1981-complete-line)
       (pascal1981-tests--wait-until
        (lambda () (not pascal1981--completion-pending-id)) 5)
+      (should (equal (buffer-string) "FOR i := 1 "))
+      (should (pascal1981--completion-overlay-live-p))
+      (pascal1981-indent-or-complete)
       (should (equal (buffer-string) "FOR i := 1 TO 10 DO")))))
 
-(ert-deftest pascal1981-tests-end-to-end-fake-proxy-http-error-unchanged ()
-  "A real HTTP round trip returning a non-200 status leaves the buffer alone."
+(ert-deftest pascal1981-tests-end-to-end-fake-proxy-http-error-no-preview ()
+  "A real HTTP round trip returning a non-200 status shows no preview and
+leaves the buffer alone."
   (pascal1981-tests--with-fake-proxy
       (pascal1981-tests--http-json-response 503 '((error . "backend down")))
     (with-temp-buffer
@@ -683,7 +852,8 @@ server is torn down after BODY runs."
       (pascal1981-complete-line)
       (pascal1981-tests--wait-until
        (lambda () (not pascal1981--completion-pending-id)) 5)
-      (should (equal (buffer-string) "FOR i := 1 ")))))
+      (should (equal (buffer-string) "FOR i := 1 "))
+      (should-not pascal1981--completion-overlay))))
 
 (ert-deftest pascal1981-tests-end-to-end-connection-refused-unchanged ()
   "A real connection-refused (nothing listening) leaves the buffer alone."

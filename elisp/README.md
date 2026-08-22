@@ -141,25 +141,49 @@ listening at `pascal1981-completion-proxy-url`.
 Other knobs: `pascal1981-completion-goal` (the instruction sent with every
 request), `pascal1981-completion-timeout` (seconds to wait before giving
 up, default 8), `pascal1981-completion-buffer-limit` (buffers larger than
-this, in characters, are never sent).
+this, in characters, are never sent), `pascal1981-completion-candidates`
+(how many candidates to request, default 1 — more candidates cost more
+upstream tokens and latency).
 
 ### TAB behavior
 
-TAB (`pascal1981-indent-or-complete`, remapped from
-`indent-for-tab-command`) requests a completion only when completion is
-enabled *and* point sits before nothing but whitespace on the current line
-(`(looking-at-p "[ \t]*$")`). Any non-whitespace character to the right of
-point, or completion being disabled, or the buffer exceeding
-`pascal1981-completion-buffer-limit`, all fall back to ordinary
-indentation — TAB's normal behavior is always the fallback, never silently
-skipped. `M-x pascal1981-complete-line` requests a completion directly,
-using the same eligibility rule.
+Completions show as a dismissible ghost-text preview, not an immediate
+insert — you always see what would be inserted before it lands.
 
-A completion is inserted at point as a single atomic undo step, and only
-if the buffer is still unchanged, point hasn't moved, and the eligibility
-rule still holds by the time the (asynchronous) response arrives — a
-response that arrives after you've kept typing is discarded rather than
-inserted somewhere it no longer belongs.
+TAB (`pascal1981-indent-or-complete`, remapped from
+`indent-for-tab-command`) does one of three things:
+
+- **A preview is already showing at point.** TAB accepts it: the shown
+  candidate is inserted as a single atomic undo step, and the preview goes
+  away.
+- **No preview, and point is eligible.** Completion must be enabled, point
+  must sit before nothing but whitespace on the current line
+  (`(looking-at-p "[ \t]*$")`), and the buffer must not exceed
+  `pascal1981-completion-buffer-limit`. TAB requests a completion; when the
+  (asynchronous) response arrives, it renders as a ghost-text preview rather
+  than inserting immediately.
+- **Anything else** — completion disabled, mid-line, oversized buffer — TAB
+  keeps its ordinary meaning: `pascal1981-indent-line`. This fallback is
+  always exactly indentation, never a no-op, so disabling or losing the
+  proxy never costs TAB its normal behavior.
+
+`M-x pascal1981-complete-line` requests a completion directly, using the
+same eligibility rule as the second case above.
+
+While a preview is showing:
+
+- **`M-n` / `M-p`** cycle to the next/previous candidate (only meaningful
+  when `pascal1981-completion-candidates` is greater than 1; the preview
+  shows a `[i/N]` suffix whenever there's more than one candidate to cycle
+  through).
+- **Any other command** — typing a character, moving point, `C-g`,
+  switching buffers — dismisses the preview without inserting anything.
+
+A response only ever turns into a preview if the buffer is still
+unchanged, point hasn't moved, and the eligibility rule still holds at the
+point the (asynchronous) response arrives — a response that arrives after
+you've kept typing is discarded rather than shown somewhere it no longer
+applies.
 
 ### Manually checking the proxy
 
@@ -176,9 +200,16 @@ responding before troubleshooting from inside Emacs.
 
 - **TAB just indents, no completion happens.** Either
   `pascal1981-completion-enabled` is nil, point isn't at end-of-line-modulo-
-  whitespace, or the buffer is over `pascal1981-completion-buffer-limit`.
-  This is by design, not a failure — check `pascal1981-complete-line`
-  directly (`M-x`) to isolate eligibility from a proxy problem.
+  whitespace, or the buffer is over `pascal1981-completion-buffer-limit` —
+  and no preview was already showing at point, which is the only other
+  thing TAB can do instead of indenting. This is by design, not a failure —
+  check `pascal1981-complete-line` directly (`M-x`) to isolate eligibility
+  from a proxy problem.
+- **The preview disappeared before I could accept it.** Any command other
+  than TAB (to accept) or `M-n`/`M-p` (to cycle) dismisses the preview —
+  including typing, moving point, and `C-g`. This is intentional: a stale
+  preview left showing after you kept typing would no longer apply to what's
+  at point.
 - **"pascal1981: completion request failed: (error connection-refused ...)"**
   The proxy isn't running, or `pascal1981-completion-proxy-url` points at
   the wrong host/port. Start the proxy yourself (see above); Emacs will not

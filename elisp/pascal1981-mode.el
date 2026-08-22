@@ -65,6 +65,13 @@ Buffers larger than this are not sent; TAB falls back to
 indentation instead."
   :type 'integer :group 'pascal1981)
 
+(defcustom pascal1981-completion-candidates 1
+  "How many candidate completions to request from the proxy.
+Sent as \"n\" in the request payload. More candidates cost more
+upstream tokens and latency; cycle between them with `M-n'/`M-p'
+while a completion preview is showing."
+  :type 'integer :group 'pascal1981)
+
 (defun pascal1981-completion-toggle (&optional arg)
   "Toggle `pascal1981-completion-enabled'.
 With prefix ARG, enable it if ARG is positive, disable otherwise."
@@ -461,30 +468,122 @@ decodes on the way back."
   (cons (line-number-at-pos)
         (1+ (- (point) (line-beginning-position)))))
 
-(defun pascal1981--completion-payload (goal buffer-text line column)
+(defun pascal1981--completion-payload (goal buffer-text line column n)
   "Build the JSON request body for a `/complete' request."
   (json-encode `((goal . ,goal)
                  (buffer . ,buffer-text)
-                 (cursor . ((line . ,line) (column . ,column))))))
+                 (cursor . ((line . ,line) (column . ,column)))
+                 (n . ,n))))
 
 (defun pascal1981--completion-insert (text)
   "Insert TEXT at point as a single atomic undo step."
   (atomic-change-group
     (insert text)))
 
+;; -------------------------------------------------------------------
+;; Ghost-text preview + cycling
+;; -------------------------------------------------------------------
+
+(defvar-local pascal1981--completion-overlay nil
+  "Overlay showing the current completion preview, or nil if none.")
+
+(defvar-local pascal1981--completion-candidate-list nil
+  "List of candidate completion strings for the current preview.")
+
+(defvar-local pascal1981--completion-candidate-index 0
+  "Index into `pascal1981--completion-candidate-list' currently shown.")
+
+(defun pascal1981--completion-overlay-live-p ()
+  "Non-nil when a completion preview is showing at point."
+  (and pascal1981--completion-overlay
+       (overlay-buffer pascal1981--completion-overlay)
+       (= (overlay-start pascal1981--completion-overlay) (point))))
+
+(defun pascal1981--completion-render-overlay ()
+  "Refresh the overlay's `after-string' from the current candidate/index."
+  (let* ((candidates pascal1981--completion-candidate-list)
+         (n (length candidates))
+         (text (nth pascal1981--completion-candidate-index candidates))
+         (suffix (if (> n 1)
+                     (format " [%d/%d]"
+                             (1+ pascal1981--completion-candidate-index) n)
+                   "")))
+    (overlay-put pascal1981--completion-overlay 'after-string
+                 (propertize (concat text suffix) 'face 'shadow))))
+
+(defun pascal1981--completion-dismiss ()
+  "Remove the completion preview overlay and clear its state.
+Safe to call when no preview is showing."
+  (when pascal1981--completion-overlay
+    (delete-overlay pascal1981--completion-overlay))
+  (setq pascal1981--completion-overlay nil
+        pascal1981--completion-candidate-list nil
+        pascal1981--completion-candidate-index 0))
+
+(defun pascal1981--completion-show-ghost (candidates)
+  "Show CANDIDATES (a list of strings) as a cycling preview at point."
+  (pascal1981--completion-dismiss)
+  (setq pascal1981--completion-candidate-list candidates
+        pascal1981--completion-candidate-index 0
+        pascal1981--completion-overlay (make-overlay (point) (point) nil t nil))
+  (pascal1981--completion-render-overlay)
+  (set-transient-map
+   (let ((map (make-sparse-keymap)))
+     (define-key map (kbd "TAB") #'pascal1981--completion-accept)
+     (define-key map (kbd "<tab>") #'pascal1981--completion-accept)
+     (define-key map (kbd "M-n") #'pascal1981-completion-cycle-next)
+     (define-key map (kbd "M-p") #'pascal1981-completion-cycle-previous)
+     (define-key map (kbd "C-g") #'pascal1981--completion-dismiss)
+     map)
+   (lambda () (memq this-command '(pascal1981-completion-cycle-next
+                                    pascal1981-completion-cycle-previous)))
+   #'pascal1981--completion-dismiss))
+
+(defun pascal1981--completion-accept ()
+  "Materialize the currently shown candidate at point.
+Inserted as a single atomic undo step via `pascal1981--completion-insert'."
+  (interactive)
+  (when (pascal1981--completion-overlay-live-p)
+    (let ((text (nth pascal1981--completion-candidate-index
+                      pascal1981--completion-candidate-list)))
+      (pascal1981--completion-dismiss)
+      (pascal1981--completion-insert text))))
+
+(defun pascal1981-completion-cycle-next ()
+  "Show the next candidate in the current completion preview."
+  (interactive)
+  (pascal1981--completion-cycle 1))
+
+(defun pascal1981-completion-cycle-previous ()
+  "Show the previous candidate in the current completion preview."
+  (interactive)
+  (pascal1981--completion-cycle -1))
+
+(defun pascal1981--completion-cycle (delta)
+  "Move the shown candidate index by DELTA, wrapping, and redraw."
+  (when (pascal1981--completion-overlay-live-p)
+    (let ((n (length pascal1981--completion-candidate-list)))
+      (setq pascal1981--completion-candidate-index
+            (mod (+ pascal1981--completion-candidate-index delta) n)))
+    (pascal1981--completion-render-overlay)))
+
 (defun pascal1981--completion-parse-response (response-buffer)
-  "Return (STATUS-CODE . COMPLETION-OR-NIL) parsed from RESPONSE-BUFFER.
-COMPLETION-OR-NIL is nil when the body is not valid JSON with a
-string \"completion\" field."
+  "Return (STATUS-CODE . CANDIDATES-OR-NIL) parsed from RESPONSE-BUFFER.
+CANDIDATES-OR-NIL is a list of strings, or nil when the body is not
+valid JSON with a \"completions\" array of strings."
   (with-current-buffer response-buffer
     (let ((status-code (url-http-symbol-value-in-buffer
                          'url-http-response-status response-buffer)))
       (goto-char (if (boundp 'url-http-end-of-headers)
                      (or url-http-end-of-headers (point-min))
                    (point-min)))
-      (let ((body (ignore-errors (json-read))))
+      (let* ((body (ignore-errors (json-read)))
+             (completions (and (listp body) (alist-get 'completions body))))
         (cons status-code
-              (and (listp body) (alist-get 'completion body)))))))
+              (and (sequencep completions)
+                   (> (length completions) 0)
+                   (cl-every #'stringp completions)
+                   (append completions nil)))))))
 
 (defun pascal1981--completion-handle-timeout (source-buffer request-id
                                                               response-buffer)
@@ -507,12 +606,13 @@ tears down the still-open connection."
                                                 point-at-request
                                                 tick-at-request)
   "`url-retrieve' callback for completion REQUEST-ID.
-STATUS is the plist url.el passes on completion/error. Insert the
-completion only if SOURCE-BUFFER still exists, completion is still
-enabled there, REQUEST-ID is still the pending one (a stale response
-is discarded silently -- it already lost the race, no message
-needed), the buffer is unchanged since TICK-AT-REQUEST, point is
-still POINT-AT-REQUEST, and the eligibility rule still holds there."
+STATUS is the plist url.el passes on completion/error. Show the
+completion(s) as a ghost-text preview only if SOURCE-BUFFER still
+exists, completion is still enabled there, REQUEST-ID is still the
+pending one (a stale response is discarded silently -- it already
+lost the race, no message needed), the buffer is unchanged since
+TICK-AT-REQUEST, point is still POINT-AT-REQUEST, and the eligibility
+rule still holds there."
   (let ((response-buffer (current-buffer)))
     (unwind-protect
         (catch 'pascal1981--completion-done
@@ -533,11 +633,11 @@ still POINT-AT-REQUEST, and the eligibility rule still holds there."
             (throw 'pascal1981--completion-done nil))
           (let* ((parsed (pascal1981--completion-parse-response response-buffer))
                  (status-code (car parsed))
-                 (completion (cdr parsed)))
+                 (candidates (cdr parsed)))
             (when (and status-code (/= status-code 200))
               (message "pascal1981: completion proxy returned HTTP %s" status-code)
               (throw 'pascal1981--completion-done nil))
-            (unless (and (stringp completion) (> (length completion) 0))
+            (unless candidates
               (message "pascal1981: completion response was empty or malformed")
               (throw 'pascal1981--completion-done nil))
             (with-current-buffer source-buffer
@@ -546,7 +646,7 @@ still POINT-AT-REQUEST, and the eligibility rule still holds there."
                             (= (point) point-at-request)
                             (pascal1981--completion-allowed-at-point-p))
                 (throw 'pascal1981--completion-done nil))
-              (pascal1981--completion-insert completion))))
+              (pascal1981--completion-show-ghost candidates))))
       (when (buffer-live-p response-buffer)
         (kill-buffer response-buffer)))))
 
@@ -569,7 +669,8 @@ than inserted somewhere it no longer belongs."
           (encode-coding-string
            (pascal1981--completion-payload
             pascal1981-completion-goal buffer-text
-            (car line-column) (cdr line-column))
+            (car line-column) (cdr line-column)
+            pascal1981-completion-candidates)
            'utf-8)))
     (setq pascal1981--completion-pending-id request-id)
     (letrec ((response-buffer
@@ -591,8 +692,9 @@ than inserted somewhere it no longer belongs."
 Does nothing but report why, via `message', when completion is
 disabled, point is mid-line, or the buffer exceeds
 `pascal1981-completion-buffer-limit'; the buffer is never modified by
-this command itself, only (asynchronously, later) by
-`pascal1981--completion-callback' if a real completion comes back."
+this command itself. Later, asynchronously, a successful response is
+shown as a ghost-text preview by `pascal1981--completion-callback',
+not inserted directly -- accept it with TAB, cycle with `M-n'/`M-p'."
   (interactive)
   (cond
    ((not pascal1981-completion-enabled)
@@ -606,10 +708,12 @@ this command itself, only (asynchronously, later) by
     (pascal1981--completion-send))))
 
 (defun pascal1981-indent-or-complete ()
-  "Request an LLM completion at point, or indent the current line.
+  "Accept a showing completion preview, request one, or indent.
 Bound in place of `indent-for-tab-command' (see the
 `[remap indent-for-tab-command]' binding in `pascal1981-mode-map',
-set up below `pascal1981-mode's definition). Requests a completion
+set up below `pascal1981-mode's definition). If a completion preview
+is already showing at point, TAB accepts it (see
+`pascal1981--completion-accept'). Otherwise it requests a completion
 only when `pascal1981-completion-enabled' is non-nil, point is
 eligible per `pascal1981--completion-allowed-at-point-p', and the
 buffer does not exceed `pascal1981-completion-buffer-limit'; in every
@@ -618,11 +722,15 @@ keeps its ordinary meaning: `pascal1981-indent-line'. That fallback is
 always exactly indentation, never a no-op, so disabling or losing the
 proxy never costs TAB its normal behavior."
   (interactive)
-  (if (and pascal1981-completion-enabled
-            (pascal1981--completion-allowed-at-point-p)
-            (<= (buffer-size) pascal1981-completion-buffer-limit))
-      (pascal1981--completion-send)
-    (pascal1981-indent-line)))
+  (cond
+   ((pascal1981--completion-overlay-live-p)
+    (pascal1981--completion-accept))
+   ((and pascal1981-completion-enabled
+         (pascal1981--completion-allowed-at-point-p)
+         (<= (buffer-size) pascal1981-completion-buffer-limit))
+    (pascal1981--completion-send))
+   (t
+    (pascal1981-indent-line))))
 
 ;; -------------------------------------------------------------------
 ;; AST helpers + imenu

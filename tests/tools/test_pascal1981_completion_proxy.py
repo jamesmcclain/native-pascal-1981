@@ -48,7 +48,7 @@ def chat_response(content,
 class ValidateRequestTests(unittest.TestCase):
 
     def test_accepts_well_formed_request(self):
-        goal, buffer, line, column = proxy.validate_request(
+        goal, buffer, line, column, n = proxy.validate_request(
             {
                 'goal': 'finish it',
                 'buffer': 'VAR x: INTEGER;\n',
@@ -58,11 +58,75 @@ class ValidateRequestTests(unittest.TestCase):
                 },
             },
             buffer_limit=1000)
-        self.assertEqual((goal, buffer, line, column),
-                         ('finish it', 'VAR x: INTEGER;\n', 1, 5))
+        self.assertEqual((goal, buffer, line, column, n),
+                         ('finish it', 'VAR x: INTEGER;\n', 1, 5, 1))
+
+    def test_n_defaults_to_one(self):
+        *_, n = proxy.validate_request(
+            {
+                'buffer': 'x',
+                'cursor': {
+                    'line': 1,
+                    'column': 1
+                }
+            },
+            buffer_limit=1000)
+        self.assertEqual(n, 1)
+
+    def test_n_is_clamped_to_max_candidates(self):
+        *_, n = proxy.validate_request(
+            {
+                'buffer': 'x',
+                'cursor': {
+                    'line': 1,
+                    'column': 1
+                },
+                'n': 999,
+            },
+            buffer_limit=1000)
+        self.assertEqual(n, proxy._MAX_CANDIDATES)
+
+    def test_n_below_one_is_clamped_to_one(self):
+        *_, n = proxy.validate_request(
+            {
+                'buffer': 'x',
+                'cursor': {
+                    'line': 1,
+                    'column': 1
+                },
+                'n': 0,
+            },
+            buffer_limit=1000)
+        self.assertEqual(n, 1)
+
+    def test_non_integer_n_falls_back_to_one(self):
+        *_, n = proxy.validate_request(
+            {
+                'buffer': 'x',
+                'cursor': {
+                    'line': 1,
+                    'column': 1
+                },
+                'n': 'three',
+            },
+            buffer_limit=1000)
+        self.assertEqual(n, 1)
+
+    def test_n_within_range_is_passed_through(self):
+        *_, n = proxy.validate_request(
+            {
+                'buffer': 'x',
+                'cursor': {
+                    'line': 1,
+                    'column': 1
+                },
+                'n': 3,
+            },
+            buffer_limit=1000)
+        self.assertEqual(n, 3)
 
     def test_goal_defaults_to_empty_string(self):
-        goal, *_ = proxy.validate_request(
+        goal, *_rest = proxy.validate_request(
             {
                 'buffer': 'x',
                 'cursor': {
@@ -294,25 +358,48 @@ class SanitizeCompletionTests(unittest.TestCase):
         self.assertEqual(proxy.sanitize_completion(''), '')
 
 
-class ExtractCompletionTests(unittest.TestCase):
+def multi_chat_response(contents,
+                        model='test-model',
+                        request_id='abc123',
+                        finish_reasons=None):
+    """Build a /chat/completions-shaped body with one choice per CONTENTS
+    entry. FINISH_REASONS, if given, is a parallel list; defaults to 'stop'
+    for every choice."""
+    finish_reasons = finish_reasons or ['stop'] * len(contents)
+    return {
+        'id':
+        request_id,
+        'model':
+        model,
+        'choices': [{
+            'message': {
+                'role': 'assistant',
+                'content': content
+            },
+            'finish_reason': reason,
+        } for content, reason in zip(contents, finish_reasons)],
+    }
+
+
+class ExtractCompletionsTests(unittest.TestCase):
 
     def test_extracts_text_model_and_id(self):
-        text, model, request_id = proxy.extract_completion(
+        texts, model, request_id = proxy.extract_completions(
             chat_response(' := 42;'))
-        self.assertEqual((text, model, request_id),
-                         (' := 42;', 'test-model', 'abc123'))
+        self.assertEqual((texts, model, request_id),
+                         ([' := 42;'], 'test-model', 'abc123'))
 
     def test_missing_choices_raises_upstream_error(self):
         with self.assertRaises(proxy.UpstreamError):
-            proxy.extract_completion({})
+            proxy.extract_completions({})
 
     def test_empty_choices_raises_upstream_error(self):
         with self.assertRaises(proxy.UpstreamError):
-            proxy.extract_completion({'choices': []})
+            proxy.extract_completions({'choices': []})
 
     def test_choice_without_message_raises_upstream_error(self):
         with self.assertRaises(proxy.UpstreamError):
-            proxy.extract_completion({'choices': [{}]})
+            proxy.extract_completions({'choices': [{}]})
 
     def test_exhausted_reasoning_budget_raises_upstream_error(self):
         # finish_reason "length" + empty content + non-empty
@@ -322,15 +409,35 @@ class ExtractCompletionTests(unittest.TestCase):
                                  finish_reason='length',
                                  reasoning_content='...thinking...')
         with self.assertRaises(proxy.UpstreamError):
-            proxy.extract_completion(response)
+            proxy.extract_completions(response)
 
     def test_empty_content_with_stop_finish_reason_is_a_valid_empty_completion(
             self):
         # Distinguish "model deliberately answered with nothing" (finish
         # reason "stop") from the exhausted-reasoning-budget case above.
-        text, _model, _id = proxy.extract_completion(
+        texts, _model, _id = proxy.extract_completions(
             chat_response('', finish_reason='stop'))
-        self.assertEqual(text, '')
+        self.assertEqual(texts, [''])
+
+    def test_multiple_choices_all_returned_in_order(self):
+        texts, _model, _id = proxy.extract_completions(
+            multi_chat_response([' one', ' two', ' three']))
+        self.assertEqual(texts, [' one', ' two', ' three'])
+
+    def test_one_exhausted_choice_dropped_others_kept(self):
+        response = multi_chat_response(
+            [' ok', '', ' also ok'], finish_reasons=['stop', 'length', 'stop'])
+        response['choices'][1]['message']['reasoning_content'] = '...'
+        texts, _model, _id = proxy.extract_completions(response)
+        self.assertEqual(texts, [' ok', ' also ok'])
+
+    def test_all_choices_exhausted_raises_upstream_error(self):
+        response = multi_chat_response(['', ''],
+                                       finish_reasons=['length', 'length'])
+        for choice in response['choices']:
+            choice['message']['reasoning_content'] = '...'
+        with self.assertRaises(proxy.UpstreamError):
+            proxy.extract_completions(response)
 
 
 class PingUpstreamTests(unittest.TestCase):
@@ -700,7 +807,7 @@ class EndToEndTests(unittest.TestCase):
         return status, data
 
     def test_successful_completion_round_trip(self):
-        proxy.call_upstream = lambda prompt, config: chat_response(
+        proxy.call_upstream = lambda prompt, config, n=None: chat_response(
             ' := 42;', model='test-model', request_id='req-1')
         status, data = self._post({
             'goal': '',
@@ -713,14 +820,52 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(
             data, {
-                'completion': ' := 42;',
+                'completions': [' := 42;'],
                 'model': 'test-model',
                 'request_id': 'req-1',
             })
 
+    def test_multiple_candidates_returned_as_a_list(self):
+        captured = {}
+
+        def fake_call_upstream(prompt, config, n=None):
+            captured['n'] = n
+            return multi_chat_response([' a', ' b', ' c'])
+
+        proxy.call_upstream = fake_call_upstream
+        status, data = self._post({
+            'buffer': 'x',
+            'cursor': {
+                'line': 1,
+                'column': 1
+            },
+            'n': 3,
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(data['completions'], [' a', ' b', ' c'])
+        self.assertEqual(captured['n'], 3)
+
+    def test_n_omitted_from_request_defaults_to_one(self):
+        captured = {}
+
+        def fake_call_upstream(prompt, config, n=None):
+            captured['n'] = n
+            return chat_response(' ok')
+
+        proxy.call_upstream = fake_call_upstream
+        status, _data = self._post({
+            'buffer': 'x',
+            'cursor': {
+                'line': 1,
+                'column': 1
+            },
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(captured['n'], 1)
+
     def test_upstream_error_returns_502_and_leaves_body_generic(self):
 
-        def boom(prompt, config):
+        def boom(prompt, config, n=None):
             raise proxy.UpstreamError('could not reach upstream: refused')
 
         proxy.call_upstream = boom
@@ -761,7 +906,7 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(status, 404)
 
     def test_empty_completion_from_upstream_is_returned_as_empty_string(self):
-        proxy.call_upstream = lambda prompt, config: chat_response(
+        proxy.call_upstream = lambda prompt, config, n=None: chat_response(
             '', model='', request_id='')
         status, data = self._post({
             'buffer': 'x',
@@ -771,7 +916,7 @@ class EndToEndTests(unittest.TestCase):
             },
         })
         self.assertEqual(status, 200)
-        self.assertEqual(data['completion'], '')
+        self.assertEqual(data['completions'], [''])
 
     def _get(self, path):
         conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=5)
@@ -812,7 +957,7 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(status, 404)
 
     def test_multiline_upstream_text_is_truncated_to_first_line(self):
-        proxy.call_upstream = lambda prompt, config: chat_response(
+        proxy.call_upstream = lambda prompt, config, n=None: chat_response(
             'first\nsecond')
         status, data = self._post({
             'buffer': 'x',
@@ -822,7 +967,7 @@ class EndToEndTests(unittest.TestCase):
             },
         })
         self.assertEqual(status, 200)
-        self.assertEqual(data['completion'], 'first')
+        self.assertEqual(data['completions'], ['first'])
 
 
 if __name__ == '__main__':
