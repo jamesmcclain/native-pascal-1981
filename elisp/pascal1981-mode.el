@@ -13,6 +13,8 @@
 ;;; Code:
 (require 'json)
 (require 'cl-lib)
+(require 'url)
+(require 'url-http)
 
 (defgroup pascal1981 nil
   "Major mode for Native Pascal 1981."
@@ -31,6 +33,37 @@ Assumed to be on `exec-path' / PATH."
 (defcustom pascal1981-idle-delay 0.4
   "Seconds of idle time before refreshing highlighting / indentation."
   :type 'number :group 'pascal1981)
+
+(defcustom pascal1981-completion-enabled nil
+  "If non-nil, TAB at end-of-line requests an LLM completion.
+
+The completion proxy's lifecycle is out-of-band from Emacs: the
+user starts and stops it themselves.  Emacs never spawns,
+health-checks, or supervises the proxy process; it only ever
+speaks HTTP to whatever is already listening at
+`pascal1981-completion-proxy-url'.  If nothing is listening,
+requests simply fail (timeout / connection-refused) and TAB
+falls back to indentation."
+  :type 'boolean :group 'pascal1981)
+
+(defcustom pascal1981-completion-proxy-url "http://127.0.0.1:8790/complete"
+  "URL of the local completion proxy's `/complete' endpoint."
+  :type 'string :group 'pascal1981)
+
+(defcustom pascal1981-completion-goal
+  "Complete the Pascal source at point with the smallest correct insertion."
+  "Goal text sent to the completion proxy with each request."
+  :type 'string :group 'pascal1981)
+
+(defcustom pascal1981-completion-timeout 8
+  "Seconds to wait for the completion proxy before giving up."
+  :type 'number :group 'pascal1981)
+
+(defcustom pascal1981-completion-buffer-limit 65536
+  "Maximum buffer size, in characters, sent to the completion proxy.
+Buffers larger than this are not sent; TAB falls back to
+indentation instead."
+  :type 'integer :group 'pascal1981)
 
 (defvar pascal1981--token-cache nil
   "Buffer-local cache of last lexer output (vector of alists).")
@@ -384,6 +417,203 @@ to the first identifier of that section."
     (when (< (current-column) want) (move-to-column want))))
 
 ;; -------------------------------------------------------------------
+;; LLM completion
+;; -------------------------------------------------------------------
+
+(defun pascal1981--completion-allowed-at-point-p ()
+  "Return non-nil when point sits before only whitespace on this line.
+
+This is the TAB eligibility rule: a completion request is only
+sent when nothing but spaces or tabs stand between point and the
+end of the current line.  A non-whitespace character to the
+right of point means TAB keeps its normal indentation behavior
+instead."
+  (looking-at-p "[ \t]*$"))
+
+(defvar-local pascal1981--completion-request-counter 0
+  "Monotonic counter used to mint completion request ids.")
+
+(defvar-local pascal1981--completion-pending-id nil
+  "Request id of the in-flight completion request, or nil if none.
+A response whose request id no longer matches this is stale and is
+discarded unread.")
+
+(defvar-local pascal1981--completion-timeout-timer nil
+  "Timer that fires if the current completion request does not answer
+within `pascal1981-completion-timeout' seconds.")
+
+(defun pascal1981--completion-line-column ()
+  "Return (LINE . COLUMN) at point, 1-based, matching the proxy's scheme.
+COLUMN counts characters from the start of the line and a TAB counts
+as one column -- the same convention `pascal1981--line-col-pos'
+decodes on the way back."
+  (cons (line-number-at-pos)
+        (1+ (- (point) (line-beginning-position)))))
+
+(defun pascal1981--completion-payload (goal buffer-text line column)
+  "Build the JSON request body for a `/complete' request."
+  (json-encode `((goal . ,goal)
+                 (buffer . ,buffer-text)
+                 (cursor . ((line . ,line) (column . ,column))))))
+
+(defun pascal1981--completion-insert (text)
+  "Insert TEXT at point as a single atomic undo step."
+  (atomic-change-group
+    (insert text)))
+
+(defun pascal1981--completion-parse-response (response-buffer)
+  "Return (STATUS-CODE . COMPLETION-OR-NIL) parsed from RESPONSE-BUFFER.
+COMPLETION-OR-NIL is nil when the body is not valid JSON with a
+string \"completion\" field."
+  (with-current-buffer response-buffer
+    (let ((status-code (url-http-symbol-value-in-buffer
+                         'url-http-response-status response-buffer)))
+      (goto-char (if (boundp 'url-http-end-of-headers)
+                     (or url-http-end-of-headers (point-min))
+                   (point-min)))
+      (let ((body (ignore-errors (json-read))))
+        (cons status-code
+              (and (listp body) (alist-get 'completion body)))))))
+
+(defun pascal1981--completion-handle-timeout (source-buffer request-id
+                                                              response-buffer)
+  "Fire when REQUEST-ID has not answered within the configured timeout.
+Reports the timeout to the user (if the request is still current) and
+tears down the still-open connection."
+  (when (buffer-live-p source-buffer)
+    (with-current-buffer source-buffer
+      (when (eq pascal1981--completion-pending-id request-id)
+        (setq pascal1981--completion-pending-id nil
+              pascal1981--completion-timeout-timer nil)
+        (message "pascal1981: completion request timed out"))))
+  (when (buffer-live-p response-buffer)
+    (let ((proc (get-buffer-process response-buffer)))
+      (when proc (delete-process proc)))
+    (when (buffer-live-p response-buffer)
+      (kill-buffer response-buffer))))
+
+(defun pascal1981--completion-callback (status source-buffer request-id
+                                                point-at-request
+                                                tick-at-request)
+  "`url-retrieve' callback for completion REQUEST-ID.
+STATUS is the plist url.el passes on completion/error. Insert the
+completion only if SOURCE-BUFFER still exists, completion is still
+enabled there, REQUEST-ID is still the pending one (a stale response
+is discarded silently -- it already lost the race, no message
+needed), the buffer is unchanged since TICK-AT-REQUEST, point is
+still POINT-AT-REQUEST, and the eligibility rule still holds there."
+  (let ((response-buffer (current-buffer)))
+    (unwind-protect
+        (catch 'pascal1981--completion-done
+          (unless (buffer-live-p source-buffer)
+            (throw 'pascal1981--completion-done nil))
+          (with-current-buffer source-buffer
+            (when (timerp pascal1981--completion-timeout-timer)
+              (cancel-timer pascal1981--completion-timeout-timer)
+              (setq pascal1981--completion-timeout-timer nil))
+            (unless (eq pascal1981--completion-pending-id request-id)
+              (throw 'pascal1981--completion-done nil))
+            (setq pascal1981--completion-pending-id nil)
+            (unless pascal1981-completion-enabled
+              (throw 'pascal1981--completion-done nil)))
+          (when (plist-get status :error)
+            (message "pascal1981: completion request failed: %s"
+                      (plist-get status :error))
+            (throw 'pascal1981--completion-done nil))
+          (let* ((parsed (pascal1981--completion-parse-response response-buffer))
+                 (status-code (car parsed))
+                 (completion (cdr parsed)))
+            (when (and status-code (/= status-code 200))
+              (message "pascal1981: completion proxy returned HTTP %s" status-code)
+              (throw 'pascal1981--completion-done nil))
+            (unless (and (stringp completion) (> (length completion) 0))
+              (message "pascal1981: completion response was empty or malformed")
+              (throw 'pascal1981--completion-done nil))
+            (with-current-buffer source-buffer
+              (unless (and pascal1981-completion-enabled
+                            (= (buffer-modified-tick) tick-at-request)
+                            (= (point) point-at-request)
+                            (pascal1981--completion-allowed-at-point-p))
+                (throw 'pascal1981--completion-done nil))
+              (pascal1981--completion-insert completion))))
+      (when (buffer-live-p response-buffer)
+        (kill-buffer response-buffer)))))
+
+(defun pascal1981--completion-send ()
+  "Send an asynchronous `/complete' request for the current buffer/point.
+Captures the source buffer, point, buffer modification tick, and
+1-based line/column before sending; `pascal1981--completion-callback'
+re-validates all of it before inserting anything, so a response that
+arrives after the buffer changed underneath it is discarded rather
+than inserted somewhere it no longer belongs."
+  (let* ((source-buffer (current-buffer))
+         (request-id (cl-incf pascal1981--completion-request-counter))
+         (point-at-request (point))
+         (tick-at-request (buffer-modified-tick))
+         (line-column (pascal1981--completion-line-column))
+         (buffer-text (buffer-substring-no-properties (point-min) (point-max)))
+         (url-request-method "POST")
+         (url-request-extra-headers '(("Content-Type" . "application/json")))
+         (url-request-data
+          (encode-coding-string
+           (pascal1981--completion-payload
+            pascal1981-completion-goal buffer-text
+            (car line-column) (cdr line-column))
+           'utf-8)))
+    (setq pascal1981--completion-pending-id request-id)
+    (letrec ((response-buffer
+              (url-retrieve
+               pascal1981-completion-proxy-url
+               #'pascal1981--completion-callback
+               (list source-buffer request-id point-at-request tick-at-request)
+               t)))
+      (when (timerp pascal1981--completion-timeout-timer)
+        (cancel-timer pascal1981--completion-timeout-timer))
+      (setq pascal1981--completion-timeout-timer
+            (run-at-time
+             pascal1981-completion-timeout nil
+             #'pascal1981--completion-handle-timeout
+             source-buffer request-id response-buffer)))))
+
+(defun pascal1981-complete-line ()
+  "Request an LLM completion at point from the local completion proxy.
+Does nothing but report why, via `message', when completion is
+disabled, point is mid-line, or the buffer exceeds
+`pascal1981-completion-buffer-limit'; the buffer is never modified by
+this command itself, only (asynchronously, later) by
+`pascal1981--completion-callback' if a real completion comes back."
+  (interactive)
+  (cond
+   ((not pascal1981-completion-enabled)
+    (message "pascal1981: completion is disabled"))
+   ((not (pascal1981--completion-allowed-at-point-p))
+    (message "pascal1981: completion is not offered mid-line"))
+   ((> (buffer-size) pascal1981-completion-buffer-limit)
+    (message "pascal1981: buffer exceeds completion size limit (%d)"
+              pascal1981-completion-buffer-limit))
+   (t
+    (pascal1981--completion-send))))
+
+(defun pascal1981-indent-or-complete ()
+  "Request an LLM completion at point, or indent the current line.
+Bound in place of `indent-for-tab-command' (see the
+`[remap indent-for-tab-command]' binding in `pascal1981-mode-map',
+set up below `pascal1981-mode's definition). Requests a completion
+only when `pascal1981-completion-enabled' is non-nil, point is
+eligible per `pascal1981--completion-allowed-at-point-p', and the
+buffer does not exceed `pascal1981-completion-buffer-limit'; in every
+other case -- completion disabled, mid-line, oversized buffer -- TAB
+keeps its ordinary meaning: `pascal1981-indent-line'. That fallback is
+always exactly indentation, never a no-op, so disabling or losing the
+proxy never costs TAB its normal behavior."
+  (interactive)
+  (if (and pascal1981-completion-enabled
+            (pascal1981--completion-allowed-at-point-p)
+            (<= (buffer-size) pascal1981-completion-buffer-limit))
+      (pascal1981--completion-send)
+    (pascal1981-indent-line)))
+
+;; -------------------------------------------------------------------
 ;; AST helpers + imenu
 ;; -------------------------------------------------------------------
 
@@ -544,6 +774,11 @@ CHECKER and CALLBACK are the flycheck start-function arguments."
   (pascal1981--refresh-caches)
   (pascal1981--apply-token-highlighting)
   (add-hook 'after-change-functions (lambda (&rest _) (pascal1981--schedule-refresh)) nil t))
+
+;; `define-derived-mode' above auto-creates `pascal1981-mode-map'; the TAB
+;; remap has to be installed after that map exists.
+(define-key pascal1981-mode-map [remap indent-for-tab-command]
+            #'pascal1981-indent-or-complete)
 
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.pas\\'" . pascal1981-mode))

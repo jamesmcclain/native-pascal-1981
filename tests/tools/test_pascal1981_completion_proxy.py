@@ -14,6 +14,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = REPO_ROOT / 'tools' / 'pascal1981_completion_proxy.py'
@@ -248,39 +249,34 @@ class GrammarContextTests(unittest.TestCase):
             proxy.load_grammar('/nonexistent/path/to/grammar.md')
 
     def test_config_defaults_to_no_grammar(self):
-        config = proxy.Config(env={})
+        config = proxy.Config()
         self.assertEqual(config.grammar_file, '')
         self.assertEqual(config.grammar_text, '')
 
-    def test_config_loads_grammar_from_env(self):
+    def test_config_loads_grammar_from_explicit_path(self):
         import tempfile
         with tempfile.NamedTemporaryFile('w', suffix='.md',
                                          delete=False) as handle:
-            handle.write('from-env = "x" ;')
+            handle.write('from-arg = "x" ;')
             path = handle.name
         try:
-            config = proxy.Config(env={'PASCAL1981_PROXY_GRAMMAR_FILE': path})
-            self.assertEqual(config.grammar_text, 'from-env = "x" ;')
+            config = proxy.Config(grammar_file=path)
+            self.assertEqual(config.grammar_text, 'from-arg = "x" ;')
         finally:
             os.remove(path)
 
-    def test_config_cli_override_wins_over_env(self):
-        import tempfile
-        with tempfile.NamedTemporaryFile('w', suffix='.md',
-                                          delete=False) as env_file, \
-             tempfile.NamedTemporaryFile('w', suffix='.md',
-                                          delete=False) as cli_file:
-            env_file.write('env-grammar')
-            cli_file.write('cli-grammar')
-            env_path, cli_path = env_file.name, cli_file.name
-        try:
-            config = proxy.Config(
-                env={'PASCAL1981_PROXY_GRAMMAR_FILE': env_path},
-                grammar_file=cli_path)
-            self.assertEqual(config.grammar_text, 'cli-grammar')
-        finally:
-            os.remove(env_path)
-            os.remove(cli_path)
+    def test_llm_api_key_defaults_from_environment(self):
+        with mock.patch.dict(os.environ, {'LLM_API_KEY': 'from-env'}):
+            self.assertEqual(proxy.Config().llm_api_key, 'from-env')
+
+    def test_llm_api_key_defaults_empty_without_environment(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(proxy.Config().llm_api_key, '')
+
+    def test_llm_api_key_explicit_arg_overrides_environment(self):
+        with mock.patch.dict(os.environ, {'LLM_API_KEY': 'from-env'}):
+            config = proxy.Config(llm_api_key='explicit')
+            self.assertEqual(config.llm_api_key, 'explicit')
 
 
 class SanitizeCompletionTests(unittest.TestCase):
@@ -340,7 +336,7 @@ class ExtractCompletionTests(unittest.TestCase):
 class PingUpstreamTests(unittest.TestCase):
 
     def setUp(self):
-        self.config = proxy.Config(env={})
+        self.config = proxy.Config()
         self._orig_call_upstream = proxy.call_upstream
         self.addCleanup(setattr, proxy, 'call_upstream',
                         self._orig_call_upstream)
@@ -379,7 +375,7 @@ class PingUpstreamTests(unittest.TestCase):
 class CalibrateReasoningEffortTests(unittest.TestCase):
 
     def setUp(self):
-        self.config = proxy.Config(env={})
+        self.config = proxy.Config()
         self._orig_call_upstream = proxy.call_upstream
         self.addCleanup(setattr, proxy, 'call_upstream',
                         self._orig_call_upstream)
@@ -488,31 +484,31 @@ class CalibrateReasoningEffortTests(unittest.TestCase):
 class ConfigTests(unittest.TestCase):
 
     def test_defaults_point_at_local_llama_cpp_no_auth(self):
-        config = proxy.Config(env={})
+        with mock.patch.dict(os.environ, {}, clear=True):
+            config = proxy.Config()
         self.assertEqual(config.llm_base_url, 'http://127.0.0.1:8080/v1')
         self.assertEqual(config.llm_api_key, '')
         self.assertEqual(config.chat_completions_url,
                          'http://127.0.0.1:8080/v1/chat/completions')
         self.assertEqual(config.host, '127.0.0.1')
-        # 'auto': the operator hasn't set PASCAL1981_PROXY_REASONING_EFFORT,
-        # so main() must run calibration against the live backend rather
-        # than silently defaulting to a value that could be wrong for
-        # whichever model is actually loaded.
+        # 'auto': the operator hasn't passed --reasoning-effort, so main()
+        # must run calibration against the live backend rather than
+        # silently defaulting to a value that could be wrong for whichever
+        # model is actually loaded.
         self.assertEqual(config.reasoning_effort, 'auto')
 
-    def test_reads_overrides_from_env_mapping(self):
+    def test_constructor_args_override_defaults(self):
         config = proxy.Config(
-            env={
-                'LLM_BASE_URL': 'http://example.invalid:9999/v1/',
-                'LLM_API_KEY': 'secret',
-                'PASCAL1981_PROXY_PORT': '1234',
-            })
+            llm_base_url='http://example.invalid:9999/v1/',
+            llm_api_key='secret',
+            port=1234,
+        )
         self.assertEqual(config.llm_base_url, 'http://example.invalid:9999/v1')
         self.assertEqual(config.llm_api_key, 'secret')
         self.assertEqual(config.port, 1234)
 
     def test_reasoning_effort_can_be_disabled_for_strict_backends(self):
-        config = proxy.Config(env={'PASCAL1981_PROXY_REASONING_EFFORT': ''})
+        config = proxy.Config(reasoning_effort='')
         self.assertEqual(config.reasoning_effort, '')
 
 
@@ -540,8 +536,7 @@ class CallUpstreamPayloadTests(unittest.TestCase):
             captured['body'] = json.loads(request.data)
             return FakeResponse()
 
-        config = proxy.Config(
-            env={'PASCAL1981_PROXY_REASONING_EFFORT': 'none'})
+        config = proxy.Config(reasoning_effort='none')
         orig_urlopen = proxy.urllib.request.urlopen
         proxy.urllib.request.urlopen = fake_urlopen
         try:
@@ -587,7 +582,7 @@ class CallUpstreamPayloadTests(unittest.TestCase):
             captured['body'] = json.loads(request.data)
             return FakeResponse()
 
-        config = proxy.Config(env={})
+        config = proxy.Config()
         orig_urlopen = proxy.urllib.request.urlopen
         proxy.urllib.request.urlopen = fake_urlopen
         try:
@@ -620,7 +615,7 @@ class CallUpstreamPayloadTests(unittest.TestCase):
             captured['body'] = json.loads(request.data)
             return FakeResponse()
 
-        config = proxy.Config(env={})  # reasoning_effort defaults to 'auto'
+        config = proxy.Config()  # reasoning_effort defaults to 'auto'
         orig_urlopen = proxy.urllib.request.urlopen
         proxy.urllib.request.urlopen = fake_urlopen
         try:
@@ -648,7 +643,7 @@ class CallUpstreamPayloadTests(unittest.TestCase):
             captured['body'] = json.loads(request.data)
             return FakeResponse()
 
-        config = proxy.Config(env={'PASCAL1981_PROXY_REASONING_EFFORT': ''})
+        config = proxy.Config(reasoning_effort='')
         orig_urlopen = proxy.urllib.request.urlopen
         proxy.urllib.request.urlopen = fake_urlopen
         try:
@@ -665,10 +660,9 @@ class CallUpstreamErrorHandlingTests(unittest.TestCase):
 
     def test_connection_refused_raises_upstream_error(self):
         config = proxy.Config(
-            env={
-                'LLM_BASE_URL': 'http://127.0.0.1:1',  # nothing listens here
-                'PASCAL1981_PROXY_UPSTREAM_TIMEOUT': '2',
-            })
+            llm_base_url='http://127.0.0.1:1',  # nothing listens here
+            upstream_timeout=2,
+        )
         with self.assertRaises(proxy.UpstreamError):
             proxy.call_upstream('prompt', config)
 
@@ -678,7 +672,7 @@ class EndToEndTests(unittest.TestCase):
     call_upstream monkeypatched so no network call happens."""
 
     def setUp(self):
-        self.config = proxy.Config(env={'PASCAL1981_PROXY_PORT': '0'})
+        self.config = proxy.Config(port=0)
         self.server = proxy.make_server(self.config)
         self.addCleanup(self.server.server_close)
         import threading

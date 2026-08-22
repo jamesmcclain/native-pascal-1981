@@ -92,6 +92,119 @@ PATH="$PWD/bin:$PATH" emacs -Q --batch -L elisp \
   -f ert-run-tests-batch-and-exit
 ```
 
+## LLM code completion (optional)
+
+`pascal1981-mode` can offer TAB-triggered code completion from a local LLM,
+through a small HTTP proxy in `tools/pascal1981_completion_proxy.py`. This
+is off by default and entirely optional.
+
+**Emacs never starts, stops, or supervises the proxy.** You run it yourself,
+outside of Emacs, before you enable completion:
+
+```sh
+python3 tools/pascal1981_completion_proxy.py
+```
+
+By default it listens on `127.0.0.1:8790` and talks to an
+OpenAI-completions-compatible backend at `http://127.0.0.1:8080/v1` — i.e.
+localhost, port 8080, a local `llama.cpp` server. Configuration is by CLI
+flag (`--help` lists them all); point it at a different backend with
+`--llm-base-url`:
+
+```sh
+python3 tools/pascal1981_completion_proxy.py --llm-base-url http://10.0.0.105:8080/v1
+```
+
+The one setting that stays an environment variable, `LLM_API_KEY`, is the
+deliberate exception: a secret doesn't belong on a command line, which any
+other process on the machine can read via `ps`, and which shells commonly
+save to history. Most local `llama.cpp`/LM Studio setups need no key at
+all.
+
+Optionally pass `--grammar-file docs/ebnf_grammar.md` to give the model the
+dialect's EBNF grammar as reference context. This costs prompt size and
+latency, so it's off unless you ask for it.
+
+If the proxy isn't running, or you haven't started it yet, completion
+requests just fail — TAB falls back to ordinary indentation. There is no
+auto-start path; Emacs is only ever an HTTP client to whatever is already
+listening at `pascal1981-completion-proxy-url`.
+
+### Enabling it in Emacs
+
+```elisp
+(setq pascal1981-completion-enabled t)
+;; Optional, only if you changed the proxy's host/port:
+;; (setq pascal1981-completion-proxy-url "http://127.0.0.1:8790/complete")
+```
+
+Other knobs: `pascal1981-completion-goal` (the instruction sent with every
+request), `pascal1981-completion-timeout` (seconds to wait before giving
+up, default 8), `pascal1981-completion-buffer-limit` (buffers larger than
+this, in characters, are never sent).
+
+### TAB behavior
+
+TAB (`pascal1981-indent-or-complete`, remapped from
+`indent-for-tab-command`) requests a completion only when completion is
+enabled *and* point sits before nothing but whitespace on the current line
+(`(looking-at-p "[ \t]*$")`). Any non-whitespace character to the right of
+point, or completion being disabled, or the buffer exceeding
+`pascal1981-completion-buffer-limit`, all fall back to ordinary
+indentation — TAB's normal behavior is always the fallback, never silently
+skipped. `M-x pascal1981-complete-line` requests a completion directly,
+using the same eligibility rule.
+
+A completion is inserted at point as a single atomic undo step, and only
+if the buffer is still unchanged, point hasn't moved, and the eligibility
+rule still holds by the time the (asynchronous) response arrives — a
+response that arrives after you've kept typing is discarded rather than
+inserted somewhere it no longer belongs.
+
+### Manually checking the proxy
+
+```sh
+curl http://127.0.0.1:8790/health
+```
+
+This makes one real call to the configured LLM backend (not just a socket
+check) and reports the model, the resolved `reasoning_effort` setting, and
+a sample completion. Useful for confirming the LLM itself is actually
+responding before troubleshooting from inside Emacs.
+
+### Troubleshooting
+
+- **TAB just indents, no completion happens.** Either
+  `pascal1981-completion-enabled` is nil, point isn't at end-of-line-modulo-
+  whitespace, or the buffer is over `pascal1981-completion-buffer-limit`.
+  This is by design, not a failure — check `pascal1981-complete-line`
+  directly (`M-x`) to isolate eligibility from a proxy problem.
+- **"pascal1981: completion request failed: (error connection-refused ...)"**
+  The proxy isn't running, or `pascal1981-completion-proxy-url` points at
+  the wrong host/port. Start the proxy yourself (see above); Emacs will not
+  do it for you.
+- **"pascal1981: completion request timed out"** The proxy is up but the
+  backend didn't answer within `pascal1981-completion-timeout` seconds. Try
+  `curl .../health` directly — a reasoning model that needs a larger
+  `--max-tokens`, or a wrong `--reasoning-effort` left over from a previous
+  model at the same endpoint, are the usual causes. The proxy self-
+  calibrates `reasoning_effort` at startup when `--reasoning-effort` isn't
+  passed explicitly, but that calibration only runs once, at proxy
+  startup — if you swap the model loaded at the backend without restarting
+  the proxy, the old calibration can go stale and start failing. Restart
+  the proxy after swapping models.
+- **"pascal1981: completion proxy returned HTTP 5xx"** / **"...response was
+  empty or malformed"** The proxy reached the backend but couldn't get a
+  usable answer out of it (see the proxy's own stderr for detail).
+
+### Privacy
+
+Enabling completion sends the buffer's full text, plus the cursor position
+and (if configured) the EBNF grammar, to whatever backend
+`pascal1981-completion-proxy-url` currently points at through the local
+proxy. For a local backend nothing leaves your machine; for anything else,
+that's on you to configure knowingly.
+
 ## I/O contract
 
 The `lexer` binary reads Pascal source on stdin. It writes a JSON

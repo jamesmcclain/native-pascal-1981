@@ -3,8 +3,7 @@
 
 Emacs never starts this process. A person starts it by hand (see
 elisp/README.md) and it keeps running until they stop it; the mode is only
-ever an HTTP client of whatever is already listening on
-PASCAL1981_PROXY_HOST:PASCAL1981_PROXY_PORT.
+ever an HTTP client of whatever is already listening on --host:--port.
 
 Protocol (see pascal-completion-plan.md):
 
@@ -13,11 +12,16 @@ Protocol (see pascal-completion-plan.md):
     ->
     {"completion": "...", "model": "...", "request_id": "..."}
 
-The upstream backend is configured by LLM_BASE_URL (default
-http://127.0.0.1:8080/v1, i.e. a local llama.cpp server) and reached through
-its OpenAI-compatible /chat/completions endpoint. LLM_API_KEY is optional;
-llama.cpp needs none. Only stdlib is used -- no extra dependency to install
-before the proxy can start.
+Configuration is by CLI flag (run --help for the full list), not
+environment variables -- the one exception is LLM_API_KEY, which stays
+environment-only because a secret does not belong on a command line
+visible to every other process on the machine (`ps`) or preserved in
+shell history. By default the upstream backend is
+http://127.0.0.1:8080/v1 (a local llama.cpp server on localhost, port
+8080), reached through its OpenAI-compatible /chat/completions endpoint;
+override with --llm-base-url. LLM_API_KEY is optional; llama.cpp needs
+none. Only stdlib is used -- no extra dependency to install before the
+proxy can start.
 
 Why /chat/completions and not the legacy /completions endpoint: verified
 live against a real backend (a reasoning-tuned model served by llama.cpp)
@@ -29,7 +33,7 @@ chat_template_kwargs -- on /chat/completions eliminates that: it makes the
 model skip its hidden reasoning pass entirely and answer directly. A backend
 that does not understand the field is expected to ignore it, per the usual
 "unknown JSON field" tolerance of OpenAI-compatible servers; if one does not,
-PASCAL1981_PROXY_REASONING_EFFORT can be set to an empty string to omit it.
+--reasoning-effort can be set to an empty string to omit it.
 """
 
 from __future__ import annotations
@@ -49,74 +53,94 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 def load_grammar(path: str) -> str:
     """Read the grammar reference file at PATH. Raise OSError on failure --
-    a bad --grammar-file / PASCAL1981_PROXY_GRAMMAR_FILE should fail the
-    proxy at startup, not silently drop grammar context on every request."""
+    a bad --grammar-file should fail the proxy at startup, not silently
+    drop grammar context on every request."""
     with open(path, encoding='utf-8') as handle:
         return handle.read()
 
 
 class Config:
-    """Proxy configuration, read from the environment (and optionally CLI
-    overrides) at startup."""
+    """Proxy configuration. Built from parsed CLI flags (see `parse_args`)
+    at startup; every field has a keyword-argument default here too, so
+    tests and other callers can construct one directly without going
+    through argv.
+
+    LLM_API_KEY is the one setting still read from the environment rather
+    than taken as a constructor argument (unless a caller passes
+    llm_api_key explicitly): a secret does not belong on a command line,
+    which any other process on the machine can read via `ps`, and which
+    shells commonly persist to history. Every other setting has no such
+    motivation to avoid a CLI flag, so it is one.
+    """
 
     def __init__(self,
-                 env: dict[str, str] | None = None,
-                 grammar_file: str | None = None) -> None:
-        env = os.environ if env is None else env
-        self.host = env.get('PASCAL1981_PROXY_HOST', '127.0.0.1')
-        self.port = int(env.get('PASCAL1981_PROXY_PORT', '8790'))
-        self.llm_base_url = env.get('LLM_BASE_URL',
-                                     'http://127.0.0.1:8080/v1').rstrip('/')
-        self.llm_api_key = env.get('LLM_API_KEY', '')
-        self.llm_model = env.get('LLM_MODEL', 'default')
-        self.buffer_limit = int(env.get('PASCAL1981_PROXY_BUFFER_LIMIT',
-                                         '65536'))
-        # 512, not the ~32 a non-reasoning backend would need: observed live,
-        # a reasoning model can spend 200-360+ tokens in reasoning_content
-        # before ever writing an answer, even with reasoning_effort tuned to
-        # the value that lets it actually finish -- and that cost rises
-        # further with a larger prompt (e.g. --grammar-file's ~2300 extra
-        # prompt tokens pushed one case from ~200 to 359 reasoning tokens in
-        # testing). A tighter budget for a backend that never reasons just
-        # means the request finishes early once its answer is written; it
-        # does not cost extra latency there, so the larger default is safe
-        # for both kinds of backend, not just a concession to one of them.
-        self.max_tokens = int(env.get('PASCAL1981_PROXY_MAX_TOKENS', '512'))
-        self.temperature = float(
-            env.get('PASCAL1981_PROXY_TEMPERATURE', '0.2'))
-        # 20s, not the 5-10s a non-reasoning backend would need: a
-        # reasoning-heavy completion at ~90 tokens/s can take several
-        # seconds even before writing an answer.
-        self.upstream_timeout = float(
-            env.get('PASCAL1981_PROXY_UPSTREAM_TIMEOUT', '20'))
-
-        # Sent as a top-level "reasoning_effort" field on every request to
-        # /chat/completions. Set to an empty string to omit the field
-        # entirely, for a backend that rejects unknown fields outright.
-        #
-        # Left unset, this is the literal sentinel "auto": observed live,
-        # the *wrong* value here does not just fail to help, it actively
-        # breaks a model that would otherwise work fine (a reasoning model
-        # given the wrong effort level burns its whole token budget without
-        # ever answering, and a non-reasoning model given a value meant for
-        # a different, reasoning-heavy model can do the same). Since the
-        # correct value is a property of whichever model happens to be
-        # loaded right now, not of the proxy, "auto" tells main() to run
-        # calibrate_reasoning_effort() against the live backend at startup
-        # and resolve this field before serving. Setting the environment
-        # variable explicitly (to "none", "low", "medium", "high", or "")
-        # always skips calibration and is used as-is -- an operator's
-        # explicit choice is never second-guessed.
-        self.reasoning_effort = env.get('PASCAL1981_PROXY_REASONING_EFFORT',
-                                         'auto')
-
-        # Optional: prepend the dialect's EBNF grammar to every prompt as
-        # reference context. Off by default -- it costs prompt tokens and
-        # upstream latency on every eligible-TAB request, so it is opt-in via
-        # --grammar-file or PASCAL1981_PROXY_GRAMMAR_FILE, not auto-detected
-        # from docs/ebnf_grammar.md even though that file is a natural fit.
-        self.grammar_file = (grammar_file if grammar_file is not None else
-                              env.get('PASCAL1981_PROXY_GRAMMAR_FILE', ''))
+                 host: str = '127.0.0.1',
+                 port: int = 8790,
+                 llm_base_url: str = 'http://127.0.0.1:8080/v1',
+                 llm_api_key: str | None = None,
+                 llm_model: str = 'default',
+                 buffer_limit: int = 65536,
+                 # 512, not the ~32 a non-reasoning backend would need:
+                 # observed live, a reasoning model can spend 200-360+
+                 # tokens in reasoning_content before ever writing an
+                 # answer, even with reasoning_effort tuned to the value
+                 # that lets it actually finish -- and that cost rises
+                 # further with a larger prompt (e.g. --grammar-file's
+                 # ~2300 extra prompt tokens pushed one case from ~200 to
+                 # 359 reasoning tokens in testing). A tighter budget for a
+                 # backend that never reasons just means the request
+                 # finishes early once its answer is written; it does not
+                 # cost extra latency there, so the larger default is safe
+                 # for both kinds of backend, not just a concession to one
+                 # of them.
+                 max_tokens: int = 512,
+                 temperature: float = 0.2,
+                 # 20s, not the 5-10s a non-reasoning backend would need: a
+                 # reasoning-heavy completion at ~90 tokens/s can take
+                 # several seconds even before writing an answer.
+                 upstream_timeout: float = 20.0,
+                 # Sent as a top-level "reasoning_effort" field on every
+                 # request to /chat/completions. Set to an empty string to
+                 # omit the field entirely, for a backend that rejects
+                 # unknown fields outright.
+                 #
+                 # The default is the literal sentinel "auto": observed
+                 # live, the *wrong* value here does not just fail to
+                 # help, it actively breaks a model that would otherwise
+                 # work fine (a reasoning model given the wrong effort
+                 # level burns its whole token budget without ever
+                 # answering, and a non-reasoning model given a value
+                 # meant for a different, reasoning-heavy model can do the
+                 # same). Since the correct value is a property of
+                 # whichever model happens to be loaded right now, not of
+                 # the proxy, "auto" tells main() to run
+                 # calibrate_reasoning_effort() against the live backend
+                 # at startup and resolve this field before serving.
+                 # Setting --reasoning-effort explicitly (to "none",
+                 # "low", "medium", "high", or "") always skips
+                 # calibration and is used as-is -- an operator's explicit
+                 # choice is never second-guessed.
+                 reasoning_effort: str = 'auto',
+                 # Optional: prepend the dialect's EBNF grammar to every
+                 # prompt as reference context. Off by default -- it costs
+                 # prompt tokens and upstream latency on every
+                 # eligible-TAB request, so it is opt-in via
+                 # --grammar-file, not auto-detected from
+                 # docs/ebnf_grammar.md even though that file is a natural
+                 # fit.
+                 grammar_file: str = '') -> None:
+        self.host = host
+        self.port = port
+        self.llm_base_url = llm_base_url.rstrip('/')
+        self.llm_api_key = (llm_api_key if llm_api_key is not None else
+                             os.environ.get('LLM_API_KEY', ''))
+        self.llm_model = llm_model
+        self.buffer_limit = buffer_limit
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.upstream_timeout = upstream_timeout
+        self.reasoning_effort = reasoning_effort
+        self.grammar_file = grammar_file
         self.grammar_text = (load_grammar(self.grammar_file)
                               if self.grammar_file else '')
 
@@ -417,9 +441,8 @@ def calibrate_reasoning_effort(config: Config,
         return candidate
 
     log('reasoning_effort: no candidate worked against this backend; '
-        'falling back to "none". Consider setting '
-        'PASCAL1981_PROXY_REASONING_EFFORT explicitly if /complete '
-        'requests fail.')
+        'falling back to "none". Consider setting --reasoning-effort '
+        'explicitly if /complete requests fail.')
     return 'none'
 
 
@@ -579,23 +602,91 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description='Local HTTP proxy for pascal1981-mode LLM completion.')
     parser.add_argument(
+        '--host',
+        default='127.0.0.1',
+        help='Host the proxy itself listens on. Default: 127.0.0.1.')
+    parser.add_argument(
+        '--port',
+        type=int,
+        default=8790,
+        help='Port the proxy itself listens on. Default: 8790.')
+    parser.add_argument(
+        '--llm-base-url',
+        default='http://127.0.0.1:8080/v1',
+        help=('Base URL of the OpenAI-completions-compatible backend '
+              '(e.g. a local llama.cpp server). Default: '
+              'http://127.0.0.1:8080/v1, i.e. localhost, port 8080.'))
+    parser.add_argument(
+        '--llm-model',
+        default='default',
+        help=('Model name sent in the "model" field of every upstream '
+              'request. Most single-model llama.cpp/LM Studio servers '
+              'ignore this and serve whatever is loaded. Default: '
+              '"default".'))
+    parser.add_argument(
+        '--buffer-limit',
+        type=int,
+        default=65536,
+        help=('Maximum accepted "buffer" size, in characters, on a '
+              '/complete request. Default: 65536.'))
+    parser.add_argument(
+        '--max-tokens',
+        type=int,
+        default=512,
+        help=('Token budget per completion request, including any hidden '
+              'reasoning a model performs before answering. Default: 512 '
+              '-- higher than a non-reasoning backend needs, but a '
+              'reasoning backend can spend most of it before ever '
+              'writing an answer; see --grammar-file for a case that can '
+              'need more.'))
+    parser.add_argument(
+        '--temperature',
+        type=float,
+        default=0.2,
+        help='Sampling temperature for completion requests. Default: 0.2.')
+    parser.add_argument(
+        '--upstream-timeout',
+        type=float,
+        default=20.0,
+        help=('Seconds to wait for the upstream backend before giving up. '
+              'Default: 20.0.'))
+    parser.add_argument(
+        '--reasoning-effort',
+        default='auto',
+        help=('Value sent as the top-level "reasoning_effort" field on '
+              'every /chat/completions request: "none", "low", "medium", '
+              '"high", or "" to omit the field entirely (for a backend '
+              'that rejects unknown fields). Default: "auto", which '
+              'self-calibrates against the live backend at startup -- '
+              'set this explicitly only to skip that calibration.'))
+    parser.add_argument(
         '--grammar-file',
-        default=None,
+        default='',
         help=('Path to an EBNF grammar file (e.g. docs/ebnf_grammar.md) to '
               'prepend as reference context on every completion request. '
-              'Optional; increases prompt size and upstream latency. '
-              'Falls back to PASCAL1981_PROXY_GRAMMAR_FILE if omitted.'))
+              'Optional; increases prompt size and upstream latency.'))
     return parser.parse_args(argv)
 
 
 def main() -> None:
     args = parse_args(sys.argv[1:])
-    config = Config(grammar_file=args.grammar_file)
+    config = Config(
+        host=args.host,
+        port=args.port,
+        llm_base_url=args.llm_base_url,
+        llm_model=args.llm_model,
+        buffer_limit=args.buffer_limit,
+        max_tokens=args.max_tokens,
+        temperature=args.temperature,
+        upstream_timeout=args.upstream_timeout,
+        reasoning_effort=args.reasoning_effort,
+        grammar_file=args.grammar_file,
+    )
 
     if config.reasoning_effort == 'auto':
         print(
-            'pascal1981-completion-proxy: PASCAL1981_PROXY_REASONING_EFFORT '
-            f'not set, calibrating against {config.chat_completions_url} ...',
+            'pascal1981-completion-proxy: --reasoning-effort not set, '
+            f'calibrating against {config.chat_completions_url} ...',
             file=sys.stderr)
         config.reasoning_effort = calibrate_reasoning_effort(
             config, log=lambda line: print(
