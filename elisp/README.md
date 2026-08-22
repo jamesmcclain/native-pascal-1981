@@ -39,7 +39,7 @@ work. `pascal1981-check-buffer` and imenu can fail on that file.
 | Font lock after idle time | Token stream from `lexer` |
 | Font lock fallback | Elisp keywords, if the lexer is not available |
 | Indentation | Token kinds such as `BEGIN`, `END`, `THEN`, and `DO`. `TAB` and `indent-region` both use this |
-| Imenu | Parser AST decls, mapped to token positions |
+| Imenu | Parser AST decls, mapped to token positions in declaration order |
 | `M-x pascal1981-refresh` | Re-run `lexer` and `parser` on the buffer. Then apply faces |
 | `M-x pascal1981-check-buffer` | `lexer \| parser`. Shows parser stderr, or `No parser errors` |
 | Flycheck | Optional. The mode registers a checker only if flycheck is loaded |
@@ -58,6 +58,16 @@ and `ELSE` indent the next line only when they end that line. `SET OF`
 and `ARRAY OF` do not indent. Names after `VAR`, `CONST`, or `TYPE`
 align to the first identifier of that section. If `VAR` is alone on a
 line, the next name indents by one width.
+
+Imenu lists one entry for each declared name. `VAR X, YY: INTEGER;`
+is one `VarDecl` with two names, and each name gets its own entry.
+
+A name resolves to a token by a left to right scan of the token
+stream. A cursor moves past each declaration, so a name declared late
+does not resolve to an earlier record field or parameter that shares
+the lexeme. The AST has no source spans, so this order is the only
+scope the mode has. The index covers the top-level block only, so a
+name declared in a nested body can still shadow.
 
 ## Tests
 

@@ -266,5 +266,44 @@ names.  The index must not join them into one \"X, YY\" entry."
                         (cdr pair) (+ (cdr pair) (length (car pair))))
                        (car pair)))))))
 
+(ert-deftest pascal1981-tests-imenu-shadowed-name ()
+  "A VAR resolves to its own declaration, not an earlier record field.
+The record field X on line 2 precedes the VAR X on line 3.  A scan
+from the start of the token stream stops at the field."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas
+      "PROGRAM P;\nTYPE R = RECORD X: INTEGER END;\nVAR X: INTEGER;\nBEGIN\nEND.\n"
+    (let ((idx (pascal1981-imenu-index)))
+      (should (equal (mapcar #'car idx) '("R" "X")))
+      (should (= (line-number-at-pos (cdr (assoc "R" idx))) 2))
+      (should (= (line-number-at-pos (cdr (assoc "X" idx))) 3)))))
+
+(ert-deftest pascal1981-tests-imenu-shadowed-after-proc-params ()
+  "A VAR resolves past a procedure parameter of the same name.
+The parameter list holds its own semicolons, so the scan for the end
+of the PROCEDURE declaration must count parenthesis depth."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas
+      (concat "PROGRAM P;\n"
+              "PROCEDURE B(VAR Q: INTEGER; R: INTEGER);\n"
+              "BEGIN\nEND;\n"
+              "VAR Q: INTEGER;\n"
+              "BEGIN\nEND.\n")
+    (let ((idx (pascal1981-imenu-index)))
+      (should (member "Q" (mapcar #'car idx)))
+      ;; The VAR Q on line 5, not the parameter Q on line 2.
+      (should (= (line-number-at-pos (cdr (assoc "Q" idx))) 5)))))
+
+(ert-deftest pascal1981-tests-imenu-positions-are-monotonic ()
+  "Imenu positions do not move backwards across the decl list."
+  (skip-unless (and (pascal1981-tests--have-binaries)
+                    (file-readable-p pascal1981-tests--kitchen)))
+  (pascal1981-tests--with-pas
+      (with-temp-buffer
+        (insert-file-contents pascal1981-tests--kitchen)
+        (buffer-string))
+    (let ((positions (mapcar #'cdr (pascal1981-imenu-index))))
+      (should (equal positions (sort (copy-sequence positions) #'<))))))
+
 (provide 'pascal1981-mode-tests)
 ;;; pascal1981-mode-tests.el ends here

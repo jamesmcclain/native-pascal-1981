@@ -415,25 +415,77 @@ VarDecl with two names, and each name is its own imenu entry."
       (when (and line col)
         (pascal1981--line-col-pos line col)))))
 
-(defun pascal1981--name-pos (name)
-  "Position of the first IDENTIFIER token whose lexeme is NAME."
+(defconst pascal1981--block-openers '("RECORD" "BEGIN" "CASE")
+  "Token kinds that open a block which a matching END closes.")
+
+(defun pascal1981--name-token-index (name &optional start)
+  "Index of the first IDENTIFIER token with lexeme NAME at or after START.
+START defaults to 0.  Return nil when there is no such token."
   (when (and name pascal1981--token-cache)
-    (cl-loop for tok across pascal1981--token-cache
+    (cl-loop for i from (or start 0) below (length pascal1981--token-cache)
+             for tok = (aref pascal1981--token-cache i)
              when (and (equal (alist-get 'kind tok) "IDENTIFIER")
-                        (equal (alist-get 'lexeme tok) name))
-             return (pascal1981--token-pos tok))))
+                       (equal (alist-get 'lexeme tok) name))
+             return i)))
+
+(defun pascal1981--name-pos (name &optional start)
+  "Position of the first IDENTIFIER token with lexeme NAME at or after START."
+  (let ((i (pascal1981--name-token-index name start)))
+    (when i (pascal1981--token-pos (aref pascal1981--token-cache i)))))
+
+(defun pascal1981--decl-end-index (start)
+  "Index just past the declaration that covers token index START.
+Scan forward for the SEMICOLON that ends the declaration: the first
+one outside RECORD, BEGIN, or CASE ... END and outside parentheses.
+A parameter list holds its own semicolons, so the paren depth counts.
+Return nil when no such SEMICOLON follows START."
+  (when pascal1981--token-cache
+    (let ((depth 0) (paren 0) (i start)
+          (n (length pascal1981--token-cache))
+          (found nil))
+      (while (and (null found) (< i n))
+        (let ((kind (alist-get 'kind (aref pascal1981--token-cache i))))
+          (cond
+           ((member kind pascal1981--block-openers) (setq depth (1+ depth)))
+           ((equal kind "END") (setq depth (max 0 (1- depth))))
+           ((equal kind "LPAREN") (setq paren (1+ paren)))
+           ((equal kind "RPAREN") (setq paren (max 0 (1- paren))))
+           ((and (equal kind "SEMICOLON") (= depth 0) (= paren 0))
+            (setq found (1+ i)))))
+        (setq i (1+ i)))
+      found)))
 
 (defun pascal1981-imenu-index ()
-  "Build imenu index from `pascal1981--ast-cache' or by re-parsing."
+  "Build imenu index from `pascal1981--ast-cache' or by re-parsing.
+Names resolve against the token stream from left to right.  A cursor
+moves past each declaration, so a name declared late does not resolve
+to an earlier record field or parameter that shares the lexeme.  The
+AST carries no source spans, so this order is the only scope the mode
+has.  A name that a nested body declares can still shadow, because the
+index covers the top-level block only."
   (unless pascal1981--ast-cache (pascal1981--refresh-caches))
   (when pascal1981--ast-cache
-    (let ((decls (pascal1981--ast-block-decls pascal1981--ast-cache)))
+    (let ((decls (pascal1981--ast-block-decls pascal1981--ast-cache))
+          (cursor 0)
+          (entries nil))
       (when decls
         (cl-loop for d across decls
-                 append (cl-loop for nm in (pascal1981--decl-names d)
-                                 when (and nm (stringp nm))
-                                 collect (cons nm (or (pascal1981--name-pos nm)
-                                                      (point-min)))))))))
+                 do (dolist (nm (pascal1981--decl-names d))
+                      (when (and nm (stringp nm))
+                        ;; Fall back to a full scan so an unexpected order
+                        ;; loses the scope hint, never the entry itself.
+                        (let ((i (or (pascal1981--name-token-index nm cursor)
+                                     (pascal1981--name-token-index nm 0))))
+                          (push (cons nm (if i
+                                             (pascal1981--token-pos
+                                              (aref pascal1981--token-cache i))
+                                           (point-min)))
+                                entries)
+                          (when (and i (>= i cursor))
+                            (setq cursor (1+ i))))))
+                 ;; Step over the rest of this declaration before the next.
+                 do (setq cursor (or (pascal1981--decl-end-index cursor) cursor)))
+        (nreverse entries)))))
 
 ;; -------------------------------------------------------------------
 ;; Diagnostics  (flycheck / flymake friendly)
