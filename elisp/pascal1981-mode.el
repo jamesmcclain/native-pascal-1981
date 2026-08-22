@@ -102,11 +102,13 @@ from the parser's stderr (e.g. \"Parser Error: ...\")."
       (pascal1981-parse-tokens-json (json-serialize (cdr lex))))))
 
 (defun pascal1981--refresh-caches ()
-  "Lex (and if successful, parse) current buffer; update caches."
+  "Lex the current buffer, paint from tokens, then parse for the AST.
+Highlighting does not wait for the parser."
   (let ((lex (pascal1981-lex-string (buffer-substring-no-properties (point-min) (point-max)))))
     (if (eq (car lex) 'error)
         (setq pascal1981--token-cache nil pascal1981--ast-cache nil)
       (setq pascal1981--token-cache (cdr lex))
+      (pascal1981--apply-token-highlighting)
       (let ((ast (pascal1981-parse-tokens-json (json-serialize (cdr lex)))))
         (setq pascal1981--ast-cache (when (eq (car ast) 'ok) (cdr ast)))))))
 
@@ -149,33 +151,45 @@ from the parser's stderr (e.g. \"Parser Error: ...\")."
      ((member kind '("STRING_LITERAL" "CHAR_LITERAL")) 'font-lock-string-face)
      ((member kind '("BOOLEAN_LITERAL" "NIL")) 'font-lock-constant-face)
      ((member kind '("IDENTIFIER"))
-      (if (member (alist-get 'lexeme tok) pascal1981--type-kinds)
-          'font-lock-type-face
-        'font-lock-variable-name-face))
+      (when (member (alist-get 'lexeme tok) pascal1981--type-kinds)
+        'font-lock-type-face))
      ((member kind '("LINE_COMMENT" "BLOCK_COMMENT")) 'font-lock-comment-face)
      (t nil))))
 
+(defun pascal1981--token-bounds (tok)
+  "Return (BEG . END) for token alist TOK, or nil if it is off-buffer."
+  (let* ((line (alist-get 'line tok))
+         (col  (alist-get 'column tok))
+         (lex  (or (alist-get 'lexeme tok) "")))
+    (when (and line col (> (length lex) 0))
+      (let* ((beg (save-excursion
+                    (goto-char (point-min))
+                    (forward-line (1- line))
+                    (move-to-column (1- col))
+                    (point)))
+             (end (+ beg (length lex))))
+        (when (and (>= beg (point-min)) (<= end (point-max)))
+          (cons beg end))))))
+
+(defun pascal1981--font-lock-from-tokens (limit)
+  "Font-lock matcher: apply faces from `pascal1981--token-cache' up to LIMIT.
+When the token cache is live, skip the regex fallback by advancing
+point to LIMIT after the tokens are painted."
+  (when pascal1981--token-cache
+    (cl-loop for tok across pascal1981--token-cache
+             for face = (pascal1981--token-face tok)
+             for bounds = (and face (pascal1981--token-bounds tok))
+             when (and bounds (< (car bounds) limit) (>= (cdr bounds) (point)))
+             do (add-face-text-property (car bounds) (cdr bounds) face))
+    (goto-char limit)
+    t))
+
 (defun pascal1981--apply-token-highlighting ()
-  "Apply faces from `pascal1981--token-cache' to the current buffer.
-Uses text properties so it composes with `font-lock-mode' and does not
-rely on jit-lock.  Safe to call with empty cache (clears overlays)."
-  (with-silent-modifications
-    (remove-text-properties (point-min) (point-max) '(face nil))
-    (when pascal1981--token-cache
-      (cl-loop for tok across pascal1981--token-cache
-               for face = (pascal1981--token-face tok)
-               when face
-               do (let* ((line (alist-get 'line tok))
-                         (col  (alist-get 'column tok))
-                         (lex  (or (alist-get 'lexeme tok) ""))
-                         (beg  (save-excursion
-                                 (goto-char (point-min))
-                                 (forward-line (1- line))
-                                 (move-to-column (1- col))
-                                 (point)))
-                         (end  (+ beg (length lex))))
-                    (when (and (>= beg (point-min)) (<= end (point-max)) (> (length lex) 0))
-                      (put-text-property beg end 'face face)))))))
+  "Ask font-lock to repaint from the current token cache."
+  (when (fboundp 'font-lock-flush)
+    (font-lock-flush))
+  (when (fboundp 'font-lock-ensure)
+    (font-lock-ensure)))
 
 (defun pascal1981--schedule-refresh ()
   "Debounce: refresh caches and highlighting after `pascal1981-idle-delay'."
@@ -201,13 +215,14 @@ rely on jit-lock.  Safe to call with empty cache (clears overlays)."
     ;; Emacs' string syntax handles the common case; the lexer is
     ;; still the authority for highlighting.
     (modify-syntax-entry ?' "\"" st)
-    ;; { ... }  comment (brace)
+    ;; { ... }  comment (brace, style a)
     (modify-syntax-entry ?{ "<" st)
     (modify-syntax-entry ?} ">" st)
-    ;; (* ... *)  comment (paren-star) — treated as style b
-    (modify-syntax-entry ?\( "()1" st)
-    (modify-syntax-entry ?\) ")4" st)
-    (modify-syntax-entry ?* ". 23" st)
+    ;; (* ... *)  comment (paren-star, style b).
+    ;; Matching char must be the partner paren; ")4" would match ?4.
+    (modify-syntax-entry ?\( "()1b" st)
+    (modify-syntax-entry ?\) ")(4b" st)
+    (modify-syntax-entry ?* ". 23b" st)
     st)
   "Syntax table for `pascal1981-mode'.")
 
@@ -225,6 +240,11 @@ rely on jit-lock.  Safe to call with empty cache (clears overlays)."
       ("\\b[0-9]+\\b" . font-lock-constant-face)
       ("'[^']*'" . font-lock-string-face)))
   "Fallback `font-lock-keywords' when lexer output is unavailable.")
+
+(defconst pascal1981--font-lock-keywords
+  `((pascal1981--font-lock-from-tokens)
+    ,@pascal1981--font-lock-keywords-fallback)
+  "Font-lock keywords: token matcher first, then the regex fallback.")
 
 ;; -------------------------------------------------------------------
 ;; Indentation  (token-driven with optional AST assist)
@@ -389,7 +409,7 @@ CHECKER and CALLBACK are the flycheck start-function arguments."
   (setq-local comment-start "{"
                 comment-end "}"
                 comment-start-skip "{\\|\\\\(\\\\*"
-                font-lock-defaults '(pascal1981--font-lock-keywords-fallback)
+                font-lock-defaults '(pascal1981--font-lock-keywords)
                 indent-line-function #'pascal1981-indent-line
                 imenu-create-index-function #'pascal1981-imenu-index)
   ;; Trigger initial lex/parse and hook up idle refresh.
