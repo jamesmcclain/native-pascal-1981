@@ -393,16 +393,19 @@ to the first identifier of that section."
     (let* ((blk (alist-get 'block ast)))
       (when blk (alist-get 'decls blk)))))
 
-(defun pascal1981--decl-name (decl)
-  "Return a display name for DECL alist, or nil."
+(defun pascal1981--decl-names (decl)
+  "Return the list of names DECL declares, or nil.
+A VarDecl holds a `names' vector.  `VAR X, YY: INTEGER;' is one
+VarDecl with two names, and each name is its own imenu entry."
   (let ((ty (alist-get '__node_type__ decl)))
     (cond
-     ((member ty '("VarDecl")) (mapconcat #'identity (append (alist-get 'names decl) nil) ", "))
-     ((member ty '("ConstDecl" "TypeDecl")) (alist-get 'name decl))
+     ((member ty '("VarDecl"))
+      (cl-remove-if-not #'stringp (append (alist-get 'names decl) nil)))
+     ((member ty '("ConstDecl" "TypeDecl")) (list (alist-get 'name decl)))
      ((member ty '("ProcDecl" "FuncDecl" "ProcedureDecl" "FunctionDecl"
                   "ProcedureHeader" "FunctionHeader"))
-      (alist-get 'name decl))
-     (t (or (alist-get 'name decl) ty)))))
+      (list (alist-get 'name decl)))
+     (t (list (or (alist-get 'name decl) ty))))))
 
 (defun pascal1981--token-pos (tok)
   "Buffer position of token alist TOK, or nil if it is off-buffer."
@@ -427,12 +430,10 @@ to the first identifier of that section."
     (let ((decls (pascal1981--ast-block-decls pascal1981--ast-cache)))
       (when decls
         (cl-loop for d across decls
-                 for nm = (pascal1981--decl-name d)
-                 for pos = (and nm (or (pascal1981--name-pos
-                                        (or (alist-get 'name d)
-                                            (car (append (alist-get 'names d) nil))))
-                                       (point-min)))
-                 when nm collect (cons nm pos))))))
+                 append (cl-loop for nm in (pascal1981--decl-names d)
+                                 when (and nm (stringp nm))
+                                 collect (cons nm (or (pascal1981--name-pos nm)
+                                                      (point-min)))))))))
 
 ;; -------------------------------------------------------------------
 ;; Diagnostics  (flycheck / flymake friendly)

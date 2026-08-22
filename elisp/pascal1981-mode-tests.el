@@ -251,5 +251,20 @@ its display width, which shifted every token after the TAB."
       ;; All four tokens of the TAB-indented line were checked.
       (should (equal (nreverse seen) '("X" ":=" "1" ";"))))))
 
+(ert-deftest pascal1981-tests-imenu-multi-name-var ()
+  "Each name of a multi-name VAR decl is its own imenu entry.
+`VAR X, YY: INTEGER;' is one VarDecl whose `names' vector holds both
+names.  The index must not join them into one \"X, YY\" entry."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas
+      "PROGRAM P;\nCONST N = 3;\nVAR X, YY: INTEGER;\n    Z: CHAR;\nBEGIN\n  X := 1;\nEND.\n"
+    (let ((idx (pascal1981-imenu-index)))
+      (should (equal (mapcar #'car idx) '("N" "X" "YY" "Z")))
+      ;; Every entry points at its own identifier.
+      (dolist (pair idx)
+        (should (equal (buffer-substring-no-properties
+                        (cdr pair) (+ (cdr pair) (length (car pair))))
+                       (car pair)))))))
+
 (provide 'pascal1981-mode-tests)
 ;;; pascal1981-mode-tests.el ends here
