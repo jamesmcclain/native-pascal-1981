@@ -53,7 +53,8 @@ spans, and the parser fails on half-typed buffers. `BEGIN`, `RECORD`,
 and `REPEAT` open a block. `CASE ... OF` opens a block. `THEN`, `DO`,
 and `ELSE` indent the next line only when they end that line. `SET OF`
 and `ARRAY OF` do not indent. Names after `VAR`, `CONST`, or `TYPE`
-align to the first identifier of that section.
+align to the first identifier of that section. If `VAR` is alone on a
+line, the next name indents by one width.
 
 ## Tests
 

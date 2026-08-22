@@ -362,6 +362,8 @@ to the first identifier of that section."
           (max 0 (* depth pascal1981-indent-width)))
          ((and (numberp decl-align) (not hang))
           decl-align)
+         ((and (eq decl-align 'pending) (not hang))
+          (max 0 (* (+ depth 1) pascal1981-indent-width)))
          (t (max 0 (* (+ depth (if hang 1 0)) pascal1981-indent-width))))))))
 
 (defun pascal1981-indent-line ()

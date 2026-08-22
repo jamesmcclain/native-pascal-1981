@@ -142,6 +142,24 @@
       (should (= (pascal1981--compute-indent 4) pascal1981-indent-width))
       (should (= (pascal1981--compute-indent 5) 0)))))
 
+(ert-deftest pascal1981-tests-indent-var-section ()
+  "A name on the line after a lone VAR indents one width, not column 0."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas
+      "PROGRAM P;\nVAR\nn, d: INTEGER;\nBEGIN\nEND.\n"
+    (should (= (pascal1981--compute-indent 2) 0))
+    (should (= (pascal1981--compute-indent 3) pascal1981-indent-width))
+    (should (= (pascal1981--compute-indent 4) 0))
+    (indent-region (point-min) (point-max))
+    (goto-char (point-min))
+    (forward-line 2)
+    (should (= (current-indentation) pascal1981-indent-width))
+    (should (string-prefix-p "n, d: INTEGER;"
+                             (string-trim-left
+                              (buffer-substring-no-properties
+                               (line-beginning-position)
+                               (line-end-position)))))))
+
 (ert-deftest pascal1981-tests-indent-kitchen ()
   "Kitchen sink `indent-region' matches the fixture layout."
   (skip-unless (and (pascal1981-tests--have-binaries)
