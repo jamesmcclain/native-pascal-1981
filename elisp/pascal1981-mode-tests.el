@@ -322,60 +322,26 @@ of the PROCEDURE declaration must count parenthesis depth."
 ;; LLM completion: toggle command
 ;; -------------------------------------------------------------------
 
-(ert-deftest pascal1981-tests-toggle-no-prefix-flips-enabled ()
-  "No prefix arg: toggles `pascal1981-completion-enabled', leaves the
-candidate count alone."
+(ert-deftest pascal1981-tests-toggle-flips-enabled ()
+  "`pascal1981-completion-toggle' is a plain toggle -- it no longer takes a
+candidate-count prefix argument, since the proxy no longer supports
+requesting more than one candidate per request."
   (with-temp-buffer
     (pascal1981-mode)
-    (setq pascal1981-completion-enabled nil
-          pascal1981-completion-candidates 1)
+    (setq pascal1981-completion-enabled nil)
     (pascal1981-completion-toggle)
     (should pascal1981-completion-enabled)
-    (should (= pascal1981-completion-candidates 1))
     (pascal1981-completion-toggle)
-    (should-not pascal1981-completion-enabled)
-    (should (= pascal1981-completion-candidates 1))))
+    (should-not pascal1981-completion-enabled)))
 
-(ert-deftest pascal1981-tests-toggle-numeric-prefix-sets-candidate-count ()
-  "A numeric prefix (e.g. `C-u 5') sets the candidate count and enables."
-  (with-temp-buffer
-    (pascal1981-mode)
-    (setq pascal1981-completion-enabled nil
-          pascal1981-completion-candidates 1)
-    (pascal1981-completion-toggle 5)
-    (should pascal1981-completion-enabled)
-    (should (= pascal1981-completion-candidates 5))))
-
-(ert-deftest pascal1981-tests-toggle-bare-c-u-defaults-to-three ()
-  "A bare `C-u' (raw arg is the list (4)) sets the candidate count to 3."
-  (with-temp-buffer
-    (pascal1981-mode)
-    (setq pascal1981-completion-enabled nil
-          pascal1981-completion-candidates 1)
-    (pascal1981-completion-toggle '(4))
-    (should pascal1981-completion-enabled)
-    (should (= pascal1981-completion-candidates 3))))
-
-(ert-deftest pascal1981-tests-toggle-numeric-prefix-clamped-to-at-least-one ()
-  "A non-positive numeric prefix still leaves at least 1 candidate."
-  (with-temp-buffer
-    (pascal1981-mode)
-    (setq pascal1981-completion-candidates 5)
-    (pascal1981-completion-toggle 0)
-    (should (= pascal1981-completion-candidates 1))
-    (pascal1981-completion-toggle -3)
-    (should (= pascal1981-completion-candidates 1))))
-
-(ert-deftest pascal1981-tests-real-c-u-5-m-x-toggle-sets-candidates ()
-  "A real `C-u 5 M-x pascal1981-completion-toggle' keypress sequence, not a
-direct function call, sets the candidate count."
+(ert-deftest pascal1981-tests-real-m-x-toggle-flips-enabled ()
+  "A real `M-x pascal1981-completion-toggle' keypress sequence, not a
+direct function call, flips `pascal1981-completion-enabled'."
   (pascal1981-tests--with-selected-buffer "pascal1981-tests-real-toggle"
     (pascal1981-mode)
-    (setq pascal1981-completion-enabled nil
-          pascal1981-completion-candidates 1)
-    (execute-kbd-macro (kbd "C-u 5 M-x pascal1981-completion-toggle RET"))
-    (should pascal1981-completion-enabled)
-    (should (= pascal1981-completion-candidates 5))))
+    (setq pascal1981-completion-enabled nil)
+    (execute-kbd-macro (kbd "M-x pascal1981-completion-toggle RET"))
+    (should pascal1981-completion-enabled)))
 
 ;; -------------------------------------------------------------------
 ;; LLM completion: eligibility predicate
@@ -496,27 +462,10 @@ the callback itself decides which buffer is \"the response\" from
                                 (overlay-get pascal1981--completion-overlay
                                              'after-string)))))
 
-(ert-deftest pascal1981-tests-completion-multi-candidate-shows-index-suffix ()
-  "Multiple candidates show a \"[1/N]\" suffix on the first one shown."
-  (with-temp-buffer
-    (pascal1981-mode)
-    (setq pascal1981-completion-enabled t)
-    (insert "x := ")
-    (let* ((source (current-buffer))
-           (request-id 1)
-           (tick (buffer-modified-tick))
-           (pt (point))
-           (response (pascal1981-tests--fake-response-buffer
-                      200 '((completions . ["1;" "2;" "3;"])))))
-      (setq pascal1981--completion-pending-id request-id)
-      (pascal1981-tests--completion-respond source response request-id pt tick))
-    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
-                   "1; [1/3]"))))
-
-(ert-deftest pascal1981-tests-completion-overlay-renders-embedded-newlines ()
-  "A multi-line candidate's newlines survive into the overlay's
-after-string verbatim -- Emacs renders an overlay after-string with
-embedded newlines as extra visual lines with no further work needed."
+(ert-deftest pascal1981-tests-completion-multi-line-shows-only-first-line-by-default ()
+  "A multi-line completion shows only its first line by default, with a
+\"[1/N lines]\" suffix -- `M-n' reveals more (see the reveal tests below),
+it is not shown all at once the way it used to be."
   (with-temp-buffer
     (pascal1981-mode)
     (setq pascal1981-completion-enabled t)
@@ -530,7 +479,29 @@ embedded newlines as extra visual lines with no further work needed."
       (setq pascal1981--completion-pending-id request-id)
       (pascal1981-tests--completion-respond source response request-id pt tick))
     (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
-                   "BEGIN\ntotal := 1;\nEND;"))))
+                   "BEGIN [1/3 lines]"))))
+
+(ert-deftest pascal1981-tests-completion-overlay-renders-embedded-newlines-once-revealed ()
+  "Once more lines are revealed, embedded newlines survive into the
+overlay's after-string verbatim -- Emacs renders an overlay after-string
+with embedded newlines as extra visual lines with no further work needed."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (insert "x := ")
+    (let* ((source (current-buffer))
+           (request-id 1)
+           (tick (buffer-modified-tick))
+           (pt (point))
+           (response (pascal1981-tests--fake-response-buffer
+                      200 '((completions . ["BEGIN\ntotal := 1;\nEND;"])))))
+      (setq pascal1981--completion-pending-id request-id)
+      (pascal1981-tests--completion-respond source response request-id pt tick))
+    ;; fib-steps(3) == (1 2 3): one M-n reveals 2 lines, another reveals 3.
+    (pascal1981-completion-reveal-more)
+    (pascal1981-completion-reveal-more)
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "BEGIN\ntotal := 1;\nEND; [3/3 lines]"))))
 
 (ert-deftest pascal1981-tests-completion-accept-materializes-into-buffer ()
   "TAB, dispatched while a preview is showing, inserts the shown candidate."
@@ -550,32 +521,20 @@ embedded newlines as extra visual lines with no further work needed."
     (should (equal (buffer-string) "x := 1;"))
     (should-not pascal1981--completion-overlay)))
 
-(ert-deftest pascal1981-tests-completion-cycle-wraps-forward ()
-  "`M-n' cycling wraps back to the first candidate after the last."
-  (with-temp-buffer
-    (pascal1981-mode)
-    (setq pascal1981-completion-enabled t)
-    (insert "x := ")
-    (let* ((source (current-buffer))
-           (request-id 1)
-           (tick (buffer-modified-tick))
-           (pt (point))
-           (response (pascal1981-tests--fake-response-buffer
-                      200 '((completions . ["1;" "2;" "3;"])))))
-      (setq pascal1981--completion-pending-id request-id)
-      (pascal1981-tests--completion-respond source response request-id pt tick))
-    (pascal1981-completion-cycle-next)
-    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
-                   "2; [2/3]"))
-    (pascal1981-completion-cycle-next)
-    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
-                   "3; [3/3]"))
-    (pascal1981-completion-cycle-next)
-    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
-                   "1; [1/3]"))))
+(ert-deftest pascal1981-tests-completion-fib-steps ()
+  "`pascal1981--completion-fib-steps' produces deduplicated Fibonacci-spaced
+counts, always ending at TOTAL."
+  (should (equal (pascal1981--completion-fib-steps 1) '(1)))
+  (should (equal (pascal1981--completion-fib-steps 2) '(1 2)))
+  (should (equal (pascal1981--completion-fib-steps 3) '(1 2 3)))
+  (should (equal (pascal1981--completion-fib-steps 5) '(1 2 3 5)))
+  (should (equal (pascal1981--completion-fib-steps 6) '(1 2 3 5 6)))
+  (should (equal (pascal1981--completion-fib-steps 7) '(1 2 3 5 7)))
+  (should-not (pascal1981--completion-fib-steps 0)))
 
-(ert-deftest pascal1981-tests-completion-cycle-wraps-backward ()
-  "`M-p' cycling wraps to the last candidate from the first."
+(ert-deftest pascal1981-tests-completion-reveal-more-steps-through-fibonacci ()
+  "`M-n' steps the revealed line count forward through the Fibonacci
+schedule, and stays at the total once it is reached -- it does not wrap."
   (with-temp-buffer
     (pascal1981-mode)
     (setq pascal1981-completion-enabled t)
@@ -585,12 +544,73 @@ embedded newlines as extra visual lines with no further work needed."
            (tick (buffer-modified-tick))
            (pt (point))
            (response (pascal1981-tests--fake-response-buffer
-                      200 '((completions . ["1;" "2;" "3;"])))))
+                      200 '((completions . ["a\nb\nc\nd\ne"])))))
       (setq pascal1981--completion-pending-id request-id)
       (pascal1981-tests--completion-respond source response request-id pt tick))
-    (pascal1981-completion-cycle-previous)
+    ;; fib-steps(5) == (1 2 3 5): 1 -> 2 -> 3 -> 5 -> 5 (clamped, no wrap).
     (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
-                   "3; [3/3]"))))
+                   "a [1/5 lines]"))
+    (pascal1981-completion-reveal-more)
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "a\nb [2/5 lines]"))
+    (pascal1981-completion-reveal-more)
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "a\nb\nc [3/5 lines]"))
+    (pascal1981-completion-reveal-more)
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "a\nb\nc\nd\ne [5/5 lines]"))
+    (pascal1981-completion-reveal-more)
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "a\nb\nc\nd\ne [5/5 lines]"))))
+
+(ert-deftest pascal1981-tests-completion-reveal-fewer-steps-back-down ()
+  "`M-p' steps the revealed line count back down, stopping at 1 line
+rather than wrapping to the total."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (insert "x := ")
+    (let* ((source (current-buffer))
+           (request-id 1)
+           (tick (buffer-modified-tick))
+           (pt (point))
+           (response (pascal1981-tests--fake-response-buffer
+                      200 '((completions . ["a\nb\nc"])))))
+      (setq pascal1981--completion-pending-id request-id)
+      (pascal1981-tests--completion-respond source response request-id pt tick))
+    (pascal1981-completion-reveal-more)
+    (pascal1981-completion-reveal-more)
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "a\nb\nc [3/3 lines]"))
+    (pascal1981-completion-reveal-fewer)
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "a\nb [2/3 lines]"))
+    (pascal1981-completion-reveal-fewer)
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "a [1/3 lines]"))
+    (pascal1981-completion-reveal-fewer)
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "a [1/3 lines]"))))
+
+(ert-deftest pascal1981-tests-completion-accept-inserts-only-revealed-lines ()
+  "TAB inserts only the lines currently revealed, not the whole completion
+-- what you see is what you get."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (insert "x := ")
+    (let* ((source (current-buffer))
+           (request-id 1)
+           (tick (buffer-modified-tick))
+           (pt (point))
+           (response (pascal1981-tests--fake-response-buffer
+                      200 '((completions . ["1;\n2;\n3;"])))))
+      (setq pascal1981--completion-pending-id request-id)
+      (pascal1981-tests--completion-respond source response request-id pt tick))
+    (pascal1981-completion-reveal-more)
+    (pascal1981-indent-or-complete)
+    (should (equal (buffer-string) "x := 1;\n2;"))
+    (should-not pascal1981--completion-overlay)))
 
 (ert-deftest pascal1981-tests-completion-not-live-after-point-moves ()
   "The preview stops being \"live\" once point moves away from it."
@@ -626,7 +646,7 @@ embedded newlines as extra visual lines with no further work needed."
       (pascal1981-tests--completion-respond source response request-id pt tick))
     (pascal1981--completion-dismiss)
     (should-not pascal1981--completion-overlay)
-    (should-not pascal1981--completion-candidate-list)
+    (should-not pascal1981--completion-text)
     (should (equal (buffer-string) "x := "))))
 
 (ert-deftest pascal1981-tests-completion-preserves-right-hand-text ()
@@ -857,7 +877,7 @@ the request was sent."
 ;; -------------------------------------------------------------------
 ;;
 ;; Every test above calls elisp functions (`pascal1981-indent-or-complete',
-;; `pascal1981-completion-cycle-next', etc.) directly -- which never
+;; `pascal1981-completion-reveal-more', etc.) directly -- which never
 ;; exercises `set-transient-map's own machinery. `set-transient-map'
 ;; evaluates its KEEP-PRED (and, when that says "don't keep", calls
 ;; ON-EXIT) from `pre-command-hook', which runs BEFORE the command bound
@@ -872,12 +892,12 @@ the request was sent."
 
 (ert-deftest pascal1981-tests-real-tab-accepts-live-preview ()
   "A real TAB keypress, not a direct function call, materializes the
-candidate currently shown by a live preview."
+completion currently shown by a live preview."
   (pascal1981-tests--with-selected-buffer "pascal1981-tests-real-tab"
     (pascal1981-mode)
     (setq pascal1981-completion-enabled t)
     (insert "x := ")
-    (pascal1981--completion-show-ghost '("1;"))
+    (pascal1981--completion-show-ghost "1;")
     (execute-kbd-macro (kbd "TAB"))
     (should (equal (buffer-string) "x := 1;"))
     (should-not pascal1981--completion-overlay)))
@@ -889,7 +909,7 @@ by a leftover transient map -- it dispatches normally again."
     (pascal1981-mode)
     (setq pascal1981-completion-enabled t)
     (insert "x := ")
-    (pascal1981--completion-show-ghost '("1;"))
+    (pascal1981--completion-show-ghost "1;")
     (execute-kbd-macro (kbd "TAB"))
     (setq pascal1981-completion-enabled nil)
     (insert "\n  y")
@@ -898,18 +918,18 @@ by a leftover transient map -- it dispatches normally again."
       (execute-kbd-macro (kbd "TAB")))
     (should (equal (buffer-string) "x := 1;\n  y<INDENTED>"))))
 
-(ert-deftest pascal1981-tests-real-m-n-cycles-and-real-tab-accepts-shown-one ()
-  "Real M-n keypresses advance the shown candidate; a real TAB after that
-materializes whichever one is currently shown, not the first."
-  (pascal1981-tests--with-selected-buffer "pascal1981-tests-real-cycle"
+(ert-deftest pascal1981-tests-real-m-n-reveals-and-real-tab-accepts-shown-lines ()
+  "Real M-n keypresses reveal more lines of the preview; a real TAB after
+that materializes whatever is currently shown, not the whole completion."
+  (pascal1981-tests--with-selected-buffer "pascal1981-tests-real-reveal"
     (pascal1981-mode)
     (setq pascal1981-completion-enabled t)
     (insert "x := ")
-    (pascal1981--completion-show-ghost '("1;" "2;" "3;"))
+    (pascal1981--completion-show-ghost "1;\n2;\n3;")
     (execute-kbd-macro (kbd "M-n"))
     (execute-kbd-macro (kbd "M-n"))
     (execute-kbd-macro (kbd "TAB"))
-    (should (equal (buffer-string) "x := 3;"))))
+    (should (equal (buffer-string) "x := 1;\n2;\n3;"))))
 
 (ert-deftest pascal1981-tests-real-c-g-dismisses-without-inserting ()
   "A real C-g dismisses the preview and inserts nothing."
@@ -917,7 +937,7 @@ materializes whichever one is currently shown, not the first."
     (pascal1981-mode)
     (setq pascal1981-completion-enabled t)
     (insert "x := ")
-    (pascal1981--completion-show-ghost '("1;"))
+    (pascal1981--completion-show-ghost "1;")
     (execute-kbd-macro (kbd "C-g"))
     (should (equal (buffer-string) "x := "))
     (should-not pascal1981--completion-overlay)))
@@ -929,7 +949,7 @@ never inserted, only the typed character is."
     (pascal1981-mode)
     (setq pascal1981-completion-enabled t)
     (insert "x := ")
-    (pascal1981--completion-show-ghost '("1;"))
+    (pascal1981--completion-show-ghost "1;")
     (execute-kbd-macro (kbd "9"))
     (should (equal (buffer-string) "x := 9"))
     (should-not pascal1981--completion-overlay)))
@@ -1014,8 +1034,11 @@ the buffer."
       (should (equal (buffer-string) "FOR i := 1 TO 10 DO")))))
 
 (ert-deftest pascal1981-tests-end-to-end-multiline-accept-reindents ()
-  "Accepting a multi-line candidate reindents the inserted lines via the
-lexer/token cache, instead of leaving the model's raw, unindented text."
+  "Accepting a multi-line candidate, after revealing all of its lines,
+reindents the inserted lines via the lexer/token cache, instead of
+leaving the model's raw, unindented text. (Only its first line is
+shown by default; `M-n' reveals the rest first -- see the reveal
+tests above for that behavior in isolation.)"
   (pascal1981-tests--with-fake-proxy
       (pascal1981-tests--http-json-response
        200 '((completions . ["BEGIN\ntotal := total + i;\nEND;"])
@@ -1029,7 +1052,7 @@ lexer/token cache, instead of leaving the model's raw, unindented text."
       (pascal1981-tests--wait-until
        (lambda () (not pascal1981--completion-pending-id)) 5)
       (should (pascal1981--completion-overlay-live-p))
-      (execute-kbd-macro (kbd "TAB"))
+      (execute-kbd-macro (kbd "M-n M-n TAB"))
       (should (equal (buffer-string)
                      "PROGRAM Demo;\nBEGIN\n  BEGIN\n    total := total + i;\n  END;")))))
 

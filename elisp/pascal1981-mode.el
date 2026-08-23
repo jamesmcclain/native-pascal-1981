@@ -65,49 +65,19 @@ Buffers larger than this are not sent; TAB falls back to
 indentation instead."
   :type 'integer :group 'pascal1981)
 
-(defcustom pascal1981-completion-candidates 3
-  "How many candidate completions to request from the proxy.
-Sent as \"n\" in the request payload. More candidates cost more
-upstream tokens and latency; cycle between them with `M-n'/`M-p'
-while a completion preview is showing.
+(defun pascal1981-completion-toggle ()
+  "Toggle `pascal1981-completion-enabled' on or off.
 
-Candidate length grows with position, roughly following the
-Fibonacci sequence: candidate 1 targets 1 line, candidate 2 targets
-1 line, candidate 3 targets 2 lines, candidate 4 targets 3 lines,
-candidate 5 targets 5 lines, and so on. The proxy computes and
-enforces this server-side; this variable only controls how many
-candidates are requested."
-  :type 'integer :group 'pascal1981)
-
-(defconst pascal1981--completion-default-candidate-count 3
-  "Candidate count `pascal1981-completion-toggle' uses for a bare `C-u'.")
-
-(defun pascal1981-completion-toggle (&optional arg)
-  "Toggle `pascal1981-completion-enabled', or set the candidate count.
-
-With a numeric prefix ARG (e.g. `C-u 5 M-x pascal1981-completion-toggle',
-or `C-5 M-x pascal1981-completion-toggle'), set
-`pascal1981-completion-candidates' to that many (minimum 1) and enable
-completion. With a bare `C-u' (no digits, ARG is then the list `(4)'),
-set the candidate count to `pascal1981--completion-default-candidate-count'
-\(3\) instead, since a bare `C-u' carries no useful number of its own.
-With no prefix ARG at all, just toggle `pascal1981-completion-enabled',
-leaving `pascal1981-completion-candidates' unchanged."
-  (interactive "P")
-  (if (null arg)
-      (progn
-        (setq pascal1981-completion-enabled
-              (not pascal1981-completion-enabled))
-        (message "pascal1981: LLM completion %s"
-                 (if pascal1981-completion-enabled "enabled" "disabled")))
-    (setq pascal1981-completion-candidates
-          (max 1 (if (consp arg)
-                     pascal1981--completion-default-candidate-count
-                   (prefix-numeric-value arg)))
-          pascal1981-completion-enabled t)
-    (message "pascal1981: LLM completion enabled, requesting %d candidate%s"
-             pascal1981-completion-candidates
-             (if (= pascal1981-completion-candidates 1) "" "s"))))
+Formerly also took a numeric prefix argument to set a candidate count
+for a multi-candidate request; the proxy no longer supports requesting
+more than one candidate per request (see `pascal1981-completion-reveal-
+more'/`pascal1981-completion-reveal-fewer' for how a single generous
+completion is browsed instead), so that prefix-argument behavior is
+gone -- this command is now a plain toggle."
+  (interactive)
+  (setq pascal1981-completion-enabled (not pascal1981-completion-enabled))
+  (message "pascal1981: LLM completion %s"
+           (if pascal1981-completion-enabled "enabled" "disabled")))
 
 (defvar pascal1981--token-cache nil
   "Buffer-local cache of last lexer output (vector of alists).")
@@ -494,20 +464,19 @@ decodes on the way back."
   (cons (line-number-at-pos)
         (1+ (- (point) (line-beginning-position)))))
 
-(defun pascal1981--completion-payload (goal buffer-text line column n)
+(defun pascal1981--completion-payload (goal buffer-text line column)
   "Build the JSON request body for a `/complete' request."
   (json-encode `((goal . ,goal)
                  (buffer . ,buffer-text)
-                 (cursor . ((line . ,line) (column . ,column)))
-                 (n . ,n))))
+                 (cursor . ((line . ,line) (column . ,column))))))
 
 (defun pascal1981--completion-insert (text)
   "Insert TEXT at point as a single atomic undo step.
-When TEXT spans multiple lines (see `fibonacci_line_counts' on the
-proxy side -- candidates beyond the first two can now be several
-lines), the raw model text carries no reliable indentation of its
-own, so the lexer/token cache is refreshed after the insert and each
-newly inserted line is reindented via `pascal1981-indent-line'. A
+When TEXT spans multiple lines (the proxy's completions are no longer
+capped at one line by default -- see its `--max-lines' flag), the raw
+model text carries no reliable indentation of its own, so the
+lexer/token cache is refreshed after the insert and each newly
+inserted line is reindented via `pascal1981-indent-line'. A
 single-line TEXT (the common case) skips this entirely and behaves
 exactly as before."
   (atomic-change-group
@@ -524,17 +493,55 @@ exactly as before."
                           (pascal1981-indent-line)))))))))
 
 ;; -------------------------------------------------------------------
-;; Ghost-text preview + cycling
+;; Ghost-text preview + line reveal
 ;; -------------------------------------------------------------------
 
 (defvar-local pascal1981--completion-overlay nil
   "Overlay showing the current completion preview, or nil if none.")
 
-(defvar-local pascal1981--completion-candidate-list nil
-  "List of candidate completion strings for the current preview.")
+(defvar-local pascal1981--completion-text nil
+  "Full text of the completion currently being previewed, or nil.
+The proxy returns exactly one completion per request; instead of
+cycling between several distinct candidates, `M-n'/`M-p' reveal more
+or fewer of this single completion's lines -- see
+`pascal1981--completion-reveal-lines'.")
 
-(defvar-local pascal1981--completion-candidate-index 0
-  "Index into `pascal1981--completion-candidate-list' currently shown.")
+(defvar-local pascal1981--completion-reveal-lines 1
+  "How many lines of `pascal1981--completion-text' are currently shown.
+Starts at 1 for a new preview; stepped by `pascal1981-completion-
+reveal-more'/`pascal1981-completion-reveal-fewer' through the
+deduplicated Fibonacci-spaced counts from `pascal1981--completion-
+fib-steps'.")
+
+(defun pascal1981--completion-text-lines ()
+  "Return `pascal1981--completion-text' split into lines, or nil."
+  (when pascal1981--completion-text
+    (split-string pascal1981--completion-text "\n")))
+
+(defun pascal1981--completion-visible-text ()
+  "Return the currently revealed prefix of the completion text."
+  (let ((lines (pascal1981--completion-text-lines)))
+    (when lines
+      (mapconcat #'identity
+                 (cl-subseq lines 0 (min pascal1981--completion-reveal-lines
+                                         (length lines)))
+                 "\n"))))
+
+(defun pascal1981--completion-fib-steps (total)
+  "Deduplicated Fibonacci-spaced positive integers up to and including
+TOTAL, always ending with TOTAL, e.g. TOTAL=7 -> (1 2 3 5 7). The raw
+Fibonacci sequence's repeated leading 1, 1 is collapsed to a single 1,
+since two consecutive `M-n' keystrokes revealing the same line count
+would be a no-op. Return nil when TOTAL <= 0."
+  (when (> total 0)
+    (let ((raw nil) (a 1) (b 1))
+      (while (<= a total)
+        (push a raw)
+        (let ((next (+ a b))) (setq a b b next)))
+      (setq raw (delete-dups (nreverse raw)))
+      (if (= (car (last raw)) total)
+          raw
+        (append raw (list total))))))
 
 (defun pascal1981--completion-overlay-live-p ()
   "Non-nil when a completion preview is showing at point."
@@ -543,16 +550,16 @@ exactly as before."
        (= (overlay-start pascal1981--completion-overlay) (point))))
 
 (defun pascal1981--completion-render-overlay ()
-  "Refresh the overlay's `after-string' from the current candidate/index."
-  (let* ((candidates pascal1981--completion-candidate-list)
-         (n (length candidates))
-         (text (nth pascal1981--completion-candidate-index candidates))
-         (suffix (if (> n 1)
-                     (format " [%d/%d]"
-                             (1+ pascal1981--completion-candidate-index) n)
+  "Refresh the overlay's `after-string' from the currently revealed lines."
+  (let* ((total (length (pascal1981--completion-text-lines)))
+         (visible (pascal1981--completion-visible-text))
+         (suffix (if (> total 1)
+                     (format " [%d/%d lines]"
+                             (min pascal1981--completion-reveal-lines total)
+                             total)
                    "")))
     (overlay-put pascal1981--completion-overlay 'after-string
-                 (propertize (concat text suffix) 'face 'shadow))))
+                 (propertize (concat visible suffix) 'face 'shadow))))
 
 (defun pascal1981--completion-dismiss ()
   "Remove the completion preview overlay and clear its state.
@@ -561,12 +568,15 @@ Safe to call when no preview is showing."
   (when pascal1981--completion-overlay
     (delete-overlay pascal1981--completion-overlay))
   (setq pascal1981--completion-overlay nil
-        pascal1981--completion-candidate-list nil
-        pascal1981--completion-candidate-index 0))
+        pascal1981--completion-text nil
+        pascal1981--completion-reveal-lines 1))
 
 (defun pascal1981--completion-do-accept ()
-  "Materialize the currently shown candidate at point, if any.
+  "Materialize the currently revealed portion of the preview at point.
 Inserted as a single atomic undo step via `pascal1981--completion-insert'.
+Only the lines currently shown are inserted, not the whole completion --
+what you see is what you get, the same as accepting a partially-cycled
+candidate used to be under the old multi-candidate scheme.
 
 This is called from the completion-preview transient map's on-exit
 handler (see `pascal1981--completion-show-ghost'), not run directly as
@@ -574,15 +584,14 @@ the command TAB is bound to. `set-transient-map' evaluates its
 KEEP-PRED, and therefore calls ON-EXIT when the map is not kept, from
 `pre-command-hook' -- which runs BEFORE the triggering command itself
 is invoked. A command bound to TAB that tried to do this work in its
-own body would see the overlay and candidate list already cleared by
+own body would see the overlay and preview state already cleared by
 a naively unconditional on-exit dismiss; doing the real work from
 inside on-exit itself, while the state is still live, avoids that
 race entirely."
   (when (pascal1981--completion-overlay-live-p)
-    (let ((text (nth pascal1981--completion-candidate-index
-                      pascal1981--completion-candidate-list)))
+    (let ((text (pascal1981--completion-visible-text)))
       (pascal1981--completion-dismiss)
-      (pascal1981--completion-insert text))))
+      (when text (pascal1981--completion-insert text)))))
 
 (defun pascal1981--completion-accept ()
   "Bound to TAB in the completion-preview transient map.
@@ -592,44 +601,58 @@ on-exit handler instead of from this command's own body -- see that
 function's docstring for why."
   (interactive))
 
-(defun pascal1981--completion-show-ghost (candidates)
-  "Show CANDIDATES (a list of strings) as a cycling preview at point."
+(defun pascal1981--completion-show-ghost (text)
+  "Show TEXT (a single completion string) as a line-revealable preview
+at point, starting with just its first line shown."
   (pascal1981--completion-dismiss)
-  (setq pascal1981--completion-candidate-list candidates
-        pascal1981--completion-candidate-index 0
+  (setq pascal1981--completion-text text
+        pascal1981--completion-reveal-lines 1
         pascal1981--completion-overlay (make-overlay (point) (point) nil t nil))
   (pascal1981--completion-render-overlay)
   (set-transient-map
    (let ((map (make-sparse-keymap)))
      (define-key map (kbd "TAB") #'pascal1981--completion-accept)
      (define-key map (kbd "<tab>") #'pascal1981--completion-accept)
-     (define-key map (kbd "M-n") #'pascal1981-completion-cycle-next)
-     (define-key map (kbd "M-p") #'pascal1981-completion-cycle-previous)
+     (define-key map (kbd "M-n") #'pascal1981-completion-reveal-more)
+     (define-key map (kbd "M-p") #'pascal1981-completion-reveal-fewer)
      (define-key map (kbd "C-g") #'pascal1981--completion-dismiss)
      map)
-   (lambda () (memq this-command '(pascal1981-completion-cycle-next
-                                    pascal1981-completion-cycle-previous)))
+   (lambda () (memq this-command '(pascal1981-completion-reveal-more
+                                    pascal1981-completion-reveal-fewer)))
    (lambda ()
      (if (eq this-command #'pascal1981--completion-accept)
          (pascal1981--completion-do-accept)
        (pascal1981--completion-dismiss)))))
 
-(defun pascal1981-completion-cycle-next ()
-  "Show the next candidate in the current completion preview."
+(defun pascal1981-completion-reveal-more ()
+  "Show more of the current completion preview.
+Steps `pascal1981--completion-reveal-lines' forward through the
+deduplicated Fibonacci-spaced counts from
+`pascal1981--completion-fib-steps', capped at the completion's total
+line count."
   (interactive)
-  (pascal1981--completion-cycle 1))
+  (pascal1981--completion-reveal-step 1))
 
-(defun pascal1981-completion-cycle-previous ()
-  "Show the previous candidate in the current completion preview."
+(defun pascal1981-completion-reveal-fewer ()
+  "Show fewer lines of the current completion preview.
+Steps `pascal1981--completion-reveal-lines' backward through the same
+schedule as `pascal1981-completion-reveal-more', down to a minimum of
+one line."
   (interactive)
-  (pascal1981--completion-cycle -1))
+  (pascal1981--completion-reveal-step -1))
 
-(defun pascal1981--completion-cycle (delta)
-  "Move the shown candidate index by DELTA, wrapping, and redraw."
+(defun pascal1981--completion-reveal-step (direction)
+  "Move `pascal1981--completion-reveal-lines' one Fibonacci step in
+DIRECTION (1 for more, -1 for fewer), then redraw."
   (when (pascal1981--completion-overlay-live-p)
-    (let ((n (length pascal1981--completion-candidate-list)))
-      (setq pascal1981--completion-candidate-index
-            (mod (+ pascal1981--completion-candidate-index delta) n)))
+    (let* ((total (length (pascal1981--completion-text-lines)))
+           (steps (pascal1981--completion-fib-steps total)))
+      (when steps
+        (let* ((pos (or (cl-position pascal1981--completion-reveal-lines
+                                     steps :test #'=)
+                        0))
+               (new-pos (max 0 (min (1- (length steps)) (+ pos direction)))))
+          (setq pascal1981--completion-reveal-lines (nth new-pos steps)))))
     (pascal1981--completion-render-overlay)))
 
 (defun pascal1981--completion-parse-response (response-buffer)
@@ -711,7 +734,7 @@ rule still holds there."
                             (= (point) point-at-request)
                             (pascal1981--completion-allowed-at-point-p))
                 (throw 'pascal1981--completion-done nil))
-              (pascal1981--completion-show-ghost candidates))))
+              (pascal1981--completion-show-ghost (car candidates)))))
       (when (buffer-live-p response-buffer)
         (kill-buffer response-buffer)))))
 
@@ -734,8 +757,7 @@ than inserted somewhere it no longer belongs."
           (encode-coding-string
            (pascal1981--completion-payload
             pascal1981-completion-goal buffer-text
-            (car line-column) (cdr line-column)
-            pascal1981-completion-candidates)
+            (car line-column) (cdr line-column))
            'utf-8)))
     (setq pascal1981--completion-pending-id request-id)
     (letrec ((response-buffer
@@ -759,7 +781,8 @@ disabled, point is mid-line, or the buffer exceeds
 `pascal1981-completion-buffer-limit'; the buffer is never modified by
 this command itself. Later, asynchronously, a successful response is
 shown as a ghost-text preview by `pascal1981--completion-callback',
-not inserted directly -- accept it with TAB, cycle with `M-n'/`M-p'."
+not inserted directly -- accept it with TAB; reveal more or fewer of
+its lines with `M-n'/`M-p'."
   (interactive)
   (cond
    ((not pascal1981-completion-enabled)
