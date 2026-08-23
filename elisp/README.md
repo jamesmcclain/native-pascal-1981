@@ -122,32 +122,22 @@ save to history. Most local `llama.cpp`/LM Studio setups need no key at
 all.
 
 Optionally pass `--grammar-file docs/ebnf_grammar.md` to give the model the
-dialect's EBNF grammar as reference context. This costs prompt size and
-latency, so it's off unless you ask for it.
+dialect's EBNF grammar as reference context. This was tested and found not
+to help completion quality while costing prompt size and latency; it stays
+available (off by default) in case a future prompt shape changes that, not
+because it's currently recommended.
 
-The prompt wording sent to the model lives in `tools/prompts/` (plain text
-files, not string literals in the proxy), so it can be read and tuned
-without touching code:
-
-- `system_prompt.txt` — instruction for a single-completion (`n == 1`) request.
-- `multi_system_prompt.txt` — instruction for a multi-candidate (`n > 1`)
-  request; must contain the literal placeholders `{n}` and `{keys}`.
-  `{keys}` now expands with each key annotated by its target line count
-  (see "Candidate length: the Fibonacci schedule" below) — an override
-  file that uses `{keys}` verbatim picks this up automatically.
-- `multi_user_prefix.txt` — a short line placed in the *user* message,
-  immediately before the buffer text, only on a multi-candidate request;
-  must contain the literal placeholder `{n}`.
-
-Override any of them with `--system-prompt-file`, `--multi-system-prompt-file`,
-or `--multi-user-prefix-file` respectively, without editing the bundled
-files. The `multi_user_prefix.txt` placement (right next to the code, not
-just once in the system prompt) matters in practice: verified live that
-repeating the "give N distinct completions" instruction there, not just in
-the system prompt, took one backend from returning the same completion in
-2-3 of every 3 slots on an obvious-answer case (`VAR count: ` → `Integer;`)
-down to zero duplicates across 40 live trials on two different backends,
-with and without `--grammar-file`.
+The prompt wording sent to the model lives in `tools/prompts/system_prompt.txt`
+(a plain text file, not a string literal in the proxy), so it can be read
+and tuned without touching code. Override it with `--system-prompt-file`
+without editing the bundled file. The bundled prompt is deliberately
+minimal — a full-corpus experiment found that an elaborate, heavily
+instructed prompt was itself the dominant cause of a failure mode where the
+model echoed text already before the cursor instead of continuing past it;
+stripping the prompt down to almost nothing eliminated that failure
+entirely (0/64 occurrences across two different backends, vs. 22-30% under
+the old wording). Resist the urge to add guardrail language back in without
+re-measuring its effect.
 
 If the proxy isn't running, or you haven't started it yet, completion
 requests just fail — TAB falls back to ordinary indentation. There is no
@@ -162,51 +152,43 @@ listening at `pascal1981-completion-proxy-url`.
 ;; (setq pascal1981-completion-proxy-url "http://127.0.0.1:8790/complete")
 ```
 
-Or interactively, `M-x pascal1981-completion-toggle`:
-
-- With no prefix argument, it just toggles `pascal1981-completion-enabled`
-  on or off, leaving the candidate count alone.
-- With a numeric prefix argument (`C-u 5 M-x pascal1981-completion-toggle`,
-  or `C-5 M-x pascal1981-completion-toggle`), it sets
-  `pascal1981-completion-candidates` to that many and enables completion.
-- With a bare `C-u` (no digits), it sets the candidate count to 3 — a
-  reasonable default for turning on cycling without picking a number.
+Or interactively, `M-x pascal1981-completion-toggle` — a plain toggle,
+flipping `pascal1981-completion-enabled` on or off.
 
 Other knobs: `pascal1981-completion-goal` (the instruction sent with every
 request), `pascal1981-completion-timeout` (seconds to wait before giving
 up, default 8), `pascal1981-completion-buffer-limit` (buffers larger than
-this, in characters, are never sent), `pascal1981-completion-candidates`
-(how many candidates to request, default 3 — more candidates cost more
-upstream tokens and latency).
+this, in characters, are never sent).
 
-Multiple candidates are requested as one round trip: the proxy asks the
-model for a single JSON object holding all of them, rather than relying on
-the backend's own multi-sample support. This was a deliberate choice, not
-an accident — verified live that backend-level sampling (`"n"` on
-`/chat/completions`) is not reliably usable: one backend silently ignores
-it and returns a single choice regardless, another hard-rejects any value
-other than 1. A single JSON-formatted request avoids depending on that
-support at all.
+Each request makes exactly one upstream call and gets back exactly one
+completion — there is no multi-candidate ("give me N different
+completions") support. This was tried (packing several distinct
+completions into one JSON response, since backend-level `"n"` sampling
+turned out not reliably usable across backends — one silently ignores it
+and returns a single choice regardless, another hard-rejects any value
+other than 1) and later dropped: browsing one generous completion's lines
+with `M-n`/`M-p` (below) serves the same "give me more to look at" need
+without the complexity, and without ever requiring more than one API call
+per request.
 
-### Candidate length: the Fibonacci schedule
+### Browsing a multi-line completion: line reveal with M-n/M-p
 
-Candidates are no longer all forced to one line. Candidate length grows
-with position, following the Fibonacci sequence: candidate 1 targets 1
-line, candidate 2 targets 1 line, candidate 3 targets 2 lines, candidate 4
-targets 3 lines, candidate 5 targets 5 lines. The proxy computes this
-schedule server-side (`fibonacci_line_counts` in
-`tools/pascal1981_completion_proxy.py`) and enforces it as a hard cap via
-`sanitize_completion`, after asking for it explicitly in the multi-candidate
-system prompt (each JSON key in `multi_system_prompt.txt` is annotated with
-its target line count, e.g. `"2" (2 lines)`). A candidate that undershoots
-its target (a model choosing not to pad a short, genuinely complete answer)
-is left as-is — only overshooting is truncated.
+Completions are no longer capped at one line by default (see the proxy's
+`--max-lines` flag, default 30) — a completion can be several lines. Only
+the first line is shown in the ghost-text preview at first, though:
+`M-n`/`M-p` reveal more or fewer of the completion's lines, one Fibonacci
+step at a time (1, 2, 3, 5, 8, 13, ... lines — the raw Fibonacci sequence's
+repeated leading 1, 1 collapsed to a single step, since two consecutive
+`M-n` presses revealing the same line count would do nothing). The preview
+shows a `[i/N lines]` suffix whenever the completion is more than one line
+long. `M-n` stops at the full completion rather than wrapping back to one
+line; `M-p` stops at one line rather than wrapping to the full completion.
 
-Cycling with `M-n`/`M-p` moves through this same schedule: the later
-candidates in the cycle are the longer ones. Accepting a multi-line
-candidate re-indents the inserted lines against the buffer's normal
-indentation rules (see `pascal1981--completion-insert`), since the raw
-model text carries no indentation of its own.
+Accepting with TAB inserts only the lines currently revealed, not
+necessarily the whole completion — what you see in the preview is what
+gets inserted. A multi-line accept re-indents the inserted lines against
+the buffer's normal indentation rules (see `pascal1981--completion-insert`),
+since the raw model text carries no indentation of its own.
 
 ### TAB behavior
 
@@ -235,10 +217,9 @@ same eligibility rule as the second case above.
 
 While a preview is showing:
 
-- **`M-n` / `M-p`** cycle to the next/previous candidate (only meaningful
-  when `pascal1981-completion-candidates` is greater than 1; the preview
-  shows a `[i/N]` suffix whenever there's more than one candidate to cycle
-  through).
+- **`M-n` / `M-p`** reveal more/fewer of the completion's lines (see
+  "Browsing a multi-line completion" above; only meaningful for a
+  completion longer than one line).
 - **Any other command** — typing a character, moving point, `C-g`,
   switching buffers — dismisses the preview without inserting anything.
 
@@ -269,7 +250,8 @@ responding before troubleshooting from inside Emacs.
   check `pascal1981-complete-line` directly (`M-x`) to isolate eligibility
   from a proxy problem.
 - **The preview disappeared before I could accept it.** Any command other
-  than TAB (to accept) or `M-n`/`M-p` (to cycle) dismisses the preview —
+  than TAB (to accept) or `M-n`/`M-p` (to reveal more/fewer lines)
+  dismisses the preview —
   including typing, moving point, and `C-g`. This is intentional: a stale
   preview left showing after you kept typing would no longer apply to what's
   at point.
