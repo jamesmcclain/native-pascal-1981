@@ -112,7 +112,7 @@ flag (`--help` lists them all); point it at a different backend with
 `--llm-base-url`:
 
 ```sh
-python3 tools/pascal1981_completion_proxy.py --llm-base-url http://10.0.0.105:8080/v1
+python3 tools/pascal1981_completion_proxy.py --llm-base-url http://192.0.2.10:8080/v1
 ```
 
 The one setting that stays an environment variable, `LLM_API_KEY`, is the
