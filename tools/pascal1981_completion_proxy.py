@@ -8,20 +8,19 @@ ever an HTTP client of whatever is already listening on --host:--port.
 Protocol (see pascal-completion-plan.md):
 
     POST /complete
-    {"goal": "...", "buffer": "...", "cursor": {"line": N, "column": N},
-     "n": N}
+    {"goal": "...", "buffer": "...", "cursor": {"line": N, "column": N}}
     ->
-    {"completions": ["...", ...], "model": "...", "request_id": "..."}
+    {"completions": ["..."], "model": "...", "request_id": "..."}
 
-"n" is optional (default 1, clamped to [1, 5]): how many candidate
-completions to request. "completions" is always a list, even when n is 1.
-
-n > 1 is implemented via a prompt asking the model for a JSON object of
-completions in a single request, not the OpenAI /chat/completions "n"
-field -- verified live that backend-level "n" is not reliably usable: LM
-Studio silently ignores it (always returns one choice), and llama.cpp
-hard-rejects any value other than 1 with an HTTP 400. See
-`multi_system_prompt` and `extract_completions`.
+"completions" is always a single-element list. There is deliberately no
+"n" / multi-candidate support: it was tried (a prompt asking the model for
+a JSON object of several completions in one request, since backend-level
+"n" is not reliably usable -- LM Studio silently ignores it, llama.cpp
+hard-rejects any value other than 1 with an HTTP 400) and later shelved --
+every request makes exactly one upstream call, full stop, and the Emacs
+client instead reveals more of one generous completion via M-n/M-p rather
+than cycling between several distinct ones. See autoresearch notes below
+for why.
 
 Configuration is by CLI flag (run --help for the full list), not
 environment variables -- the one exception is LLM_API_KEY, which stays
@@ -64,24 +63,36 @@ Porting notes (for a future native pascal1981 port of this proxy):
 Autoresearch notes (for an effort that optimizes completion quality by
 varying prompts and proxy parameters, without touching this file):
 
-- The tunable surface is not just tools/prompts/*.txt. --temperature,
-  --reasoning-effort, --max-tokens, and --grammar-file are all real,
-  high-impact levers on quality that live in CLI flags / Config, not
-  prompt text -- include them in the search space, not just prompt
+- The tunable surface is not just tools/prompts/system_prompt.txt.
+  --temperature, --reasoning-effort, --max-tokens, and --grammar-file are
+  all real, high-impact levers on quality that live in CLI flags / Config,
+  not prompt text -- include them in the search space, not just prompt
   wording.
-- The multi-candidate JSON output shape (a flat object with string values
-  at keys "0".."n-1") and the per-candidate Fibonacci line-count schedule
-  (`fibonacci_line_counts`) are both fixed by this code, not by prompt
-  wording -- a prompt variant can ask for a different shape or schedule,
-  but it will fail to parse or get silently truncated/relabeled rather
-  than actually changing either, since `_parse_multi_completions` and
-  `sanitize_completion` enforce them regardless of what was asked for.
-  Within that fixed contract, prompt wording is free to vary.
-- Prompt-file edits are validated at proxy startup (see
-  `validate_prompt_templates`): an unescaped '{'/'}' in a hand-edited
-  multi_system_prompt.txt/multi_user_prefix.txt now fails the proxy
-  immediately with a clear message instead of surfacing as a dropped
-  connection on the first request that hits it.
+- A full-corpus experiment (see /home/ubuntu/autoresearch_notes.md,
+  "Headline finding: a minimal prompt (no proxy) eliminates the echo bug")
+  found that a near-bare system prompt eliminates the dominant "echo bug"
+  failure mode (the model retyping text already before the cursor): 0/64
+  echoes at full-corpus scale on two different backends, vs. 22-30% under
+  a more elaborate, heavily-instructed prompt this file used to ship. That
+  finding is what SYSTEM_PROMPT now is -- verbatim, not adapted or
+  extended, per explicit instruction not to ship any wording beyond what
+  was actually measured. Multi-candidate support (a prompt asking for
+  several completions packed into one JSON response) was tried and later
+  shelved entirely, for two reasons: the backend's one-connection-at-a-time
+  behavior and the Emacs client's completion timeout ruled out ever making
+  more than one upstream call per request, and once the client started
+  revealing more of a single generous completion via M-n/M-p instead of
+  cycling between candidates, packing multiple *distinct* completions into
+  one response stopped solving a problem that still existed. (Follow-on,
+  elisp-side, not implemented here: M-n/M-p should step through the
+  completion's lines at deduplicated Fibonacci-spaced counts -- 1, 2, 3,
+  5, 8, 13, ... -- not the raw Fibonacci sequence's repeated leading 1, 1,
+  since two consecutive keystrokes revealing the same line count would be
+  a no-op.)
+- --grammar-file was independently tested and found not to help completion
+  quality while inflating prompt size and upstream latency -- it remains
+  available (off by default) in case a future prompt shape changes that
+  finding, but treat it as a known-not-helpful lever, not a live one.
 - Swapping --llm-base-url or the model loaded behind an existing one
   without restarting the proxy leaves --reasoning-effort=auto's
   calibration stale (see calibrate_reasoning_effort) -- restart the proxy
@@ -121,11 +132,11 @@ def load_prompt_text(filename: str) -> str:
 
 
 def load_prompt_override(path: str) -> str:
-    """Read a --system-prompt-file / --multi-system-prompt-file override
-    from an arbitrary PATH (unlike `load_prompt_text`, not relative to the
-    bundled tools/prompts/ directory). Raise OSError on failure -- a bad
-    override path should fail the proxy at startup, not silently fall back
-    to the bundled default."""
+    """Read a --system-prompt-file override from an arbitrary PATH (unlike
+    `load_prompt_text`, not relative to the bundled tools/prompts/
+    directory). Raise OSError on failure -- a bad override path should
+    fail the proxy at startup, not silently fall back to the bundled
+    default."""
     with open(path, encoding='utf-8') as handle:
         return handle.read().rstrip('\n')
 
@@ -212,20 +223,22 @@ class Config:
                  # docs/ebnf_grammar.md even though that file is a natural
                  # fit.
                  grammar_file: str = '',
-                 # Both default to the bundled tools/prompts/ files (see
-                 # `load_prompt_text`) when left as None. Overridable via
-                 # --system-prompt-file / --multi-system-prompt-file so
-                 # prompt wording can be tuned per deployment without
-                 # touching this module -- the same reasoning as
-                 # --grammar-file.
+                 # Defaults to the bundled tools/prompts/system_prompt.txt
+                 # (see `load_prompt_text`) when left as None. Overridable
+                 # via --system-prompt-file so prompt wording can be tuned
+                 # per deployment without touching this module -- the same
+                 # reasoning as --grammar-file.
                  system_prompt: str | None = None,
-                 multi_system_prompt_template: str | None = None,
-                 # Overridable via --multi-user-prefix-file. Placed in the
-                 # *user* message, immediately before the source text, for
-                 # an n > 1 request -- see build_prompt's docstring for why
-                 # that placement (not just the system prompt) mattered
-                 # live.
-                 multi_user_prefix_template: str | None = None) -> None:
+                 # Safety-valve cap on completion length, in lines -- not a
+                 # quality lever. Deliberately generous (see
+                 # `sanitize_completion`'s docstring for why 1, the old
+                 # default, is wrong): a completion running longer than a
+                 # real single-statement or short-block continuation is
+                 # welcome, not a bug to prevent, per the "too much
+                 # completion is better than too little; extra can be
+                 # stripped in some appropriate way" guidance that drove
+                 # this default's increase from 1 to 30.
+                 max_lines: int = 30) -> None:
         self.host = host
         self.port = port
         self.llm_base_url = llm_base_url.rstrip('/')
@@ -242,14 +255,7 @@ class Config:
                               if self.grammar_file else '')
         self.system_prompt = (system_prompt
                               if system_prompt is not None else SYSTEM_PROMPT)
-        self.multi_system_prompt_template = (
-            multi_system_prompt_template
-            if multi_system_prompt_template is not None else
-            _MULTI_SYSTEM_PROMPT_TEMPLATE)
-        self.multi_user_prefix_template = (
-            multi_user_prefix_template
-            if multi_user_prefix_template is not None else
-            _MULTI_USER_PREFIX_TEMPLATE)
+        self.max_lines = max_lines
 
     @property
     def chat_completions_url(self) -> str:
@@ -265,37 +271,13 @@ class RequestError(Exception):
     """Malformed /complete request. Message is safe to return to the client."""
 
 
-_MAX_CANDIDATES = 5
-
-
-def fibonacci_line_counts(n: int) -> list[int]:
-    """Target line count for each of N candidates, 1-indexed by position.
-
-    Candidate 1 -> 1 line, candidate 2 -> 1 line, candidate 3 -> 2 lines,
-    candidate 4 -> 3 lines, candidate 5 -> 5 lines, ... i.e. the standard
-    Fibonacci sequence (1, 1, 2, 3, 5, ...). Longer candidates later in the
-    cycle give a user who keeps pressing `M-n` progressively more to look
-    at, without every candidate paying the token/latency cost of a long
-    completion up front.
-    """
-    counts = []
-    a, b = 1, 1
-    for _ in range(max(n, 0)):
-        counts.append(a)
-        a, b = b, a + b
-    return counts
-
-
 def validate_request(
         payload: object,
-        buffer_limit: int) -> tuple[str, str, int, int, int]:
+        buffer_limit: int) -> tuple[str, str, int, int]:
     """Validate a decoded /complete JSON body.
 
-    Return (goal, buffer, line, column, n) on success. Raise RequestError
-    with a client-safe message otherwise. "n" (candidate count) is optional
-    and clamped into [1, _MAX_CANDIDATES] rather than rejected outright --
-    an out-of-range value is a client quirk, not a protocol violation worth
-    failing the request over.
+    Return (goal, buffer, line, column) on success. Raise RequestError with
+    a client-safe message otherwise.
     """
     if not isinstance(payload, dict):
         raise RequestError('request body must be a JSON object')
@@ -321,12 +303,7 @@ def validate_request(
     if not isinstance(column, int) or isinstance(column, bool) or column < 1:
         raise RequestError('"cursor.column" must be a positive integer')
 
-    n = payload.get('n', 1)
-    if not isinstance(n, int) or isinstance(n, bool):
-        n = 1
-    n = min(max(n, 1), _MAX_CANDIDATES)
-
-    return goal, buffer, line, column, n
+    return goal, buffer, line, column
 
 
 def compute_prefix(buffer: str, line: int, column: int) -> str:
@@ -351,8 +328,7 @@ _GRAMMAR_FOOTER = '# --- end grammar reference ---'
 
 def build_prompt(goal: str,
                  prefix: str,
-                 grammar: str = '',
-                 multi_prefix: str = '') -> str:
+                 grammar: str = '') -> str:
     """Build the user-message content sent upstream (see SYSTEM_PROMPT for
     the accompanying system message).
 
@@ -363,16 +339,6 @@ def build_prompt(goal: str,
     before the prefix, kept off its own line's indentation so it cannot be
     mistaken for buffer content.
 
-    A non-empty MULTI_PREFIX (see Config.multi_user_prefix_template /
-    --multi-user-prefix-file) is placed immediately before GOAL/PREFIX, not
-    up near GRAMMAR. Verified live: for a multi-candidate (n > 1) request,
-    repeating the "give N distinct completions" instruction here, right
-    next to the actual source text, made a real difference that having it
-    only once in the system prompt did not -- one backend went from
-    returning the same completion 2-3 times in 7 of 10 trials on an
-    obvious-answer case ("VAR count: " -> "Integer;") to zero duplicates in
-    10/10 once this line was added immediately before the code.
-
     A non-empty GRAMMAR (the dialect's EBNF reference, opt-in via
     --grammar-file) is prepended ahead of everything else, marked with a
     plain '#' header/footer rather than a Pascal '{ }' or '(* *)' comment:
@@ -382,8 +348,6 @@ def build_prompt(goal: str,
     """
     goal = goal.strip().replace('\n', ' ')
     body = f'{{ {goal} }}\n{prefix}' if goal else prefix
-    if multi_prefix:
-        body = f'{multi_prefix}\n{body}'
     if not grammar.strip():
         return body
     return f'{_GRAMMAR_HEADER}\n{grammar.strip()}\n{_GRAMMAR_FOOTER}\n\n{body}'
@@ -412,53 +376,6 @@ class ReasoningBudgetExhausted(UpstreamError):
 
 SYSTEM_PROMPT = load_prompt_text('system_prompt.txt')
 
-_MULTI_SYSTEM_PROMPT_TEMPLATE = load_prompt_text('multi_system_prompt.txt')
-
-_MULTI_USER_PREFIX_TEMPLATE = load_prompt_text('multi_user_prefix.txt')
-
-
-def multi_system_prompt(n: int, template: str | None = None) -> str:
-    """System prompt for a multi-candidate (N > 1) request.
-
-    Asks for N distinct single-line completions packed into one JSON
-    object instead of the single bare string SYSTEM_PROMPT asks for --
-    see `call_upstream' and `extract_completions' for why (backend-level
-    "n" sampling turned out not to be reliable across backends). The
-    response is read back by `_parse_multi_completions'.
-
-    TEMPLATE defaults to the bundled
-    tools/prompts/multi_system_prompt.txt (see
-    Config.multi_system_prompt_template for the --multi-system-prompt-file
-    override path); callers pass CONFIG's copy explicitly rather than
-    relying on this default, so an override actually takes effect.
-    Whatever template is used must contain the literal '{n}' and '{keys}'
-    placeholders -- filled in here via str.format.
-
-    The bundled template explicitly demands the N completions be
-    meaningfully different from each other, not just "distinct" --
-    verified live that a milder instruction let both tested backends
-    return the same completion two or three times for a request like
-    "VAR count: " (an obvious best answer, "Integer;", apparently
-    squeezes out any drive toward alternatives without an explicit push).
-    The stronger wording fixed that reliably at the default temperature;
-    raising temperature instead made it worse (more parse failures, more
-    duplicates), so this is a prompting fix, not a sampling one.
-
-    Each key is annotated with its target line count from
-    `fibonacci_line_counts` (e.g. `"0" (1 line), "1" (1 line), "2" (2
-    lines)`) so a single request can carry per-candidate length targets
-    without a second placeholder -- `sanitize_completion` still enforces
-    the cap server-side afterward, this is just what the model is asked
-    for.
-    """
-    line_counts = fibonacci_line_counts(n)
-    keys = ', '.join(
-        f'"{i}" ({count} line{"" if count == 1 else "s"})'
-        for i, count in enumerate(line_counts))
-    active_template = (template
-                      if template is not None else _MULTI_SYSTEM_PROMPT_TEMPLATE)
-    return active_template.format(n=n, keys=keys)
-
 
 def call_upstream(prompt: str,
                    config: Config,
@@ -479,14 +396,14 @@ def call_upstream(prompt: str,
     here -- calibrate_reasoning_effort is what resolves 'auto' into a real
     value or '', so if it somehow still reaches this function it is treated
     the same as '' (omit) rather than sent upstream literally. SYSTEM_PROMPT
-    defaults to the module-level `SYSTEM_PROMPT` constant when omitted;
-    callers requesting more than one candidate pass `multi_system_prompt(n)`
-    instead (see that function and `extract_completions`) -- there is
-    deliberately no "n" field sent upstream at all: verified live, one
-    backend (LM Studio) silently ignores "n" and returns a single choice,
-    and another (llama.cpp) hard-rejects any "n" other than 1 with an HTTP
-    400, so multiple candidates are requested via prompt + JSON output
-    instead of relying on backend-level sampling support.
+    defaults to the module-level `SYSTEM_PROMPT` constant when omitted.
+    There is deliberately no "n" field sent upstream, and no multi-candidate
+    support at all: verified live, one backend (LM Studio) silently ignores
+    "n" and returns a single choice, and another (llama.cpp) hard-rejects
+    any "n" other than 1 with an HTTP 400 -- and packing several candidates
+    into one JSON response (this proxy's earlier approach) was tried and
+    later shelved (see the module docstring's autoresearch notes). Every
+    request now makes exactly one call and returns exactly one completion.
 
     Porting note: PAYLOAD below never sets "stream": true, so every upstream
     response is a single complete JSON body delimited by a normal
@@ -601,8 +518,8 @@ def ping_upstream(config: Config) -> tuple[str, str]:
                              config,
                              temperature=0.0,
                              system_prompt=config.system_prompt)
-    texts, model, _request_id, _indices = extract_completions(response)
-    return texts[0], model
+    text, model, _request_id = extract_completions(response)
+    return text, model
 
 
 # Tried in this order: cheapest/most-likely-to-just-work first. '' (omit the
@@ -687,101 +604,41 @@ def _extract_choice_text(choice: dict) -> str:
 def _strip_code_fence(text: str) -> str:
     """Strip a leading/trailing markdown code fence if present.
 
-    `multi_system_prompt' explicitly asks for no code fences, but models
-    wrap JSON output in ```json ... ``` fences often enough in practice
-    that stripping one defensively is worth it before attempting to parse.
+    SYSTEM_PROMPT does not instruct the model to avoid markdown -- that
+    instruction was tried and found not to actually prevent fences even
+    when present, so it was dropped rather than kept as dead weight (see
+    the module docstring's autoresearch notes). Fences are simply stripped
+    mechanically instead, unconditionally, on every completion.
     """
     stripped = text.strip()
     if not stripped.startswith('```'):
-        return stripped
+        return text
     first_newline = stripped.find('\n')
     if first_newline == -1:
-        return stripped
+        return text
     body = stripped[first_newline + 1:]
     if body.rstrip().endswith('```'):
         body = body.rstrip()[:-3]
     return body.strip()
 
 
-def _parse_multi_completions(text: str, n: int) -> list[tuple[int, str]]:
-    """Parse TEXT as the JSON object `multi_system_prompt(n)' asked for:
-    keys "0" through str(n - 1), string values.
-
-    Returns (key_index, text) pairs, not a bare list of strings -- a caller
-    that needs to match each candidate back to something keyed by its
-    position (e.g. `fibonacci_line_counts(n)`'s per-candidate line-count
-    target) must use KEY_INDEX, not the pair's position in this returned
-    list: those two only coincide when every key from "0" to str(n - 1) was
-    present, which the tolerance below deliberately does not guarantee. A
-    previous version of this function returned a bare list of strings in
-    key order with gaps silently closed up, which let exactly that
-    misalignment happen one call site away (do_POST used the resulting
-    list's position to index into fibonacci_line_counts, which is only
-    correct when there are no gaps).
-
-    Tolerant by design: a missing key or a non-string value for some index
-    is skipped rather than failing the whole request, and extra keys
-    outside [0, n) are ignored. Only raises UpstreamError when TEXT is not
-    parseable as a JSON object at all, or when no usable string survives
-    for any expected index -- a completion response with nothing useful in
-    it is exactly as bad as one that failed to parse.
-    """
-    try:
-        parsed = json.loads(_strip_code_fence(text))
-    except json.JSONDecodeError as exc:
-        raise UpstreamError(
-            'upstream did not return valid JSON for a multi-candidate '
-            'request') from exc
-    if not isinstance(parsed, dict):
-        raise UpstreamError('upstream JSON for a multi-candidate request '
-                            'was not an object')
-    pairs = [(i, parsed[str(i)]) for i in range(n)
-             if isinstance(parsed.get(str(i)), str)]
-    if not pairs:
-        raise UpstreamError(
-            'upstream JSON had no usable candidate strings')
-    return pairs
-
-
 def extract_completions(
-        upstream_response: dict,
-        n: int = 1) -> tuple[list[str], str, str, list[int]]:
-    """Pull (completions, model, request_id, indices) out of a
-    /chat/completions JSON body's single choice.
-
-    For N == 1, COMPLETIONS is a single-element list holding
-    choices[0].message.content verbatim -- the plain single-line-completion
-    contract, unchanged from before multi-candidate support existed.
-    INDICES is always [0] in this case.
-
-    For N > 1, the backend was asked (via `multi_system_prompt') to pack N
-    completions into that same content field as a JSON object; see
-    `_parse_multi_completions' for how that is read back. COMPLETIONS[i]
-    corresponds to candidate key INDICES[i] -- these two lists can be
-    shorter than N and INDICES is not just range(len(COMPLETIONS)) whenever
-    the model skipped a key, so a caller matching completions back to
-    something keyed by candidate position (e.g.
-    `fibonacci_line_counts(n)`) MUST index by INDICES[i], never by i
-    itself. There is deliberately only ever one choice to look at -- see
-    `call_upstream' for why multiple candidates are requested this way
-    instead of via backend-level "n" sampling.
+        upstream_response: dict) -> tuple[str, str, str]:
+    """Pull (completion, model, request_id) out of a /chat/completions JSON
+    body's single choice. COMPLETION is choices[0].message.content
+    verbatim, with any markdown code fence stripped (`_strip_code_fence`) --
+    further cleanup (`sanitize_completion`) happens at the call site.
     """
     choices = upstream_response.get('choices')
     if not isinstance(choices, list) or not choices:
         raise UpstreamError('upstream response had no choices')
     choice = choices[0] if isinstance(choices[0], dict) else {}
-    text = _extract_choice_text(choice)
-    if n <= 1:
-        texts, indices = [text], [0]
-    else:
-        pairs = _parse_multi_completions(text, n)
-        indices = [i for i, _ in pairs]
-        texts = [t for _, t in pairs]
+    text = _strip_code_fence(_extract_choice_text(choice))
 
     model = upstream_response.get('model', '')
     request_id = upstream_response.get('id', '')
-    return texts, model if isinstance(model, str) else '', (
-        request_id if isinstance(request_id, str) else ''), indices
+    return text, model if isinstance(model, str) else '', (
+        request_id if isinstance(request_id, str) else '')
 
 
 # --------------------------------------------------------------------------
@@ -792,16 +649,23 @@ def extract_completions(
 _SPECIAL_TOKEN_MARKER = '<|'
 
 
-def sanitize_completion(text: str, max_lines: int = 1) -> str:
+def sanitize_completion(text: str, max_lines: int = 30) -> str:
     """Enforce the NUL-free, marker-free, at-most-MAX_LINES output policy.
+
+    This is a safety valve, not a quality lever: a completion running
+    longer than a real single-statement or short-block continuation is
+    welcome, not a bug to prevent ("too much completion is better than too
+    little; extra can be stripped in some appropriate way" -- hence
+    MAX_LINES defaults to a generous flat 30, not the old default of 1,
+    which existed to solve a problem that turned out not to be one).
+    MAX_LINES still exists to bound a genuinely runaway response, not to
+    keep completions short.
 
     Extra lines in the raw text beyond MAX_LINES (the upstream stop sequence
     should prevent this, but a differently-configured backend might not
-    honor it, and a model can simply undershoot or overshoot a requested
-    line count) are truncated rather than failing the request -- trailing
-    whitespace on the last kept line is preserved. MAX_LINES defaults to 1,
-    the original single-line policy, unchanged for every caller that
-    doesn't pass a candidate-specific target (see `fibonacci_line_counts`).
+    honor it, and a model can simply overshoot) are truncated rather than
+    failing the request -- trailing whitespace on the last kept line is
+    preserved.
 
     Some backends (observed live: a reasoning/chat-tuned model served over
     the plain-completion endpoint) leak fragments of their internal special-
@@ -877,58 +741,30 @@ class CompletionHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            goal, buffer, line, column, n = validate_request(
+            goal, buffer, line, column = validate_request(
                 payload, self.config.buffer_limit)
         except RequestError as exc:
             self._send_json(400, {'error': str(exc)})
             return
 
         prefix = compute_prefix(buffer, line, column)
-        line_counts = fibonacci_line_counts(n)
 
         try:
-            multi_prefix = (self.config.multi_user_prefix_template.format(n=n)
-                            if n > 1 else '')
-            prompt = build_prompt(goal, prefix, self.config.grammar_text,
-                                  multi_prefix)
+            prompt = build_prompt(goal, prefix, self.config.grammar_text)
             upstream_response = call_upstream(
                 prompt,
                 self.config,
-                max_tokens=self.config.max_tokens * sum(line_counts),
-                system_prompt=(self.config.system_prompt if n <= 1 else
-                              multi_system_prompt(
-                                  n, self.config.multi_system_prompt_template)))
-            texts, model, request_id, indices = extract_completions(
-                upstream_response, n=n)
+                system_prompt=self.config.system_prompt)
+            text, model, request_id = extract_completions(upstream_response)
         except UpstreamError as exc:
             self._send_json(502, {'error': str(exc)})
             return
-        except (KeyError, IndexError, ValueError) as exc:
-            # A prompt-file template with an unescaped '{'/'}' (e.g. showing
-            # the model a literal JSON example) raises this from .format()
-            # -- str.format() treats any brace not doubled as '{{'/'}}' as a
-            # placeholder reference. This should already be caught at
-            # startup by validate_prompt_templates, but a request is a
-            # clean, diagnosable 500 rather than a dropped connection if it
-            # somehow still reaches here (e.g. a template swapped in
-            # without restarting the proxy).
-            self._send_json(
-                500, {
-                    'error': ('prompt template formatting failed: '
-                              f'{exc!r} -- a bundled or overridden prompt '
-                              'file likely has an unescaped { or } '
-                              '(double literal braces as {{ and }})')
-                })
-            return
 
-        completions = [
-            sanitize_completion(t, line_counts[idx] if idx < len(line_counts) else 1)
-            for idx, t in zip(indices, texts)
-        ]
+        completion = sanitize_completion(text, self.config.max_lines)
 
         self._send_json(
             200, {
-                'completions': completions,
+                'completions': [completion],
                 'model': model or self.config.llm_model,
                 'request_id': request_id,
             })
@@ -1020,73 +856,23 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default='',
         help=('Path to an EBNF grammar file (e.g. docs/ebnf_grammar.md) to '
               'prepend as reference context on every completion request. '
-              'Optional; increases prompt size and upstream latency.'))
+              'Optional; increases prompt size and upstream latency, and '
+              'was independently tested and found not to help completion '
+              'quality -- kept available in case a future prompt shape '
+              'changes that, not because it is currently recommended.'))
     parser.add_argument(
         '--system-prompt-file',
         default='',
-        help=('Path to a text file overriding the single-completion system '
-              'prompt (default: the bundled '
-              'tools/prompts/system_prompt.txt).'))
+        help=('Path to a text file overriding the completion system prompt '
+              '(default: the bundled tools/prompts/system_prompt.txt).'))
     parser.add_argument(
-        '--multi-system-prompt-file',
-        default='',
-        help=('Path to a text file overriding the multi-candidate system '
-              'prompt template (default: the bundled '
-              'tools/prompts/multi_system_prompt.txt). Must contain the '
-              'literal placeholders {n} and {keys}, filled in via '
-              'str.format at request time.'))
-    parser.add_argument(
-        '--multi-user-prefix-file',
-        default='',
-        help=('Path to a text file overriding the short instruction placed '
-              'in the user message immediately before the source text on a '
-              'multi-candidate (n > 1) request (default: the bundled '
-              'tools/prompts/multi_user_prefix.txt). Must contain the '
-              'literal placeholder {n}, filled in via str.format at '
-              'request time.'))
+        '--max-lines',
+        type=int,
+        default=30,
+        help=('Safety-valve cap on completion length, in lines -- not a '
+              'quality lever. A completion longer than this is truncated '
+              'rather than the request failing. Default: 30.'))
     return parser.parse_args(argv)
-
-
-class PromptTemplateError(Exception):
-    """A prompt-file template is not safe to use with str.format().
-
-    Raised by `validate_prompt_templates` -- see that function for when
-    this happens and why it's checked at startup rather than left to
-    surface on the first request that hits the broken template.
-    """
-
-
-def validate_prompt_templates(config: Config) -> None:
-    """Smoke-test CONFIG's multi-candidate prompt templates against the
-    same str.format() call they'll get at request time, with placeholder
-    dummy values, and raise PromptTemplateError with a clear, actionable
-    message if either one fails.
-
-    Both `multi_system_prompt_template` (see `multi_system_prompt`) and
-    `multi_user_prefix_template` (see CompletionHandler.do_POST) are filled
-    via str.format() -- any unescaped '{'/'}' in the prompt wording (e.g.
-    showing the model a literal JSON example, a natural thing to write
-    when hand-tuning a prompt that must produce JSON) raises KeyError from
-    that call. Left unchecked, that KeyError only surfaces on the first
-    real n > 1 request that reaches the broken template, as an unhandled
-    exception -- checking here instead means a bad prompt-file edit fails
-    the proxy at startup, with a message that says why, rather than as a
-    request that mysteriously drops its connection later.
-    """
-    try:
-        multi_system_prompt(2, config.multi_system_prompt_template)
-    except (KeyError, IndexError, ValueError) as exc:
-        raise PromptTemplateError(
-            f'multi_system_prompt_template is not safe to use: {exc!r} -- '
-            'likely an unescaped { or } in the prompt wording (double '
-            'literal braces as {{ and }})') from exc
-    try:
-        config.multi_user_prefix_template.format(n=2)
-    except (KeyError, IndexError, ValueError) as exc:
-        raise PromptTemplateError(
-            f'multi_user_prefix_template is not safe to use: {exc!r} -- '
-            'likely an unescaped { or } in the prompt wording (double '
-            'literal braces as {{ and }})') from exc
 
 
 def main() -> None:
@@ -1104,19 +890,8 @@ def main() -> None:
         grammar_file=args.grammar_file,
         system_prompt=(load_prompt_override(args.system_prompt_file)
                       if args.system_prompt_file else None),
-        multi_system_prompt_template=(
-            load_prompt_override(args.multi_system_prompt_file)
-            if args.multi_system_prompt_file else None),
-        multi_user_prefix_template=(
-            load_prompt_override(args.multi_user_prefix_file)
-            if args.multi_user_prefix_file else None),
+        max_lines=args.max_lines,
     )
-
-    try:
-        validate_prompt_templates(config)
-    except PromptTemplateError as exc:
-        print(f'pascal1981-completion-proxy: {exc}', file=sys.stderr)
-        sys.exit(1)
 
     if config.reasoning_effort == 'auto':
         print(

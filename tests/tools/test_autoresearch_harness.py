@@ -167,8 +167,7 @@ class EstimatePromptCharsTests(unittest.TestCase):
             },
         }
         entry = {'label': 'baseline', 'proxy_args': {}}
-        n = 1
-        chars = run_experiment.estimate_prompt_chars(entry, item, n)
+        chars = run_experiment.estimate_prompt_chars(entry, item)
 
         prefix = run_experiment.proxy.compute_prefix(item['buffer'],
                                                      item['cursor']['line'],
@@ -194,24 +193,10 @@ class EstimatePromptCharsTests(unittest.TestCase):
             },
         }
         baseline_chars = run_experiment.estimate_prompt_chars(
-            baseline_entry, item, 1)
+            baseline_entry, item)
         grammar_chars = run_experiment.estimate_prompt_chars(
-            grammar_entry, item, 1)
+            grammar_entry, item)
         self.assertGreater(grammar_chars, baseline_chars)
-
-    def test_multi_candidate_prompt_chars_use_multi_templates(self):
-        item = {
-            'goal': '',
-            'buffer': 'PROGRAM X(OUTPUT);\nBEGIN\nEND.',
-            'cursor': {
-                'line': 3,
-                'column': 1
-            },
-        }
-        entry = {'label': 'baseline', 'proxy_args': {}}
-        n1_chars = run_experiment.estimate_prompt_chars(entry, item, 1)
-        n3_chars = run_experiment.estimate_prompt_chars(entry, item, 3)
-        self.assertNotEqual(n1_chars, n3_chars)
 
 
 class LoadMatrixTests(unittest.TestCase):

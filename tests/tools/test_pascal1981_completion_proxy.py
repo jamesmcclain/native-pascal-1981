@@ -45,22 +45,10 @@ def chat_response(content,
     }
 
 
-class FibonacciLineCountsTests(unittest.TestCase):
-
-    def test_first_five_candidates_follow_fibonacci_schedule(self):
-        self.assertEqual(proxy.fibonacci_line_counts(5), [1, 1, 2, 3, 5])
-
-    def test_single_candidate_is_one_line(self):
-        self.assertEqual(proxy.fibonacci_line_counts(1), [1])
-
-    def test_zero_candidates_is_empty(self):
-        self.assertEqual(proxy.fibonacci_line_counts(0), [])
-
-
 class ValidateRequestTests(unittest.TestCase):
 
     def test_accepts_well_formed_request(self):
-        goal, buffer, line, column, n = proxy.validate_request(
+        goal, buffer, line, column = proxy.validate_request(
             {
                 'goal': 'finish it',
                 'buffer': 'VAR x: INTEGER;\n',
@@ -70,72 +58,8 @@ class ValidateRequestTests(unittest.TestCase):
                 },
             },
             buffer_limit=1000)
-        self.assertEqual((goal, buffer, line, column, n),
-                         ('finish it', 'VAR x: INTEGER;\n', 1, 5, 1))
-
-    def test_n_defaults_to_one(self):
-        *_, n = proxy.validate_request(
-            {
-                'buffer': 'x',
-                'cursor': {
-                    'line': 1,
-                    'column': 1
-                }
-            },
-            buffer_limit=1000)
-        self.assertEqual(n, 1)
-
-    def test_n_is_clamped_to_max_candidates(self):
-        *_, n = proxy.validate_request(
-            {
-                'buffer': 'x',
-                'cursor': {
-                    'line': 1,
-                    'column': 1
-                },
-                'n': 999,
-            },
-            buffer_limit=1000)
-        self.assertEqual(n, proxy._MAX_CANDIDATES)
-
-    def test_n_below_one_is_clamped_to_one(self):
-        *_, n = proxy.validate_request(
-            {
-                'buffer': 'x',
-                'cursor': {
-                    'line': 1,
-                    'column': 1
-                },
-                'n': 0,
-            },
-            buffer_limit=1000)
-        self.assertEqual(n, 1)
-
-    def test_non_integer_n_falls_back_to_one(self):
-        *_, n = proxy.validate_request(
-            {
-                'buffer': 'x',
-                'cursor': {
-                    'line': 1,
-                    'column': 1
-                },
-                'n': 'three',
-            },
-            buffer_limit=1000)
-        self.assertEqual(n, 1)
-
-    def test_n_within_range_is_passed_through(self):
-        *_, n = proxy.validate_request(
-            {
-                'buffer': 'x',
-                'cursor': {
-                    'line': 1,
-                    'column': 1
-                },
-                'n': 3,
-            },
-            buffer_limit=1000)
-        self.assertEqual(n, 3)
+        self.assertEqual((goal, buffer, line, column),
+                         ('finish it', 'VAR x: INTEGER;\n', 1, 5))
 
     def test_goal_defaults_to_empty_string(self):
         goal, *_rest = proxy.validate_request(
@@ -275,28 +199,6 @@ class BuildPromptTests(unittest.TestCase):
         self.assertEqual(proxy.build_prompt('line one\nline two', 'p'),
                          '{ line one line two }\np')
 
-    def test_multi_prefix_placed_immediately_before_goal_and_prefix(self):
-        result = proxy.build_prompt('finish it',
-                                    'p',
-                                    multi_prefix='Give 3 distinct:')
-        self.assertEqual(result, 'Give 3 distinct:\n{ finish it }\np')
-
-    def test_multi_prefix_placed_immediately_before_bare_prefix(self):
-        result = proxy.build_prompt('', 'p', multi_prefix='Give 3 distinct:')
-        self.assertEqual(result, 'Give 3 distinct:\np')
-
-    def test_multi_prefix_absent_by_default(self):
-        self.assertEqual(proxy.build_prompt('', 'p'), 'p')
-
-    def test_multi_prefix_comes_after_grammar_block(self):
-        result = proxy.build_prompt('',
-                                    'p',
-                                    grammar='g = "z" ;',
-                                    multi_prefix='Give 3 distinct:')
-        self.assertTrue(result.endswith('Give 3 distinct:\np'))
-        self.assertLess(result.index(proxy._GRAMMAR_HEADER),
-                        result.index('Give 3 distinct:'))
-
 
 class GrammarContextTests(unittest.TestCase):
 
@@ -382,8 +284,13 @@ class SanitizeCompletionTests(unittest.TestCase):
     def test_strips_nul_bytes(self):
         self.assertEqual(proxy.sanitize_completion('a\0b'), 'ab')
 
-    def test_truncates_at_first_newline(self):
-        self.assertEqual(proxy.sanitize_completion('a\nb\nc'), 'a')
+    def test_default_max_lines_is_thirty(self):
+        text = '\n'.join(f'line{i}' for i in range(40))
+        expected = '\n'.join(f'line{i}' for i in range(30))
+        self.assertEqual(proxy.sanitize_completion(text), expected)
+
+    def test_short_multiline_text_untouched_by_default(self):
+        self.assertEqual(proxy.sanitize_completion('a\nb\nc'), 'a\nb\nc')
 
     def test_preserves_trailing_whitespace_on_single_line(self):
         self.assertEqual(proxy.sanitize_completion(' := 42;   '), ' := 42;   ')
@@ -410,10 +317,10 @@ class SanitizeCompletionTests(unittest.TestCase):
 class ExtractCompletionsTests(unittest.TestCase):
 
     def test_extracts_text_model_and_id(self):
-        texts, model, request_id, indices = proxy.extract_completions(
+        text, model, request_id = proxy.extract_completions(
             chat_response(' := 42;'))
-        self.assertEqual((texts, model, request_id, indices),
-                         ([' := 42;'], 'test-model', 'abc123', [0]))
+        self.assertEqual((text, model, request_id),
+                         (' := 42;', 'test-model', 'abc123'))
 
     def test_missing_choices_raises_upstream_error(self):
         with self.assertRaises(proxy.UpstreamError):
@@ -441,61 +348,19 @@ class ExtractCompletionsTests(unittest.TestCase):
             self):
         # Distinguish "model deliberately answered with nothing" (finish
         # reason "stop") from the exhausted-reasoning-budget case above.
-        texts, _model, _id, indices = proxy.extract_completions(
+        text, _model, _id = proxy.extract_completions(
             chat_response('', finish_reason='stop'))
-        self.assertEqual(texts, [''])
-        self.assertEqual(indices, [0])
+        self.assertEqual(text, '')
 
-    def test_multi_candidate_parses_json_dict_from_single_choice(self):
-        response = chat_response('{"0": " one", "1": " two", "2": " three"}')
-        texts, _model, _id, indices = proxy.extract_completions(response, n=3)
-        self.assertEqual(texts, [' one', ' two', ' three'])
-        self.assertEqual(indices, [0, 1, 2])
-
-    def test_multi_candidate_strips_markdown_code_fence(self):
-        response = chat_response('```json\n{"0": " one", "1": " two"}\n```')
-        texts, _model, _id, indices = proxy.extract_completions(response, n=2)
-        self.assertEqual(texts, [' one', ' two'])
-        self.assertEqual(indices, [0, 1])
-
-    def test_multi_candidate_skips_missing_or_non_string_keys(self):
-        response = chat_response('{"0": " one", "1": 42, "2": " three"}')
-        texts, _model, _id, indices = proxy.extract_completions(response, n=3)
-        self.assertEqual(texts, [' one', ' three'])
-        # Key "1" was skipped -- the surviving candidates keep their real
-        # key indices (0 and 2), not a compacted 0..len(texts) range. This
-        # is exactly the alignment a caller needs to match each text back
-        # to e.g. fibonacci_line_counts(n)[index] correctly.
-        self.assertEqual(indices, [0, 2])
-
-    def test_multi_candidate_ignores_keys_outside_requested_range(self):
-        response = chat_response(
-            '{"0": " one", "1": " two", "2": " three", "3": " four"}')
-        texts, _model, _id, indices = proxy.extract_completions(response, n=2)
-        self.assertEqual(texts, [' one', ' two'])
-        self.assertEqual(indices, [0, 1])
-
-    def test_multi_candidate_non_json_raises_upstream_error(self):
-        response = chat_response('not json at all')
-        with self.assertRaises(proxy.UpstreamError):
-            proxy.extract_completions(response, n=3)
-
-    def test_multi_candidate_json_array_raises_upstream_error(self):
-        response = chat_response('["one", "two"]')
-        with self.assertRaises(proxy.UpstreamError):
-            proxy.extract_completions(response, n=2)
-
-    def test_multi_candidate_no_usable_strings_raises_upstream_error(self):
-        response = chat_response('{"0": 1, "1": 2}')
-        with self.assertRaises(proxy.UpstreamError):
-            proxy.extract_completions(response, n=2)
-
-    def test_multi_candidate_exhausted_reasoning_budget_raises(self):
-        response = chat_response('',
-                                 finish_reason='length',
-                                 reasoning_content='...thinking...')
-        with self.assertRaises(proxy.UpstreamError):
-            proxy.extract_completions(response, n=3)
+    def test_strips_markdown_code_fence_unconditionally(self):
+        # No multi-candidate JSON parsing left to justify fence-stripping
+        # only sometimes -- it now runs on every completion, since the
+        # minimal system prompt (unlike the old one) doesn't ask the model
+        # to avoid markdown, and fences show up often enough to need
+        # cleanup regardless.
+        response = chat_response('```pascal\n a := 1;\n```')
+        text, _model, _id = proxy.extract_completions(response)
+        self.assertEqual(text, 'a := 1;')
 
 
 class PingUpstreamTests(unittest.TestCase):
@@ -691,28 +556,17 @@ class ConfigTests(unittest.TestCase):
         config = proxy.Config()
         self.assertEqual(config.system_prompt, proxy.SYSTEM_PROMPT)
 
-    def test_multi_system_prompt_template_defaults_to_bundled_file(self):
-        config = proxy.Config()
-        self.assertEqual(config.multi_system_prompt_template,
-                         proxy._MULTI_SYSTEM_PROMPT_TEMPLATE)
-
     def test_system_prompt_explicit_arg_overrides_default(self):
         config = proxy.Config(system_prompt='custom system prompt')
         self.assertEqual(config.system_prompt, 'custom system prompt')
 
-    def test_multi_system_prompt_template_explicit_arg_overrides_default(self):
-        config = proxy.Config(multi_system_prompt_template='custom {n} {keys}')
-        self.assertEqual(config.multi_system_prompt_template,
-                         'custom {n} {keys}')
-
-    def test_multi_user_prefix_template_defaults_to_bundled_file(self):
+    def test_max_lines_defaults_to_thirty(self):
         config = proxy.Config()
-        self.assertEqual(config.multi_user_prefix_template,
-                         proxy._MULTI_USER_PREFIX_TEMPLATE)
+        self.assertEqual(config.max_lines, 30)
 
-    def test_multi_user_prefix_template_explicit_arg_overrides_default(self):
-        config = proxy.Config(multi_user_prefix_template='custom {n}')
-        self.assertEqual(config.multi_user_prefix_template, 'custom {n}')
+    def test_max_lines_explicit_arg_overrides_default(self):
+        config = proxy.Config(max_lines=10)
+        self.assertEqual(config.max_lines, 10)
 
 
 class PromptFileLoadingTests(unittest.TestCase):
@@ -736,39 +590,6 @@ class PromptFileLoadingTests(unittest.TestCase):
     def test_load_prompt_override_missing_file_raises(self):
         with self.assertRaises(OSError):
             proxy.load_prompt_override('/nonexistent/path/to/prompt.txt')
-
-    def test_multi_system_prompt_uses_bundled_template_by_default(self):
-        result = proxy.multi_system_prompt(2)
-        self.assertIn('"0" (1 line), "1" (1 line)', result)
-
-    def test_multi_system_prompt_uses_explicit_template_override(self):
-        result = proxy.multi_system_prompt(2, template='n={n} keys={keys}')
-        self.assertEqual(result, 'n=2 keys="0" (1 line), "1" (1 line)')
-
-
-class ValidatePromptTemplatesTests(unittest.TestCase):
-
-    def test_bundled_templates_pass(self):
-        proxy.validate_prompt_templates(proxy.Config())  # must not raise
-
-    def test_unescaped_brace_in_multi_system_prompt_template_raises(self):
-        config = proxy.Config(
-            multi_system_prompt_template='bad {"0": "x"} {n} {keys}')
-        with self.assertRaises(proxy.PromptTemplateError) as ctx:
-            proxy.validate_prompt_templates(config)
-        self.assertIn('multi_system_prompt_template', str(ctx.exception))
-
-    def test_unescaped_brace_in_multi_user_prefix_template_raises(self):
-        config = proxy.Config(
-            multi_user_prefix_template='Give {n} like {"0": "x"}:')
-        with self.assertRaises(proxy.PromptTemplateError) as ctx:
-            proxy.validate_prompt_templates(config)
-        self.assertIn('multi_user_prefix_template', str(ctx.exception))
-
-    def test_properly_escaped_braces_pass(self):
-        config = proxy.Config(
-            multi_system_prompt_template='n={n} keys={keys} e.g. {{"0": "x"}}')
-        proxy.validate_prompt_templates(config)  # must not raise
 
 
 class CallUpstreamPayloadTests(unittest.TestCase):
@@ -978,71 +799,16 @@ class EndToEndTests(unittest.TestCase):
                 'request_id': 'req-1',
             })
 
-    def test_multiple_candidates_returned_as_a_list(self):
-        # The server now forks a child process per connection (see
-        # ForkingHTTPServer), so a request handler's fake_call_upstream runs
-        # in a copy-on-write child -- mutating a shared Python list/dict from
-        # in there is invisible to this (parent) test process. Echo what was
-        # received back through the "model" field instead, which really did
-        # cross the wire and so is visible in DATA below.
-        def fake_call_upstream(prompt,
-                               config,
-                               max_tokens=None,
-                               system_prompt=None):
-            return chat_response('{"0": " a", "1": " b", "2": " c"}',
-                                 model=json.dumps({
-                                     'max_tokens':
-                                     max_tokens,
-                                     'system_prompt':
-                                     system_prompt,
-                                 }))
-
-        proxy.call_upstream = fake_call_upstream
-        status, data = self._post({
-            'buffer': 'x',
-            'cursor': {
-                'line': 1,
-                'column': 1
-            },
-            'n': 3,
-        })
-        self.assertEqual(status, 200)
-        self.assertEqual(data['completions'], [' a', ' b', ' c'])
-        received = json.loads(data['model'])
-        # A multi-candidate request uses the JSON-dict system prompt, not
-        # the plain single-completion one, and a scaled-up token budget so
-        # the JSON has room to hold all N candidates.
-        self.assertEqual(received['system_prompt'],
-                         proxy.multi_system_prompt(3))
-        # fibonacci_line_counts(3) == [1, 1, 2], summing to 4 -- the token
-        # budget scales with total requested lines, not candidate count.
-        self.assertEqual(received['max_tokens'], self.config.max_tokens * 4)
-
     def test_custom_system_prompts_reach_call_upstream(self):
-        # Overriding Config.system_prompt / .multi_system_prompt_template
-        # (as --system-prompt-file / --multi-system-prompt-file do) must
-        # actually be what reaches call_upstream, for both the n == 1 and
-        # n > 1 paths -- not just the bundled defaults. Echoed back via the
-        # "model" field -- see the comment in
-        # test_multiple_candidates_returned_as_a_list for why (forked
-        # per-connection child, not a shared-memory thread).
+        # Overriding Config.system_prompt (as --system-prompt-file does)
+        # must actually be what reaches call_upstream, not just the bundled
+        # default. Echoed back via the "model" field -- the server forks a
+        # child process per connection (see ForkingHTTPServer), so a
+        # request handler's fake_call_upstream runs in a copy-on-write
+        # child; mutating a shared Python list/dict from in there is
+        # invisible to this (parent) test process, but "model" really did
+        # cross the wire and so is visible in DATA below.
         self.config.system_prompt = 'CUSTOM SINGLE'
-        self.config.multi_system_prompt_template = 'CUSTOM MULTI {n} {keys}'
-
-        proxy.call_upstream = (
-            lambda prompt, config, max_tokens=None, system_prompt=None:
-            chat_response('{"0": " a", "1": " b"}', model=system_prompt))
-        status, data = self._post({
-            'buffer': 'x',
-            'cursor': {
-                'line': 1,
-                'column': 1
-            },
-            'n': 2,
-        })
-        self.assertEqual(status, 200)
-        self.assertEqual(data['model'],
-                         'CUSTOM MULTI 2 "0" (1 line), "1" (1 line)')
 
         proxy.call_upstream = (
             lambda prompt, config, max_tokens=None, system_prompt=None:
@@ -1057,62 +823,6 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(data['model'], 'CUSTOM SINGLE')
 
-    def test_custom_multi_user_prefix_reaches_the_prompt_body(self):
-        # multi_user_prefix_template belongs in the *user* message content,
-        # immediately before the buffer prefix -- not in system_prompt.
-        # Echoed back via "model" -- see the comment in
-        # test_multiple_candidates_returned_as_a_list.
-        self.config.multi_user_prefix_template = 'GIVE {n} NOW:'
-
-        proxy.call_upstream = (
-            lambda prompt, config, max_tokens=None, system_prompt=None:
-            chat_response('{"0": " a", "1": " b"}', model=prompt))
-        status, data = self._post({
-            'buffer': 'x',
-            'cursor': {
-                'line': 1,
-                'column': 2
-            },
-            'n': 2,
-        })
-        self.assertEqual(status, 200)
-        self.assertEqual(data['model'], 'GIVE 2 NOW:\nx')
-
-    def test_multi_user_prefix_absent_when_n_is_one(self):
-        # Echoed back via "model" -- see the comment in
-        # test_multiple_candidates_returned_as_a_list.
-        self.config.multi_user_prefix_template = 'GIVE {n} NOW:'
-
-        proxy.call_upstream = (
-            lambda prompt, config, max_tokens=None, system_prompt=None:
-            chat_response(' ok', model=prompt))
-        status, data = self._post({
-            'buffer': 'x',
-            'cursor': {
-                'line': 1,
-                'column': 2
-            },
-        })
-        self.assertEqual(status, 200)
-        self.assertEqual(data['model'], 'x')
-
-    def test_n_omitted_from_request_defaults_to_one(self):
-        # Echoed back via "model" -- see the comment in
-        # test_multiple_candidates_returned_as_a_list.
-        proxy.call_upstream = (
-            lambda prompt, config, max_tokens=None, system_prompt=None:
-            chat_response(' ok', model=system_prompt))
-        status, data = self._post({
-            'buffer': 'x',
-            'cursor': {
-                'line': 1,
-                'column': 1
-            },
-        })
-        self.assertEqual(status, 200)
-        self.assertEqual(data['completions'], [' ok'])
-        self.assertEqual(data['model'], proxy.SYSTEM_PROMPT)
-
     def test_upstream_error_returns_502_and_leaves_body_generic(self):
 
         def boom(prompt, config, max_tokens=None, system_prompt=None):
@@ -1125,24 +835,6 @@ class EndToEndTests(unittest.TestCase):
                 'line': 1,
                 'column': 1
             },
-        })
-        self.assertEqual(status, 502)
-        self.assertIn('error', data)
-
-    def test_multi_candidate_upstream_json_failure_returns_502(self):
-        # The upstream call itself succeeds, but its content isn't the
-        # JSON the multi-candidate prompt asked for -- extract_completions
-        # raises UpstreamError, which do_POST must still turn into a 502,
-        # not a 200 with a garbled completions list.
-        proxy.call_upstream = (lambda prompt, config, max_tokens=None,
-                               system_prompt=None: chat_response('not json'))
-        status, data = self._post({
-            'buffer': 'x',
-            'cursor': {
-                'line': 1,
-                'column': 1
-            },
-            'n': 3,
         })
         self.assertEqual(status, 502)
         self.assertIn('error', data)
@@ -1230,7 +922,10 @@ class EndToEndTests(unittest.TestCase):
         status, _data = self._get('/nope')
         self.assertEqual(status, 404)
 
-    def test_multiline_upstream_text_is_truncated_to_first_line(self):
+    def test_multiline_upstream_text_is_returned_uncut_within_the_cap(self):
+        # Multi-line completions are welcome by default now (max_lines=30);
+        # only a completion actually longer than the cap gets truncated
+        # (see test_completion_longer_than_max_lines_is_truncated).
         proxy.call_upstream = (
             lambda prompt, config, max_tokens=None, system_prompt=None:
             chat_response('first\nsecond'))
@@ -1242,81 +937,22 @@ class EndToEndTests(unittest.TestCase):
             },
         })
         self.assertEqual(status, 200)
-        self.assertEqual(data['completions'], ['first'])
+        self.assertEqual(data['completions'], ['first\nsecond'])
 
-    def test_multi_candidate_lines_truncated_per_fibonacci_schedule(self):
-        # n=4 -> fibonacci_line_counts == [1, 1, 2, 3]: candidate 3 (index
-        # "2") is allowed 2 lines and candidate 4 (index "3") is allowed 3,
-        # each overshooting its target here to prove truncation actually
-        # applies per-candidate, not just to the first one.
+    def test_completion_longer_than_max_lines_is_truncated(self):
+        text = '\n'.join(f'line{i}' for i in range(40))
         proxy.call_upstream = (lambda prompt, config, max_tokens=None,
-                               system_prompt=None: chat_response(
-                                   json.dumps({
-                                       '0': 'a1\na2',
-                                       '1': 'b1\nb2',
-                                       '2': 'c1\nc2\nc3',
-                                       '3': 'd1\nd2\nd3\nd4',
-                                   })))
+                               system_prompt=None: chat_response(text))
         status, data = self._post({
             'buffer': 'x',
             'cursor': {
                 'line': 1,
                 'column': 1
             },
-            'n': 4,
         })
         self.assertEqual(status, 200)
-        self.assertEqual(data['completions'],
-                         ['a1', 'b1', 'c1\nc2', 'd1\nd2\nd3'])
-
-    def test_truncation_uses_real_key_when_a_candidate_is_skipped(self):
-        # n=4 -> fibonacci_line_counts == [1, 1, 2, 3]. Key "1" is missing
-        # from the model's JSON, so only 3 candidates come back, at their
-        # real key indices 0, 2, 3 (not compacted to 0, 1, 2). Truncation
-        # must use each candidate's real key (2 lines for key "2", 3 for
-        # key "3") -- indexing by list position instead (the bug this
-        # guards against) would wrongly truncate key "2" to 1 line and key
-        # "3" to 2, using fibonacci_line_counts[1] and [2] instead of the
-        # correct [2] and [3].
-        proxy.call_upstream = (lambda prompt, config, max_tokens=None,
-                               system_prompt=None: chat_response(
-                                   json.dumps({
-                                       '0': 'a1\na2',
-                                       '2': 'c1\nc2\nc3',
-                                       '3': 'd1\nd2\nd3\nd4',
-                                   })))
-        status, data = self._post({
-            'buffer': 'x',
-            'cursor': {
-                'line': 1,
-                'column': 1
-            },
-            'n': 4,
-        })
-        self.assertEqual(status, 200)
-        self.assertEqual(data['completions'], ['a1', 'c1\nc2', 'd1\nd2\nd3'])
-
-    def test_bad_prompt_template_returns_clean_500_not_a_dropped_connection(
-            self):
-        # An unescaped brace in a runtime-swapped template (bypassing the
-        # startup validate_prompt_templates check, e.g. Config mutated
-        # directly as this test does) must surface as a clean 500 with a
-        # diagnosable message, not an unhandled exception that drops the
-        # connection.
-        self.config.multi_system_prompt_template = 'bad {"0": "x"} {n} {keys}'
-        proxy.call_upstream = (
-            lambda prompt, config, max_tokens=None, system_prompt=None:
-            chat_response('{"0": " a", "1": " b"}'))
-        status, data = self._post({
-            'buffer': 'x',
-            'cursor': {
-                'line': 1,
-                'column': 1
-            },
-            'n': 2,
-        })
-        self.assertEqual(status, 500)
-        self.assertIn('prompt template formatting failed', data['error'])
+        expected = '\n'.join(f'line{i}' for i in range(self.config.max_lines))
+        self.assertEqual(data['completions'], [expected])
 
     def test_concurrent_requests_each_get_independent_responses(self):
         # Exercises the ForkingHTTPServer path itself (every other test here

@@ -157,12 +157,24 @@ def wait_for_health(base_url: str, timeout: float = 90.0) -> bool:
     return False
 
 
+# Populated by main() from --backend NAME=URL command-line arguments. A
+# matrix file names backends symbolically (e.g. "PASCAL1981_LLM1_URL"); the
+# actual base URL is supplied only on the command line, never in the matrix
+# file, an env var, or anywhere under version control.
+BACKEND_URLS: dict[str, str] = {}
+
+
+def resolve_backend_url(name: str) -> str | None:
+    return BACKEND_URLS.get(name)
+
+
 def start_proxy(entry: dict, port: int) -> subprocess.Popen:
-    backend_url = os.environ.get(entry['backend_env_var'])
+    backend_url = resolve_backend_url(entry['backend_env_var'])
     if not backend_url:
         raise RuntimeError(
-            f'matrix entry {entry["label"]!r} needs env var '
-            f'{entry["backend_env_var"]!r} set to the backend base URL')
+            f'matrix entry {entry["label"]!r} needs a backend base URL for '
+            f'{entry["backend_env_var"]!r} -- pass it with '
+            f'--backend {entry["backend_env_var"]}=http://host:port')
     args = [sys.executable, str(PROXY_SCRIPT),
             '--port', str(port), '--llm-base-url', backend_url]
     for flag, value in entry.get('proxy_args', {}).items():
@@ -182,13 +194,12 @@ def start_proxy(entry: dict, port: int) -> subprocess.Popen:
     return proc
 
 
-def post_complete(base_url: str, item: dict, n: int,
+def post_complete(base_url: str, item: dict,
                    timeout: float = 60.0) -> dict:
     payload = {
         'goal': item['goal'],
         'buffer': item['buffer'],
         'cursor': item['cursor'],
-        'n': n,
     }
     data = json.dumps(payload).encode('utf-8')
     req = urllib.request.Request(
@@ -205,12 +216,12 @@ def _flag_value(proxy_args: dict, *flags: str) -> str | None:
     return None
 
 
-def estimate_prompt_chars(entry: dict, item: dict, n: int) -> int:
+def estimate_prompt_chars(entry: dict, item: dict) -> int:
     """Character count of the exact system + user prompt text this matrix
     entry's proxy config would send upstream for ITEM, reusing the proxy
-    module's own build_prompt/multi_system_prompt (not a reimplementation)
-    so the number reflects the real assembled prompt, including any
-    --grammar-file or prompt-file override in ENTRY['proxy_args'].
+    module's own build_prompt (not a reimplementation) so the number
+    reflects the real assembled prompt, including any --grammar-file or
+    --system-prompt-file override in ENTRY['proxy_args'].
 
     This is a prompt-*size* efficiency signal distinct from the judge's
     "efficiency" axis (which scores the candidate's usefulness per
@@ -219,11 +230,12 @@ def estimate_prompt_chars(entry: dict, item: dict, n: int) -> int:
     overwhelm a small model's effective context handling even when it
     technically fits the context window -- see the module docstring's
     Autoresearch notes in pascal1981_completion_proxy.py. Character count,
-    not a real tokenizer count, since the harness has no dependency on
-    either backend's tokenizer and both backends' /complete responses
-    don't surface upstream "usage" token counts to the proxy's client (see
+    not a real tokenizer count, since the harness has no dependency on any
+    backend's tokenizer and a backend's /complete responses don't surface
+    upstream "usage" token counts to the proxy's client (see
     extract_completions) -- characters are the closest signal obtainable
-    without changing the proxy.
+    without changing the proxy. This holds for any number of backends in
+    the matrix, not just two.
     """
     proxy_args = entry.get('proxy_args', {})
     grammar_path = _flag_value(proxy_args, '--grammar-file')
@@ -234,27 +246,10 @@ def estimate_prompt_chars(entry: dict, item: dict, n: int) -> int:
     system_prompt_text = (proxy.load_prompt_override(system_prompt_path)
                             if system_prompt_path else proxy.SYSTEM_PROMPT)
 
-    multi_system_path = _flag_value(proxy_args, '--multi-system-prompt-file')
-    multi_system_template = (proxy.load_prompt_override(multi_system_path)
-                               if multi_system_path
-                               else proxy._MULTI_SYSTEM_PROMPT_TEMPLATE)
-
-    multi_prefix_path = _flag_value(proxy_args, '--multi-user-prefix-file')
-    multi_prefix_template = (proxy.load_prompt_override(multi_prefix_path)
-                               if multi_prefix_path
-                               else proxy._MULTI_USER_PREFIX_TEMPLATE)
-
     prefix = proxy.compute_prefix(item['buffer'], item['cursor']['line'],
                                    item['cursor']['column'])
-    if n > 1:
-        system_text = proxy.multi_system_prompt(n, multi_system_template)
-        multi_prefix = multi_prefix_template.format(n=n)
-    else:
-        system_text = system_prompt_text
-        multi_prefix = ''
-    user_text = proxy.build_prompt(item['goal'], prefix, grammar_text,
-                                    multi_prefix)
-    return len(system_text) + len(user_text)
+    user_text = proxy.build_prompt(item['goal'], prefix, grammar_text)
+    return len(system_prompt_text) + len(user_text)
 
 
 def find_compiler_binary() -> pathlib.Path | None:
@@ -371,7 +366,7 @@ def run_matrix_entry(entry: dict, corpus: list[dict],
                   'objective compile checks for this run', file=sys.stderr)
 
         judge_backend_url = (None if skip_judge else
-                              os.environ.get(judge_backend_env_var))
+                              resolve_backend_url(judge_backend_env_var))
         judge_config = None
         if judge_backend_url:
             # 700, not a tighter budget: observed live, a reasoning-heavy
@@ -397,20 +392,19 @@ def run_matrix_entry(entry: dict, corpus: list[dict],
                     f'[{label}] judge calibration: {line}', file=sys.stderr))
         judge_prompt_template = JUDGE_PROMPT_PATH.read_text(encoding='utf-8')
         print(f'[{label}] completions backend: {entry["backend_env_var"]}='
-              f'{os.environ.get(entry["backend_env_var"])}', file=sys.stderr)
+              f'{resolve_backend_url(entry["backend_env_var"])}', file=sys.stderr)
         print(f'[{label}] judge backend: {judge_backend_env_var}='
               f'{judge_backend_url or "(unset -- judging will be skipped)"}',
               file=sys.stderr)
 
         item_results = []
         for i, item in enumerate(corpus):
-            n = entry.get('n', 1)
-            prompt_chars = estimate_prompt_chars(entry, item, n)
+            prompt_chars = estimate_prompt_chars(entry, item)
             t0 = time.monotonic()
             print(f'[{label}] ({i + 1}/{len(corpus)}) {item["id"]}: '
-                  f'requesting completion (n={n})...', file=sys.stderr)
+                  f'requesting completion...', file=sys.stderr)
             try:
-                response = post_complete(base_url, item, n)
+                response = post_complete(base_url, item)
                 latency = time.monotonic() - t0
             except (urllib.error.URLError, OSError, TimeoutError) as exc:
                 print(f'[{label}] ({i + 1}/{len(corpus)}) {item["id"]}: '
@@ -467,6 +461,15 @@ def run_matrix_entry(entry: dict, corpus: list[dict],
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('matrix_file', type=pathlib.Path)
+    parser.add_argument('--backend', action='append', default=[],
+                         metavar='NAME=URL',
+                         help=('Bind a backend name used in the matrix file '
+                               '(e.g. PASCAL1981_LLM1_URL) to its actual base '
+                               'URL. Repeat once per backend named in the '
+                               'matrix. The URL is never read from an env var '
+                               'or written to any file under version control '
+                               '-- only ever passed here, live, on the '
+                               'command line.'))
     parser.add_argument('--judge-backend-env-var', default=None,
                          help=('Env var naming the backend base URL to use as '
                                'judge. No default -- which backend judges is '
@@ -494,6 +497,12 @@ def main() -> None:
     if not args.skip_judge and not args.judge_backend_env_var:
         parser.error('--judge-backend-env-var is required unless --skip-judge '
                       'is given')
+
+    for binding in args.backend:
+        name, sep, url = binding.partition('=')
+        if not sep:
+            parser.error(f'--backend must be NAME=URL, got {binding!r}')
+        BACKEND_URLS[name] = url
 
     matrix = load_matrix(args.matrix_file)
     corpus = load_corpus()
