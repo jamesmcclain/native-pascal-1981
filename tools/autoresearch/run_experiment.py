@@ -71,14 +71,44 @@ def load_matrix(path: pathlib.Path) -> list[dict]:
     return json.loads(path.read_text(encoding='utf-8'))['matrix']
 
 
-def wait_for_health(base_url: str, timeout: float = 15.0) -> bool:
+def wait_for_health(base_url: str, timeout: float = 90.0) -> bool:
+    """Wait for the proxy at BASE_URL to be ready to serve, up to TIMEOUT.
+
+    Deliberately does NOT poll GET /health: that endpoint calls
+    ping_upstream on every single request (see CompletionHandler.do_GET in
+    pascal1981_completion_proxy.py) -- it's a live liveness probe against
+    the real backend, not a cheap "is the process up" check. Polling it
+    repeatedly was observed live to itself generate real backend load: each
+    poll attempt's short client-side timeout abandoned the connection
+    before ping_upstream finished, but the backend (configured for one
+    connection at a time) kept working the abandoned request anyway,
+    piling up ahead of the harness's real completion requests and making
+    the whole run far slower and less predictable than the corpus size
+    alone would suggest -- and, server-side, surfaced as a wall of
+    BrokenPipeError tracebacks for each abandoned probe.
+
+    A plain TCP connect is enough: by the time the proxy's make_server()
+    call binds and listens (see main() in the proxy module), startup
+    calibration has already finished, so "accepts a TCP connection" and
+    "ready to serve /complete" are the same moment -- no LLM round trip
+    needed to observe it.
+
+    90s, not a short timeout: still needs to comfortably span the proxy's
+    own startup calibration step (calibrate_reasoning_effort), which can
+    take tens of seconds against a reasoning-heavy backend trying several
+    reasoning_effort candidates before finding one that works, and that
+    step runs entirely before the socket is even opened.
+    """
+    import socket
+    host, _, rest = base_url.partition('://')[2].partition('/')
+    hostname, _, port_str = host.partition(':')
+    port = int(port_str)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(f'{base_url}/health', timeout=1.0) as resp:
-                if resp.status == 200:
-                    return True
-        except (urllib.error.URLError, OSError):
+            with socket.create_connection((hostname, port), timeout=1.0):
+                return True
+        except OSError:
             pass
         time.sleep(0.3)
     return False
@@ -94,9 +124,18 @@ def start_proxy(entry: dict, port: int) -> subprocess.Popen:
             '--port', str(port), '--llm-base-url', backend_url]
     for flag, value in entry.get('proxy_args', {}).items():
         args.extend([flag, str(value)])
-    proc = subprocess.Popen(args, stdout=subprocess.PIPE,
-                             stderr=subprocess.STDOUT, text=True,
-                             cwd=REPO_ROOT)
+    # Let the proxy's own stdout/stderr (including its startup calibration
+    # log lines -- see calibrate_reasoning_effort in the proxy module) go
+    # straight to this process's stderr rather than a PIPE: PIPE requires
+    # something to actively drain it, and a plain proc.stdout.read() on a
+    # still-running child blocks until the child exits, which is exactly
+    # what made an earlier version of this function deadlock on the health-
+    # check failure path. Inheriting the fd instead means the harness's own
+    # progress lines (see run_matrix_entry) interleave live with the
+    # proxy's, so a slow/stuck calibration is visible as it happens, not
+    # silently buffered.
+    proc = subprocess.Popen(args, stdout=sys.stderr, stderr=subprocess.STDOUT,
+                             text=True, cwd=REPO_ROOT)
     return proc
 
 
@@ -233,11 +272,24 @@ def judge_candidate(judge_config: proxy.Config, judge_prompt_template: str,
         candidate=candidate,
         compile_check_note=compile_note,
     )
-    response = proxy.call_upstream(
-        prompt, judge_config,
-        max_tokens=300, temperature=0.0,
-        system_prompt='You are a strict, terse code-review grader.')
-    texts, _model, _request_id, _indices = proxy.extract_completions(response)
+    try:
+        response = proxy.call_upstream(
+            prompt, judge_config,
+            max_tokens=judge_config.max_tokens, temperature=0.0,
+            system_prompt='You are a strict, terse code-review grader.')
+        texts, _model, _request_id, _indices = proxy.extract_completions(
+            response)
+    except proxy.UpstreamError as exc:
+        # Calibration (see run_matrix_entry) only tunes reasoning_effort
+        # against a short fixed probe prompt -- the real judge prompt here
+        # varies in length per item (buffer window, reference continuation,
+        # candidate all differ) and can still exhaust the token budget on
+        # hidden reasoning for a longer item even after calibration picked
+        # a value that works for the probe. One candidate failing to score
+        # should not crash the whole run -- see run_matrix_entry's per-item
+        # loop, which otherwise has no protection against this propagating
+        # all the way out of main() (observed live).
+        return {'error': f'judge call failed: {exc!r}'}
     raw = texts[0] if texts else ''
     try:
         scores = json.loads(_strip_code_fence(raw))
@@ -254,49 +306,101 @@ def judge_candidate(judge_config: proxy.Config, judge_prompt_template: str,
 
 
 def run_matrix_entry(entry: dict, corpus: list[dict],
-                      judge_backend_env_var: str, port: int) -> dict:
+                      judge_backend_env_var: str, port: int,
+                      skip_judge: bool = False) -> dict:
     label = entry['label']
     print(f'--- running matrix entry {label!r} ---', file=sys.stderr)
     proc = start_proxy(entry, port)
     base_url = f'http://127.0.0.1:{port}'
     try:
         if not wait_for_health(base_url):
-            out = proc.stdout.read() if proc.stdout else ''
-            raise RuntimeError(f'proxy for {label!r} never became healthy:\n{out}')
+            # The proxy's own output already streamed to stderr live (see
+            # start_proxy) as this polled, so there's nothing further to
+            # capture here -- just report the failure and let `finally`
+            # tear the process down.
+            raise RuntimeError(f'proxy for {label!r} never became healthy '
+                                f'within the wait_for_health timeout; see '
+                                f'its interleaved stderr output above')
 
         compiler = find_compiler_binary()
         if compiler is None:
             print('note: no compiler binary found under bin/ -- skipping '
                   'objective compile checks for this run', file=sys.stderr)
 
-        judge_backend_url = os.environ.get(judge_backend_env_var)
-        judge_config = proxy.Config(
-            llm_base_url=judge_backend_url) if judge_backend_url else None
+        judge_backend_url = (None if skip_judge else
+                              os.environ.get(judge_backend_env_var))
+        judge_config = None
+        if judge_backend_url:
+            # 700, not a tighter budget: observed live, a reasoning-heavy
+            # judge backend can exhaust a 300-400 token budget on hidden
+            # reasoning alone even after calibration (calibration only
+            # tunes against a short fixed probe, not the real, longer,
+            # per-item judge prompt -- see judge_candidate's UpstreamError
+            # handling for the case where this still isn't enough).
+            judge_config = proxy.Config(llm_base_url=judge_backend_url,
+                                         max_tokens=700)
+            # judge_config.reasoning_effort defaults to the "auto" sentinel,
+            # which call_upstream (see judge_candidate) treats as "omit the
+            # field" rather than as "run calibration" -- only main() ever
+            # resolves "auto" into a real value, and the harness never goes
+            # through main(). Left unresolved, a reasoning-heavy judge
+            # backend reliably exhausts its token budget on hidden
+            # reasoning and never returns a score (observed live). Run the
+            # same calibration main() would, against the judge backend.
+            print(f'[{label}] calibrating judge backend '
+                  f'({judge_backend_url})...', file=sys.stderr)
+            judge_config.reasoning_effort = proxy.calibrate_reasoning_effort(
+                judge_config, log=lambda line: print(
+                    f'[{label}] judge calibration: {line}', file=sys.stderr))
         judge_prompt_template = JUDGE_PROMPT_PATH.read_text(encoding='utf-8')
+        print(f'[{label}] completions backend: {entry["backend_env_var"]}='
+              f'{os.environ.get(entry["backend_env_var"])}', file=sys.stderr)
+        print(f'[{label}] judge backend: {judge_backend_env_var}='
+              f'{judge_backend_url or "(unset -- judging will be skipped)"}',
+              file=sys.stderr)
 
         item_results = []
-        for item in corpus:
+        for i, item in enumerate(corpus):
             n = entry.get('n', 1)
             prompt_chars = estimate_prompt_chars(entry, item, n)
             t0 = time.monotonic()
+            print(f'[{label}] ({i + 1}/{len(corpus)}) {item["id"]}: '
+                  f'requesting completion (n={n})...', file=sys.stderr)
             try:
                 response = post_complete(base_url, item, n)
                 latency = time.monotonic() - t0
             except (urllib.error.URLError, OSError, TimeoutError) as exc:
+                print(f'[{label}] ({i + 1}/{len(corpus)}) {item["id"]}: '
+                      f'completion request failed: {exc}', file=sys.stderr)
                 item_results.append({'id': item['id'], 'error': str(exc)})
                 continue
             candidates = response.get('completions', [])
+            print(f'[{label}] ({i + 1}/{len(corpus)}) {item["id"]}: '
+                  f'got {len(candidates)} candidate(s) in {latency:.1f}s',
+                  file=sys.stderr)
             candidate_results = []
             for idx, candidate in enumerate(candidates[:JUDGE_CANDIDATE_CAP]):
                 compile_result = None
                 if idx == 0 and item.get('compiles_when_appended'):
                     compile_result = compile_check(
                         compiler, item['buffer'], candidate)
-                judge_result = (
-                    judge_candidate(judge_config, judge_prompt_template,
-                                     item, candidate, compile_result)
-                    if judge_config is not None else
-                    {'error': f'no {judge_backend_env_var} set, judging skipped'})
+                if judge_config is not None:
+                    print(f'[{label}] ({i + 1}/{len(corpus)}) {item["id"]}: '
+                          f'sending candidate {idx} to judge '
+                          f'({judge_backend_url})...', file=sys.stderr)
+                if judge_config is not None:
+                    judge_result = judge_candidate(
+                        judge_config, judge_prompt_template, item, candidate,
+                        compile_result)
+                elif skip_judge:
+                    judge_result = {'error': 'judging skipped (--skip-judge)'}
+                else:
+                    judge_result = {
+                        'error': f'no {judge_backend_env_var} set, judging skipped'
+                    }
+                print(f'[{label}] ({i + 1}/{len(corpus)}) {item["id"]}: '
+                      f'judge result for candidate {idx}: {judge_result}',
+                      file=sys.stderr)
                 candidate_results.append({
                     'candidate': candidate,
                     'compile_check': compile_result,
@@ -322,13 +426,31 @@ def main() -> None:
     parser.add_argument('matrix_file', type=pathlib.Path)
     parser.add_argument('--judge-backend-env-var', default='PASCAL1981_LLM2_URL',
                          help=('Env var naming the backend base URL to use as '
-                               'judge. Default: PASCAL1981_LLM2_URL.'))
+                               'judge. Default: PASCAL1981_LLM2_URL. Ignored '
+                               'if --skip-judge is given.'))
+    parser.add_argument('--skip-judge', action='store_true',
+                         help=('Collect completions (and the objective '
+                               'compile-check, where available) without '
+                               'calling any backend as judge -- each '
+                               'candidate is left with '
+                               '{"error": "judging skipped (--skip-judge)"} '
+                               'in place of scores, for a human (or Claude) '
+                               'to score results/*.json directly instead of '
+                               'an LLM judge. The judge infrastructure '
+                               '(judge_candidate, calibration) is untouched '
+                               'and still available via a normal run.'))
     parser.add_argument('--port', type=int, default=8799,
                          help='Local port to run each proxy instance on.')
+    parser.add_argument('--corpus-item-limit', type=int, default=None,
+                         help=('Use only the first N corpus items (sorted by '
+                               'id). For smoke-testing a matrix cheaply '
+                               'before running it over the full corpus.'))
     args = parser.parse_args()
 
     matrix = load_matrix(args.matrix_file)
     corpus = load_corpus()
+    if args.corpus_item_limit is not None:
+        corpus = corpus[:args.corpus_item_limit]
     print(f'loaded {len(corpus)} corpus items, {len(matrix)} matrix entries',
           file=sys.stderr)
 
@@ -336,7 +458,7 @@ def main() -> None:
     timestamp = time.strftime('%Y%m%dT%H%M%S')
     for entry in matrix:
         result = run_matrix_entry(entry, corpus, args.judge_backend_env_var,
-                                   args.port)
+                                   args.port, skip_judge=args.skip_judge)
         out_path = RESULTS_DIR / f'{timestamp}-{entry["label"]}.json'
         out_path.write_text(json.dumps(result, indent=2, ensure_ascii=False),
                              encoding='utf-8')

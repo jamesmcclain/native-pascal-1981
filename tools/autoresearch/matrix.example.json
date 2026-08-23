@@ -4,14 +4,33 @@
       "label": "llm1-baseline",
       "backend_env_var": "PASCAL1981_LLM1_URL",
       "n": 3,
-      "proxy_args": {}
+      "proxy_args": {
+        "--max-tokens": "1024"
+      }
+    },
+    {
+      "label": "llm1-maxtokens512",
+      "backend_env_var": "PASCAL1981_LLM1_URL",
+      "n": 3,
+      "proxy_args": {
+        "--max-tokens": "512"
+      }
+    },
+    {
+      "label": "llm1-maxtokens2048",
+      "backend_env_var": "PASCAL1981_LLM1_URL",
+      "n": 3,
+      "proxy_args": {
+        "--max-tokens": "2048"
+      }
     },
     {
       "label": "llm1-grammar",
       "backend_env_var": "PASCAL1981_LLM1_URL",
       "n": 3,
       "proxy_args": {
-        "--grammar-file": "docs/ebnf_grammar.md"
+        "--grammar-file": "docs/ebnf_grammar.md",
+        "--max-tokens": "1024"
       }
     },
     {
@@ -19,7 +38,8 @@
       "backend_env_var": "PASCAL1981_LLM1_URL",
       "n": 3,
       "proxy_args": {
-        "--temperature": "0.0"
+        "--temperature": "0.0",
+        "--max-tokens": "1024"
       }
     },
     {
@@ -27,6 +47,22 @@
       "backend_env_var": "PASCAL1981_LLM2_URL",
       "n": 3,
       "proxy_args": {}
+    },
+    {
+      "label": "llm2-maxtokens256",
+      "backend_env_var": "PASCAL1981_LLM2_URL",
+      "n": 3,
+      "proxy_args": {
+        "--max-tokens": "256"
+      }
+    },
+    {
+      "label": "llm2-maxtokens1024",
+      "backend_env_var": "PASCAL1981_LLM2_URL",
+      "n": 3,
+      "proxy_args": {
+        "--max-tokens": "1024"
+      }
     },
     {
       "label": "llm2-grammar",
