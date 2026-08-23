@@ -45,6 +45,18 @@ def chat_response(content,
     }
 
 
+class FibonacciLineCountsTests(unittest.TestCase):
+
+    def test_first_five_candidates_follow_fibonacci_schedule(self):
+        self.assertEqual(proxy.fibonacci_line_counts(5), [1, 1, 2, 3, 5])
+
+    def test_single_candidate_is_one_line(self):
+        self.assertEqual(proxy.fibonacci_line_counts(1), [1])
+
+    def test_zero_candidates_is_empty(self):
+        self.assertEqual(proxy.fibonacci_line_counts(0), [])
+
+
 class ValidateRequestTests(unittest.TestCase):
 
     def test_accepts_well_formed_request(self):
@@ -379,6 +391,21 @@ class SanitizeCompletionTests(unittest.TestCase):
     def test_empty_completion_stays_empty(self):
         self.assertEqual(proxy.sanitize_completion(''), '')
 
+    def test_max_lines_keeps_up_to_that_many_lines(self):
+        self.assertEqual(proxy.sanitize_completion('a\nb\nc', max_lines=2),
+                         'a\nb')
+
+    def test_max_lines_leaves_shorter_text_untouched(self):
+        self.assertEqual(proxy.sanitize_completion('a\nb', max_lines=5),
+                         'a\nb')
+
+    def test_max_lines_exact_match_untouched(self):
+        self.assertEqual(proxy.sanitize_completion('a\nb\nc', max_lines=3),
+                         'a\nb\nc')
+
+    def test_max_lines_below_one_still_keeps_one_line(self):
+        self.assertEqual(proxy.sanitize_completion('a\nb', max_lines=0), 'a')
+
 
 class ExtractCompletionsTests(unittest.TestCase):
 
@@ -703,11 +730,11 @@ class PromptFileLoadingTests(unittest.TestCase):
 
     def test_multi_system_prompt_uses_bundled_template_by_default(self):
         result = proxy.multi_system_prompt(2)
-        self.assertIn('"0", "1"', result)
+        self.assertIn('"0" (1 line), "1" (1 line)', result)
 
     def test_multi_system_prompt_uses_explicit_template_override(self):
         result = proxy.multi_system_prompt(2, template='n={n} keys={keys}')
-        self.assertEqual(result, 'n=2 keys="0", "1"')
+        self.assertEqual(result, 'n=2 keys="0" (1 line), "1" (1 line)')
 
 
 class CallUpstreamPayloadTests(unittest.TestCase):
@@ -944,7 +971,9 @@ class EndToEndTests(unittest.TestCase):
         # the JSON has room to hold all N candidates.
         self.assertEqual(captured['system_prompt'],
                          proxy.multi_system_prompt(3))
-        self.assertEqual(captured['max_tokens'], self.config.max_tokens * 3)
+        # fibonacci_line_counts(3) == [1, 1, 2], summing to 4 -- the token
+        # budget scales with total requested lines, not candidate count.
+        self.assertEqual(captured['max_tokens'], self.config.max_tokens * 4)
 
     def test_custom_system_prompts_reach_call_upstream(self):
         # Overriding Config.system_prompt / .multi_system_prompt_template
@@ -972,7 +1001,8 @@ class EndToEndTests(unittest.TestCase):
             'n': 2,
         })
         self.assertEqual(status, 200)
-        self.assertEqual(captured, ['CUSTOM MULTI 2 "0", "1"'])
+        self.assertEqual(captured,
+                         ['CUSTOM MULTI 2 "0" (1 line), "1" (1 line)'])
 
         captured.clear()
         proxy.call_upstream = (
@@ -1187,6 +1217,31 @@ class EndToEndTests(unittest.TestCase):
         })
         self.assertEqual(status, 200)
         self.assertEqual(data['completions'], ['first'])
+
+    def test_multi_candidate_lines_truncated_per_fibonacci_schedule(self):
+        # n=4 -> fibonacci_line_counts == [1, 1, 2, 3]: candidate 3 (index
+        # "2") is allowed 2 lines and candidate 4 (index "3") is allowed 3,
+        # each overshooting its target here to prove truncation actually
+        # applies per-candidate, not just to the first one.
+        proxy.call_upstream = (lambda prompt, config, max_tokens=None,
+                               system_prompt=None: chat_response(
+                                   json.dumps({
+                                       '0': 'a1\na2',
+                                       '1': 'b1\nb2',
+                                       '2': 'c1\nc2\nc3',
+                                       '3': 'd1\nd2\nd3\nd4',
+                                   })))
+        status, data = self._post({
+            'buffer': 'x',
+            'cursor': {
+                'line': 1,
+                'column': 1
+            },
+            'n': 4,
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(data['completions'],
+                         ['a1', 'b1', 'c1\nc2', 'd1\nd2\nd3'])
 
 
 if __name__ == '__main__':

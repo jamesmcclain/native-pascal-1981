@@ -225,6 +225,24 @@ class RequestError(Exception):
 _MAX_CANDIDATES = 5
 
 
+def fibonacci_line_counts(n: int) -> list[int]:
+    """Target line count for each of N candidates, 1-indexed by position.
+
+    Candidate 1 -> 1 line, candidate 2 -> 1 line, candidate 3 -> 2 lines,
+    candidate 4 -> 3 lines, candidate 5 -> 5 lines, ... i.e. the standard
+    Fibonacci sequence (1, 1, 2, 3, 5, ...). Longer candidates later in the
+    cycle give a user who keeps pressing `M-n` progressively more to look
+    at, without every candidate paying the token/latency cost of a long
+    completion up front.
+    """
+    counts = []
+    a, b = 1, 1
+    for _ in range(max(n, 0)):
+        counts.append(a)
+        a, b = b, a + b
+    return counts
+
+
 def validate_request(
         payload: object,
         buffer_limit: int) -> tuple[str, str, int, int, int]:
@@ -382,8 +400,18 @@ def multi_system_prompt(n: int, template: str | None = None) -> str:
     The stronger wording fixed that reliably at the default temperature;
     raising temperature instead made it worse (more parse failures, more
     duplicates), so this is a prompting fix, not a sampling one.
+
+    Each key is annotated with its target line count from
+    `fibonacci_line_counts` (e.g. `"0" (1 line), "1" (1 line), "2" (2
+    lines)`) so a single request can carry per-candidate length targets
+    without a second placeholder -- `sanitize_completion` still enforces
+    the cap server-side afterward, this is just what the model is asked
+    for.
     """
-    keys = ', '.join(f'"{i}"' for i in range(n))
+    line_counts = fibonacci_line_counts(n)
+    keys = ', '.join(
+        f'"{i}" ({count} line{"" if count == 1 else "s"})'
+        for i, count in enumerate(line_counts))
     active_template = (template
                       if template is not None else _MULTI_SYSTEM_PROMPT_TEMPLATE)
     return active_template.format(n=n, keys=keys)
@@ -692,13 +720,16 @@ def extract_completions(upstream_response: dict,
 _SPECIAL_TOKEN_MARKER = '<|'
 
 
-def sanitize_completion(text: str) -> str:
-    """Enforce the single-line, NUL-free, marker-free output policy.
+def sanitize_completion(text: str, max_lines: int = 1) -> str:
+    """Enforce the NUL-free, marker-free, at-most-MAX_LINES output policy.
 
-    A newline in the raw text (the upstream stop sequence should prevent
-    this, but a differently-configured backend might not honor it) truncates
-    the completion at the first line rather than failing the request --
-    trailing whitespace on that first line is preserved.
+    Extra lines in the raw text beyond MAX_LINES (the upstream stop sequence
+    should prevent this, but a differently-configured backend might not
+    honor it, and a model can simply undershoot or overshoot a requested
+    line count) are truncated rather than failing the request -- trailing
+    whitespace on the last kept line is preserved. MAX_LINES defaults to 1,
+    the original single-line policy, unchanged for every caller that
+    doesn't pass a candidate-specific target (see `fibonacci_line_counts`).
 
     Some backends (observed live: a reasoning/chat-tuned model served over
     the plain-completion endpoint) leak fragments of their internal special-
@@ -707,14 +738,14 @@ def sanitize_completion(text: str) -> str:
     in with, real source. '<|' does not occur in legitimate Pascal source,
     so truncating there is a safe, backend-agnostic guard: it stops leaked
     formatting from ever reaching the buffer. It is a containment measure,
-    not a fix for a backend/model that is a poor fit for raw single-line
-    completion -- see pascal-completion-plan.md.
+    not a fix for a backend/model that is a poor fit for raw completion --
+    see pascal-completion-plan.md.
     """
     text = text.replace('\0', '')
     marker_index = text.find(_SPECIAL_TOKEN_MARKER)
     if marker_index != -1:
         text = text[:marker_index]
-    return text.split('\n', 1)[0]
+    return '\n'.join(text.split('\n')[:max(max_lines, 1)])
 
 
 # --------------------------------------------------------------------------
@@ -786,11 +817,13 @@ class CompletionHandler(BaseHTTPRequestHandler):
         prompt = build_prompt(goal, prefix, self.config.grammar_text,
                               multi_prefix)
 
+        line_counts = fibonacci_line_counts(n)
+
         try:
             upstream_response = call_upstream(
                 prompt,
                 self.config,
-                max_tokens=self.config.max_tokens * n,
+                max_tokens=self.config.max_tokens * sum(line_counts),
                 system_prompt=(self.config.system_prompt if n <= 1 else
                               multi_system_prompt(
                                   n, self.config.multi_system_prompt_template)))
@@ -800,7 +833,10 @@ class CompletionHandler(BaseHTTPRequestHandler):
             self._send_json(502, {'error': str(exc)})
             return
 
-        completions = [sanitize_completion(t) for t in texts]
+        completions = [
+            sanitize_completion(t, line_counts[i] if i < len(line_counts) else 1)
+            for i, t in enumerate(texts)
+        ]
 
         self._send_json(
             200, {
