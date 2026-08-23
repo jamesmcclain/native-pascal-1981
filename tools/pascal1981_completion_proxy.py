@@ -83,12 +83,19 @@ varying prompts and proxy parameters, without touching this file):
   more than one upstream call per request, and once the client started
   revealing more of a single generous completion via M-n/M-p instead of
   cycling between candidates, packing multiple *distinct* completions into
-  one response stopped solving a problem that still existed. (Follow-on,
-  elisp-side, not implemented here: M-n/M-p should step through the
-  completion's lines at deduplicated Fibonacci-spaced counts -- 1, 2, 3,
-  5, 8, 13, ... -- not the raw Fibonacci sequence's repeated leading 1, 1,
-  since two consecutive keystrokes revealing the same line count would be
-  a no-op.)
+  one response stopped solving a problem that still existed. On the elisp
+  side, M-n/M-p now step through a single completion's lines at
+  deduplicated Fibonacci-spaced counts (1, 2, 3, 5, 8, 13, ... -- not the
+  raw Fibonacci sequence's repeated leading 1, 1, since two consecutive
+  keystrokes revealing the same line count would be a no-op).
+- `strip_echo` is unconditional, mechanical defense-in-depth against the
+  echo bug, run on every completion in `do_POST` regardless of how rare
+  it now is under the minimal prompt: the 0/64 result above was measured
+  against one 64-item corpus, not proven impossible in general. It is a
+  word-level, whitespace/case-normalized overlap check between the
+  buffer's tail and the candidate's start -- safe by construction, since
+  it only ever removes text that is already genuinely present immediately
+  before the cursor.
 - --grammar-file was independently tested and found not to help completion
   quality while inflating prompt size and upstream latency -- it remains
   available (off by default) in case a future prompt shape changes that
@@ -105,6 +112,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -646,6 +654,48 @@ def extract_completions(
 # --------------------------------------------------------------------------
 
 
+def _norm_words(s: str) -> list[str]:
+    return re.sub(r'\s+', ' ', s).strip().lower().split(' ')
+
+
+def strip_echo(buffer: str, candidate: str) -> str:
+    """Strip a word-level, whitespace/case-insensitive echoed prefix of
+    BUFFER's tail from the start of CANDIDATE, returning the residue.
+
+    The minimal system prompt drove the echo bug (the model retyping text
+    already before the cursor) down to 0/64 occurrences at full-corpus
+    scale -- but that was measured against one 64-item corpus, not proven
+    impossible. This is unconditional defense-in-depth against whatever
+    that corpus didn't cover: it finds the longest suffix-of-BUFFER /
+    prefix-of-CANDIDATE word overlap (case- and whitespace-normalized, so
+    "BEGIN\\n" in the buffer still matches "begin " at the start of a
+    candidate) and walks CANDIDATE forward that many raw whitespace-
+    delimited tokens, preserving the candidate's own original casing and
+    formatting in what is returned. A candidate with no such overlap is
+    returned unchanged.
+    """
+    buf_words = _norm_words(buffer)
+    cand_words = _norm_words(candidate)
+    overlap = 0
+    for k in range(1, min(len(buf_words), len(cand_words)) + 1):
+        if buf_words[-k:] == cand_words[:k]:
+            overlap = k
+    if overlap == 0:
+        return candidate
+    idx = 0
+    tokens_consumed = 0
+    n = len(candidate)
+    while idx < n and tokens_consumed < overlap:
+        while idx < n and candidate[idx].isspace():
+            idx += 1
+        start = idx
+        while idx < n and not candidate[idx].isspace():
+            idx += 1
+        if start != idx:
+            tokens_consumed += 1
+    return candidate[idx:].lstrip()
+
+
 _SPECIAL_TOKEN_MARKER = '<|'
 
 
@@ -760,7 +810,8 @@ class CompletionHandler(BaseHTTPRequestHandler):
             self._send_json(502, {'error': str(exc)})
             return
 
-        completion = sanitize_completion(text, self.config.max_lines)
+        completion = sanitize_completion(
+            strip_echo(prefix, text), self.config.max_lines)
 
         self._send_json(
             200, {

@@ -279,6 +279,57 @@ class GrammarContextTests(unittest.TestCase):
             self.assertEqual(config.llm_api_key, 'explicit')
 
 
+class StripEchoTests(unittest.TestCase):
+
+    def test_no_overlap_passed_through_unchanged(self):
+        self.assertEqual(
+            proxy.strip_echo('VAR x: INTEGER;\nBEGIN\n', '  x := 1;'),
+            '  x := 1;')
+
+    def test_full_word_echo_stripped(self):
+        self.assertEqual(
+            proxy.strip_echo('PROGRAM Demo;\nBEGIN\n',
+                             'BEGIN\n  x := 1;\nEND.'), 'x := 1;\nEND.')
+
+    def test_case_insensitive_match_stripped(self):
+        self.assertEqual(proxy.strip_echo('...\nBEGIN\n', 'begin\n  x := 1;'),
+                         'x := 1;')
+
+    def test_whitespace_normalized_match_stripped(self):
+        self.assertEqual(
+            proxy.strip_echo('VAR   x,   y: INTEGER;\n',
+                             'x, y: INTEGER;\nBEGIN'), 'BEGIN')
+
+    def test_partial_word_overlap_not_falsely_matched(self):
+        # "BEGINNING" must not be treated as echoing "BEGIN".
+        self.assertEqual(
+            proxy.strip_echo('...\nBEGIN\n', 'BEGINNING := TRUE;'),
+            'BEGINNING := TRUE;')
+
+    def test_entire_candidate_echoed_becomes_empty(self):
+        self.assertEqual(proxy.strip_echo('...\nBEGIN\n', 'BEGIN'), '')
+
+    def test_empty_buffer_no_match(self):
+        self.assertEqual(proxy.strip_echo('', 'x := 1;'), 'x := 1;')
+
+    def test_empty_candidate_stays_empty(self):
+        self.assertEqual(proxy.strip_echo('BEGIN\n', ''), '')
+
+    def test_longest_overlap_preferred_over_shorter_one(self):
+        # Buffer tail "END; BEGIN" and candidate "END; BEGIN x := 1;" --
+        # the 2-word overlap must win, not just the 1-word "BEGIN" one.
+        self.assertEqual(
+            proxy.strip_echo('...\nEND; BEGIN\n', 'END; BEGIN x := 1;'),
+            'x := 1;')
+
+    def test_preserves_original_casing_and_formatting_of_residue(self):
+        # lstrip only -- leading whitespace after the stripped echo is
+        # dropped, but trailing whitespace/casing in the residue survives.
+        self.assertEqual(
+            proxy.strip_echo('...\nbegin\n', 'BEGIN\n  X := 1;  '),
+            'X := 1;  ')
+
+
 class SanitizeCompletionTests(unittest.TestCase):
 
     def test_strips_nul_bytes(self):
@@ -798,6 +849,23 @@ class EndToEndTests(unittest.TestCase):
                 'model': 'test-model',
                 'request_id': 'req-1',
             })
+
+    def test_echo_stripped_before_line_cap_applies(self):
+        # do_POST must run strip_echo(prefix, text) before sanitize_
+        # completion -- an echoed BEGIN plus real content must have the
+        # echo removed, not counted against the line cap.
+        proxy.call_upstream = (
+            lambda prompt, config, max_tokens=None, system_prompt=None:
+            chat_response('BEGIN\n  x := 1;\nEND.'))
+        status, data = self._post({
+            'buffer': 'PROGRAM Demo;\nBEGIN\n',
+            'cursor': {
+                'line': 2,
+                'column': 6
+            },
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(data['completions'], ['x := 1;\nEND.'])
 
     def test_custom_system_prompts_reach_call_upstream(self):
         # Overriding Config.system_prompt (as --system-prompt-file does)
