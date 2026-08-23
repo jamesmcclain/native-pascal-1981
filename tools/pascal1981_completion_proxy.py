@@ -60,6 +60,33 @@ Porting notes (for a future native pascal1981 port of this proxy):
   abbreviated/prefix matching, and no combined short flags anywhere this
   proxy is invoked -- a hand-rolled Pascal argv parser only needs to
   implement that one, narrow grammar, not argparse's full feature set.
+
+Autoresearch notes (for an effort that optimizes completion quality by
+varying prompts and proxy parameters, without touching this file):
+
+- The tunable surface is not just tools/prompts/*.txt. --temperature,
+  --reasoning-effort, --max-tokens, and --grammar-file are all real,
+  high-impact levers on quality that live in CLI flags / Config, not
+  prompt text -- include them in the search space, not just prompt
+  wording.
+- The multi-candidate JSON output shape (a flat object with string values
+  at keys "0".."n-1") and the per-candidate Fibonacci line-count schedule
+  (`fibonacci_line_counts`) are both fixed by this code, not by prompt
+  wording -- a prompt variant can ask for a different shape or schedule,
+  but it will fail to parse or get silently truncated/relabeled rather
+  than actually changing either, since `_parse_multi_completions` and
+  `sanitize_completion` enforce them regardless of what was asked for.
+  Within that fixed contract, prompt wording is free to vary.
+- Prompt-file edits are validated at proxy startup (see
+  `validate_prompt_templates`): an unescaped '{'/'}' in a hand-edited
+  multi_system_prompt.txt/multi_user_prefix.txt now fails the proxy
+  immediately with a clear message instead of surfacing as a dropped
+  connection on the first request that hits it.
+- Swapping --llm-base-url or the model loaded behind an existing one
+  without restarting the proxy leaves --reasoning-effort=auto's
+  calibration stale (see calibrate_reasoning_effort) -- restart the proxy
+  on every backend/model change in an experiment sweep, don't just
+  repoint the flag.
 """
 
 from __future__ import annotations
@@ -574,7 +601,7 @@ def ping_upstream(config: Config) -> tuple[str, str]:
                              config,
                              temperature=0.0,
                              system_prompt=config.system_prompt)
-    texts, model, _request_id = extract_completions(response)
+    texts, model, _request_id, _indices = extract_completions(response)
     return texts[0], model
 
 
@@ -676,9 +703,21 @@ def _strip_code_fence(text: str) -> str:
     return body.strip()
 
 
-def _parse_multi_completions(text: str, n: int) -> list[str]:
+def _parse_multi_completions(text: str, n: int) -> list[tuple[int, str]]:
     """Parse TEXT as the JSON object `multi_system_prompt(n)' asked for:
     keys "0" through str(n - 1), string values.
+
+    Returns (key_index, text) pairs, not a bare list of strings -- a caller
+    that needs to match each candidate back to something keyed by its
+    position (e.g. `fibonacci_line_counts(n)`'s per-candidate line-count
+    target) must use KEY_INDEX, not the pair's position in this returned
+    list: those two only coincide when every key from "0" to str(n - 1) was
+    present, which the tolerance below deliberately does not guarantee. A
+    previous version of this function returned a bare list of strings in
+    key order with gaps silently closed up, which let exactly that
+    misalignment happen one call site away (do_POST used the resulting
+    list's position to index into fibonacci_line_counts, which is only
+    correct when there are no gaps).
 
     Tolerant by design: a missing key or a non-string value for some index
     is skipped rather than failing the whole request, and extra keys
@@ -696,43 +735,53 @@ def _parse_multi_completions(text: str, n: int) -> list[str]:
     if not isinstance(parsed, dict):
         raise UpstreamError('upstream JSON for a multi-candidate request '
                             'was not an object')
-    texts = [
-        parsed[key] for key in (str(i) for i in range(n))
-        if isinstance(parsed.get(key), str)
-    ]
-    if not texts:
+    pairs = [(i, parsed[str(i)]) for i in range(n)
+             if isinstance(parsed.get(str(i)), str)]
+    if not pairs:
         raise UpstreamError(
             'upstream JSON had no usable candidate strings')
-    return texts
+    return pairs
 
 
-def extract_completions(upstream_response: dict,
-                        n: int = 1) -> tuple[list[str], str, str]:
-    """Pull (completions, model, request_id) out of a /chat/completions JSON
-    body's single choice.
+def extract_completions(
+        upstream_response: dict,
+        n: int = 1) -> tuple[list[str], str, str, list[int]]:
+    """Pull (completions, model, request_id, indices) out of a
+    /chat/completions JSON body's single choice.
 
     For N == 1, COMPLETIONS is a single-element list holding
     choices[0].message.content verbatim -- the plain single-line-completion
     contract, unchanged from before multi-candidate support existed.
+    INDICES is always [0] in this case.
 
     For N > 1, the backend was asked (via `multi_system_prompt') to pack N
     completions into that same content field as a JSON object; see
-    `_parse_multi_completions' for how that is read back. There is
-    deliberately only ever one choice to look at -- see `call_upstream' for
-    why multiple candidates are requested this way instead of via
-    backend-level "n" sampling.
+    `_parse_multi_completions' for how that is read back. COMPLETIONS[i]
+    corresponds to candidate key INDICES[i] -- these two lists can be
+    shorter than N and INDICES is not just range(len(COMPLETIONS)) whenever
+    the model skipped a key, so a caller matching completions back to
+    something keyed by candidate position (e.g.
+    `fibonacci_line_counts(n)`) MUST index by INDICES[i], never by i
+    itself. There is deliberately only ever one choice to look at -- see
+    `call_upstream' for why multiple candidates are requested this way
+    instead of via backend-level "n" sampling.
     """
     choices = upstream_response.get('choices')
     if not isinstance(choices, list) or not choices:
         raise UpstreamError('upstream response had no choices')
     choice = choices[0] if isinstance(choices[0], dict) else {}
     text = _extract_choice_text(choice)
-    texts = [text] if n <= 1 else _parse_multi_completions(text, n)
+    if n <= 1:
+        texts, indices = [text], [0]
+    else:
+        pairs = _parse_multi_completions(text, n)
+        indices = [i for i, _ in pairs]
+        texts = [t for _, t in pairs]
 
     model = upstream_response.get('model', '')
     request_id = upstream_response.get('id', '')
     return texts, model if isinstance(model, str) else '', (
-        request_id if isinstance(request_id, str) else '')
+        request_id if isinstance(request_id, str) else ''), indices
 
 
 # --------------------------------------------------------------------------
@@ -835,14 +884,13 @@ class CompletionHandler(BaseHTTPRequestHandler):
             return
 
         prefix = compute_prefix(buffer, line, column)
-        multi_prefix = (self.config.multi_user_prefix_template.format(n=n)
-                        if n > 1 else '')
-        prompt = build_prompt(goal, prefix, self.config.grammar_text,
-                              multi_prefix)
-
         line_counts = fibonacci_line_counts(n)
 
         try:
+            multi_prefix = (self.config.multi_user_prefix_template.format(n=n)
+                            if n > 1 else '')
+            prompt = build_prompt(goal, prefix, self.config.grammar_text,
+                                  multi_prefix)
             upstream_response = call_upstream(
                 prompt,
                 self.config,
@@ -850,15 +898,32 @@ class CompletionHandler(BaseHTTPRequestHandler):
                 system_prompt=(self.config.system_prompt if n <= 1 else
                               multi_system_prompt(
                                   n, self.config.multi_system_prompt_template)))
-            texts, model, request_id = extract_completions(upstream_response,
-                                                            n=n)
+            texts, model, request_id, indices = extract_completions(
+                upstream_response, n=n)
         except UpstreamError as exc:
             self._send_json(502, {'error': str(exc)})
             return
+        except (KeyError, IndexError, ValueError) as exc:
+            # A prompt-file template with an unescaped '{'/'}' (e.g. showing
+            # the model a literal JSON example) raises this from .format()
+            # -- str.format() treats any brace not doubled as '{{'/'}}' as a
+            # placeholder reference. This should already be caught at
+            # startup by validate_prompt_templates, but a request is a
+            # clean, diagnosable 500 rather than a dropped connection if it
+            # somehow still reaches here (e.g. a template swapped in
+            # without restarting the proxy).
+            self._send_json(
+                500, {
+                    'error': ('prompt template formatting failed: '
+                              f'{exc!r} -- a bundled or overridden prompt '
+                              'file likely has an unescaped { or } '
+                              '(double literal braces as {{ and }})')
+                })
+            return
 
         completions = [
-            sanitize_completion(t, line_counts[i] if i < len(line_counts) else 1)
-            for i, t in enumerate(texts)
+            sanitize_completion(t, line_counts[idx] if idx < len(line_counts) else 1)
+            for idx, t in zip(indices, texts)
         ]
 
         self._send_json(
@@ -982,6 +1047,48 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+class PromptTemplateError(Exception):
+    """A prompt-file template is not safe to use with str.format().
+
+    Raised by `validate_prompt_templates` -- see that function for when
+    this happens and why it's checked at startup rather than left to
+    surface on the first request that hits the broken template.
+    """
+
+
+def validate_prompt_templates(config: Config) -> None:
+    """Smoke-test CONFIG's multi-candidate prompt templates against the
+    same str.format() call they'll get at request time, with placeholder
+    dummy values, and raise PromptTemplateError with a clear, actionable
+    message if either one fails.
+
+    Both `multi_system_prompt_template` (see `multi_system_prompt`) and
+    `multi_user_prefix_template` (see CompletionHandler.do_POST) are filled
+    via str.format() -- any unescaped '{'/'}' in the prompt wording (e.g.
+    showing the model a literal JSON example, a natural thing to write
+    when hand-tuning a prompt that must produce JSON) raises KeyError from
+    that call. Left unchecked, that KeyError only surfaces on the first
+    real n > 1 request that reaches the broken template, as an unhandled
+    exception -- checking here instead means a bad prompt-file edit fails
+    the proxy at startup, with a message that says why, rather than as a
+    request that mysteriously drops its connection later.
+    """
+    try:
+        multi_system_prompt(2, config.multi_system_prompt_template)
+    except (KeyError, IndexError, ValueError) as exc:
+        raise PromptTemplateError(
+            f'multi_system_prompt_template is not safe to use: {exc!r} -- '
+            'likely an unescaped { or } in the prompt wording (double '
+            'literal braces as {{ and }})') from exc
+    try:
+        config.multi_user_prefix_template.format(n=2)
+    except (KeyError, IndexError, ValueError) as exc:
+        raise PromptTemplateError(
+            f'multi_user_prefix_template is not safe to use: {exc!r} -- '
+            'likely an unescaped { or } in the prompt wording (double '
+            'literal braces as {{ and }})') from exc
+
+
 def main() -> None:
     args = parse_args(sys.argv[1:])
     config = Config(
@@ -1004,6 +1111,12 @@ def main() -> None:
             load_prompt_override(args.multi_user_prefix_file)
             if args.multi_user_prefix_file else None),
     )
+
+    try:
+        validate_prompt_templates(config)
+    except PromptTemplateError as exc:
+        print(f'pascal1981-completion-proxy: {exc}', file=sys.stderr)
+        sys.exit(1)
 
     if config.reasoning_effort == 'auto':
         print(

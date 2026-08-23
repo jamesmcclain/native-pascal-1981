@@ -410,10 +410,10 @@ class SanitizeCompletionTests(unittest.TestCase):
 class ExtractCompletionsTests(unittest.TestCase):
 
     def test_extracts_text_model_and_id(self):
-        texts, model, request_id = proxy.extract_completions(
+        texts, model, request_id, indices = proxy.extract_completions(
             chat_response(' := 42;'))
-        self.assertEqual((texts, model, request_id),
-                         ([' := 42;'], 'test-model', 'abc123'))
+        self.assertEqual((texts, model, request_id, indices),
+                         ([' := 42;'], 'test-model', 'abc123', [0]))
 
     def test_missing_choices_raises_upstream_error(self):
         with self.assertRaises(proxy.UpstreamError):
@@ -441,30 +441,39 @@ class ExtractCompletionsTests(unittest.TestCase):
             self):
         # Distinguish "model deliberately answered with nothing" (finish
         # reason "stop") from the exhausted-reasoning-budget case above.
-        texts, _model, _id = proxy.extract_completions(
+        texts, _model, _id, indices = proxy.extract_completions(
             chat_response('', finish_reason='stop'))
         self.assertEqual(texts, [''])
+        self.assertEqual(indices, [0])
 
     def test_multi_candidate_parses_json_dict_from_single_choice(self):
         response = chat_response('{"0": " one", "1": " two", "2": " three"}')
-        texts, _model, _id = proxy.extract_completions(response, n=3)
+        texts, _model, _id, indices = proxy.extract_completions(response, n=3)
         self.assertEqual(texts, [' one', ' two', ' three'])
+        self.assertEqual(indices, [0, 1, 2])
 
     def test_multi_candidate_strips_markdown_code_fence(self):
         response = chat_response('```json\n{"0": " one", "1": " two"}\n```')
-        texts, _model, _id = proxy.extract_completions(response, n=2)
+        texts, _model, _id, indices = proxy.extract_completions(response, n=2)
         self.assertEqual(texts, [' one', ' two'])
+        self.assertEqual(indices, [0, 1])
 
     def test_multi_candidate_skips_missing_or_non_string_keys(self):
         response = chat_response('{"0": " one", "1": 42, "2": " three"}')
-        texts, _model, _id = proxy.extract_completions(response, n=3)
+        texts, _model, _id, indices = proxy.extract_completions(response, n=3)
         self.assertEqual(texts, [' one', ' three'])
+        # Key "1" was skipped -- the surviving candidates keep their real
+        # key indices (0 and 2), not a compacted 0..len(texts) range. This
+        # is exactly the alignment a caller needs to match each text back
+        # to e.g. fibonacci_line_counts(n)[index] correctly.
+        self.assertEqual(indices, [0, 2])
 
     def test_multi_candidate_ignores_keys_outside_requested_range(self):
         response = chat_response(
             '{"0": " one", "1": " two", "2": " three", "3": " four"}')
-        texts, _model, _id = proxy.extract_completions(response, n=2)
+        texts, _model, _id, indices = proxy.extract_completions(response, n=2)
         self.assertEqual(texts, [' one', ' two'])
+        self.assertEqual(indices, [0, 1])
 
     def test_multi_candidate_non_json_raises_upstream_error(self):
         response = chat_response('not json at all')
@@ -735,6 +744,31 @@ class PromptFileLoadingTests(unittest.TestCase):
     def test_multi_system_prompt_uses_explicit_template_override(self):
         result = proxy.multi_system_prompt(2, template='n={n} keys={keys}')
         self.assertEqual(result, 'n=2 keys="0" (1 line), "1" (1 line)')
+
+
+class ValidatePromptTemplatesTests(unittest.TestCase):
+
+    def test_bundled_templates_pass(self):
+        proxy.validate_prompt_templates(proxy.Config())  # must not raise
+
+    def test_unescaped_brace_in_multi_system_prompt_template_raises(self):
+        config = proxy.Config(
+            multi_system_prompt_template='bad {"0": "x"} {n} {keys}')
+        with self.assertRaises(proxy.PromptTemplateError) as ctx:
+            proxy.validate_prompt_templates(config)
+        self.assertIn('multi_system_prompt_template', str(ctx.exception))
+
+    def test_unescaped_brace_in_multi_user_prefix_template_raises(self):
+        config = proxy.Config(
+            multi_user_prefix_template='Give {n} like {"0": "x"}:')
+        with self.assertRaises(proxy.PromptTemplateError) as ctx:
+            proxy.validate_prompt_templates(config)
+        self.assertIn('multi_user_prefix_template', str(ctx.exception))
+
+    def test_properly_escaped_braces_pass(self):
+        config = proxy.Config(
+            multi_system_prompt_template='n={n} keys={keys} e.g. {{"0": "x"}}')
+        proxy.validate_prompt_templates(config)  # must not raise
 
 
 class CallUpstreamPayloadTests(unittest.TestCase):
@@ -1234,6 +1268,55 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(data['completions'],
                          ['a1', 'b1', 'c1\nc2', 'd1\nd2\nd3'])
+
+    def test_truncation_uses_real_key_when_a_candidate_is_skipped(self):
+        # n=4 -> fibonacci_line_counts == [1, 1, 2, 3]. Key "1" is missing
+        # from the model's JSON, so only 3 candidates come back, at their
+        # real key indices 0, 2, 3 (not compacted to 0, 1, 2). Truncation
+        # must use each candidate's real key (2 lines for key "2", 3 for
+        # key "3") -- indexing by list position instead (the bug this
+        # guards against) would wrongly truncate key "2" to 1 line and key
+        # "3" to 2, using fibonacci_line_counts[1] and [2] instead of the
+        # correct [2] and [3].
+        proxy.call_upstream = (lambda prompt, config, max_tokens=None,
+                               system_prompt=None: chat_response(
+                                   json.dumps({
+                                       '0': 'a1\na2',
+                                       '2': 'c1\nc2\nc3',
+                                       '3': 'd1\nd2\nd3\nd4',
+                                   })))
+        status, data = self._post({
+            'buffer': 'x',
+            'cursor': {
+                'line': 1,
+                'column': 1
+            },
+            'n': 4,
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(data['completions'], ['a1', 'c1\nc2', 'd1\nd2\nd3'])
+
+    def test_bad_prompt_template_returns_clean_500_not_a_dropped_connection(
+            self):
+        # An unescaped brace in a runtime-swapped template (bypassing the
+        # startup validate_prompt_templates check, e.g. Config mutated
+        # directly as this test does) must surface as a clean 500 with a
+        # diagnosable message, not an unhandled exception that drops the
+        # connection.
+        self.config.multi_system_prompt_template = 'bad {"0": "x"} {n} {keys}'
+        proxy.call_upstream = (
+            lambda prompt, config, max_tokens=None, system_prompt=None:
+            chat_response('{"0": " a", "1": " b"}'))
+        status, data = self._post({
+            'buffer': 'x',
+            'cursor': {
+                'line': 1,
+                'column': 1
+            },
+            'n': 2,
+        })
+        self.assertEqual(status, 500)
+        self.assertIn('prompt template formatting failed', data['error'])
 
     def test_concurrent_requests_each_get_independent_responses(self):
         # Exercises the ForkingHTTPServer path itself (every other test here
