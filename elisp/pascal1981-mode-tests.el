@@ -371,6 +371,211 @@ direct function call, flips `pascal1981-completion-enabled'."
     (should-not (pascal1981--completion-allowed-at-point-p))))
 
 ;; -------------------------------------------------------------------
+;; LLM completion: lexical-unit slicing
+;; -------------------------------------------------------------------
+
+(ert-deftest pascal1981-tests-proc-span-end-covers-whole-body ()
+  "A procedure with params and a real body: the span ends after its own
+closing `END;', not just after its header `;'."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas
+      (concat "PROGRAM P;\n"
+              "PROCEDURE BUMP(VAR X: INTEGER);\n"
+              "BEGIN\n"
+              "  X := X + 1\n"
+              "END;\n"
+              "BEGIN\n"
+              "END.\n")
+    (let* ((proc-index (cl-position-if
+                        (lambda (tok) (equal (alist-get 'kind tok) "PROCEDURE"))
+                        pascal1981--token-cache))
+           (end-index (pascal1981--completion-proc-span-end proc-index))
+           (end-tok (aref pascal1981--token-cache end-index)))
+      ;; The token just past the span is BUMP's own BEGIN's matching
+      ;; END's semicolon -- i.e. the outer program's own "BEGIN" on
+      ;; line 6, not anything inside BUMP itself.
+      (should (= (alist-get 'line end-tok) 6)))))
+
+(ert-deftest pascal1981-tests-proc-span-end-extern-has-no-body ()
+  "An EXTERN declaration's span ends right after its own trailing `;',
+with no BEGIN/END involved at all."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas
+      (concat "PROGRAM P;\n"
+              "FUNCTION Alloc(size: INTEGER): INTEGER; EXTERN;\n"
+              "BEGIN\n"
+              "END.\n")
+    (let* ((proc-index (cl-position-if
+                        (lambda (tok) (equal (alist-get 'kind tok) "FUNCTION"))
+                        pascal1981--token-cache))
+           (end-index (pascal1981--completion-proc-span-end proc-index))
+           (end-tok (aref pascal1981--token-cache end-index)))
+      (should (= (alist-get 'line end-tok) 3)))))
+
+(ert-deftest pascal1981-tests-proc-span-end-skips-nested-procedure ()
+  "A procedure containing a nested procedure declaration in its own
+decls section: the nested procedure's own BEGIN...END must not be
+mistaken for the outer one's -- this is the case a naive single-pass
+depth scan gets wrong (the nested BEGIN...END returns depth to 0
+before the outer procedure's own body has even started)."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas
+      (concat "PROGRAM P;\n"
+              "PROCEDURE Outer;\n"
+              "PROCEDURE Inner;\n"
+              "BEGIN\n"
+              "END;\n"
+              "BEGIN\n"
+              "  Inner\n"
+              "END;\n"
+              "BEGIN\n"
+              "END.\n")
+    (let* ((outer-index (cl-position-if
+                         (lambda (tok) (equal (alist-get 'kind tok) "PROCEDURE"))
+                         pascal1981--token-cache))
+           (end-index (pascal1981--completion-proc-span-end outer-index))
+           (end-tok (aref pascal1981--token-cache end-index)))
+      ;; Must run past Inner's own "END;" (line 5) all the way to
+      ;; Outer's own "END;" -- the token just past the span is the
+      ;; PROGRAM's own top-level BEGIN, on line 9.
+      (should (= (alist-get 'line end-tok) 9)))))
+
+(ert-deftest pascal1981-tests-enclosing-unit-span-finds-innermost ()
+  "Point inside a nested procedure resolves to the nested one's span,
+not the outer one's."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas
+      (concat "PROGRAM P;\n"
+              "PROCEDURE Outer;\n"
+              "PROCEDURE Inner;\n"
+              "BEGIN\n"
+              "  Q := 1\n"
+              "END;\n"
+              "BEGIN\n"
+              "  Inner\n"
+              "END;\n"
+              "BEGIN\n"
+              "END.\n")
+    (goto-char (point-min))
+    (search-forward "Q := 1")
+    (let ((span (pascal1981--completion-enclosing-unit-span (point))))
+      (should span)
+      (should (= (line-number-at-pos (car span)) 3)))))
+
+(ert-deftest pascal1981-tests-enclosing-unit-span-nil-at-top-level ()
+  "Point in the top-level main block (not inside any procedure) has no
+enclosing unit."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas
+      (concat "PROGRAM P;\n"
+              "PROCEDURE Foo;\n"
+              "BEGIN\n"
+              "END;\n"
+              "BEGIN\n"
+              "  Foo\n"
+              "END.\n")
+    (goto-char (point-min))
+    (search-forward "Foo\n")
+    (should-not (pascal1981--completion-enclosing-unit-span (point)))))
+
+(ert-deftest pascal1981-tests-toplevel-decls-end-before-first-procedure ()
+  "The top-level declarations span stops right at the first PROCEDURE."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas
+      (concat "PROGRAM P;\n"
+              "CONST N = 1;\n"
+              "VAR X: INTEGER;\n"
+              "PROCEDURE Foo;\n"
+              "BEGIN\n"
+              "END;\n"
+              "BEGIN\n"
+              "END.\n")
+    (let ((end (pascal1981--completion-toplevel-decls-end)))
+      (should (equal (buffer-substring-no-properties (point-min) end)
+                     "PROGRAM P;\nCONST N = 1;\nVAR X: INTEGER;\n")))))
+
+(ert-deftest pascal1981-tests-build-slice-adjusts-line-column ()
+  "The slice combines top-level decls with the unit's own text, and the
+returned LINE/COLUMN point into the combined text, not the original
+buffer."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas
+      (concat "PROGRAM P;\n"
+              "VAR N: INTEGER;\n"
+              "PROCEDURE Foo;\n"
+              "BEGIN\n"
+              "  N := 1\n"
+              "END;\n"
+              "BEGIN\n"
+              "END.\n")
+    (goto-char (point-min))
+    (search-forward "N := 1")
+    (let* ((span (pascal1981--completion-enclosing-unit-span (point)))
+           (result (pascal1981--completion-build-slice
+                    (car span) (cdr span) (point)))
+           (text (car result))
+           (line-column (cdr result)))
+      (should (string-prefix-p "PROGRAM P;\nVAR N: INTEGER;\n" text))
+      (should (string-match-p "PROCEDURE Foo;" text))
+      ;; decls-text is 2 complete lines (PROGRAM + VAR), so within the
+      ;; slice: line 3 is "PROCEDURE Foo;", line 4 is "BEGIN", and
+      ;; "N := 1" (where point stops, right after the "1") is line 5.
+      (should (= (car line-column) 5))
+      (should (= (cdr line-column) 9)))))
+
+(ert-deftest pascal1981-tests-request-text-unchanged-under-threshold ()
+  "A buffer under `pascal1981-completion-lexical-unit-threshold' still
+sends the whole buffer verbatim, unchanged from before this feature."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas "PROGRAM P;\nBEGIN\nEND.\n"
+    (let* ((pascal1981-completion-lexical-unit-threshold 4000)
+           (result (pascal1981--completion-request-text)))
+      (should (equal (car result) (buffer-string))))))
+
+(ert-deftest pascal1981-tests-request-text-slices-above-threshold ()
+  "Above the threshold, with point inside a procedure, the request text
+is a slice, not the whole (padded, larger) buffer."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas
+      (concat "PROGRAM P;\n"
+              "VAR N: INTEGER;\n"
+              "PROCEDURE Foo;\n"
+              "BEGIN\n"
+              "  N := 1\n"
+              "END;\n"
+              "BEGIN\n"
+              "END.\n"
+              ;; Padding as a comment so the buffer exceeds a tiny
+              ;; threshold without changing the token stream that
+              ;; matters for slicing.
+              "{ " (make-string 50 ?x) " }\n")
+    (goto-char (point-min))
+    (search-forward "N := 1")
+    (let* ((pascal1981-completion-lexical-unit-threshold 50)
+           (result (pascal1981--completion-request-text)))
+      (should (< (length (car result)) (buffer-size)))
+      (should (string-match-p "PROCEDURE Foo;" (car result))))))
+
+(ert-deftest pascal1981-tests-request-text-falls-back-at-top-level ()
+  "Above the threshold, with point at the top level (no enclosing
+unit), the whole buffer is still sent."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas
+      (concat "PROGRAM P;\n"
+              "PROCEDURE Foo;\n"
+              "BEGIN\n"
+              "END;\n"
+              "BEGIN\n"
+              "  Foo\n"
+              "END.\n"
+              "{ " (make-string 50 ?x) " }\n")
+    (goto-char (point-min))
+    (search-forward "Foo\n")
+    (let* ((pascal1981-completion-lexical-unit-threshold 50)
+           (result (pascal1981--completion-request-text)))
+      (should (equal (car result) (buffer-string))))))
+
+;; -------------------------------------------------------------------
 ;; LLM completion: async client
 ;; -------------------------------------------------------------------
 
@@ -1055,6 +1260,46 @@ tests above for that behavior in isolation.)"
       (execute-kbd-macro (kbd "M-n M-n TAB"))
       (should (equal (buffer-string)
                      "PROGRAM Demo;\nBEGIN\n  BEGIN\n    total := total + i;\n  END;")))))
+
+(ert-deftest pascal1981-tests-end-to-end-lexical-unit-slice-still-completes ()
+  "A buffer whose whole text exceeds `pascal1981-completion-buffer-limit'
+still gets a completion, as long as the lexical-unit slice around
+point (which excludes an unrelated, much larger procedure elsewhere in
+the file) fits -- exercised through the real send path, not just the
+`pascal1981--completion-request-text' helper in isolation. Without
+slicing, this request would be refused before ever reaching the proxy."
+  (pascal1981-tests--with-fake-proxy
+      (pascal1981-tests--http-json-response
+       200 '((completions . ["x := 1;"])
+             (model . "test-model") (request_id . "e2e-slice")))
+    (pascal1981-tests--with-selected-buffer "pascal1981-tests-e2e-slice"
+      (pascal1981-mode)
+      (setq pascal1981-completion-enabled t
+            pascal1981-completion-timeout 5
+            pascal1981-completion-lexical-unit-threshold 50
+            pascal1981-completion-buffer-limit 300)
+      (insert "PROGRAM P;\nVAR N: INTEGER;\nPROCEDURE Foo;\nBEGIN\n  N := 1")
+      (let ((point-in-foo (point)))
+        (insert (concat "\nEND;\nPROCEDURE Bar;\nBEGIN\n"
+                        (apply #'concat
+                               (make-list 60 "  N := N + 1;\n"))
+                        "END;\nBEGIN\nEND.\n"))
+        (goto-char point-in-foo))
+      ;; pascal1981-mode was enabled on an empty buffer above; real
+      ;; edits only refresh the token cache via an idle timer, which
+      ;; this test does not wait for -- force it synchronously so
+      ;; slicing has a token cache to work from, the same as it would
+      ;; have after the idle delay in real use.
+      (pascal1981--refresh-caches)
+      ;; Point is right after "N := 1", nothing but whitespace to EOL --
+      ;; eligible per `pascal1981--completion-allowed-at-point-p'.
+      ;; Whole buffer is well over 300 chars; the slice around point
+      ;; (declarations + Foo only, excluding Bar's padding) is not.
+      (should (> (buffer-size) pascal1981-completion-buffer-limit))
+      (pascal1981-complete-line)
+      (pascal1981-tests--wait-until
+       (lambda () (not pascal1981--completion-pending-id)) 5)
+      (should (pascal1981--completion-overlay-live-p)))))
 
 (ert-deftest pascal1981-tests-end-to-end-fake-proxy-http-error-no-preview ()
   "A real HTTP round trip returning a non-200 status shows no preview and

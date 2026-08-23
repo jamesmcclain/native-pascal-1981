@@ -60,9 +60,24 @@ falls back to indentation."
   :type 'number :group 'pascal1981)
 
 (defcustom pascal1981-completion-buffer-limit 65536
-  "Maximum buffer size, in characters, sent to the completion proxy.
-Buffers larger than this are not sent; TAB falls back to
-indentation instead."
+  "Maximum size, in characters, of what is actually sent to the completion
+proxy for one request -- the whole buffer when it fits under
+`pascal1981-completion-lexical-unit-threshold', or the sliced lexical
+unit otherwise (see that variable). If even the chosen text still
+exceeds this, nothing is sent; TAB falls back to indentation instead."
+  :type 'integer :group 'pascal1981)
+
+(defcustom pascal1981-completion-lexical-unit-threshold 4000
+  "Buffer size, in characters, above which a completion request sends
+only the innermost enclosing PROCEDURE/FUNCTION body around point (plus
+the top-level declarations), instead of the whole buffer.
+
+This exists so a large file does not have to fit `pascal1981-completion-
+buffer-limit' in its entirety just to get a completion somewhere inside
+it: only the relevant lexical unit needs to fit. If point is not inside
+any PROCEDURE/FUNCTION (e.g. it is in the top-level declarations or main
+block), the whole buffer is sent regardless of this threshold -- there is
+no unit to slice to. See `pascal1981--completion-enclosing-unit-span'."
   :type 'integer :group 'pascal1981)
 
 (defun pascal1981-completion-toggle ()
@@ -493,6 +508,173 @@ exactly as before."
                           (pascal1981-indent-line)))))))))
 
 ;; -------------------------------------------------------------------
+;; Lexical-unit slicing -- send an enclosing PROCEDURE/FUNCTION instead
+;; of the whole buffer once it exceeds
+;; `pascal1981-completion-lexical-unit-threshold'.
+;; -------------------------------------------------------------------
+
+(defconst pascal1981--block-openers '("RECORD" "BEGIN" "CASE")
+  "Token kinds that open a block which a matching END closes.
+Shared by `pascal1981--completion-proc-span-end' and
+`pascal1981--decl-end-index'.")
+
+(defun pascal1981--completion-proc-span-end (start-index)
+  "Return the token-cache index just past the SEMICOLON ending the
+PROCEDURE/FUNCTION declaration starting at token index START-INDEX (its
+own `PROCEDURE'/`FUNCTION' token), or nil if the cache runs out first.
+
+A naive reuse of `pascal1981--decl-end-index' does NOT give the whole
+declaration's span: a procedure header always ends in its own `;'
+before any `BEGIN' or further declarations (e.g. `PROCEDURE
+Foo(X: INTEGER);' on its own line), so the very first SEMICOLON at
+block-depth 0/paren-depth 0 is never the real end by itself -- it
+either introduces an EXTERN/EXTERNAL/FORWARD modifier (no body at all,
+so the *next* such SEMICOLON is the end), or it introduces the real
+body, in which case every further depth-0/paren-0 SEMICOLON before
+this procedure's own `BEGIN' belongs to one of ITS declarations
+(VAR/CONST/TYPE, or a nested PROCEDURE/FUNCTION's own header) and must
+be skipped rather than mistaken for the end. The true end in that case
+is the SEMICOLON immediately following the point where block depth,
+having gone above 0 at least once, returns to 0.
+
+A genuinely nested PROCEDURE/FUNCTION declaration (one appearing in
+this declaration's own decls section, before its own `BEGIN') is NOT
+just skipped by depth-tracking alone: its own `BEGIN...END' pair would
+otherwise be mistaken for THIS declaration's body boundary, ending the
+scan far too early. Such a nested declaration is instead skipped over
+as a whole via a recursive call to this same function, jumping the
+scan index past its entire span (header through its own trailing `;')
+without ever looking at its internal tokens -- each recursive call has
+its own independent DEPTH/PAREN/PAST-HEADER/SEEN-OPEN state, so nothing
+about a nested declaration's internals can perturb the outer scan."
+  (when pascal1981--token-cache
+    (let ((depth 0) (paren 0) (i start-index)
+          (n (length pascal1981--token-cache))
+          (past-header nil) (externp nil) (seen-open nil)
+          (found nil))
+      (while (and (null found) (< i n))
+        (let ((kind (alist-get 'kind (aref pascal1981--token-cache i))))
+          (cond
+           ((and past-header (not seen-open)
+                 (member kind '("PROCEDURE" "FUNCTION")))
+            (let ((nested-end (pascal1981--completion-proc-span-end i)))
+              (when nested-end (setq i (1- nested-end)))))
+           ((member kind pascal1981--block-openers)
+            (cl-incf depth) (setq seen-open t))
+           ((equal kind "END") (setq depth (max 0 (1- depth))))
+           ((equal kind "LPAREN") (cl-incf paren))
+           ((equal kind "RPAREN") (setq paren (max 0 (1- paren))))
+           ((and (equal kind "SEMICOLON") (= depth 0) (= paren 0))
+            (cond
+             ((not past-header)
+              (setq past-header t)
+              (setq externp
+                    (and (< (1+ i) n)
+                         (member (alist-get 'kind
+                                            (aref pascal1981--token-cache (1+ i)))
+                                 '("EXTERN" "EXTERNAL" "FORWARD")))))
+             (externp (setq found (1+ i)))
+             (seen-open (setq found (1+ i)))
+             ;; Else: a nested declaration's own SEMICOLON before this
+             ;; procedure's own BEGIN -- ignore it, keep scanning.
+             ))))
+        (setq i (1+ i)))
+      found)))
+
+(defun pascal1981--completion-enclosing-unit-span (pos)
+  "Return (START . END), the buffer positions of the innermost
+PROCEDURE/FUNCTION declaration containing POS, or nil if POS is not
+inside any such declaration (e.g. it is in the top-level declarations
+or main BEGIN...END). Chooses the smallest containing span when
+several nest around POS -- well-formed spans nest cleanly, so this is
+enough to find the innermost one without building an explicit tree."
+  (when pascal1981--token-cache
+    (let ((best nil) (best-width nil)
+          (n (length pascal1981--token-cache)))
+      (cl-loop for i from 0 below n
+               for tok = (aref pascal1981--token-cache i)
+               when (member (alist-get 'kind tok) '("PROCEDURE" "FUNCTION"))
+               do (let* ((start (pascal1981--token-pos tok))
+                         (end-index (pascal1981--completion-proc-span-end i))
+                         (end (if (and end-index (< end-index n))
+                                  (pascal1981--token-pos
+                                   (aref pascal1981--token-cache end-index))
+                                (point-max))))
+                    (when (and start end (<= start pos) (<= pos end))
+                      (let ((width (- end start)))
+                        (when (or (null best-width) (< width best-width))
+                          (setq best (cons start end) best-width width))))))
+      best)))
+
+(defun pascal1981--completion-toplevel-decls-end ()
+  "Position just before the first top-level PROCEDURE, FUNCTION, or
+BEGIN token -- i.e. the end of the PROGRAM header plus any top-level
+CONST/TYPE/VAR/LABEL declarations. Nothing can be nested before the
+very first occurrence of any of these three kinds, so no depth
+tracking is needed. Returns `point-max' if the token cache is empty or
+none of these kinds ever occurs."
+  (if pascal1981--token-cache
+      (let ((tok (cl-find-if
+                  (lambda (tok)
+                    (member (alist-get 'kind tok)
+                            '("PROCEDURE" "FUNCTION" "BEGIN")))
+                  pascal1981--token-cache)))
+        (if tok (pascal1981--token-pos tok) (point-max)))
+    (point-max)))
+
+(defun pascal1981--completion-build-slice (unit-start unit-end orig-point)
+  "Build (TEXT . (LINE . COLUMN)) for a lexical-unit slice: the
+top-level declarations (`pascal1981--completion-toplevel-decls-end')
+followed by the buffer text from UNIT-START to UNIT-END, with
+LINE/COLUMN computed relative to that combined text at ORIG-POINT
+(which must lie within [UNIT-START, UNIT-END]).
+
+Builds LINE/COLUMN by reusing `pascal1981--completion-line-column'
+inside a scratch `with-temp-buffer' at exactly the inserted position
+that corresponds to ORIG-POINT, rather than computing the offset by
+hand -- the temp buffer's own notion of \"where point is\" already
+matches what is needed once the text is assembled in the same order
+it will be sent."
+  (let ((decls-text (buffer-substring-no-properties
+                      (point-min) (pascal1981--completion-toplevel-decls-end)))
+        (before (buffer-substring-no-properties unit-start orig-point))
+        (after (buffer-substring-no-properties orig-point unit-end)))
+    (with-temp-buffer
+      (insert decls-text)
+      (unless (bolp) (insert "\n"))
+      (insert before)
+      (let ((line-column (pascal1981--completion-line-column)))
+        (insert after)
+        (cons (buffer-string) line-column)))))
+
+(defun pascal1981--completion-request-text ()
+  "Return (TEXT . (LINE . COLUMN)) to send for a `/complete' request at
+point: the whole buffer when its size is at or under
+`pascal1981-completion-lexical-unit-threshold'; above that, the
+innermost enclosing PROCEDURE/FUNCTION's text plus the top-level
+declarations (see `pascal1981--completion-enclosing-unit-span' and
+`pascal1981--completion-build-slice'), with LINE/COLUMN adjusted to be
+relative to that slice. Falls back to the whole buffer when no
+enclosing unit is found (point is at the top level) or the token cache
+is unavailable -- a crude line-window slice was considered and
+rejected as more likely to produce a confusing or invalid excerpt than
+a clean procedure-boundary one."
+  (if (<= (buffer-size) pascal1981-completion-lexical-unit-threshold)
+      (cons (buffer-substring-no-properties (point-min) (point-max))
+            (pascal1981--completion-line-column))
+    (let ((span (pascal1981--completion-enclosing-unit-span (point))))
+      (if span
+          (pascal1981--completion-build-slice (car span) (cdr span) (point))
+        (cons (buffer-substring-no-properties (point-min) (point-max))
+              (pascal1981--completion-line-column))))))
+
+(defun pascal1981--completion-oversized-p ()
+  "Non-nil when what `pascal1981--completion-request-text' would send
+for point right now exceeds `pascal1981-completion-buffer-limit'."
+  (> (length (car (pascal1981--completion-request-text)))
+     pascal1981-completion-buffer-limit))
+
+;; -------------------------------------------------------------------
 ;; Ghost-text preview + line reveal
 ;; -------------------------------------------------------------------
 
@@ -749,8 +931,9 @@ than inserted somewhere it no longer belongs."
          (request-id (cl-incf pascal1981--completion-request-counter))
          (point-at-request (point))
          (tick-at-request (buffer-modified-tick))
-         (line-column (pascal1981--completion-line-column))
-         (buffer-text (buffer-substring-no-properties (point-min) (point-max)))
+         (request-text (pascal1981--completion-request-text))
+         (buffer-text (car request-text))
+         (line-column (cdr request-text))
          (url-request-method "POST")
          (url-request-extra-headers '(("Content-Type" . "application/json")))
          (url-request-data
@@ -777,7 +960,9 @@ than inserted somewhere it no longer belongs."
 (defun pascal1981-complete-line ()
   "Request an LLM completion at point from the local completion proxy.
 Does nothing but report why, via `message', when completion is
-disabled, point is mid-line, or the buffer exceeds
+disabled, point is mid-line, or what would be sent (the whole buffer,
+or a lexical-unit slice of it -- see
+`pascal1981-completion-lexical-unit-threshold') exceeds
 `pascal1981-completion-buffer-limit'; the buffer is never modified by
 this command itself. Later, asynchronously, a successful response is
 shown as a ghost-text preview by `pascal1981--completion-callback',
@@ -789,7 +974,7 @@ its lines with `M-n'/`M-p'."
     (message "pascal1981: completion is disabled"))
    ((not (pascal1981--completion-allowed-at-point-p))
     (message "pascal1981: completion is not offered mid-line"))
-   ((> (buffer-size) pascal1981-completion-buffer-limit)
+   ((pascal1981--completion-oversized-p)
     (message "pascal1981: buffer exceeds completion size limit (%d)"
               pascal1981-completion-buffer-limit))
    (t
@@ -803,9 +988,10 @@ set up below `pascal1981-mode's definition). If a completion preview
 is already showing at point, TAB accepts it (see
 `pascal1981--completion-do-accept'). Otherwise it requests a completion
 only when `pascal1981-completion-enabled' is non-nil, point is
-eligible per `pascal1981--completion-allowed-at-point-p', and the
-buffer does not exceed `pascal1981-completion-buffer-limit'; in every
-other case -- completion disabled, mid-line, oversized buffer -- TAB
+eligible per `pascal1981--completion-allowed-at-point-p', and what
+would be sent does not exceed `pascal1981-completion-buffer-limit'
+(see `pascal1981--completion-oversized-p'); in every other case --
+completion disabled, mid-line, oversized -- TAB
 keeps its ordinary meaning: `pascal1981-indent-line'. That fallback is
 always exactly indentation, never a no-op, so disabling or losing the
 proxy never costs TAB its normal behavior."
@@ -815,7 +1001,7 @@ proxy never costs TAB its normal behavior."
     (pascal1981--completion-do-accept))
    ((and pascal1981-completion-enabled
          (pascal1981--completion-allowed-at-point-p)
-         (<= (buffer-size) pascal1981-completion-buffer-limit))
+         (not (pascal1981--completion-oversized-p)))
     (pascal1981--completion-send))
    (t
     (pascal1981-indent-line))))
@@ -851,9 +1037,6 @@ VarDecl with two names, and each name is its own imenu entry."
            (col  (alist-get 'column tok)))
       (when (and line col)
         (pascal1981--line-col-pos line col)))))
-
-(defconst pascal1981--block-openers '("RECORD" "BEGIN" "CASE")
-  "Token kinds that open a block which a matching END closes.")
 
 (defun pascal1981--name-token-index (name &optional start)
   "Index of the first IDENTIFIER token with lexeme NAME at or after START.

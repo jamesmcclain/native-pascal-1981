@@ -157,8 +157,9 @@ flipping `pascal1981-completion-enabled` on or off.
 
 Other knobs: `pascal1981-completion-goal` (the instruction sent with every
 request), `pascal1981-completion-timeout` (seconds to wait before giving
-up, default 8), `pascal1981-completion-buffer-limit` (buffers larger than
-this, in characters, are never sent).
+up, default 8), `pascal1981-completion-buffer-limit` (nothing larger than
+this, in characters, is ever sent — see "Large files" below for what
+actually gets measured against it).
 
 Each request makes exactly one upstream call and gets back exactly one
 completion — there is no multi-candidate ("give me N different
@@ -190,6 +191,36 @@ gets inserted. A multi-line accept re-indents the inserted lines against
 the buffer's normal indentation rules (see `pascal1981--completion-insert`),
 since the raw model text carries no indentation of its own.
 
+### Large files: sending a lexical unit instead of the whole buffer
+
+A request normally sends the whole buffer. Once the buffer exceeds
+`pascal1981-completion-lexical-unit-threshold` (characters, default 4000),
+the mode instead sends only the innermost enclosing `PROCEDURE`/`FUNCTION`
+around point, plus the top-level declarations (the `PROGRAM` header and any
+top-level `CONST`/`TYPE`/`VAR`/`LABEL` section) — not the whole file. This
+is what actually lets completion work on a file far larger than
+`pascal1981-completion-buffer-limit` would otherwise allow: only the
+relevant lexical unit has to fit that limit, not the entire file.
+
+The top-level declarations are always included alongside the unit, not
+just the unit alone — dropping them was found, during this feature's
+design, to measurably hurt completion correctness on at least one backend
+(it started fabricating unrelated logic once it lost sight of what a
+variable was declared as). Cursor position is translated to be relative to
+the sent slice; the proxy never needs to know a slice happened.
+
+If point is not inside any `PROCEDURE`/`FUNCTION` — e.g. it's in the
+top-level declarations or the main `BEGIN...END` block — there is no unit
+to slice to, and the whole buffer is sent regardless of size, same as
+before this feature existed. A crude "some lines around point" fallback
+was considered for that case and rejected: it seemed more likely to
+produce a confusing or syntactically broken excerpt than a clean
+procedure-boundary slice reliably does.
+
+Set `pascal1981-completion-lexical-unit-threshold` very high to disable
+slicing entirely and always send the whole buffer (subject to
+`pascal1981-completion-buffer-limit` as before).
+
 ### TAB behavior
 
 Completions show as a dismissible ghost-text preview, not an immediate
@@ -203,10 +234,11 @@ TAB (`pascal1981-indent-or-complete`, remapped from
   away.
 - **No preview, and point is eligible.** Completion must be enabled, point
   must sit before nothing but whitespace on the current line
-  (`(looking-at-p "[ \t]*$")`), and the buffer must not exceed
-  `pascal1981-completion-buffer-limit`. TAB requests a completion; when the
-  (asynchronous) response arrives, it renders as a ghost-text preview rather
-  than inserting immediately.
+  (`(looking-at-p "[ \t]*$")`), and whatever would actually be sent (the
+  whole buffer, or a lexical-unit slice of it — see "Large files" above)
+  must not exceed `pascal1981-completion-buffer-limit`. TAB requests a
+  completion; when the (asynchronous) response arrives, it renders as a
+  ghost-text preview rather than inserting immediately.
 - **Anything else** — completion disabled, mid-line, oversized buffer — TAB
   keeps its ordinary meaning: `pascal1981-indent-line`. This fallback is
   always exactly indentation, never a no-op, so disabling or losing the
@@ -244,8 +276,9 @@ responding before troubleshooting from inside Emacs.
 
 - **TAB just indents, no completion happens.** Either
   `pascal1981-completion-enabled` is nil, point isn't at end-of-line-modulo-
-  whitespace, or the buffer is over `pascal1981-completion-buffer-limit` —
-  and no preview was already showing at point, which is the only other
+  whitespace, or what would be sent is over `pascal1981-completion-buffer-limit`
+  even after lexical-unit slicing — and no preview was already showing at
+  point, which is the only other
   thing TAB can do instead of indenting. This is by design, not a failure —
   check `pascal1981-complete-line` directly (`M-x`) to isolate eligibility
   from a proxy problem.
@@ -275,8 +308,9 @@ responding before troubleshooting from inside Emacs.
 
 ### Privacy
 
-Enabling completion sends the buffer's full text, plus the cursor position
-and (if configured) the EBNF grammar, to whatever backend
+Enabling completion sends the buffer's full text (or, on a large buffer, a
+lexical-unit slice of it — see "Large files" above), plus the cursor
+position and (if configured) the EBNF grammar, to whatever backend
 `pascal1981-completion-proxy-url` currently points at through the local
 proxy. For a local backend nothing leaves your machine; for anything else,
 that's on you to configure knowingly.
