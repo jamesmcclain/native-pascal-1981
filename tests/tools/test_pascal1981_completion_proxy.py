@@ -2,7 +2,7 @@
 
 Pure-function tests (schema validation, prompt construction, sanitization)
 run directly. The HTTP layer is tested end-to-end against a real
-ThreadingHTTPServer instance bound to an ephemeral loopback port, with
+ForkingHTTPServer instance bound to an ephemeral loopback port, with
 `call_upstream` monkeypatched so no network call ever leaves the process --
 there is no live OpenAI-compatible backend in CI.
 """
@@ -945,15 +945,23 @@ class EndToEndTests(unittest.TestCase):
             })
 
     def test_multiple_candidates_returned_as_a_list(self):
-        captured = {}
-
+        # The server now forks a child process per connection (see
+        # ForkingHTTPServer), so a request handler's fake_call_upstream runs
+        # in a copy-on-write child -- mutating a shared Python list/dict from
+        # in there is invisible to this (parent) test process. Echo what was
+        # received back through the "model" field instead, which really did
+        # cross the wire and so is visible in DATA below.
         def fake_call_upstream(prompt,
                                config,
                                max_tokens=None,
                                system_prompt=None):
-            captured['max_tokens'] = max_tokens
-            captured['system_prompt'] = system_prompt
-            return chat_response('{"0": " a", "1": " b", "2": " c"}')
+            return chat_response('{"0": " a", "1": " b", "2": " c"}',
+                                 model=json.dumps({
+                                     'max_tokens':
+                                     max_tokens,
+                                     'system_prompt':
+                                     system_prompt,
+                                 }))
 
         proxy.call_upstream = fake_call_upstream
         status, data = self._post({
@@ -966,33 +974,31 @@ class EndToEndTests(unittest.TestCase):
         })
         self.assertEqual(status, 200)
         self.assertEqual(data['completions'], [' a', ' b', ' c'])
+        received = json.loads(data['model'])
         # A multi-candidate request uses the JSON-dict system prompt, not
         # the plain single-completion one, and a scaled-up token budget so
         # the JSON has room to hold all N candidates.
-        self.assertEqual(captured['system_prompt'],
+        self.assertEqual(received['system_prompt'],
                          proxy.multi_system_prompt(3))
         # fibonacci_line_counts(3) == [1, 1, 2], summing to 4 -- the token
         # budget scales with total requested lines, not candidate count.
-        self.assertEqual(captured['max_tokens'], self.config.max_tokens * 4)
+        self.assertEqual(received['max_tokens'], self.config.max_tokens * 4)
 
     def test_custom_system_prompts_reach_call_upstream(self):
         # Overriding Config.system_prompt / .multi_system_prompt_template
         # (as --system-prompt-file / --multi-system-prompt-file do) must
         # actually be what reaches call_upstream, for both the n == 1 and
-        # n > 1 paths -- not just the bundled defaults.
+        # n > 1 paths -- not just the bundled defaults. Echoed back via the
+        # "model" field -- see the comment in
+        # test_multiple_candidates_returned_as_a_list for why (forked
+        # per-connection child, not a shared-memory thread).
         self.config.system_prompt = 'CUSTOM SINGLE'
         self.config.multi_system_prompt_template = 'CUSTOM MULTI {n} {keys}'
-        captured = []
 
-        def fake_call_upstream(prompt,
-                               config,
-                               max_tokens=None,
-                               system_prompt=None):
-            captured.append(system_prompt)
-            return chat_response('{"0": " a", "1": " b"}')
-
-        proxy.call_upstream = fake_call_upstream
-        status, _data = self._post({
+        proxy.call_upstream = (
+            lambda prompt, config, max_tokens=None, system_prompt=None:
+            chat_response('{"0": " a", "1": " b"}', model=system_prompt))
+        status, data = self._post({
             'buffer': 'x',
             'cursor': {
                 'line': 1,
@@ -1001,14 +1007,13 @@ class EndToEndTests(unittest.TestCase):
             'n': 2,
         })
         self.assertEqual(status, 200)
-        self.assertEqual(captured,
-                         ['CUSTOM MULTI 2 "0" (1 line), "1" (1 line)'])
+        self.assertEqual(data['model'],
+                         'CUSTOM MULTI 2 "0" (1 line), "1" (1 line)')
 
-        captured.clear()
         proxy.call_upstream = (
             lambda prompt, config, max_tokens=None, system_prompt=None:
-            (captured.append(system_prompt), chat_response(' ok'))[1])
-        status, _data = self._post({
+            chat_response(' ok', model=system_prompt))
+        status, data = self._post({
             'buffer': 'x',
             'cursor': {
                 'line': 1,
@@ -1016,23 +1021,19 @@ class EndToEndTests(unittest.TestCase):
             },
         })
         self.assertEqual(status, 200)
-        self.assertEqual(captured, ['CUSTOM SINGLE'])
+        self.assertEqual(data['model'], 'CUSTOM SINGLE')
 
     def test_custom_multi_user_prefix_reaches_the_prompt_body(self):
         # multi_user_prefix_template belongs in the *user* message content,
         # immediately before the buffer prefix -- not in system_prompt.
+        # Echoed back via "model" -- see the comment in
+        # test_multiple_candidates_returned_as_a_list.
         self.config.multi_user_prefix_template = 'GIVE {n} NOW:'
-        captured = []
 
-        def fake_call_upstream(prompt,
-                               config,
-                               max_tokens=None,
-                               system_prompt=None):
-            captured.append(prompt)
-            return chat_response('{"0": " a", "1": " b"}')
-
-        proxy.call_upstream = fake_call_upstream
-        status, _data = self._post({
+        proxy.call_upstream = (
+            lambda prompt, config, max_tokens=None, system_prompt=None:
+            chat_response('{"0": " a", "1": " b"}', model=prompt))
+        status, data = self._post({
             'buffer': 'x',
             'cursor': {
                 'line': 1,
@@ -1041,21 +1042,17 @@ class EndToEndTests(unittest.TestCase):
             'n': 2,
         })
         self.assertEqual(status, 200)
-        self.assertEqual(captured, ['GIVE 2 NOW:\nx'])
+        self.assertEqual(data['model'], 'GIVE 2 NOW:\nx')
 
     def test_multi_user_prefix_absent_when_n_is_one(self):
+        # Echoed back via "model" -- see the comment in
+        # test_multiple_candidates_returned_as_a_list.
         self.config.multi_user_prefix_template = 'GIVE {n} NOW:'
-        captured = []
 
-        def fake_call_upstream(prompt,
-                               config,
-                               max_tokens=None,
-                               system_prompt=None):
-            captured.append(prompt)
-            return chat_response(' ok')
-
-        proxy.call_upstream = fake_call_upstream
-        status, _data = self._post({
+        proxy.call_upstream = (
+            lambda prompt, config, max_tokens=None, system_prompt=None:
+            chat_response(' ok', model=prompt))
+        status, data = self._post({
             'buffer': 'x',
             'cursor': {
                 'line': 1,
@@ -1063,19 +1060,14 @@ class EndToEndTests(unittest.TestCase):
             },
         })
         self.assertEqual(status, 200)
-        self.assertEqual(captured, ['x'])
+        self.assertEqual(data['model'], 'x')
 
     def test_n_omitted_from_request_defaults_to_one(self):
-        captured = {}
-
-        def fake_call_upstream(prompt,
-                               config,
-                               max_tokens=None,
-                               system_prompt=None):
-            captured['system_prompt'] = system_prompt
-            return chat_response(' ok')
-
-        proxy.call_upstream = fake_call_upstream
+        # Echoed back via "model" -- see the comment in
+        # test_multiple_candidates_returned_as_a_list.
+        proxy.call_upstream = (
+            lambda prompt, config, max_tokens=None, system_prompt=None:
+            chat_response(' ok', model=system_prompt))
         status, data = self._post({
             'buffer': 'x',
             'cursor': {
@@ -1085,7 +1077,7 @@ class EndToEndTests(unittest.TestCase):
         })
         self.assertEqual(status, 200)
         self.assertEqual(data['completions'], [' ok'])
-        self.assertEqual(captured['system_prompt'], proxy.SYSTEM_PROMPT)
+        self.assertEqual(data['model'], proxy.SYSTEM_PROMPT)
 
     def test_upstream_error_returns_502_and_leaves_body_generic(self):
 
@@ -1242,6 +1234,48 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(data['completions'],
                          ['a1', 'b1', 'c1\nc2', 'd1\nd2\nd3'])
+
+    def test_concurrent_requests_each_get_independent_responses(self):
+        # Exercises the ForkingHTTPServer path itself (every other test here
+        # only ever has one request in flight at a time): two overlapping
+        # connections must each get back the response that matches what
+        # *they* sent, not get crossed or corrupted by running in sibling
+        # forked child processes.
+        def fake_call_upstream(prompt,
+                               config,
+                               max_tokens=None,
+                               system_prompt=None):
+            # Echo the buffer prefix back via "model" so each response can
+            # be matched to its own request.
+            return chat_response(' ok;', model=prompt)
+
+        proxy.call_upstream = fake_call_upstream
+        results = {}
+
+        def post_one(tag):
+            results[tag] = self._post({
+                'buffer': f'x_{tag}',
+                'cursor': {
+                    'line': 1,
+                    'column': 1 + len(f'x_{tag}')
+                },
+            })
+
+        import threading
+        threads = [
+            threading.Thread(target=post_one, args=(tag, ))
+            for tag in ('a', 'b', 'c')
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        for tag in ('a', 'b', 'c'):
+            status, data = results[tag]
+            self.assertEqual(status, 200)
+            self.assertEqual(data['model'], f'x_{tag}')
+            self.assertEqual(data['completions'], [' ok;'])
 
 
 if __name__ == '__main__':

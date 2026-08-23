@@ -45,6 +45,21 @@ model skip its hidden reasoning pass entirely and answer directly. A backend
 that does not understand the field is expected to ignore it, per the usual
 "unknown JSON field" tolerance of OpenAI-compatible servers; if one does not,
 --reasoning-effort can be set to an empty string to omit it.
+
+Porting notes (for a future native pascal1981 port of this proxy):
+
+- Every buffer/JSON payload here (the request body, the source-buffer
+  prefix, upstream request/response bodies) can exceed 255 characters --
+  the dialect's LSTRING(n) stores its length as a single byte (0..255), so
+  none of this data can be carried in an LSTRING. It has to be a raw
+  ADRMEM/^CHAR buffer with an explicit INTEGER32 length, the same pattern
+  src/jsonutil.pas's ReadAllStdin/MakeCStr/CStrToStr255 already use for
+  arbitrary-length C-string data.
+- Every CLI flag below is used, in practice, only as `--flag value`
+  (long form, space-separated). There is no `--flag=value` usage, no
+  abbreviated/prefix matching, and no combined short flags anywhere this
+  proxy is invoked -- a hand-rolled Pascal argv parser only needs to
+  implement that one, narrow grammar, not argparse's full feature set.
 """
 
 from __future__ import annotations
@@ -55,7 +70,8 @@ import os
 import sys
 import urllib.error
 import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import socketserver
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 # --------------------------------------------------------------------------
@@ -444,6 +460,13 @@ def call_upstream(prompt: str,
     and another (llama.cpp) hard-rejects any "n" other than 1 with an HTTP
     400, so multiple candidates are requested via prompt + JSON output
     instead of relying on backend-level sampling support.
+
+    Porting note: PAYLOAD below never sets "stream": true, so every upstream
+    response is a single complete JSON body delimited by a normal
+    Content-Length header -- never chunked transfer-encoding, never SSE
+    framing. A future socket-based Pascal HTTP client only has to read
+    exactly Content-Length bytes after the header block; it never needs to
+    handle a chunked or streamed response from this code path.
     """
     payload = {
         'model':
@@ -846,10 +869,24 @@ class CompletionHandler(BaseHTTPRequestHandler):
             })
 
 
-def make_server(config: Config) -> ThreadingHTTPServer:
+class ForkingHTTPServer(socketserver.ForkingMixIn, HTTPServer):
+    """One process per connection, not one thread.
+
+    Deliberately forking rather than threading: `Config` is built once at
+    startup and only ever read afterward, and no per-request state lives in
+    this process (the elisp side owns all pending-request tracking) -- so
+    nothing here needs threads' shared-memory semantics. Forking instead
+    makes this reference implementation's concurrency model match what a
+    future native pascal1981 port will actually use (fork-per-connection,
+    proven in tests/integration/posix_pipe_fork.pas), rather than relying on
+    a thread abstraction the dialect's runtime doesn't have.
+    """
+
+
+def make_server(config: Config) -> ForkingHTTPServer:
     handler = type('BoundCompletionHandler', (CompletionHandler,),
                     {'config': config})
-    return ThreadingHTTPServer((config.host, config.port), handler)
+    return ForkingHTTPServer((config.host, config.port), handler)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
