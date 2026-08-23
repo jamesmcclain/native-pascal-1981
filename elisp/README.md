@@ -132,6 +132,9 @@ without touching code:
 - `system_prompt.txt` — instruction for a single-completion (`n == 1`) request.
 - `multi_system_prompt.txt` — instruction for a multi-candidate (`n > 1`)
   request; must contain the literal placeholders `{n}` and `{keys}`.
+  `{keys}` now expands with each key annotated by its target line count
+  (see "Candidate length: the Fibonacci schedule" below) — an override
+  file that uses `{keys}` verbatim picks this up automatically.
 - `multi_user_prefix.txt` — a short line placed in the *user* message,
   immediately before the buffer text, only on a multi-candidate request;
   must contain the literal placeholder `{n}`.
@@ -184,6 +187,26 @@ an accident — verified live that backend-level sampling (`"n"` on
 it and returns a single choice regardless, another hard-rejects any value
 other than 1. A single JSON-formatted request avoids depending on that
 support at all.
+
+### Candidate length: the Fibonacci schedule
+
+Candidates are no longer all forced to one line. Candidate length grows
+with position, following the Fibonacci sequence: candidate 1 targets 1
+line, candidate 2 targets 1 line, candidate 3 targets 2 lines, candidate 4
+targets 3 lines, candidate 5 targets 5 lines. The proxy computes this
+schedule server-side (`fibonacci_line_counts` in
+`tools/pascal1981_completion_proxy.py`) and enforces it as a hard cap via
+`sanitize_completion`, after asking for it explicitly in the multi-candidate
+system prompt (each JSON key in `multi_system_prompt.txt` is annotated with
+its target line count, e.g. `"2" (2 lines)`). A candidate that undershoots
+its target (a model choosing not to pad a short, genuinely complete answer)
+is left as-is — only overshooting is truncated.
+
+Cycling with `M-n`/`M-p` moves through this same schedule: the later
+candidates in the cycle are the longer ones. Accepting a multi-line
+candidate re-indents the inserted lines against the buffer's normal
+indentation rules (see `pascal1981--completion-insert`), since the raw
+model text carries no indentation of its own.
 
 ### TAB behavior
 
