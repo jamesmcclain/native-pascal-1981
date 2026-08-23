@@ -51,8 +51,25 @@ falls back to indentation."
   :type 'string :group 'pascal1981)
 
 (defcustom pascal1981-completion-goal
-  "Complete the Pascal source at point with the smallest correct insertion."
-  "Goal text sent to the completion proxy with each request."
+  "Continue this Pascal 1981 program plausibly toward a correct, complete, idiomatic finish."
+  "Goal text sent to the completion proxy with each request, as a leading
+comment ahead of the buffer (see `pascal1981--completion-payload' and
+the proxy's `build_prompt').
+
+This exact wording is deliberate, not a placeholder: the mode's prior
+default (\"Complete the Pascal source at point with the smallest
+correct insertion.\") was found, live, to reliably break LLM1 on at
+least one realistic buffer -- retyping the entire program from its
+`PROGRAM' header instead of continuing from the cursor, or exhausting
+its reasoning budget outright, in 5 of 6 trials on that buffer. Neither
+omitting the goal field entirely nor this replacement wording (the
+autoresearch corpus's own goal-comment style, validated at full-corpus
+scale) reproduced that failure in the same isolated A/B test. The
+proxy's own full-corpus validation of its system prompt never covered
+elisp's old default wording at all -- only the corpus's own per-item
+goal text -- so that specific combination was shipped unvalidated.
+Changing this default away from the corpus-validated style again
+should not be done without re-testing it the same way."
   :type 'string :group 'pascal1981)
 
 (defcustom pascal1981-completion-timeout 8
