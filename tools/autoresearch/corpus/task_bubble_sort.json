@@ -1,0 +1,9 @@
+{
+  "id": "task_bubble_sort",
+  "goal": "Write a complete Pascal 1981 program that bubble-sorts a fixed array of 10 integers and prints the sorted result.",
+  "buffer": "",
+  "cursor": {"line": 1, "column": 1},
+  "reference_continuation": "PROGRAM BubbleSort(OUTPUT);\nVAR\n  a: ARRAY [1..10] OF INTEGER;\n  i, j, tmp: INTEGER;\nBEGIN\n  a[1] := 9; a[2] := 3; a[3] := 7; a[4] := 1; a[5] := 8;\n  a[6] := 2; a[7] := 6; a[8] := 4; a[9] := 10; a[10] := 5;\n  FOR i := 1 TO 9 DO\n    FOR j := 1 TO 10 - i DO\n      IF a[j] > a[j + 1] THEN\n      BEGIN\n        tmp := a[j];\n        a[j] := a[j + 1];\n        a[j + 1] := tmp\n      END;\n  FOR i := 1 TO 10 DO\n    WRITE(a[i], ' ');\n  WRITELN\nEND.\n",
+  "compiles_when_appended": false,
+  "generated": false
+}

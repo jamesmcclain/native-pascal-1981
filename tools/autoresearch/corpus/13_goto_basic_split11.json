@@ -1,0 +1,13 @@
+{
+  "id": "13_goto_basic_split11",
+  "goal": "Continue this Pascal 1981 program plausibly toward a correct, complete, idiomatic finish.",
+  "buffer": "PROGRAM GotoBasic(OUTPUT);\nLABEL 1, done, top;\nVAR\n  i: INTEGER;\nBEGIN\n  { Forward GOTO skips dead code. }\n  GOTO 1;\n  WRITELN('should not print');\n1:\n  WRITELN('forward goto ok');\n\n",
+  "cursor": {
+    "line": 11,
+    "column": 1
+  },
+  "reference_continuation": "  { Backward GOTO forms a loop. }\n  i := 0;\ntop:\n  i := i + 1;\n  WRITELN(i);\n  IF i < 3 THEN GOTO top;\n\n  { GOTO escaping out of nested loops to code after them. }\n  FOR i := 1 TO 5 DO\n  BEGIN\n    IF i = 2 THEN GOTO done;\n    WRITELN('inner ', i);\n  END;\n  WRITELN('unreached');\ndone:\n  WRITELN('escaped loop');\nEND.\n",
+  "compiles_when_appended": true,
+  "generated": true,
+  "source_file": "native-pascal-1981/tests/golden/13_goto_basic.pas"
+}

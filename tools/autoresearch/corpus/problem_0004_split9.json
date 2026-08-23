@@ -1,0 +1,13 @@
+{
+  "id": "problem_0004_split9",
+  "goal": "Continue this Pascal 1981 program plausibly toward a correct, complete, idiomatic finish.",
+  "buffer": "PROGRAM EulerProblem4(OUTPUT);\n\nVAR\n  a, b, prod, rev, tmp, best: INTEGER32;\n\nBEGIN\n  best := 0;\n  FOR a := 100 TO 999 DO\n    FOR b := a TO 999 DO\n",
+  "cursor": {
+    "line": 9,
+    "column": 1
+  },
+  "reference_continuation": "    BEGIN\n      prod := a * b;\n      tmp := prod;\n      rev := 0;\n      WHILE tmp > 0 DO\n      BEGIN\n        rev := rev * 10 + tmp MOD 10;\n        tmp := tmp DIV 10\n      END;\n      IF (rev = prod) AND (prod > best) THEN\n        best := prod\n    END;\n  WRITELN(best)\nEND.\n",
+  "compiles_when_appended": true,
+  "generated": true,
+  "source_file": "project-euler/problem-0004/problem_0004.pas"
+}

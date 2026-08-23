@@ -1,0 +1,13 @@
+{
+  "id": "posix_file_env_split38",
+  "goal": "Continue this Pascal 1981 program plausibly toward a correct, complete, idiomatic finish.",
+  "buffer": "PROGRAM posix_file_env(input, output);\nFUNCTION malloc(size: CINT): ADRMEM [C]; EXTERN;\nFUNCTION open(path: ADRMEM; flags: CINT; mode: CINT): CINT [C]; EXTERN;\nFUNCTION close(fd: CINT): CINT [C]; EXTERN;\nFUNCTION dup2(old_fd: CINT; new_fd: CINT): CINT [C]; EXTERN;\nFUNCTION unlink(path: ADRMEM): CINT [C]; EXTERN;\nFUNCTION getenv(name: ADRMEM): ADRMEM [C]; EXTERN;\nFUNCTION setenv(name: ADRMEM; new_value: ADRMEM; replace: CINT): CINT [C]; EXTERN;\nTYPE\n  STR255 = LSTRING(255);\n  CHARBUF = ARRAY[0..255] OF CHAR;\n  PCHARBUF = ^CHARBUF;\nFUNCTION MakeCStr(s: STR255): ADRMEM;\nVAR\n  result: ADRMEM;\n  text: PCHARBUF;\n  i, length: INTEGER;\nBEGIN\n  result := malloc(256);\n  text := result;\n  length := ORD(s[0]);\n  FOR i := 0 TO length - 1 DO text^[i] := s[i + 1];\n  text^[length] := CHR(0);\n  MakeCStr := result;\nEND;\nVAR\n  fd, result: CINT;\n  env_value: ADRMEM;\nBEGIN\n  result := setenv(MakeCStr('PASCAL1981_POSIX_PROBE'), MakeCStr('present'), 1);\n  env_value := getenv(MakeCStr('PASCAL1981_POSIX_PROBE'));\n  IF (result <> 0) OR (env_value = NIL) THEN\n    result := 1\n  ELSE\n  BEGIN\n    fd := open(MakeCStr('pascal1981_posix_probe.tmp'), 66, 384);\n    IF fd < 0 THEN\n      result := 2\n",
+  "cursor": {
+    "line": 38,
+    "column": 1
+  },
+  "reference_continuation": "    ELSE\n    BEGIN\n      result := dup2(fd, 9);\n      close(fd);\n      close(9);\n      IF result = 9 THEN\n        result := unlink(MakeCStr('pascal1981_posix_probe.tmp'))\n      ELSE\n        result := 3;\n    END;\n  END;\n  WRITELN(result);\nEND.\n",
+  "compiles_when_appended": true,
+  "generated": true,
+  "source_file": "native-pascal-1981/tests/integration/posix_file_env.pas"
+}

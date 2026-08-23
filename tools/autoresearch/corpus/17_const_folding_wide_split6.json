@@ -1,0 +1,13 @@
+{
+  "id": "17_const_folding_wide_split6",
+  "goal": "Continue this Pascal 1981 program plausibly toward a correct, complete, idiomatic finish.",
+  "buffer": "PROGRAM ConstFoldingWide(OUTPUT);\nCONST\n  Base = 32000;\n  Step = 1000;\n  Scale = 2;\n  Negative = -5;\n",
+  "cursor": {
+    "line": 6,
+    "column": 1
+  },
+  "reference_continuation": "VAR\n  i32, floor_div, floor_mod: INTEGER32;\n  w64: WORD64;\nBEGIN\n  i32 := Base + Step + ORD(Scale) - Scale;\n  w64 := SUCC(PRED(Base)) * Scale;\n  floor_div := Negative DIV Scale;\n  floor_mod := Negative MOD Scale;\n  WRITELN(i32, ' ', w64, ' ', floor_div, ' ', floor_mod);\nEND.\n",
+  "compiles_when_appended": true,
+  "generated": true,
+  "source_file": "native-pascal-1981/tests/golden/17_const_folding_wide.pas"
+}

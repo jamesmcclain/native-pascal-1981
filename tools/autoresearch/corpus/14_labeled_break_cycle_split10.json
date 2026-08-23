@@ -1,0 +1,13 @@
+{
+  "id": "14_labeled_break_cycle_split10",
+  "goal": "Continue this Pascal 1981 program plausibly toward a correct, complete, idiomatic finish.",
+  "buffer": "PROGRAM LabeledBreakCycle(OUTPUT);\nVAR\n  i, j: INTEGER;\nBEGIN\n  { Labeled BREAK from an inner loop targets the outer loop. }\n  outer: FOR i := 1 TO 3 DO\n  BEGIN\n    FOR j := 1 TO 3 DO\n    BEGIN\n      IF j = 2 THEN BREAK outer;\n",
+  "cursor": {
+    "line": 10,
+    "column": 1
+  },
+  "reference_continuation": "      WRITELN('outer=', i, ' inner=', j);\n    END;\n  END;\n  WRITELN('after outer break');\n\n  { Labeled CYCLE from an inner loop continues the outer loop. }\n  again: FOR i := 1 TO 3 DO\n  BEGIN\n    FOR j := 1 TO 3 DO\n    BEGIN\n      IF j = 2 THEN CYCLE again;\n      WRITELN('again outer=', i, ' inner=', j);\n    END;\n  END;\n  WRITELN('after outer cycle');\nEND.\n",
+  "compiles_when_appended": true,
+  "generated": true,
+  "source_file": "native-pascal-1981/tests/golden/14_labeled_break_cycle.pas"
+}

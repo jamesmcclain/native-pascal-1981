@@ -1,0 +1,13 @@
+{
+  "id": "16_variant_records_split10",
+  "goal": "Continue this Pascal 1981 program plausibly toward a correct, complete, idiomatic finish.",
+  "buffer": "PROGRAM VariantRecords;\nTYPE\n  Tagged = RECORD\n    fixed: INTEGER;\n    CASE kind: INTEGER OF\n      1: (letter: CHAR);\n      2: (number: REAL)\n  END;\n  Tagless = RECORD\n    CASE BOOLEAN OF\n",
+  "cursor": {
+    "line": 10,
+    "column": 1
+  },
+  "reference_continuation": "      TRUE: (yes: INTEGER);\n      FALSE: (no: CHAR)\n  END;\nVAR\n  r: Tagged;\n  t: Tagless;\nBEGIN\n  r.fixed := 7;\n  r.kind := 1;\n  r.letter := 'x';\n  WITH r DO\n    WRITELN(fixed, ' ', kind, ' ', letter);\n  t.yes := 42;\n  WRITELN(t.yes)\nEND.\n",
+  "compiles_when_appended": true,
+  "generated": true,
+  "source_file": "native-pascal-1981/tests/golden/16_variant_records.pas"
+}

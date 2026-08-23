@@ -1,0 +1,9 @@
+{
+  "id": "micro_procedure_header",
+  "goal": "Declare a procedure Swap that exchanges two INTEGER VAR parameters a and b.",
+  "buffer": "PROGRAM Micro(OUTPUT);\n\nPROCEDURE Swap",
+  "cursor": {"line": 3, "column": 15},
+  "reference_continuation": "(VAR a, b: INTEGER);\nVAR\n  tmp: INTEGER;\nBEGIN\n  tmp := a;\n  a := b;\n  b := tmp\nEND;\n\nBEGIN\nEND.\n",
+  "compiles_when_appended": false,
+  "generated": false
+}

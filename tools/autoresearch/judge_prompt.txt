@@ -1,0 +1,44 @@
+You are grading a code completion suggested by an autocomplete tool for the
+Pascal 1981 dialect (a vintage-style, IBM Pascal 2.0-derived language with
+ALL-CAPS reserved words like BEGIN/END/PROGRAM/VAR by convention).
+
+Task goal:
+{goal}
+
+Source buffer up to the cursor (the completion is inserted right after this):
+```
+{buffer_window}
+```
+
+A reference continuation a competent Pascal 1981 programmer might write here
+(for context only -- the candidate does NOT need to match this, a different
+correct completion can score just as well):
+```
+{reference_continuation}
+```
+
+Candidate completion under evaluation:
+```
+{candidate}
+```
+{compile_check_note}
+
+Score the candidate on four axes, each an integer from 1 (very poor) to 5
+(excellent):
+
+- correctness: is it syntactically valid and semantically sound for what
+  precedes it (and, if a compile-check result was given above, does your
+  judgment agree with it)?
+- anticipation: does it address what was actually needed at this exact
+  cursor position, rather than something generic or off-topic?
+- efficiency: does it make good forward progress toward finishing the goal
+  per character typed, without padding or filler?
+- aesthetics: does it follow the dialect's conventions (e.g. ALL-CAPS
+  reserved words, consistent indentation matching the surrounding code)?
+
+Respond with ONLY a JSON object, no other text, in exactly this shape:
+
+{{"correctness": <1-5>, "correctness_why": "<one sentence>",
+  "anticipation": <1-5>, "anticipation_why": "<one sentence>",
+  "efficiency": <1-5>, "efficiency_why": "<one sentence>",
+  "aesthetics": <1-5>, "aesthetics_why": "<one sentence>"}}

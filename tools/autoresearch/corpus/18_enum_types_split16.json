@@ -1,0 +1,13 @@
+{
+  "id": "18_enum_types_split16",
+  "goal": "Continue this Pascal 1981 program plausibly toward a correct, complete, idiomatic finish.",
+  "buffer": "PROGRAM enumtypes(output);\n{ User-declared enumerated types: members are compile-time ordinal\n  constants, storage is the ordinal as INTEGER32, WRITE prints the ordinal\n  (the vintage default), and the ordinal builtins plus FOR all treat the\n  value as an ordinal -- matching the Python reference's default behavior\n  and the manual's read-as-number rule (13610-13618). }\nTYPE\n  hue = (red, green, blue);\nVAR\n  c, d: hue;\nBEGIN\n  c := green;\n  WRITELN('ord=', ORD(c));\n  WRITELN('write=', c);\n  c := SUCC(c);\n  WRITELN('succ=', ORD(c));\n",
+  "cursor": {
+    "line": 16,
+    "column": 1
+  },
+  "reference_continuation": "  c := PRED(c);\n  IF c = green THEN WRITELN('back to green');\n  d := blue;\n  IF d > c THEN WRITELN('blue > green');\n  FOR c := red TO blue DO WRITELN('for ', ORD(c));\nEND.\n",
+  "compiles_when_appended": true,
+  "generated": true,
+  "source_file": "native-pascal-1981/tests/golden/18_enum_types.pas"
+}

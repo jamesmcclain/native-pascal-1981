@@ -1,0 +1,13 @@
+{
+  "id": "pointer_record_graph_split12",
+  "goal": "Continue this Pascal 1981 program plausibly toward a correct, complete, idiomatic finish.",
+  "buffer": "PROGRAM RecordGraph(output);\nTYPE\n  Inner = RECORD\n    val: INTEGER;\n  END;\n  PInner = ^Inner;\n  Wrapper = RECORD\n    head: Inner;\n    ptr: PInner;\n    count: INTEGER;\n  END;\nVAR\n",
+  "cursor": {
+    "line": 12,
+    "column": 1
+  },
+  "reference_continuation": "  p1, p2: PInner;\n  w: Wrapper;\nBEGIN\n  NEW(p1); NEW(p2);\n  p1^.val := 1;\n  p2^.val := 2;\n\n  w.head.val := 99;\n  w.ptr := p1;\n  w.count := 3;\n\n  WRITELN(w.head.val);\n  WRITELN(w.ptr^.val);\n  WRITELN(p2^.val);\n  WRITELN(w.count);\n\n  DISPOSE(p1);\n  DISPOSE(p2);\nEND.\n",
+  "compiles_when_appended": true,
+  "generated": true,
+  "source_file": "native-pascal-1981/tests/integration/pointer_record_graph.pas"
+}

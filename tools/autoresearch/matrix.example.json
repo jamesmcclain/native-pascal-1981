@@ -1,0 +1,40 @@
+{
+  "matrix": [
+    {
+      "label": "llm1-baseline",
+      "backend_env_var": "PASCAL1981_LLM1_URL",
+      "n": 3,
+      "proxy_args": {}
+    },
+    {
+      "label": "llm1-grammar",
+      "backend_env_var": "PASCAL1981_LLM1_URL",
+      "n": 3,
+      "proxy_args": {
+        "--grammar-file": "docs/ebnf_grammar.md"
+      }
+    },
+    {
+      "label": "llm1-temp0",
+      "backend_env_var": "PASCAL1981_LLM1_URL",
+      "n": 3,
+      "proxy_args": {
+        "--temperature": "0.0"
+      }
+    },
+    {
+      "label": "llm2-baseline",
+      "backend_env_var": "PASCAL1981_LLM2_URL",
+      "n": 3,
+      "proxy_args": {}
+    },
+    {
+      "label": "llm2-grammar",
+      "backend_env_var": "PASCAL1981_LLM2_URL",
+      "n": 3,
+      "proxy_args": {
+        "--grammar-file": "docs/ebnf_grammar.md"
+      }
+    }
+  ]
+}

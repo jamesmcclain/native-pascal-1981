@@ -1,0 +1,10 @@
+{
+  "id": "task_pi_digits",
+  "goal": "Write a complete Pascal 1981 program that computes and prints the first 20 digits of pi.",
+  "buffer": "",
+  "cursor": {"line": 1, "column": 1},
+  "reference_continuation": "PROGRAM PiDigits(OUTPUT);\n{ Spigot/series algorithm left to the model; a correct program prints\n  20 correct digits of pi, e.g. via an arbitrary-precision or\n  fixed-point series method within the dialect's INTEGER32/REAL limits. }\nBEGIN\nEND.\n",
+  "compiles_when_appended": false,
+  "generated": false,
+  "notes": "Long-horizon whole-program task; no single canonical reference exists, reference_continuation is a sketch/placeholder for judge context only, not something to diff against."
+}

@@ -1,0 +1,9 @@
+{
+  "id": "micro_writeln_partial_call",
+  "goal": "Print the value of total, labeled, on its own line.",
+  "buffer": "PROGRAM Micro(OUTPUT);\nVAR\n  total: INTEGER;\nBEGIN\n  total := 42;\n  WRITELN('total: ', total",
+  "cursor": {"line": 6, "column": 24},
+  "reference_continuation": ")\nEND.\n",
+  "compiles_when_appended": false,
+  "generated": false
+}

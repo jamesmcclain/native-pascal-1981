@@ -1,0 +1,13 @@
+{
+  "id": "02_arithmetic_split8",
+  "goal": "Continue this Pascal 1981 program plausibly toward a correct, complete, idiomatic finish.",
+  "buffer": "PROGRAM Arithmetic(OUTPUT);\nVAR\n  a, b, c: INTEGER;\nBEGIN\n  a := 10;\n  b := 25;\n  c := a + b * 2 - 5;\n  WRITELN('c = ', c);\n",
+  "cursor": {
+    "line": 8,
+    "column": 1
+  },
+  "reference_continuation": "  WRITELN('div = ', b DIV a, ' mod = ', b MOD a);\nEND.\n",
+  "compiles_when_appended": true,
+  "generated": true,
+  "source_file": "native-pascal-1981/tests/golden/02_arithmetic.pas"
+}

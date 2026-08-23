@@ -1,0 +1,13 @@
+{
+  "id": "problem_0002_split8",
+  "goal": "Continue this Pascal 1981 program plausibly toward a correct, complete, idiomatic finish.",
+  "buffer": "PROGRAM EulerProblem2(OUTPUT);\n\nVAR\n  a, b, tmp, total, maxv: INTEGER32;\n\nBEGIN\n  maxv := 4000000;\n  a := 1;\n",
+  "cursor": {
+    "line": 8,
+    "column": 1
+  },
+  "reference_continuation": "  b := 2;\n  total := 0;\n  WHILE b <= maxv DO\n  BEGIN\n    IF (b MOD 2 = 0) THEN\n      total := total + b;\n    tmp := a + b;\n    a := b;\n    b := tmp\n  END;\n  WRITELN(total)\nEND.\n",
+  "compiles_when_appended": true,
+  "generated": true,
+  "source_file": "project-euler/problem-0002/problem_0002.pas"
+}
