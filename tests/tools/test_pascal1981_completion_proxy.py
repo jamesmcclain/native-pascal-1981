@@ -286,28 +286,44 @@ class StripEchoTests(unittest.TestCase):
             proxy.strip_echo('VAR x: INTEGER;\nBEGIN\n', '  x := 1;'),
             '  x := 1;')
 
-    def test_full_word_echo_stripped(self):
+    def test_short_legitimate_repetition_not_stripped(self):
+        # Two nested blocks closing back-to-back both correctly end in
+        # "END;" -- this is not an echo, it's required Pascal syntax,
+        # and the overlap (4 chars) is at/under the minimum, so it must
+        # survive untouched. This is the exact false-positive class an
+        # earlier word-level version of this function got wrong live.
         self.assertEqual(
-            proxy.strip_echo('PROGRAM Demo;\nBEGIN\n',
-                             'BEGIN\n  x := 1;\nEND.'), 'x := 1;\nEND.')
+            proxy.strip_echo('BEGIN\n  BEGIN\n    x := 1\n  END;\n',
+                             'END;\nEND.'), 'END;\nEND.')
 
-    def test_case_insensitive_match_stripped(self):
-        self.assertEqual(proxy.strip_echo('...\nBEGIN\n', 'begin\n  x := 1;'),
-                         'x := 1;')
+    def test_long_echo_stripped(self):
+        # A genuine echo: the model retypes "BEGIN\n  x := " (13 chars,
+        # well past the minimum) verbatim before continuing.
+        buf = 'PROGRAM Demo;\nBEGIN\n  x := '
+        cand = 'BEGIN\n  x := 1;\nEND.'
+        self.assertEqual(proxy.strip_echo(buf, cand), '1;\nEND.')
 
-    def test_whitespace_normalized_match_stripped(self):
-        self.assertEqual(
-            proxy.strip_echo('VAR   x,   y: INTEGER;\n',
-                             'x, y: INTEGER;\nBEGIN'), 'BEGIN')
+    def test_overlap_at_minimum_not_stripped(self):
+        # Exactly at the threshold (not over it) must not strip.
+        buf = 'x' * proxy._ECHO_MIN_OVERLAP
+        cand = buf + 'y'
+        self.assertEqual(proxy.strip_echo(buf, cand), cand)
 
-    def test_partial_word_overlap_not_falsely_matched(self):
-        # "BEGINNING" must not be treated as echoing "BEGIN".
-        self.assertEqual(
-            proxy.strip_echo('...\nBEGIN\n', 'BEGINNING := TRUE;'),
-            'BEGINNING := TRUE;')
+    def test_overlap_one_over_minimum_stripped(self):
+        buf = 'x' * (proxy._ECHO_MIN_OVERLAP + 1)
+        cand = buf + 'y'
+        self.assertEqual(proxy.strip_echo(buf, cand), 'y')
+
+    def test_case_sensitive_no_match(self):
+        # A case-mismatched echo is not detected -- deliberately simple,
+        # no normalization; the model's own casing has to match.
+        buf = '...\nBEGIN OF SOMETHING\n'
+        cand = 'begin of something\n  x := 1;'
+        self.assertEqual(proxy.strip_echo(buf, cand), cand)
 
     def test_entire_candidate_echoed_becomes_empty(self):
-        self.assertEqual(proxy.strip_echo('...\nBEGIN\n', 'BEGIN'), '')
+        buf = 'PROGRAM Demo;\nBEGIN\n  x := 1;\n'
+        self.assertEqual(proxy.strip_echo(buf, '  x := 1;\n'), '')
 
     def test_empty_buffer_no_match(self):
         self.assertEqual(proxy.strip_echo('', 'x := 1;'), 'x := 1;')
@@ -315,19 +331,13 @@ class StripEchoTests(unittest.TestCase):
     def test_empty_candidate_stays_empty(self):
         self.assertEqual(proxy.strip_echo('BEGIN\n', ''), '')
 
-    def test_longest_overlap_preferred_over_shorter_one(self):
-        # Buffer tail "END; BEGIN" and candidate "END; BEGIN x := 1;" --
-        # the 2-word overlap must win, not just the 1-word "BEGIN" one.
-        self.assertEqual(
-            proxy.strip_echo('...\nEND; BEGIN\n', 'END; BEGIN x := 1;'),
-            'x := 1;')
-
-    def test_preserves_original_casing_and_formatting_of_residue(self):
-        # lstrip only -- leading whitespace after the stripped echo is
-        # dropped, but trailing whitespace/casing in the residue survives.
-        self.assertEqual(
-            proxy.strip_echo('...\nbegin\n', 'BEGIN\n  X := 1;  '),
-            'X := 1;  ')
+    def test_longest_overlap_used_not_shortest(self):
+        # Buffer tail and candidate share both a short trailing overlap
+        # and a longer one starting earlier -- the longest match found
+        # (scanning from the largest k down) must be the one used.
+        buf = 'PROGRAM Demo;\nBEGIN\n  x := 1;\n'
+        cand = '  x := 1;\n  y := 2;'
+        self.assertEqual(proxy.strip_echo(buf, cand), '  y := 2;')
 
 
 class SanitizeCompletionTests(unittest.TestCase):
@@ -852,20 +862,21 @@ class EndToEndTests(unittest.TestCase):
 
     def test_echo_stripped_before_line_cap_applies(self):
         # do_POST must run strip_echo(prefix, text) before sanitize_
-        # completion -- an echoed BEGIN plus real content must have the
-        # echo removed, not counted against the line cap.
+        # completion -- an echoed "BEGIN\n" (6 chars, over the minimum)
+        # plus real content must have the echo removed, not counted
+        # against the line cap.
         proxy.call_upstream = (
             lambda prompt, config, max_tokens=None, system_prompt=None:
             chat_response('BEGIN\n  x := 1;\nEND.'))
         status, data = self._post({
             'buffer': 'PROGRAM Demo;\nBEGIN\n',
             'cursor': {
-                'line': 2,
-                'column': 6
+                'line': 3,
+                'column': 1
             },
         })
         self.assertEqual(status, 200)
-        self.assertEqual(data['completions'], ['x := 1;\nEND.'])
+        self.assertEqual(data['completions'], ['  x := 1;\nEND.'])
 
     def test_custom_system_prompts_reach_call_upstream(self):
         # Overriding Config.system_prompt (as --system-prompt-file does)

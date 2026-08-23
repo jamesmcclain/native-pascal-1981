@@ -92,10 +92,15 @@ varying prompts and proxy parameters, without touching this file):
   echo bug, run on every completion in `do_POST` regardless of how rare
   it now is under the minimal prompt: the 0/64 result above was measured
   against one 64-item corpus, not proven impossible in general. It is a
-  word-level, whitespace/case-normalized overlap check between the
-  buffer's tail and the candidate's start -- safe by construction, since
-  it only ever removes text that is already genuinely present immediately
-  before the cursor.
+  literal, character-level overlap check between the buffer's tail and
+  the candidate's start, only stripped once the match exceeds
+  `_ECHO_MIN_OVERLAP` characters. An earlier word-level, case/whitespace-
+  normalized version of this function looked safer on paper but was not:
+  it silently ate real completions whenever a *short* repeated word was
+  legitimate rather than an echo -- e.g. two nested blocks correctly
+  closing back-to-back both end in "END;", and that got stripped down to
+  nothing, live in Emacs. A short overlap is common, structurally
+  required repetition; only a longer one is implausible as coincidence.
 - --grammar-file was independently tested and found not to help completion
   quality while inflating prompt size and upstream latency -- it remains
   available (off by default) in case a future prompt shape changes that
@@ -112,7 +117,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 import urllib.error
 import urllib.request
@@ -654,46 +658,34 @@ def extract_completions(
 # --------------------------------------------------------------------------
 
 
-def _norm_words(s: str) -> list[str]:
-    return re.sub(r'\s+', ' ', s).strip().lower().split(' ')
+_ECHO_MIN_OVERLAP = 5
 
 
 def strip_echo(buffer: str, candidate: str) -> str:
-    """Strip a word-level, whitespace/case-insensitive echoed prefix of
-    BUFFER's tail from the start of CANDIDATE, returning the residue.
+    """Strip a literal, character-level echoed prefix of BUFFER's tail
+    from the start of CANDIDATE, returning the residue.
 
-    The minimal system prompt drove the echo bug (the model retyping text
-    already before the cursor) down to 0/64 occurrences at full-corpus
-    scale -- but that was measured against one 64-item corpus, not proven
-    impossible. This is unconditional defense-in-depth against whatever
-    that corpus didn't cover: it finds the longest suffix-of-BUFFER /
-    prefix-of-CANDIDATE word overlap (case- and whitespace-normalized, so
-    "BEGIN\\n" in the buffer still matches "begin " at the start of a
-    candidate) and walks CANDIDATE forward that many raw whitespace-
-    delimited tokens, preserving the candidate's own original casing and
-    formatting in what is returned. A candidate with no such overlap is
-    returned unchanged.
+    Finds the longest exact match between some suffix of BUFFER and a
+    prefix of CANDIDATE, and only treats it as a genuine echo -- worth
+    stripping -- once that match is longer than _ECHO_MIN_OVERLAP
+    characters. A short overlap is common, legitimate repetition, not
+    the model retyping something already there: two nested blocks
+    closing back-to-back both correctly end in "END;", and treating
+    that kind of short, structurally-required repeat as an echo (an
+    earlier version of this function did, comparing whole words with no
+    minimum length) silently ate real completions down to nothing --
+    live in Emacs, not hypothetically. A longer overlap is not
+    plausible as coincidence, so it is safe to treat as an echo.
     """
-    buf_words = _norm_words(buffer)
-    cand_words = _norm_words(candidate)
+    max_check = min(len(buffer), len(candidate))
     overlap = 0
-    for k in range(1, min(len(buf_words), len(cand_words)) + 1):
-        if buf_words[-k:] == cand_words[:k]:
+    for k in range(max_check, 0, -1):
+        if buffer[-k:] == candidate[:k]:
             overlap = k
-    if overlap == 0:
+            break
+    if overlap <= _ECHO_MIN_OVERLAP:
         return candidate
-    idx = 0
-    tokens_consumed = 0
-    n = len(candidate)
-    while idx < n and tokens_consumed < overlap:
-        while idx < n and candidate[idx].isspace():
-            idx += 1
-        start = idx
-        while idx < n and not candidate[idx].isspace():
-            idx += 1
-        if start != idx:
-            tokens_consumed += 1
-    return candidate[idx:].lstrip()
+    return candidate[overlap:]
 
 
 _SPECIAL_TOKEN_MARKER = '<|'
