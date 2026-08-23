@@ -513,6 +513,25 @@ the callback itself decides which buffer is \"the response\" from
     (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
                    "1; [1/3]"))))
 
+(ert-deftest pascal1981-tests-completion-overlay-renders-embedded-newlines ()
+  "A multi-line candidate's newlines survive into the overlay's
+after-string verbatim -- Emacs renders an overlay after-string with
+embedded newlines as extra visual lines with no further work needed."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (insert "x := ")
+    (let* ((source (current-buffer))
+           (request-id 1)
+           (tick (buffer-modified-tick))
+           (pt (point))
+           (response (pascal1981-tests--fake-response-buffer
+                      200 '((completions . ["BEGIN\ntotal := 1;\nEND;"])))))
+      (setq pascal1981--completion-pending-id request-id)
+      (pascal1981-tests--completion-respond source response request-id pt tick))
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "BEGIN\ntotal := 1;\nEND;"))))
+
 (ert-deftest pascal1981-tests-completion-accept-materializes-into-buffer ()
   "TAB, dispatched while a preview is showing, inserts the shown candidate."
   (with-temp-buffer
@@ -993,6 +1012,26 @@ the buffer."
       (should (pascal1981--completion-overlay-live-p))
       (execute-kbd-macro (kbd "TAB"))
       (should (equal (buffer-string) "FOR i := 1 TO 10 DO")))))
+
+(ert-deftest pascal1981-tests-end-to-end-multiline-accept-reindents ()
+  "Accepting a multi-line candidate reindents the inserted lines via the
+lexer/token cache, instead of leaving the model's raw, unindented text."
+  (pascal1981-tests--with-fake-proxy
+      (pascal1981-tests--http-json-response
+       200 '((completions . ["BEGIN\ntotal := total + i;\nEND;"])
+             (model . "test-model") (request_id . "e2e-multiline")))
+    (pascal1981-tests--with-selected-buffer "pascal1981-tests-e2e-multiline"
+      (pascal1981-mode)
+      (setq pascal1981-completion-enabled t
+            pascal1981-completion-timeout 5)
+      (insert "PROGRAM Demo;\nBEGIN\n  ")
+      (pascal1981-complete-line)
+      (pascal1981-tests--wait-until
+       (lambda () (not pascal1981--completion-pending-id)) 5)
+      (should (pascal1981--completion-overlay-live-p))
+      (execute-kbd-macro (kbd "TAB"))
+      (should (equal (buffer-string)
+                     "PROGRAM Demo;\nBEGIN\n  BEGIN\n    total := total + i;\n  END;")))))
 
 (ert-deftest pascal1981-tests-end-to-end-fake-proxy-http-error-no-preview ()
   "A real HTTP round trip returning a non-200 status shows no preview and

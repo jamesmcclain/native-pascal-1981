@@ -69,7 +69,14 @@ indentation instead."
   "How many candidate completions to request from the proxy.
 Sent as \"n\" in the request payload. More candidates cost more
 upstream tokens and latency; cycle between them with `M-n'/`M-p'
-while a completion preview is showing."
+while a completion preview is showing.
+
+Candidate length grows with position, roughly following the
+Fibonacci sequence: candidate 1 targets 1 line, candidate 2 targets
+1 line, candidate 3 targets 2 lines, candidate 4 targets 3 lines,
+candidate 5 targets 5 lines, and so on. The proxy computes and
+enforces this server-side; this variable only controls how many
+candidates are requested."
   :type 'integer :group 'pascal1981)
 
 (defconst pascal1981--completion-default-candidate-count 3
@@ -495,9 +502,26 @@ decodes on the way back."
                  (n . ,n))))
 
 (defun pascal1981--completion-insert (text)
-  "Insert TEXT at point as a single atomic undo step."
+  "Insert TEXT at point as a single atomic undo step.
+When TEXT spans multiple lines (see `fibonacci_line_counts' on the
+proxy side -- candidates beyond the first two can now be several
+lines), the raw model text carries no reliable indentation of its
+own, so the lexer/token cache is refreshed after the insert and each
+newly inserted line is reindented via `pascal1981-indent-line'. A
+single-line TEXT (the common case) skips this entirely and behaves
+exactly as before."
   (atomic-change-group
-    (insert text)))
+    (let ((start-line (line-number-at-pos)))
+      (insert text)
+      (when (string-match-p "\n" text)
+        (let ((end-line (line-number-at-pos)))
+          (pascal1981--refresh-caches)
+          (save-excursion
+            (cl-loop for line from start-line to end-line
+                     do (progn
+                          (goto-char (point-min))
+                          (forward-line (1- line))
+                          (pascal1981-indent-line)))))))))
 
 ;; -------------------------------------------------------------------
 ;; Ghost-text preview + cycling
