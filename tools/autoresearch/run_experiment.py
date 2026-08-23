@@ -68,7 +68,50 @@ def load_corpus() -> list[dict]:
 
 
 def load_matrix(path: pathlib.Path) -> list[dict]:
-    return json.loads(path.read_text(encoding='utf-8'))['matrix']
+    """Expand a matrix file into a flat list of run entries.
+
+    Schema: {"backends": [env_var, ...], "variants": [{"label", "n"?,
+    "proxy_args"?}, ...], "backend_overrides"?: {env_var: proxy_args}}.
+
+    Deliberately a cross product of BACKENDS x VARIANTS, not a flat list
+    where each entry names its own backend (an earlier version of this
+    matrix format worked that way, with labels like "llm1-baseline"): a
+    variant (a prompt/parameter choice under research, e.g. "grammar" or
+    "temp0") is the thing being studied, and which backend happens to run
+    it is not a property of that research question -- it's an axis to loop
+    over like any other, not a first-class identity baked into the variant
+    or its label. A variant's `proxy_args` stays backend-agnostic;
+    BACKEND_OVERRIDES is the one place backend-specific accommodation
+    lives (e.g. a backend that needs a larger --max-tokens to avoid
+    exhausting its reasoning budget), merged on top of the variant's own
+    proxy_args only for that backend -- analogous to how the proxy's own
+    reasoning_effort=auto calibration is already backend-specific and
+    automatic, not something the research variant should have to know
+    about.
+    """
+    data = json.loads(path.read_text(encoding='utf-8'))
+    backends = data['backends']
+    variants = data['variants']
+    backend_overrides = data.get('backend_overrides', {})
+    entries = []
+    for backend_env_var in backends:
+        for variant in variants:
+            # backend_overrides first, variant's own proxy_args applied on
+            # top: a variant that explicitly varies a flag (e.g. the
+            # maxtokens256/maxtokens2048 variants in matrix.example.json)
+            # must win over a backend's baseline accommodation for that
+            # same flag (e.g. LLM1's --max-tokens override) -- otherwise
+            # the backend override would silently clobber the very
+            # parameter the variant exists to study.
+            proxy_args = dict(backend_overrides.get(backend_env_var, {}))
+            proxy_args.update(variant.get('proxy_args', {}))
+            entries.append({
+                'label': variant['label'],
+                'backend_env_var': backend_env_var,
+                'n': variant.get('n', 1),
+                'proxy_args': proxy_args,
+            })
+    return entries
 
 
 def wait_for_health(base_url: str, timeout: float = 90.0) -> bool:
@@ -424,10 +467,12 @@ def run_matrix_entry(entry: dict, corpus: list[dict],
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('matrix_file', type=pathlib.Path)
-    parser.add_argument('--judge-backend-env-var', default='PASCAL1981_LLM2_URL',
+    parser.add_argument('--judge-backend-env-var', default=None,
                          help=('Env var naming the backend base URL to use as '
-                               'judge. Default: PASCAL1981_LLM2_URL. Ignored '
-                               'if --skip-judge is given.'))
+                               'judge. No default -- which backend judges is '
+                               'a choice to make explicitly each run, not an '
+                               'assumption to bake in. Required unless '
+                               '--skip-judge is given.'))
     parser.add_argument('--skip-judge', action='store_true',
                          help=('Collect completions (and the objective '
                                'compile-check, where available) without '
@@ -446,6 +491,9 @@ def main() -> None:
                                'id). For smoke-testing a matrix cheaply '
                                'before running it over the full corpus.'))
     args = parser.parse_args()
+    if not args.skip_judge and not args.judge_backend_env_var:
+        parser.error('--judge-backend-env-var is required unless --skip-judge '
+                      'is given')
 
     matrix = load_matrix(args.matrix_file)
     corpus = load_corpus()
@@ -456,10 +504,15 @@ def main() -> None:
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = time.strftime('%Y%m%dT%H%M%S')
-    for entry in matrix:
+    for i, entry in enumerate(matrix):
         result = run_matrix_entry(entry, corpus, args.judge_backend_env_var,
                                    args.port, skip_judge=args.skip_judge)
-        out_path = RESULTS_DIR / f'{timestamp}-{entry["label"]}.json'
+        # Indexed, not just f'{timestamp}-{entry["label"]}.json': the same
+        # variant label now runs once per backend (see load_matrix), so
+        # label alone is no longer a unique filename -- which backend ran
+        # it lives in the file's own "entry" field, not smuggled into the
+        # filename either.
+        out_path = RESULTS_DIR / f'{timestamp}-{i:03d}-{entry["label"]}.json'
         out_path.write_text(json.dumps(result, indent=2, ensure_ascii=False),
                              encoding='utf-8')
         print(f'wrote {out_path}', file=sys.stderr)

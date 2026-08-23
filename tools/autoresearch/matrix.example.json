@@ -1,76 +1,16 @@
 {
-  "matrix": [
-    {
-      "label": "llm1-baseline",
-      "backend_env_var": "PASCAL1981_LLM1_URL",
-      "n": 3,
-      "proxy_args": {
-        "--max-tokens": "1024"
-      }
-    },
-    {
-      "label": "llm1-maxtokens512",
-      "backend_env_var": "PASCAL1981_LLM1_URL",
-      "n": 3,
-      "proxy_args": {
-        "--max-tokens": "512"
-      }
-    },
-    {
-      "label": "llm1-maxtokens2048",
-      "backend_env_var": "PASCAL1981_LLM1_URL",
-      "n": 3,
-      "proxy_args": {
-        "--max-tokens": "2048"
-      }
-    },
-    {
-      "label": "llm1-grammar",
-      "backend_env_var": "PASCAL1981_LLM1_URL",
-      "n": 3,
-      "proxy_args": {
-        "--grammar-file": "docs/ebnf_grammar.md",
-        "--max-tokens": "1024"
-      }
-    },
-    {
-      "label": "llm1-temp0",
-      "backend_env_var": "PASCAL1981_LLM1_URL",
-      "n": 3,
-      "proxy_args": {
-        "--temperature": "0.0",
-        "--max-tokens": "1024"
-      }
-    },
-    {
-      "label": "llm2-baseline",
-      "backend_env_var": "PASCAL1981_LLM2_URL",
-      "n": 3,
-      "proxy_args": {}
-    },
-    {
-      "label": "llm2-maxtokens256",
-      "backend_env_var": "PASCAL1981_LLM2_URL",
-      "n": 3,
-      "proxy_args": {
-        "--max-tokens": "256"
-      }
-    },
-    {
-      "label": "llm2-maxtokens1024",
-      "backend_env_var": "PASCAL1981_LLM2_URL",
-      "n": 3,
-      "proxy_args": {
-        "--max-tokens": "1024"
-      }
-    },
-    {
-      "label": "llm2-grammar",
-      "backend_env_var": "PASCAL1981_LLM2_URL",
-      "n": 3,
-      "proxy_args": {
-        "--grammar-file": "docs/ebnf_grammar.md"
-      }
+  "backends": ["PASCAL1981_LLM1_URL", "PASCAL1981_LLM2_URL"],
+  "backend_overrides": {
+    "PASCAL1981_LLM1_URL": {
+      "--max-tokens": "1024"
     }
+  },
+  "variants": [
+    {"label": "baseline", "n": 3, "proxy_args": {}},
+    {"label": "grammar", "n": 3,
+     "proxy_args": {"--grammar-file": "docs/ebnf_grammar.md"}},
+    {"label": "temp0", "n": 3, "proxy_args": {"--temperature": "0.0"}},
+    {"label": "maxtokens256", "n": 3, "proxy_args": {"--max-tokens": "256"}},
+    {"label": "maxtokens2048", "n": 3, "proxy_args": {"--max-tokens": "2048"}}
   ]
 }

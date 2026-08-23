@@ -64,7 +64,14 @@ def _fake_run(label, item_overrides=()):
     }]
     for override in item_overrides:
         items.append(override)
-    return {'label': label, 'entry': {'label': label}, 'items': items}
+    return {
+        'label': label,
+        'entry': {
+            'label': label,
+            'backend_env_var': 'ENV_A'
+        },
+        'items': items
+    }
 
 
 class SummarizeRunTests(unittest.TestCase):
@@ -129,6 +136,24 @@ class RenderLeaderboardTests(unittest.TestCase):
         self.assertIn('my-label', table)
         self.assertIn('mean prompt chars', table)
 
+    def test_leaderboard_has_a_separate_backend_column(self):
+        summary = build_report.summarize_run(_fake_run('my-label'))
+        table = build_report.render_leaderboard([summary])
+        self.assertIn('| backend |', table)
+        self.assertIn('ENV_A', table)
+
+    def test_same_label_different_backends_both_appear_as_distinct_rows(self):
+        run_a = _fake_run('baseline')
+        run_b = _fake_run('baseline')
+        run_b['entry']['backend_env_var'] = 'ENV_B'
+        table = build_report.render_leaderboard([
+            build_report.summarize_run(run_a),
+            build_report.summarize_run(run_b)
+        ])
+        self.assertIn('ENV_A', table)
+        self.assertIn('ENV_B', table)
+        self.assertEqual(table.count('| baseline |'), 2)
+
 
 class EstimatePromptCharsTests(unittest.TestCase):
 
@@ -187,6 +212,108 @@ class EstimatePromptCharsTests(unittest.TestCase):
         n1_chars = run_experiment.estimate_prompt_chars(entry, item, 1)
         n3_chars = run_experiment.estimate_prompt_chars(entry, item, 3)
         self.assertNotEqual(n1_chars, n3_chars)
+
+
+class LoadMatrixTests(unittest.TestCase):
+    """The matrix format is a cross product of backends x variants (see
+    load_matrix's docstring): the same variant label runs once per backend,
+    and backend identity is never folded into the label."""
+
+    def _write_matrix(self, tmp_path, data):
+        import json
+        p = tmp_path / 'matrix.json'
+        p.write_text(json.dumps(data))
+        return p
+
+    def test_expands_to_cross_product_of_backends_and_variants(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_matrix(
+                pathlib.Path(tmp), {
+                    'backends': ['ENV_A', 'ENV_B'],
+                    'variants': [
+                        {
+                            'label': 'baseline',
+                            'proxy_args': {}
+                        },
+                        {
+                            'label': 'grammar',
+                            'proxy_args': {
+                                '--grammar-file': 'x'
+                            }
+                        },
+                    ],
+                })
+            entries = run_experiment.load_matrix(path)
+        self.assertEqual(len(entries), 4)
+        pairs = {(e['backend_env_var'], e['label']) for e in entries}
+        self.assertEqual(
+            pairs, {
+                ('ENV_A', 'baseline'),
+                ('ENV_A', 'grammar'),
+                ('ENV_B', 'baseline'),
+                ('ENV_B', 'grammar'),
+            })
+
+    def test_label_never_encodes_backend_identity(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_matrix(
+                pathlib.Path(tmp), {
+                    'backends': ['ENV_A', 'ENV_B'],
+                    'variants': [{
+                        'label': 'baseline',
+                        'proxy_args': {}
+                    }],
+                })
+            entries = run_experiment.load_matrix(path)
+        labels = {e['label'] for e in entries}
+        self.assertEqual(labels, {'baseline'})
+
+    def test_variant_proxy_args_win_over_backend_override(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_matrix(
+                pathlib.Path(tmp), {
+                    'backends': ['ENV_A'],
+                    'backend_overrides': {
+                        'ENV_A': {
+                            '--max-tokens': '1024'
+                        }
+                    },
+                    'variants': [
+                        {
+                            'label': 'baseline',
+                            'proxy_args': {}
+                        },
+                        {
+                            'label': 'maxtokens256',
+                            'proxy_args': {
+                                '--max-tokens': '256'
+                            }
+                        },
+                    ],
+                })
+            entries = run_experiment.load_matrix(path)
+        by_label = {e['label']: e for e in entries}
+        self.assertEqual(by_label['baseline']['proxy_args']['--max-tokens'],
+                         '1024')
+        self.assertEqual(
+            by_label['maxtokens256']['proxy_args']['--max-tokens'], '256')
+
+    def test_variant_n_defaults_to_one(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_matrix(
+                pathlib.Path(tmp), {
+                    'backends': ['ENV_A'],
+                    'variants': [{
+                        'label': 'baseline',
+                        'proxy_args': {}
+                    }],
+                })
+            entries = run_experiment.load_matrix(path)
+        self.assertEqual(entries[0]['n'], 1)
 
 
 if __name__ == '__main__':

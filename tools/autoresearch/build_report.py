@@ -59,6 +59,7 @@ def summarize_run(run: dict) -> dict:
 
     return {
         'label': run['label'],
+        'backend': run['entry'].get('backend_env_var', '?'),
         'entry': run['entry'],
         'n_items': len(run['items']),
         'mean_latency': mean_or_none(latencies),
@@ -72,14 +73,21 @@ def summarize_run(run: dict) -> dict:
 
 
 def render_leaderboard(summaries: list[dict]) -> str:
-    header = ('| label | correctness | anticipation | efficiency | aesthetics '
-               '| compile pass rate | mean latency (s) | mean prompt chars |')
-    sep = '|---' * 8 + '|'
+    # "backend" is its own column, not folded into "label": the label
+    # names the research variant (prompt/parameter choice under study);
+    # which backend happened to run it is a separate axis a matrix can
+    # loop over (see load_matrix in run_experiment.py), not part of the
+    # variant's identity.
+    header = ('| label | backend | correctness | anticipation | efficiency '
+               '| aesthetics | compile pass rate | mean latency (s) '
+               '| mean prompt chars |')
+    sep = '|---' * 9 + '|'
     rows = [header, sep]
     for s in summaries:
         scores = s['mean_scores']
         rows.append(
             f"| {s['label']} "
+            f"| {s['backend']} "
             f"| {scores['correctness']} "
             f"| {scores['anticipation']} "
             f"| {scores['efficiency']} "
@@ -93,7 +101,7 @@ def render_leaderboard(summaries: list[dict]) -> str:
 def render_examples(summaries: list[dict], top_n: int = 2) -> str:
     sections = []
     for s in summaries:
-        lines = [f'### {s["label"]}']
+        lines = [f'### {s["label"]} ({s["backend"]})']
         for axis in AXES:
             scored = sorted(s['examples'][axis], key=lambda t: t[0])
             if not scored:

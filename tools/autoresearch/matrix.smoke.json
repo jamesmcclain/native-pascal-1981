@@ -1,12 +1,11 @@
 {
-  "matrix": [
-    {
-      "label": "smoke-llm1-baseline",
-      "backend_env_var": "PASCAL1981_LLM1_URL",
-      "n": 1,
-      "proxy_args": {
-        "--max-tokens": "1024"
-      }
+  "backends": ["PASCAL1981_LLM1_URL", "PASCAL1981_LLM2_URL"],
+  "backend_overrides": {
+    "PASCAL1981_LLM1_URL": {
+      "--max-tokens": "1024"
     }
+  },
+  "variants": [
+    {"label": "baseline", "n": 1, "proxy_args": {}}
   ]
 }
