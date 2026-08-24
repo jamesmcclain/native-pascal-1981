@@ -16,6 +16,7 @@ names and orderings, so both outputs are assembled by clang instead.
 
 import json
 import os
+import resource
 import shutil
 import subprocess
 import sys
@@ -164,6 +165,30 @@ class TestNativeFixtureParity(unittest.TestCase):
             (FIXTURES / "parser" / "should_fail").glob("*.pas")):
             with self.subTest(source=source.name):
                 self._assert_same_acceptance(source, stages=2)
+
+    def test_stray_rparen_parser_failure_is_bounded(self):
+        source = (FIXTURES / "parser" / "should_fail" /
+                  "16_stray_rparen_in_compound.pas")
+        lexed = _run([NATIVE["lexer"]], source.read_text())
+        self.assertEqual(lexed.returncode, 0, lexed.stderr)
+
+        memory_limit = 128 * 1024 * 1024
+
+        def limit_address_space():
+            resource.setrlimit(resource.RLIMIT_AS,
+                               (memory_limit, memory_limit))
+
+        parsed = subprocess.run(
+            [NATIVE["parser"]],
+            input=lexed.stdout,
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            timeout=5,
+            preexec_fn=limit_address_space,
+        )
+        self.assertNotEqual(parsed.returncode, 0)
+        self.assertIn("Parser Error: expected statement", parsed.stderr)
 
     def test_parser_judgment_call_fixtures_have_expected_parity(self):
         fixtures = FIXTURES / "parser" / "judgment_calls"

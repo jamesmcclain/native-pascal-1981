@@ -1340,14 +1340,21 @@ END;
 FUNCTION ParseCompoundStmt: ADRMEM;
 VAR
   node, stmts_arr: ADRMEM;
+  start_pos: INTEGER32;
 BEGIN
   Expect('BEGIN');
   node := CreateNode('CompoundStmt');
   stmts_arr := cJSON_CreateArray;
   WHILE (CurKind <> 'END') AND (CurKind <> 'EOF') DO
   BEGIN
+    start_pos := pos;
     cJSON_AddItemToArray(stmts_arr, ParseStatement);
     IF CurKind = 'SEMICOLON' THEN pos := pos + 1;
+    IF pos = start_pos THEN
+    BEGIN
+      EPrint('Parser Error: statement failed to advance token stream');
+      exit(1);
+    END;
   END;
   Expect('END');
   AddField(node, 'stmts', stmts_arr);
@@ -1357,13 +1364,20 @@ END;
 FUNCTION ParseCompoundStmtList: ADRMEM;
 VAR
   arr: ADRMEM;
+  start_pos: INTEGER32;
 BEGIN
   Expect('BEGIN');
   arr := cJSON_CreateArray;
   WHILE (CurKind <> 'END') AND (CurKind <> 'EOF') DO
   BEGIN
+    start_pos := pos;
     cJSON_AddItemToArray(arr, ParseStatement);
     IF CurKind = 'SEMICOLON' THEN pos := pos + 1;
+    IF pos = start_pos THEN
+    BEGIN
+      EPrint('Parser Error: statement failed to advance token stream');
+      exit(1);
+    END;
   END;
   Expect('END');
   ParseCompoundStmtList := arr;
@@ -1710,7 +1724,7 @@ BEGIN
   ELSE IF k = 'IDENTIFIER' THEN
     ParseStatement := ParseAssignOrCallStmt
   ELSE IF (k = 'SEMICOLON') OR (k = 'END') OR (k = 'UNTIL') OR
-          (k = 'ELSE') OR (k = 'OTHERWISE') OR (k = 'RPAREN') THEN
+          (k = 'ELSE') OR (k = 'OTHERWISE') THEN
     ParseStatement := CreateNode('EmptyStmt')
   ELSE
   BEGIN
