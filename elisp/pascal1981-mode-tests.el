@@ -617,6 +617,90 @@ the callback itself decides which buffer is \"the response\" from
       (pascal1981-complete-line))
     (should (equal (buffer-string) "x := "))))
 
+(ert-deftest pascal1981-tests-completion-send-logging ()
+  "An outgoing completion request logs its captured request state when enabled."
+  (let ((log-buffer-name "*pascal1981-completion-log*")
+        (response-buffer (generate-new-buffer " *pascal1981-test-response*")))
+    (unwind-protect
+        (with-temp-buffer
+          (pascal1981-mode)
+          (insert "x := ")
+          (let ((pascal1981-completion-debug-log t)
+                (source-name (buffer-name))
+                (tick (buffer-modified-tick))
+                (pt (point)))
+            (cl-letf (((symbol-function 'url-retrieve)
+                       (lambda (&rest _) response-buffer)))
+              (pascal1981--completion-send-1
+               (cons (buffer-string) (cons 1 pt))))
+            (let ((log (with-current-buffer (get-buffer log-buffer-name)
+                         (buffer-string))))
+              (should (string-match-p "^SEND time=[0-9.]+ request=1 " log))
+              (should (string-match-p (regexp-quote (format "buffer=%S" source-name)) log))
+              (should (string-match-p (format "tick=%d point=%d" tick pt) log))
+              (should (string-match-p (format "line=1 column=%d" pt) log)))
+            (cancel-timer pascal1981--completion-timeout-timer)))
+      (when (get-buffer log-buffer-name)
+        (kill-buffer log-buffer-name))
+      (when (buffer-live-p response-buffer)
+        (kill-buffer response-buffer)))))
+
+(ert-deftest pascal1981-tests-completion-send-logging-mocked-round-trip ()
+  "A mocked completion response leaves one timestamped send record."
+  (let ((log-buffer-name "*pascal1981-completion-log*")
+        (response-buffer (pascal1981-tests--fake-response-buffer
+                          200 '((completions . ["1;"])))))
+    (unwind-protect
+        (with-temp-buffer
+          (pascal1981-mode)
+          (setq pascal1981-completion-enabled t)
+          (insert "x := ")
+          (let ((pascal1981-completion-debug-log t)
+                (started (float-time)))
+            (cl-letf (((symbol-function 'url-retrieve)
+                       (lambda (_url callback callback-args &rest _)
+                         (with-current-buffer response-buffer
+                           (apply callback nil callback-args))
+                         response-buffer)))
+              (pascal1981--completion-send-1
+               (cons (buffer-string) (cons 1 (point)))))
+            (let ((finished (float-time))
+                  (log (with-current-buffer (get-buffer log-buffer-name)
+                         (buffer-string))))
+              (should (pascal1981--completion-overlay-live-p))
+              (should (string-match "^SEND time=\\([0-9.]+\\) " log))
+              (let ((sent-at (string-to-number (match-string 1 log))))
+                ;; The log keeps microsecond precision, so allow rounding
+                ;; at the lower bound.
+                (should (<= started (+ sent-at 0.000001)))
+                (should (<= sent-at finished))))
+          (cancel-timer pascal1981--completion-timeout-timer)))
+      (when (get-buffer log-buffer-name)
+        (kill-buffer log-buffer-name))
+      (when (buffer-live-p response-buffer)
+        (kill-buffer response-buffer)))))
+
+(ert-deftest pascal1981-tests-completion-send-logging-disabled ()
+  "Disabled request logging does not create a diagnostic buffer."
+  (let ((log-buffer-name "*pascal1981-completion-log*")
+        (response-buffer (generate-new-buffer " *pascal1981-test-response*")))
+    (unwind-protect
+        (with-temp-buffer
+          (pascal1981-mode)
+          (insert "x := ")
+          (when (get-buffer log-buffer-name)
+            (kill-buffer log-buffer-name))
+          (cl-letf (((symbol-function 'url-retrieve)
+                     (lambda (&rest _) response-buffer)))
+            (pascal1981--completion-send-1
+             (cons (buffer-string) (cons 1 (point)))))
+          (should-not (get-buffer log-buffer-name))
+          (cancel-timer pascal1981--completion-timeout-timer))
+      (when (get-buffer log-buffer-name)
+        (kill-buffer log-buffer-name))
+      (when (buffer-live-p response-buffer)
+        (kill-buffer response-buffer)))))
+
 (ert-deftest pascal1981-tests-completion-mid-line-sends-no-request ()
   "Mid-line point never calls `url-retrieve', even when enabled."
   (with-temp-buffer
@@ -1020,6 +1104,39 @@ the request was sent."
         (insert " ")
         (pascal1981-indent-or-complete))
       (should sent))))
+
+(ert-deftest pascal1981-tests-double-tab-after-acceptance-sends-no-second-request ()
+  "A mocked completion followed by two TAB dispatches makes one LLM call."
+  (let ((log-buffer-name "*pascal1981-completion-log*")
+        (response-buffer (pascal1981-tests--fake-response-buffer
+                          200 '((completions . ["1;"])))))
+    (unwind-protect
+        (with-temp-buffer
+          (pascal1981-mode)
+          (setq pascal1981-completion-enabled t)
+          (insert "x := ")
+          (let ((pascal1981-completion-debug-log t)
+                (request-count 0))
+            (cl-letf (((symbol-function 'pascal1981--schedule-refresh) #'ignore)
+                      ((symbol-function 'url-retrieve)
+                       (lambda (_url callback callback-args &rest _)
+                         (setq request-count (1+ request-count))
+                         (with-current-buffer response-buffer
+                           (apply callback nil callback-args))
+                         response-buffer)))
+              (pascal1981-complete-line)
+              (should (pascal1981--completion-overlay-live-p))
+              (pascal1981-indent-or-complete)
+              (pascal1981-indent-or-complete))
+            (should (= request-count 1))
+            (with-current-buffer (get-buffer log-buffer-name)
+              (should (= (how-many "^SEND" (point-min) (point-max)) 1)))
+            (should (equal (buffer-string) "x := 1;"))
+            (cancel-timer pascal1981--completion-timeout-timer)))
+      (when (get-buffer log-buffer-name)
+        (kill-buffer log-buffer-name))
+      (when (buffer-live-p response-buffer)
+        (kill-buffer response-buffer)))))
 
 (ert-deftest pascal1981-tests-indent-or-complete-dispatches-to-completion ()
   "Enabled and eligible, no preview showing: TAB requests, doesn't indent."
