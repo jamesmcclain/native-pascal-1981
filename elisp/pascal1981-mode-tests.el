@@ -322,60 +322,26 @@ of the PROCEDURE declaration must count parenthesis depth."
 ;; LLM completion: toggle command
 ;; -------------------------------------------------------------------
 
-(ert-deftest pascal1981-tests-toggle-no-prefix-flips-enabled ()
-  "No prefix arg: toggles `pascal1981-completion-enabled', leaves the
-candidate count alone."
+(ert-deftest pascal1981-tests-toggle-flips-enabled ()
+  "`pascal1981-completion-toggle' is a plain toggle -- it no longer takes a
+candidate-count prefix argument, since the proxy no longer supports
+requesting more than one candidate per request."
   (with-temp-buffer
     (pascal1981-mode)
-    (setq pascal1981-completion-enabled nil
-          pascal1981-completion-candidates 1)
+    (setq pascal1981-completion-enabled nil)
     (pascal1981-completion-toggle)
     (should pascal1981-completion-enabled)
-    (should (= pascal1981-completion-candidates 1))
     (pascal1981-completion-toggle)
-    (should-not pascal1981-completion-enabled)
-    (should (= pascal1981-completion-candidates 1))))
+    (should-not pascal1981-completion-enabled)))
 
-(ert-deftest pascal1981-tests-toggle-numeric-prefix-sets-candidate-count ()
-  "A numeric prefix (e.g. `C-u 5') sets the candidate count and enables."
-  (with-temp-buffer
-    (pascal1981-mode)
-    (setq pascal1981-completion-enabled nil
-          pascal1981-completion-candidates 1)
-    (pascal1981-completion-toggle 5)
-    (should pascal1981-completion-enabled)
-    (should (= pascal1981-completion-candidates 5))))
-
-(ert-deftest pascal1981-tests-toggle-bare-c-u-defaults-to-three ()
-  "A bare `C-u' (raw arg is the list (4)) sets the candidate count to 3."
-  (with-temp-buffer
-    (pascal1981-mode)
-    (setq pascal1981-completion-enabled nil
-          pascal1981-completion-candidates 1)
-    (pascal1981-completion-toggle '(4))
-    (should pascal1981-completion-enabled)
-    (should (= pascal1981-completion-candidates 3))))
-
-(ert-deftest pascal1981-tests-toggle-numeric-prefix-clamped-to-at-least-one ()
-  "A non-positive numeric prefix still leaves at least 1 candidate."
-  (with-temp-buffer
-    (pascal1981-mode)
-    (setq pascal1981-completion-candidates 5)
-    (pascal1981-completion-toggle 0)
-    (should (= pascal1981-completion-candidates 1))
-    (pascal1981-completion-toggle -3)
-    (should (= pascal1981-completion-candidates 1))))
-
-(ert-deftest pascal1981-tests-real-c-u-5-m-x-toggle-sets-candidates ()
-  "A real `C-u 5 M-x pascal1981-completion-toggle' keypress sequence, not a
-direct function call, sets the candidate count."
+(ert-deftest pascal1981-tests-real-m-x-toggle-flips-enabled ()
+  "A real `M-x pascal1981-completion-toggle' keypress sequence, not a
+direct function call, flips `pascal1981-completion-enabled'."
   (pascal1981-tests--with-selected-buffer "pascal1981-tests-real-toggle"
     (pascal1981-mode)
-    (setq pascal1981-completion-enabled nil
-          pascal1981-completion-candidates 1)
-    (execute-kbd-macro (kbd "C-u 5 M-x pascal1981-completion-toggle RET"))
-    (should pascal1981-completion-enabled)
-    (should (= pascal1981-completion-candidates 5))))
+    (setq pascal1981-completion-enabled nil)
+    (execute-kbd-macro (kbd "M-x pascal1981-completion-toggle RET"))
+    (should pascal1981-completion-enabled)))
 
 ;; -------------------------------------------------------------------
 ;; LLM completion: eligibility predicate
@@ -403,6 +369,211 @@ direct function call, sets the candidate count."
     (insert "x := ")
     (save-excursion (insert "1"))
     (should-not (pascal1981--completion-allowed-at-point-p))))
+
+;; -------------------------------------------------------------------
+;; LLM completion: lexical-unit slicing
+;; -------------------------------------------------------------------
+
+(ert-deftest pascal1981-tests-proc-span-end-covers-whole-body ()
+  "A procedure with params and a real body: the span ends after its own
+closing `END;', not just after its header `;'."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas
+      (concat "PROGRAM P;\n"
+              "PROCEDURE BUMP(VAR X: INTEGER);\n"
+              "BEGIN\n"
+              "  X := X + 1\n"
+              "END;\n"
+              "BEGIN\n"
+              "END.\n")
+    (let* ((proc-index (cl-position-if
+                        (lambda (tok) (equal (alist-get 'kind tok) "PROCEDURE"))
+                        pascal1981--token-cache))
+           (end-index (pascal1981--completion-proc-span-end proc-index))
+           (end-tok (aref pascal1981--token-cache end-index)))
+      ;; The token just past the span is BUMP's own BEGIN's matching
+      ;; END's semicolon -- i.e. the outer program's own "BEGIN" on
+      ;; line 6, not anything inside BUMP itself.
+      (should (= (alist-get 'line end-tok) 6)))))
+
+(ert-deftest pascal1981-tests-proc-span-end-extern-has-no-body ()
+  "An EXTERN declaration's span ends right after its own trailing `;',
+with no BEGIN/END involved at all."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas
+      (concat "PROGRAM P;\n"
+              "FUNCTION Alloc(size: INTEGER): INTEGER; EXTERN;\n"
+              "BEGIN\n"
+              "END.\n")
+    (let* ((proc-index (cl-position-if
+                        (lambda (tok) (equal (alist-get 'kind tok) "FUNCTION"))
+                        pascal1981--token-cache))
+           (end-index (pascal1981--completion-proc-span-end proc-index))
+           (end-tok (aref pascal1981--token-cache end-index)))
+      (should (= (alist-get 'line end-tok) 3)))))
+
+(ert-deftest pascal1981-tests-proc-span-end-skips-nested-procedure ()
+  "A procedure containing a nested procedure declaration in its own
+decls section: the nested procedure's own BEGIN...END must not be
+mistaken for the outer one's -- this is the case a naive single-pass
+depth scan gets wrong (the nested BEGIN...END returns depth to 0
+before the outer procedure's own body has even started)."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas
+      (concat "PROGRAM P;\n"
+              "PROCEDURE Outer;\n"
+              "PROCEDURE Inner;\n"
+              "BEGIN\n"
+              "END;\n"
+              "BEGIN\n"
+              "  Inner\n"
+              "END;\n"
+              "BEGIN\n"
+              "END.\n")
+    (let* ((outer-index (cl-position-if
+                         (lambda (tok) (equal (alist-get 'kind tok) "PROCEDURE"))
+                         pascal1981--token-cache))
+           (end-index (pascal1981--completion-proc-span-end outer-index))
+           (end-tok (aref pascal1981--token-cache end-index)))
+      ;; Must run past Inner's own "END;" (line 5) all the way to
+      ;; Outer's own "END;" -- the token just past the span is the
+      ;; PROGRAM's own top-level BEGIN, on line 9.
+      (should (= (alist-get 'line end-tok) 9)))))
+
+(ert-deftest pascal1981-tests-enclosing-unit-span-finds-innermost ()
+  "Point inside a nested procedure resolves to the nested one's span,
+not the outer one's."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas
+      (concat "PROGRAM P;\n"
+              "PROCEDURE Outer;\n"
+              "PROCEDURE Inner;\n"
+              "BEGIN\n"
+              "  Q := 1\n"
+              "END;\n"
+              "BEGIN\n"
+              "  Inner\n"
+              "END;\n"
+              "BEGIN\n"
+              "END.\n")
+    (goto-char (point-min))
+    (search-forward "Q := 1")
+    (let ((span (pascal1981--completion-enclosing-unit-span (point))))
+      (should span)
+      (should (= (line-number-at-pos (car span)) 3)))))
+
+(ert-deftest pascal1981-tests-enclosing-unit-span-nil-at-top-level ()
+  "Point in the top-level main block (not inside any procedure) has no
+enclosing unit."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas
+      (concat "PROGRAM P;\n"
+              "PROCEDURE Foo;\n"
+              "BEGIN\n"
+              "END;\n"
+              "BEGIN\n"
+              "  Foo\n"
+              "END.\n")
+    (goto-char (point-min))
+    (search-forward "Foo\n")
+    (should-not (pascal1981--completion-enclosing-unit-span (point)))))
+
+(ert-deftest pascal1981-tests-toplevel-decls-end-before-first-procedure ()
+  "The top-level declarations span stops right at the first PROCEDURE."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas
+      (concat "PROGRAM P;\n"
+              "CONST N = 1;\n"
+              "VAR X: INTEGER;\n"
+              "PROCEDURE Foo;\n"
+              "BEGIN\n"
+              "END;\n"
+              "BEGIN\n"
+              "END.\n")
+    (let ((end (pascal1981--completion-toplevel-decls-end)))
+      (should (equal (buffer-substring-no-properties (point-min) end)
+                     "PROGRAM P;\nCONST N = 1;\nVAR X: INTEGER;\n")))))
+
+(ert-deftest pascal1981-tests-build-slice-adjusts-line-column ()
+  "The slice combines top-level decls with the unit's own text, and the
+returned LINE/COLUMN point into the combined text, not the original
+buffer."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas
+      (concat "PROGRAM P;\n"
+              "VAR N: INTEGER;\n"
+              "PROCEDURE Foo;\n"
+              "BEGIN\n"
+              "  N := 1\n"
+              "END;\n"
+              "BEGIN\n"
+              "END.\n")
+    (goto-char (point-min))
+    (search-forward "N := 1")
+    (let* ((span (pascal1981--completion-enclosing-unit-span (point)))
+           (result (pascal1981--completion-build-slice
+                    (car span) (cdr span) (point)))
+           (text (car result))
+           (line-column (cdr result)))
+      (should (string-prefix-p "PROGRAM P;\nVAR N: INTEGER;\n" text))
+      (should (string-match-p "PROCEDURE Foo;" text))
+      ;; decls-text is 2 complete lines (PROGRAM + VAR), so within the
+      ;; slice: line 3 is "PROCEDURE Foo;", line 4 is "BEGIN", and
+      ;; "N := 1" (where point stops, right after the "1") is line 5.
+      (should (= (car line-column) 5))
+      (should (= (cdr line-column) 9)))))
+
+(ert-deftest pascal1981-tests-request-text-unchanged-under-threshold ()
+  "A buffer under `pascal1981-completion-lexical-unit-threshold' still
+sends the whole buffer verbatim, unchanged from before this feature."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas "PROGRAM P;\nBEGIN\nEND.\n"
+    (let* ((pascal1981-completion-lexical-unit-threshold 4000)
+           (result (pascal1981--completion-request-text)))
+      (should (equal (car result) (buffer-string))))))
+
+(ert-deftest pascal1981-tests-request-text-slices-above-threshold ()
+  "Above the threshold, with point inside a procedure, the request text
+is a slice, not the whole (padded, larger) buffer."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas
+      (concat "PROGRAM P;\n"
+              "VAR N: INTEGER;\n"
+              "PROCEDURE Foo;\n"
+              "BEGIN\n"
+              "  N := 1\n"
+              "END;\n"
+              "BEGIN\n"
+              "END.\n"
+              ;; Padding as a comment so the buffer exceeds a tiny
+              ;; threshold without changing the token stream that
+              ;; matters for slicing.
+              "{ " (make-string 50 ?x) " }\n")
+    (goto-char (point-min))
+    (search-forward "N := 1")
+    (let* ((pascal1981-completion-lexical-unit-threshold 50)
+           (result (pascal1981--completion-request-text)))
+      (should (< (length (car result)) (buffer-size)))
+      (should (string-match-p "PROCEDURE Foo;" (car result))))))
+
+(ert-deftest pascal1981-tests-request-text-falls-back-at-top-level ()
+  "Above the threshold, with point at the top level (no enclosing
+unit), the whole buffer is still sent."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas
+      (concat "PROGRAM P;\n"
+              "PROCEDURE Foo;\n"
+              "BEGIN\n"
+              "END;\n"
+              "BEGIN\n"
+              "  Foo\n"
+              "END.\n"
+              "{ " (make-string 50 ?x) " }\n")
+    (goto-char (point-min))
+    (search-forward "Foo\n")
+    (let* ((pascal1981-completion-lexical-unit-threshold 50)
+           (result (pascal1981--completion-request-text)))
+      (should (equal (car result) (buffer-string))))))
 
 ;; -------------------------------------------------------------------
 ;; LLM completion: async client
@@ -496,8 +667,10 @@ the callback itself decides which buffer is \"the response\" from
                                 (overlay-get pascal1981--completion-overlay
                                              'after-string)))))
 
-(ert-deftest pascal1981-tests-completion-multi-candidate-shows-index-suffix ()
-  "Multiple candidates show a \"[1/N]\" suffix on the first one shown."
+(ert-deftest pascal1981-tests-completion-multi-line-shows-only-first-line-by-default ()
+  "A multi-line completion shows only its first line by default, with a
+\"[1/N lines]\" suffix -- `M-n' reveals more (see the reveal tests below),
+it is not shown all at once the way it used to be."
   (with-temp-buffer
     (pascal1981-mode)
     (setq pascal1981-completion-enabled t)
@@ -507,11 +680,33 @@ the callback itself decides which buffer is \"the response\" from
            (tick (buffer-modified-tick))
            (pt (point))
            (response (pascal1981-tests--fake-response-buffer
-                      200 '((completions . ["1;" "2;" "3;"])))))
+                      200 '((completions . ["BEGIN\ntotal := 1;\nEND;"])))))
       (setq pascal1981--completion-pending-id request-id)
       (pascal1981-tests--completion-respond source response request-id pt tick))
     (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
-                   "1; [1/3]"))))
+                   "BEGIN [1/3 lines]"))))
+
+(ert-deftest pascal1981-tests-completion-overlay-renders-embedded-newlines-once-revealed ()
+  "Once more lines are revealed, embedded newlines survive into the
+overlay's after-string verbatim -- Emacs renders an overlay after-string
+with embedded newlines as extra visual lines with no further work needed."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (insert "x := ")
+    (let* ((source (current-buffer))
+           (request-id 1)
+           (tick (buffer-modified-tick))
+           (pt (point))
+           (response (pascal1981-tests--fake-response-buffer
+                      200 '((completions . ["BEGIN\ntotal := 1;\nEND;"])))))
+      (setq pascal1981--completion-pending-id request-id)
+      (pascal1981-tests--completion-respond source response request-id pt tick))
+    ;; fib-steps(3) == (1 2 3): one M-n reveals 2 lines, another reveals 3.
+    (pascal1981-completion-reveal-more)
+    (pascal1981-completion-reveal-more)
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "BEGIN\ntotal := 1;\nEND; [3/3 lines]"))))
 
 (ert-deftest pascal1981-tests-completion-accept-materializes-into-buffer ()
   "TAB, dispatched while a preview is showing, inserts the shown candidate."
@@ -531,32 +726,20 @@ the callback itself decides which buffer is \"the response\" from
     (should (equal (buffer-string) "x := 1;"))
     (should-not pascal1981--completion-overlay)))
 
-(ert-deftest pascal1981-tests-completion-cycle-wraps-forward ()
-  "`M-n' cycling wraps back to the first candidate after the last."
-  (with-temp-buffer
-    (pascal1981-mode)
-    (setq pascal1981-completion-enabled t)
-    (insert "x := ")
-    (let* ((source (current-buffer))
-           (request-id 1)
-           (tick (buffer-modified-tick))
-           (pt (point))
-           (response (pascal1981-tests--fake-response-buffer
-                      200 '((completions . ["1;" "2;" "3;"])))))
-      (setq pascal1981--completion-pending-id request-id)
-      (pascal1981-tests--completion-respond source response request-id pt tick))
-    (pascal1981-completion-cycle-next)
-    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
-                   "2; [2/3]"))
-    (pascal1981-completion-cycle-next)
-    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
-                   "3; [3/3]"))
-    (pascal1981-completion-cycle-next)
-    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
-                   "1; [1/3]"))))
+(ert-deftest pascal1981-tests-completion-fib-steps ()
+  "`pascal1981--completion-fib-steps' produces deduplicated Fibonacci-spaced
+counts, always ending at TOTAL."
+  (should (equal (pascal1981--completion-fib-steps 1) '(1)))
+  (should (equal (pascal1981--completion-fib-steps 2) '(1 2)))
+  (should (equal (pascal1981--completion-fib-steps 3) '(1 2 3)))
+  (should (equal (pascal1981--completion-fib-steps 5) '(1 2 3 5)))
+  (should (equal (pascal1981--completion-fib-steps 6) '(1 2 3 5 6)))
+  (should (equal (pascal1981--completion-fib-steps 7) '(1 2 3 5 7)))
+  (should-not (pascal1981--completion-fib-steps 0)))
 
-(ert-deftest pascal1981-tests-completion-cycle-wraps-backward ()
-  "`M-p' cycling wraps to the last candidate from the first."
+(ert-deftest pascal1981-tests-completion-reveal-more-steps-through-fibonacci ()
+  "`M-n' steps the revealed line count forward through the Fibonacci
+schedule, and stays at the total once it is reached -- it does not wrap."
   (with-temp-buffer
     (pascal1981-mode)
     (setq pascal1981-completion-enabled t)
@@ -566,12 +749,73 @@ the callback itself decides which buffer is \"the response\" from
            (tick (buffer-modified-tick))
            (pt (point))
            (response (pascal1981-tests--fake-response-buffer
-                      200 '((completions . ["1;" "2;" "3;"])))))
+                      200 '((completions . ["a\nb\nc\nd\ne"])))))
       (setq pascal1981--completion-pending-id request-id)
       (pascal1981-tests--completion-respond source response request-id pt tick))
-    (pascal1981-completion-cycle-previous)
+    ;; fib-steps(5) == (1 2 3 5): 1 -> 2 -> 3 -> 5 -> 5 (clamped, no wrap).
     (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
-                   "3; [3/3]"))))
+                   "a [1/5 lines]"))
+    (pascal1981-completion-reveal-more)
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "a\nb [2/5 lines]"))
+    (pascal1981-completion-reveal-more)
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "a\nb\nc [3/5 lines]"))
+    (pascal1981-completion-reveal-more)
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "a\nb\nc\nd\ne [5/5 lines]"))
+    (pascal1981-completion-reveal-more)
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "a\nb\nc\nd\ne [5/5 lines]"))))
+
+(ert-deftest pascal1981-tests-completion-reveal-fewer-steps-back-down ()
+  "`M-p' steps the revealed line count back down, stopping at 1 line
+rather than wrapping to the total."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (insert "x := ")
+    (let* ((source (current-buffer))
+           (request-id 1)
+           (tick (buffer-modified-tick))
+           (pt (point))
+           (response (pascal1981-tests--fake-response-buffer
+                      200 '((completions . ["a\nb\nc"])))))
+      (setq pascal1981--completion-pending-id request-id)
+      (pascal1981-tests--completion-respond source response request-id pt tick))
+    (pascal1981-completion-reveal-more)
+    (pascal1981-completion-reveal-more)
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "a\nb\nc [3/3 lines]"))
+    (pascal1981-completion-reveal-fewer)
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "a\nb [2/3 lines]"))
+    (pascal1981-completion-reveal-fewer)
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "a [1/3 lines]"))
+    (pascal1981-completion-reveal-fewer)
+    (should (equal (overlay-get pascal1981--completion-overlay 'after-string)
+                   "a [1/3 lines]"))))
+
+(ert-deftest pascal1981-tests-completion-accept-inserts-only-revealed-lines ()
+  "TAB inserts only the lines currently revealed, not the whole completion
+-- what you see is what you get."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (insert "x := ")
+    (let* ((source (current-buffer))
+           (request-id 1)
+           (tick (buffer-modified-tick))
+           (pt (point))
+           (response (pascal1981-tests--fake-response-buffer
+                      200 '((completions . ["1;\n2;\n3;"])))))
+      (setq pascal1981--completion-pending-id request-id)
+      (pascal1981-tests--completion-respond source response request-id pt tick))
+    (pascal1981-completion-reveal-more)
+    (pascal1981-indent-or-complete)
+    (should (equal (buffer-string) "x := 1;\n2;"))
+    (should-not pascal1981--completion-overlay)))
 
 (ert-deftest pascal1981-tests-completion-not-live-after-point-moves ()
   "The preview stops being \"live\" once point moves away from it."
@@ -607,7 +851,7 @@ the callback itself decides which buffer is \"the response\" from
       (pascal1981-tests--completion-respond source response request-id pt tick))
     (pascal1981--completion-dismiss)
     (should-not pascal1981--completion-overlay)
-    (should-not pascal1981--completion-candidate-list)
+    (should-not pascal1981--completion-text)
     (should (equal (buffer-string) "x := "))))
 
 (ert-deftest pascal1981-tests-completion-preserves-right-hand-text ()
@@ -752,7 +996,7 @@ the request was sent."
     (insert "x := ")
     (let (sent indented)
       (cl-letf (((symbol-function 'pascal1981--completion-send)
-                 (lambda () (setq sent t)))
+                 (lambda (&rest _) (setq sent t)))
                 ((symbol-function 'pascal1981-indent-line)
                  (lambda () (setq indented t))))
         (pascal1981-indent-or-complete))
@@ -775,7 +1019,7 @@ the request was sent."
       (pascal1981-tests--completion-respond source response request-id pt tick))
     (let (sent)
       (cl-letf (((symbol-function 'pascal1981--completion-send)
-                 (lambda () (setq sent t))))
+                 (lambda (&rest _) (setq sent t))))
         (pascal1981-indent-or-complete))
       (should-not sent)
       (should (equal (buffer-string) "x := 1;")))))
@@ -789,7 +1033,7 @@ the request was sent."
     (save-excursion (insert "1"))
     (let (sent indented)
       (cl-letf (((symbol-function 'pascal1981--completion-send)
-                 (lambda () (setq sent t)))
+                 (lambda (&rest _) (setq sent t)))
                 ((symbol-function 'pascal1981-indent-line)
                  (lambda () (setq indented t))))
         (pascal1981-indent-or-complete))
@@ -804,7 +1048,7 @@ the request was sent."
     (insert "x := ")
     (let (sent indented)
       (cl-letf (((symbol-function 'pascal1981--completion-send)
-                 (lambda () (setq sent t)))
+                 (lambda (&rest _) (setq sent t)))
                 ((symbol-function 'pascal1981-indent-line)
                  (lambda () (setq indented t))))
         (pascal1981-indent-or-complete))
@@ -820,7 +1064,7 @@ the request was sent."
     (insert "x := ")
     (let (sent indented)
       (cl-letf (((symbol-function 'pascal1981--completion-send)
-                 (lambda () (setq sent t)))
+                 (lambda (&rest _) (setq sent t)))
                 ((symbol-function 'pascal1981-indent-line)
                  (lambda () (setq indented t))))
         (pascal1981-indent-or-complete))
@@ -838,7 +1082,7 @@ the request was sent."
 ;; -------------------------------------------------------------------
 ;;
 ;; Every test above calls elisp functions (`pascal1981-indent-or-complete',
-;; `pascal1981-completion-cycle-next', etc.) directly -- which never
+;; `pascal1981-completion-reveal-more', etc.) directly -- which never
 ;; exercises `set-transient-map's own machinery. `set-transient-map'
 ;; evaluates its KEEP-PRED (and, when that says "don't keep", calls
 ;; ON-EXIT) from `pre-command-hook', which runs BEFORE the command bound
@@ -853,12 +1097,12 @@ the request was sent."
 
 (ert-deftest pascal1981-tests-real-tab-accepts-live-preview ()
   "A real TAB keypress, not a direct function call, materializes the
-candidate currently shown by a live preview."
+completion currently shown by a live preview."
   (pascal1981-tests--with-selected-buffer "pascal1981-tests-real-tab"
     (pascal1981-mode)
     (setq pascal1981-completion-enabled t)
     (insert "x := ")
-    (pascal1981--completion-show-ghost '("1;"))
+    (pascal1981--completion-show-ghost "1;")
     (execute-kbd-macro (kbd "TAB"))
     (should (equal (buffer-string) "x := 1;"))
     (should-not pascal1981--completion-overlay)))
@@ -870,7 +1114,7 @@ by a leftover transient map -- it dispatches normally again."
     (pascal1981-mode)
     (setq pascal1981-completion-enabled t)
     (insert "x := ")
-    (pascal1981--completion-show-ghost '("1;"))
+    (pascal1981--completion-show-ghost "1;")
     (execute-kbd-macro (kbd "TAB"))
     (setq pascal1981-completion-enabled nil)
     (insert "\n  y")
@@ -879,18 +1123,18 @@ by a leftover transient map -- it dispatches normally again."
       (execute-kbd-macro (kbd "TAB")))
     (should (equal (buffer-string) "x := 1;\n  y<INDENTED>"))))
 
-(ert-deftest pascal1981-tests-real-m-n-cycles-and-real-tab-accepts-shown-one ()
-  "Real M-n keypresses advance the shown candidate; a real TAB after that
-materializes whichever one is currently shown, not the first."
-  (pascal1981-tests--with-selected-buffer "pascal1981-tests-real-cycle"
+(ert-deftest pascal1981-tests-real-m-n-reveals-and-real-tab-accepts-shown-lines ()
+  "Real M-n keypresses reveal more lines of the preview; a real TAB after
+that materializes whatever is currently shown, not the whole completion."
+  (pascal1981-tests--with-selected-buffer "pascal1981-tests-real-reveal"
     (pascal1981-mode)
     (setq pascal1981-completion-enabled t)
     (insert "x := ")
-    (pascal1981--completion-show-ghost '("1;" "2;" "3;"))
+    (pascal1981--completion-show-ghost "1;\n2;\n3;")
     (execute-kbd-macro (kbd "M-n"))
     (execute-kbd-macro (kbd "M-n"))
     (execute-kbd-macro (kbd "TAB"))
-    (should (equal (buffer-string) "x := 3;"))))
+    (should (equal (buffer-string) "x := 1;\n2;\n3;"))))
 
 (ert-deftest pascal1981-tests-real-c-g-dismisses-without-inserting ()
   "A real C-g dismisses the preview and inserts nothing."
@@ -898,7 +1142,7 @@ materializes whichever one is currently shown, not the first."
     (pascal1981-mode)
     (setq pascal1981-completion-enabled t)
     (insert "x := ")
-    (pascal1981--completion-show-ghost '("1;"))
+    (pascal1981--completion-show-ghost "1;")
     (execute-kbd-macro (kbd "C-g"))
     (should (equal (buffer-string) "x := "))
     (should-not pascal1981--completion-overlay)))
@@ -910,7 +1154,7 @@ never inserted, only the typed character is."
     (pascal1981-mode)
     (setq pascal1981-completion-enabled t)
     (insert "x := ")
-    (pascal1981--completion-show-ghost '("1;"))
+    (pascal1981--completion-show-ghost "1;")
     (execute-kbd-macro (kbd "9"))
     (should (equal (buffer-string) "x := 9"))
     (should-not pascal1981--completion-overlay)))
@@ -994,6 +1238,69 @@ the buffer."
       (execute-kbd-macro (kbd "TAB"))
       (should (equal (buffer-string) "FOR i := 1 TO 10 DO")))))
 
+(ert-deftest pascal1981-tests-end-to-end-multiline-accept-reindents ()
+  "Accepting a multi-line candidate, after revealing all of its lines,
+reindents the inserted lines via the lexer/token cache, instead of
+leaving the model's raw, unindented text. (Only its first line is
+shown by default; `M-n' reveals the rest first -- see the reveal
+tests above for that behavior in isolation.)"
+  (pascal1981-tests--with-fake-proxy
+      (pascal1981-tests--http-json-response
+       200 '((completions . ["BEGIN\ntotal := total + i;\nEND;"])
+             (model . "test-model") (request_id . "e2e-multiline")))
+    (pascal1981-tests--with-selected-buffer "pascal1981-tests-e2e-multiline"
+      (pascal1981-mode)
+      (setq pascal1981-completion-enabled t
+            pascal1981-completion-timeout 5)
+      (insert "PROGRAM Demo;\nBEGIN\n  ")
+      (pascal1981-complete-line)
+      (pascal1981-tests--wait-until
+       (lambda () (not pascal1981--completion-pending-id)) 5)
+      (should (pascal1981--completion-overlay-live-p))
+      (execute-kbd-macro (kbd "M-n M-n TAB"))
+      (should (equal (buffer-string)
+                     "PROGRAM Demo;\nBEGIN\n  BEGIN\n    total := total + i;\n  END;")))))
+
+(ert-deftest pascal1981-tests-end-to-end-lexical-unit-slice-still-completes ()
+  "A buffer whose whole text exceeds `pascal1981-completion-buffer-limit'
+still gets a completion, as long as the lexical-unit slice around
+point (which excludes an unrelated, much larger procedure elsewhere in
+the file) fits -- exercised through the real send path, not just the
+`pascal1981--completion-request-text' helper in isolation. Without
+slicing, this request would be refused before ever reaching the proxy."
+  (pascal1981-tests--with-fake-proxy
+      (pascal1981-tests--http-json-response
+       200 '((completions . ["x := 1;"])
+             (model . "test-model") (request_id . "e2e-slice")))
+    (pascal1981-tests--with-selected-buffer "pascal1981-tests-e2e-slice"
+      (pascal1981-mode)
+      (setq pascal1981-completion-enabled t
+            pascal1981-completion-timeout 5
+            pascal1981-completion-lexical-unit-threshold 50
+            pascal1981-completion-buffer-limit 300)
+      (insert "PROGRAM P;\nVAR N: INTEGER;\nPROCEDURE Foo;\nBEGIN\n  N := 1")
+      (let ((point-in-foo (point)))
+        (insert (concat "\nEND;\nPROCEDURE Bar;\nBEGIN\n"
+                        (apply #'concat
+                               (make-list 60 "  N := N + 1;\n"))
+                        "END;\nBEGIN\nEND.\n"))
+        (goto-char point-in-foo))
+      ;; pascal1981-mode was enabled on an empty buffer above; real
+      ;; edits only refresh the token cache via an idle timer, which
+      ;; this test does not wait for -- force it synchronously so
+      ;; slicing has a token cache to work from, the same as it would
+      ;; have after the idle delay in real use.
+      (pascal1981--refresh-caches)
+      ;; Point is right after "N := 1", nothing but whitespace to EOL --
+      ;; eligible per `pascal1981--completion-allowed-at-point-p'.
+      ;; Whole buffer is well over 300 chars; the slice around point
+      ;; (declarations + Foo only, excluding Bar's padding) is not.
+      (should (> (buffer-size) pascal1981-completion-buffer-limit))
+      (pascal1981-complete-line)
+      (pascal1981-tests--wait-until
+       (lambda () (not pascal1981--completion-pending-id)) 5)
+      (should (pascal1981--completion-overlay-live-p)))))
+
 (ert-deftest pascal1981-tests-end-to-end-fake-proxy-http-error-no-preview ()
   "A real HTTP round trip returning a non-200 status shows no preview and
 leaves the buffer alone."
@@ -1025,6 +1332,175 @@ leaves the buffer alone."
     (pascal1981-tests--wait-until
      (lambda () (not pascal1981--completion-pending-id)) 6)
     (should (equal (buffer-string) "FOR i := 1 "))))
+
+;; -------------------------------------------------------------------
+;; LLM completion: junk-response corpus
+;; -------------------------------------------------------------------
+;;
+;; What a low-parameter LLM, or a proxy speaking for one, actually sends
+;; when things go wrong. The proxy sanitizes its own output, but this mode
+;; speaks HTTP to whatever is listening at `pascal1981-completion-proxy-
+;; url' -- which need not be the bundled proxy -- so the client is checked
+;; here against the raw article rather than against the proxy's promises.
+;;
+;; The invariant asserted is the same for every case: no preview appears,
+;; the buffer is untouched, no error is signaled, and the request is
+;; retired rather than left pending forever.
+
+(defconst pascal1981-tests--junk-responses
+  `(("empty completion string" . ((completions . [""])))
+    ("whitespace-only completion" . ((completions . ["   \t  "])))
+    ("newline-only completion" . ((completions . ["\n\n"])))
+    ("empty completions array" . ((completions . [])))
+    ("null inside completions" . ((completions . [:null])))
+    ("completions is a string" . ((completions . "x := 1;")))
+    ("completions is an object" . ((completions . ((text . "x := 1;")))))
+    ("completions holds a number" . ((completions . [42])))
+    ("missing completions key" . ((model . "test-model")))
+    ("carriage return" . ((completions . ["x := 1;\r\ny := 2;"])))
+    ("escape sequence" . ((completions . ["\e[31mx := 1;\e[0m"])))
+    ("control characters" . ((completions . ["x :=\001\002 1;"])))
+    ("oversized completion"
+     . ((completions . [,(make-string 20000 ?A)]))))
+  "Alist of LABEL -> JSON body that must never produce a preview.")
+
+(defun pascal1981-tests--junk-round-trip (response)
+  "Drive one real HTTP round trip against RESPONSE (raw HTTP bytes).
+Return the resulting buffer text; asserts no preview is showing."
+  (pascal1981-tests--with-fake-proxy response
+    (with-temp-buffer
+      (pascal1981-mode)
+      (setq pascal1981-completion-enabled t
+            pascal1981-completion-timeout 3)
+      (insert "FOR i := 1 ")
+      (pascal1981-complete-line)
+      (pascal1981-tests--wait-until
+       (lambda () (not pascal1981--completion-pending-id)) 6)
+      (should-not pascal1981--completion-pending-id)
+      (should-not (pascal1981--completion-overlay-live-p))
+      (buffer-string))))
+
+(ert-deftest pascal1981-tests-junk-completions-never-preview ()
+  "Every entry in `pascal1981-tests--junk-responses' is rejected: no
+preview, no buffer change, no error."
+  (dolist (case pascal1981-tests--junk-responses)
+    (let ((label (car case)))
+      (should (equal (cons label
+                           (pascal1981-tests--junk-round-trip
+                            (pascal1981-tests--http-json-response
+                             200 (cdr case))))
+                     (cons label "FOR i := 1 "))))))
+
+(ert-deftest pascal1981-tests-junk-http-statuses-never-preview ()
+  "A non-200 status is rejected even when its body looks well-formed."
+  (dolist (status '(400 404 500 502 503))
+    (should (equal (pascal1981-tests--junk-round-trip
+                    (pascal1981-tests--http-json-response
+                     status '((completions . ["x := 1;"]))))
+                   "FOR i := 1 "))))
+
+(ert-deftest pascal1981-tests-junk-non-json-body-never-previews ()
+  "A body that is not JSON at all is rejected rather than signaling."
+  (dolist (body '("not json at all"
+                  "<html><body>502 Bad Gateway</body></html>"
+                  ""
+                  "{\"completions\": [\"x := 1;\""))
+    (should (equal (pascal1981-tests--junk-round-trip
+                    (concat "HTTP/1.1 200 OK\r\n"
+                            "Content-Type: application/json\r\n"
+                            (format "Content-Length: %d\r\n"
+                                    (string-bytes body))
+                            "Connection: close\r\n\r\n"
+                            body))
+                   "FOR i := 1 "))))
+
+(ert-deftest pascal1981-tests-usable-completion-predicate ()
+  "`pascal1981--completion-usable-p' accepts real source and rejects the
+empty, the oversized, and the control-character-bearing."
+  (should (pascal1981--completion-usable-p "TO 10 DO"))
+  (should (pascal1981--completion-usable-p "BEGIN\n  x := 1;\nEND;"))
+  (should (pascal1981--completion-usable-p "\tx := 1;"))
+  (should-not (pascal1981--completion-usable-p ""))
+  (should-not (pascal1981--completion-usable-p "   \n\t "))
+  (should-not (pascal1981--completion-usable-p "x := 1;\r"))
+  (should-not (pascal1981--completion-usable-p "x :=\e[0m 1;"))
+  (should-not (pascal1981--completion-usable-p 42))
+  (let ((pascal1981-completion-max-chars 16))
+    (should-not (pascal1981--completion-usable-p (make-string 17 ?A)))
+    (should (pascal1981--completion-usable-p (make-string 16 ?A)))))
+
+(ert-deftest pascal1981-tests-multibyte-completion-round-trips ()
+  "Non-ASCII in a completion survives the round trip as characters, not
+as the raw UTF-8 bytes `json-read' would have handed back undecoded."
+  (pascal1981-tests--with-fake-proxy
+      (pascal1981-tests--http-json-response
+       200 '((completions . ["WRITELN('café')"])))
+    (pascal1981-tests--with-selected-buffer "pascal1981-tests-multibyte"
+      (pascal1981-mode)
+      (setq pascal1981-completion-enabled t
+            pascal1981-completion-timeout 5)
+      (insert "  ")
+      (pascal1981-complete-line)
+      (pascal1981-tests--wait-until
+       (lambda () (not pascal1981--completion-pending-id)) 6)
+      (should (pascal1981--completion-overlay-live-p))
+      (execute-kbd-macro (kbd "TAB"))
+      (should (equal (buffer-string) "  WRITELN('café')")))))
+
+(ert-deftest pascal1981-tests-in-flight-request-blocks-a-second ()
+  "A second TAB while a request is in flight does not fire another one.
+Every TAB used to send its own; the forking proxy accepted them all and
+piled them onto a backend that serves one request at a time."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (insert "FOR i := 1 ")
+    (let ((sends 0))
+      (cl-letf (((symbol-function 'url-retrieve)
+                 (lambda (&rest _) (cl-incf sends) nil)))
+        (pascal1981-complete-line)
+        (pascal1981-complete-line)
+        (pascal1981-complete-line))
+      (should (= sends 1))
+      (should pascal1981--completion-pending-id))))
+
+(ert-deftest pascal1981-tests-failed-send-does-not-wedge-the-in-flight-guard ()
+  "A `url-retrieve' that signals clears the pending id.
+Otherwise the in-flight guard would refuse every later completion in
+this buffer -- a typo in `pascal1981-completion-proxy-url' would
+disable completion until the buffer was killed."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (insert "FOR i := 1 ")
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (&rest _) (error "no handler for this scheme"))))
+      (pascal1981-complete-line))
+    (should-not pascal1981--completion-pending-id)
+    ;; And a later request is still allowed through.
+    (let ((sends 0))
+      (cl-letf (((symbol-function 'url-retrieve)
+                 (lambda (&rest _) (cl-incf sends) nil)))
+        (pascal1981-complete-line))
+      (should (= sends 1)))))
+
+(ert-deftest pascal1981-tests-multiline-accept-preserves-indent-without-lexer ()
+  "Accepting a multi-line completion when the lexer is unavailable leaves
+the surrounding indentation alone.
+
+`pascal1981--compute-indent' answers 0 for every line when the token
+cache is nil, so an unguarded reindent pass does not leave indentation
+as-is -- it flattens it to column 0. A nil cache is the expected case
+here, not a remote one: the inserted text came from an LLM, and a
+partial statement is exactly what makes the lexer fail."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (let ((pascal1981-lexer-program "pascal1981-no-such-lexer-binary")
+          (pascal1981-parser-program "pascal1981-no-such-parser-binary"))
+      (insert "PROGRAM P;\nBEGIN\n    ")
+      (pascal1981--completion-insert "x := 1;\n    y := 2;")
+      (should (equal (buffer-string)
+                     "PROGRAM P;\nBEGIN\n    x := 1;\n    y := 2;")))))
 
 (provide 'pascal1981-mode-tests)
 ;;; pascal1981-mode-tests.el ends here

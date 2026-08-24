@@ -8,20 +8,19 @@ ever an HTTP client of whatever is already listening on --host:--port.
 Protocol (see pascal-completion-plan.md):
 
     POST /complete
-    {"goal": "...", "buffer": "...", "cursor": {"line": N, "column": N},
-     "n": N}
+    {"goal": "...", "buffer": "...", "cursor": {"line": N, "column": N}}
     ->
-    {"completions": ["...", ...], "model": "...", "request_id": "..."}
+    {"completions": ["..."], "model": "...", "request_id": "..."}
 
-"n" is optional (default 1, clamped to [1, 5]): how many candidate
-completions to request. "completions" is always a list, even when n is 1.
-
-n > 1 is implemented via a prompt asking the model for a JSON object of
-completions in a single request, not the OpenAI /chat/completions "n"
-field -- verified live that backend-level "n" is not reliably usable: LM
-Studio silently ignores it (always returns one choice), and llama.cpp
-hard-rejects any value other than 1 with an HTTP 400. See
-`multi_system_prompt` and `extract_completions`.
+"completions" is always a single-element list. There is deliberately no
+"n" / multi-candidate support: it was tried (a prompt asking the model for
+a JSON object of several completions in one request, since backend-level
+"n" is not reliably usable -- LM Studio silently ignores it, llama.cpp
+hard-rejects any value other than 1 with an HTTP 400) and later shelved --
+every request makes exactly one upstream call, full stop, and the Emacs
+client instead reveals more of one generous completion via M-n/M-p rather
+than cycling between several distinct ones. See autoresearch notes below
+for why.
 
 Configuration is by CLI flag (run --help for the full list), not
 environment variables -- the one exception is LLM_API_KEY, which stays
@@ -45,6 +44,72 @@ model skip its hidden reasoning pass entirely and answer directly. A backend
 that does not understand the field is expected to ignore it, per the usual
 "unknown JSON field" tolerance of OpenAI-compatible servers; if one does not,
 --reasoning-effort can be set to an empty string to omit it.
+
+Porting notes (for a future native pascal1981 port of this proxy):
+
+- Every buffer/JSON payload here (the request body, the source-buffer
+  prefix, upstream request/response bodies) can exceed 255 characters --
+  the dialect's LSTRING(n) stores its length as a single byte (0..255), so
+  none of this data can be carried in an LSTRING. It has to be a raw
+  ADRMEM/^CHAR buffer with an explicit INTEGER32 length, the same pattern
+  src/jsonutil.pas's ReadAllStdin/MakeCStr/CStrToStr255 already use for
+  arbitrary-length C-string data.
+- Every CLI flag below is used, in practice, only as `--flag value`
+  (long form, space-separated). There is no `--flag=value` usage, no
+  abbreviated/prefix matching, and no combined short flags anywhere this
+  proxy is invoked -- a hand-rolled Pascal argv parser only needs to
+  implement that one, narrow grammar, not argparse's full feature set.
+
+Autoresearch notes (for an effort that optimizes completion quality by
+varying prompts and proxy parameters, without touching this file):
+
+- The tunable surface is not just tools/prompts/system_prompt.txt.
+  --temperature, --reasoning-effort, --max-tokens, and --grammar-file are
+  all real, high-impact levers on quality that live in CLI flags / Config,
+  not prompt text -- include them in the search space, not just prompt
+  wording.
+- A full-corpus experiment (see /home/ubuntu/autoresearch_notes.md,
+  "Headline finding: a minimal prompt (no proxy) eliminates the echo bug")
+  found that a near-bare system prompt eliminates the dominant "echo bug"
+  failure mode (the model retyping text already before the cursor): 0/64
+  echoes at full-corpus scale on two different backends, vs. 22-30% under
+  a more elaborate, heavily-instructed prompt this file used to ship. That
+  finding is what SYSTEM_PROMPT now is -- verbatim, not adapted or
+  extended, per explicit instruction not to ship any wording beyond what
+  was actually measured. Multi-candidate support (a prompt asking for
+  several completions packed into one JSON response) was tried and later
+  shelved entirely, for two reasons: the backend's one-connection-at-a-time
+  behavior and the Emacs client's completion timeout ruled out ever making
+  more than one upstream call per request, and once the client started
+  revealing more of a single generous completion via M-n/M-p instead of
+  cycling between candidates, packing multiple *distinct* completions into
+  one response stopped solving a problem that still existed. On the elisp
+  side, M-n/M-p now step through a single completion's lines at
+  deduplicated Fibonacci-spaced counts (1, 2, 3, 5, 8, 13, ... -- not the
+  raw Fibonacci sequence's repeated leading 1, 1, since two consecutive
+  keystrokes revealing the same line count would be a no-op).
+- `strip_echo` is unconditional, mechanical defense-in-depth against the
+  echo bug, run on every completion in `do_POST` regardless of how rare
+  it now is under the minimal prompt: the 0/64 result above was measured
+  against one 64-item corpus, not proven impossible in general. It is a
+  literal, character-level overlap check between the buffer's tail and
+  the candidate's start, only stripped once the match exceeds
+  `_ECHO_MIN_OVERLAP` characters. An earlier word-level, case/whitespace-
+  normalized version of this function looked safer on paper but was not:
+  it silently ate real completions whenever a *short* repeated word was
+  legitimate rather than an echo -- e.g. two nested blocks correctly
+  closing back-to-back both end in "END;", and that got stripped down to
+  nothing, live in Emacs. A short overlap is common, structurally
+  required repetition; only a longer one is implausible as coincidence.
+- --grammar-file was independently tested and found not to help completion
+  quality while inflating prompt size and upstream latency -- it remains
+  available (off by default) in case a future prompt shape changes that
+  finding, but treat it as a known-not-helpful lever, not a live one.
+- Swapping --llm-base-url or the model loaded behind an existing one
+  without restarting the proxy leaves --reasoning-effort=auto's
+  calibration stale (see calibrate_reasoning_effort) -- restart the proxy
+  on every backend/model change in an experiment sweep, don't just
+  repoint the flag.
 """
 
 from __future__ import annotations
@@ -55,7 +120,8 @@ import os
 import sys
 import urllib.error
 import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import socketserver
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 # --------------------------------------------------------------------------
@@ -78,11 +144,11 @@ def load_prompt_text(filename: str) -> str:
 
 
 def load_prompt_override(path: str) -> str:
-    """Read a --system-prompt-file / --multi-system-prompt-file override
-    from an arbitrary PATH (unlike `load_prompt_text`, not relative to the
-    bundled tools/prompts/ directory). Raise OSError on failure -- a bad
-    override path should fail the proxy at startup, not silently fall back
-    to the bundled default."""
+    """Read a --system-prompt-file override from an arbitrary PATH (unlike
+    `load_prompt_text`, not relative to the bundled tools/prompts/
+    directory). Raise OSError on failure -- a bad override path should
+    fail the proxy at startup, not silently fall back to the bundled
+    default."""
     with open(path, encoding='utf-8') as handle:
         return handle.read().rstrip('\n')
 
@@ -138,6 +204,17 @@ class Config:
                  # 20s, not the 5-10s a non-reasoning backend would need: a
                  # reasoning-heavy completion at ~90 tokens/s can take
                  # several seconds even before writing an answer.
+                 #
+                 # This value is paired with `pascal1981-completion-timeout`
+                 # in elisp/pascal1981-mode.el, which must not be shorter.
+                 # It used to be: the client gave up at 8s while this budget
+                 # ran to 20s, so every slow request died client-side with a
+                 # blind "timed out" -- the user never saw the proxy's own
+                 # diagnosis, and the forked child went on holding the
+                 # upstream call open after the client had walked away. The
+                 # two now match at 20s, with the client adding a small
+                 # transport grace on top so this side always answers first.
+                 # Change one and change the other.
                  upstream_timeout: float = 20.0,
                  # Sent as a top-level "reasoning_effort" field on every
                  # request to /chat/completions. Set to an empty string to
@@ -169,20 +246,22 @@ class Config:
                  # docs/ebnf_grammar.md even though that file is a natural
                  # fit.
                  grammar_file: str = '',
-                 # Both default to the bundled tools/prompts/ files (see
-                 # `load_prompt_text`) when left as None. Overridable via
-                 # --system-prompt-file / --multi-system-prompt-file so
-                 # prompt wording can be tuned per deployment without
-                 # touching this module -- the same reasoning as
-                 # --grammar-file.
+                 # Defaults to the bundled tools/prompts/system_prompt.txt
+                 # (see `load_prompt_text`) when left as None. Overridable
+                 # via --system-prompt-file so prompt wording can be tuned
+                 # per deployment without touching this module -- the same
+                 # reasoning as --grammar-file.
                  system_prompt: str | None = None,
-                 multi_system_prompt_template: str | None = None,
-                 # Overridable via --multi-user-prefix-file. Placed in the
-                 # *user* message, immediately before the source text, for
-                 # an n > 1 request -- see build_prompt's docstring for why
-                 # that placement (not just the system prompt) mattered
-                 # live.
-                 multi_user_prefix_template: str | None = None) -> None:
+                 # Safety-valve cap on completion length, in lines -- not a
+                 # quality lever. Deliberately generous (see
+                 # `sanitize_completion`'s docstring for why 1, the old
+                 # default, is wrong): a completion running longer than a
+                 # real single-statement or short-block continuation is
+                 # welcome, not a bug to prevent, per the "too much
+                 # completion is better than too little; extra can be
+                 # stripped in some appropriate way" guidance that drove
+                 # this default's increase from 1 to 30.
+                 max_lines: int = 30) -> None:
         self.host = host
         self.port = port
         self.llm_base_url = llm_base_url.rstrip('/')
@@ -199,14 +278,7 @@ class Config:
                               if self.grammar_file else '')
         self.system_prompt = (system_prompt
                               if system_prompt is not None else SYSTEM_PROMPT)
-        self.multi_system_prompt_template = (
-            multi_system_prompt_template
-            if multi_system_prompt_template is not None else
-            _MULTI_SYSTEM_PROMPT_TEMPLATE)
-        self.multi_user_prefix_template = (
-            multi_user_prefix_template
-            if multi_user_prefix_template is not None else
-            _MULTI_USER_PREFIX_TEMPLATE)
+        self.max_lines = max_lines
 
     @property
     def chat_completions_url(self) -> str:
@@ -222,19 +294,13 @@ class RequestError(Exception):
     """Malformed /complete request. Message is safe to return to the client."""
 
 
-_MAX_CANDIDATES = 5
-
-
 def validate_request(
         payload: object,
-        buffer_limit: int) -> tuple[str, str, int, int, int]:
+        buffer_limit: int) -> tuple[str, str, int, int]:
     """Validate a decoded /complete JSON body.
 
-    Return (goal, buffer, line, column, n) on success. Raise RequestError
-    with a client-safe message otherwise. "n" (candidate count) is optional
-    and clamped into [1, _MAX_CANDIDATES] rather than rejected outright --
-    an out-of-range value is a client quirk, not a protocol violation worth
-    failing the request over.
+    Return (goal, buffer, line, column) on success. Raise RequestError with
+    a client-safe message otherwise.
     """
     if not isinstance(payload, dict):
         raise RequestError('request body must be a JSON object')
@@ -260,12 +326,7 @@ def validate_request(
     if not isinstance(column, int) or isinstance(column, bool) or column < 1:
         raise RequestError('"cursor.column" must be a positive integer')
 
-    n = payload.get('n', 1)
-    if not isinstance(n, int) or isinstance(n, bool):
-        n = 1
-    n = min(max(n, 1), _MAX_CANDIDATES)
-
-    return goal, buffer, line, column, n
+    return goal, buffer, line, column
 
 
 def compute_prefix(buffer: str, line: int, column: int) -> str:
@@ -290,8 +351,7 @@ _GRAMMAR_FOOTER = '# --- end grammar reference ---'
 
 def build_prompt(goal: str,
                  prefix: str,
-                 grammar: str = '',
-                 multi_prefix: str = '') -> str:
+                 grammar: str = '') -> str:
     """Build the user-message content sent upstream (see SYSTEM_PROMPT for
     the accompanying system message).
 
@@ -302,16 +362,6 @@ def build_prompt(goal: str,
     before the prefix, kept off its own line's indentation so it cannot be
     mistaken for buffer content.
 
-    A non-empty MULTI_PREFIX (see Config.multi_user_prefix_template /
-    --multi-user-prefix-file) is placed immediately before GOAL/PREFIX, not
-    up near GRAMMAR. Verified live: for a multi-candidate (n > 1) request,
-    repeating the "give N distinct completions" instruction here, right
-    next to the actual source text, made a real difference that having it
-    only once in the system prompt did not -- one backend went from
-    returning the same completion 2-3 times in 7 of 10 trials on an
-    obvious-answer case ("VAR count: " -> "Integer;") to zero duplicates in
-    10/10 once this line was added immediately before the code.
-
     A non-empty GRAMMAR (the dialect's EBNF reference, opt-in via
     --grammar-file) is prepended ahead of everything else, marked with a
     plain '#' header/footer rather than a Pascal '{ }' or '(* *)' comment:
@@ -321,8 +371,6 @@ def build_prompt(goal: str,
     """
     goal = goal.strip().replace('\n', ' ')
     body = f'{{ {goal} }}\n{prefix}' if goal else prefix
-    if multi_prefix:
-        body = f'{multi_prefix}\n{body}'
     if not grammar.strip():
         return body
     return f'{_GRAMMAR_HEADER}\n{grammar.strip()}\n{_GRAMMAR_FOOTER}\n\n{body}'
@@ -351,43 +399,6 @@ class ReasoningBudgetExhausted(UpstreamError):
 
 SYSTEM_PROMPT = load_prompt_text('system_prompt.txt')
 
-_MULTI_SYSTEM_PROMPT_TEMPLATE = load_prompt_text('multi_system_prompt.txt')
-
-_MULTI_USER_PREFIX_TEMPLATE = load_prompt_text('multi_user_prefix.txt')
-
-
-def multi_system_prompt(n: int, template: str | None = None) -> str:
-    """System prompt for a multi-candidate (N > 1) request.
-
-    Asks for N distinct single-line completions packed into one JSON
-    object instead of the single bare string SYSTEM_PROMPT asks for --
-    see `call_upstream' and `extract_completions' for why (backend-level
-    "n" sampling turned out not to be reliable across backends). The
-    response is read back by `_parse_multi_completions'.
-
-    TEMPLATE defaults to the bundled
-    tools/prompts/multi_system_prompt.txt (see
-    Config.multi_system_prompt_template for the --multi-system-prompt-file
-    override path); callers pass CONFIG's copy explicitly rather than
-    relying on this default, so an override actually takes effect.
-    Whatever template is used must contain the literal '{n}' and '{keys}'
-    placeholders -- filled in here via str.format.
-
-    The bundled template explicitly demands the N completions be
-    meaningfully different from each other, not just "distinct" --
-    verified live that a milder instruction let both tested backends
-    return the same completion two or three times for a request like
-    "VAR count: " (an obvious best answer, "Integer;", apparently
-    squeezes out any drive toward alternatives without an explicit push).
-    The stronger wording fixed that reliably at the default temperature;
-    raising temperature instead made it worse (more parse failures, more
-    duplicates), so this is a prompting fix, not a sampling one.
-    """
-    keys = ', '.join(f'"{i}"' for i in range(n))
-    active_template = (template
-                      if template is not None else _MULTI_SYSTEM_PROMPT_TEMPLATE)
-    return active_template.format(n=n, keys=keys)
-
 
 def call_upstream(prompt: str,
                    config: Config,
@@ -408,14 +419,21 @@ def call_upstream(prompt: str,
     here -- calibrate_reasoning_effort is what resolves 'auto' into a real
     value or '', so if it somehow still reaches this function it is treated
     the same as '' (omit) rather than sent upstream literally. SYSTEM_PROMPT
-    defaults to the module-level `SYSTEM_PROMPT` constant when omitted;
-    callers requesting more than one candidate pass `multi_system_prompt(n)`
-    instead (see that function and `extract_completions`) -- there is
-    deliberately no "n" field sent upstream at all: verified live, one
-    backend (LM Studio) silently ignores "n" and returns a single choice,
-    and another (llama.cpp) hard-rejects any "n" other than 1 with an HTTP
-    400, so multiple candidates are requested via prompt + JSON output
-    instead of relying on backend-level sampling support.
+    defaults to the module-level `SYSTEM_PROMPT` constant when omitted.
+    There is deliberately no "n" field sent upstream, and no multi-candidate
+    support at all: verified live, one backend (LM Studio) silently ignores
+    "n" and returns a single choice, and another (llama.cpp) hard-rejects
+    any "n" other than 1 with an HTTP 400 -- and packing several candidates
+    into one JSON response (this proxy's earlier approach) was tried and
+    later shelved (see the module docstring's autoresearch notes). Every
+    request now makes exactly one call and returns exactly one completion.
+
+    Porting note: PAYLOAD below never sets "stream": true, so every upstream
+    response is a single complete JSON body delimited by a normal
+    Content-Length header -- never chunked transfer-encoding, never SSE
+    framing. A future socket-based Pascal HTTP client only has to read
+    exactly Content-Length bytes after the header block; it never needs to
+    handle a chunked or streamed response from this code path.
     """
     payload = {
         'model':
@@ -523,8 +541,8 @@ def ping_upstream(config: Config) -> tuple[str, str]:
                              config,
                              temperature=0.0,
                              system_prompt=config.system_prompt)
-    texts, model, _request_id = extract_completions(response)
-    return texts[0], model
+    text, model, _request_id = extract_completions(response)
+    return text, model
 
 
 # Tried in this order: cheapest/most-likely-to-just-work first. '' (omit the
@@ -595,6 +613,14 @@ def _extract_choice_text(choice: dict) -> str:
     """
     message = choice.get('message')
     text = message.get('content') if isinstance(message, dict) else None
+    # Newer OpenAI-compatible backends may return content as a list of typed
+    # parts ([{"type": "text", "text": "..."}]) instead of a bare string.
+    # Concatenating the text parts costs nothing and turns a hard failure on
+    # such a backend into a normal completion.
+    if isinstance(text, list):
+        text = ''.join(part.get('text', '') for part in text
+                       if isinstance(part, dict) and isinstance(
+                           part.get('text'), str))
     if not isinstance(text, str):
         raise UpstreamError('upstream choice had no message.content field')
     if (not text and choice.get('finish_reason') == 'length'
@@ -607,80 +633,70 @@ def _extract_choice_text(choice: dict) -> str:
 
 
 def _strip_code_fence(text: str) -> str:
-    """Strip a leading/trailing markdown code fence if present.
+    """Return the first markdown-fenced block's contents, or TEXT unchanged
+    when there is no fence.
 
-    `multi_system_prompt' explicitly asks for no code fences, but models
-    wrap JSON output in ```json ... ``` fences often enough in practice
-    that stripping one defensively is worth it before attempting to parse.
+    SYSTEM_PROMPT does not instruct the model to avoid markdown -- that
+    instruction was tried and found not to actually prevent fences even
+    when present, so it was dropped rather than kept as dead weight (see
+    the module docstring's autoresearch notes). Fences are simply stripped
+    mechanically instead, unconditionally, on every completion.
+
+    The fence is deliberately searched for anywhere in TEXT, not only at its
+    very start. A small model very commonly answers with a prose preamble
+    ahead of the fence -- "Here is the completion:\\n```pascal\\n..." -- and
+    an earlier version of this function, which only fired when TEXT itself
+    started with '```', passed that whole thing through verbatim: the
+    preamble sentence landed in the user's Pascal buffer as if it were
+    source. Everything outside the first fenced block is prose about the
+    answer, not the answer, so it is discarded rather than kept.
+
+    An unterminated fence (the model ran out of tokens mid-block) still
+    yields the block's contents -- the text after the opening fence line is
+    real source, and dropping it because the closing fence never arrived
+    would throw away a usable completion.
     """
-    stripped = text.strip()
-    if not stripped.startswith('```'):
-        return stripped
-    first_newline = stripped.find('\n')
+    fence_index = text.find('```')
+    if fence_index == -1:
+        return text
+    # Skip the opening fence line entirely: it carries an optional info
+    # string ('```pascal'), never source.
+    first_newline = text.find('\n', fence_index)
     if first_newline == -1:
-        return stripped
-    body = stripped[first_newline + 1:]
-    if body.rstrip().endswith('```'):
-        body = body.rstrip()[:-3]
+        # A lone '```' with nothing after it -- no block, nothing to keep.
+        return text[:fence_index] if fence_index else ''
+    body = text[first_newline + 1:]
+    closing = body.find('```')
+    if closing != -1:
+        body = body[:closing]
     return body.strip()
 
 
-def _parse_multi_completions(text: str, n: int) -> list[str]:
-    """Parse TEXT as the JSON object `multi_system_prompt(n)' asked for:
-    keys "0" through str(n - 1), string values.
-
-    Tolerant by design: a missing key or a non-string value for some index
-    is skipped rather than failing the whole request, and extra keys
-    outside [0, n) are ignored. Only raises UpstreamError when TEXT is not
-    parseable as a JSON object at all, or when no usable string survives
-    for any expected index -- a completion response with nothing useful in
-    it is exactly as bad as one that failed to parse.
+def extract_completions(
+        upstream_response: dict) -> tuple[str, str, str]:
+    """Pull (completion, model, request_id) out of a /chat/completions JSON
+    body's single choice. COMPLETION is choices[0].message.content
+    verbatim, with any markdown code fence stripped (`_strip_code_fence`) --
+    further cleanup (`sanitize_completion`) happens at the call site.
     """
-    try:
-        parsed = json.loads(_strip_code_fence(text))
-    except json.JSONDecodeError as exc:
-        raise UpstreamError(
-            'upstream did not return valid JSON for a multi-candidate '
-            'request') from exc
-    if not isinstance(parsed, dict):
-        raise UpstreamError('upstream JSON for a multi-candidate request '
-                            'was not an object')
-    texts = [
-        parsed[key] for key in (str(i) for i in range(n))
-        if isinstance(parsed.get(key), str)
-    ]
-    if not texts:
-        raise UpstreamError(
-            'upstream JSON had no usable candidate strings')
-    return texts
+    # `call_upstream` returns whatever `json.loads` produced, which is not
+    # necessarily an object: a backend answering with a bare JSON array or
+    # string used to reach `.get` here and raise AttributeError -- not an
+    # UpstreamError, so `do_POST` never caught it and the handler died
+    # without sending any response at all, leaving the client to see the
+    # connection drop rather than a 502.
+    if not isinstance(upstream_response, dict):
+        raise UpstreamError('upstream response was not a JSON object')
 
-
-def extract_completions(upstream_response: dict,
-                        n: int = 1) -> tuple[list[str], str, str]:
-    """Pull (completions, model, request_id) out of a /chat/completions JSON
-    body's single choice.
-
-    For N == 1, COMPLETIONS is a single-element list holding
-    choices[0].message.content verbatim -- the plain single-line-completion
-    contract, unchanged from before multi-candidate support existed.
-
-    For N > 1, the backend was asked (via `multi_system_prompt') to pack N
-    completions into that same content field as a JSON object; see
-    `_parse_multi_completions' for how that is read back. There is
-    deliberately only ever one choice to look at -- see `call_upstream' for
-    why multiple candidates are requested this way instead of via
-    backend-level "n" sampling.
-    """
     choices = upstream_response.get('choices')
     if not isinstance(choices, list) or not choices:
         raise UpstreamError('upstream response had no choices')
     choice = choices[0] if isinstance(choices[0], dict) else {}
-    text = _extract_choice_text(choice)
-    texts = [text] if n <= 1 else _parse_multi_completions(text, n)
+    text = _strip_code_fence(_extract_choice_text(choice))
 
     model = upstream_response.get('model', '')
     request_id = upstream_response.get('id', '')
-    return texts, model if isinstance(model, str) else '', (
+    return text, model if isinstance(model, str) else '', (
         request_id if isinstance(request_id, str) else '')
 
 
@@ -689,16 +705,306 @@ def extract_completions(upstream_response: dict,
 # --------------------------------------------------------------------------
 
 
+_ECHO_MIN_OVERLAP = 5
+
+# Floors the approximate pass must clear before it will strip anything,
+# measured on the matched candidate prefix. Both apply: an echo has to be
+# long in tokens *and* substantial in actual characters.
+#
+# These are much stricter than _ECHO_MIN_OVERLAP because approximate
+# matching strictly increases the chance of a match: it deliberately accepts
+# text that merely resembles the buffer's tail. The floor has to rise to
+# compensate, or the approximate pass reintroduces exactly the false
+# positives that the character-level pass's floor exists to prevent.
+#
+# Both floors are calibrated against the concrete false positive that
+# motivated the original floor -- back-to-back structural closers -- and
+# against the shortest thing that is unambiguously a real echo, a retyped
+# assignment statement.
+#
+# "END;" is 1 token pair and 4 characters; two nested blocks closing in a
+# row, the case that ate real completions live, is 4 tokens and 8
+# characters; three in a row is 6 tokens and 12 characters. A retyped
+# "total := total + j;" is 7 tokens and 15 characters. So the floors sit
+# between those two: 7 tokens and 14 characters admits the statement and
+# excludes every run of up to three closers. Note the two floors are not
+# redundant -- tokens alone would admit six one-character closers, and
+# characters alone would admit two long identifiers.
+_ECHO_MIN_APPROX_TOKENS = 7
+_ECHO_MIN_APPROX_CHARS = 14
+
+# Fraction of the matched candidate prefix that must align with the buffer's
+# tail. 0.8 tolerates roughly one differing token in five -- enough for the
+# renamed loop variable or dropped modifier a small model introduces while
+# retyping, not enough for two genuinely different pieces of code to pass.
+_ECHO_APPROX_MIN_SIMILARITY = 0.8
+
+# Token budget for the alignment on each side. The DP below is O(m*n), so
+# these bound its cost outright: 256x256 is ~65k cells, trivially fast, and
+# far longer than any echo a model with a few hundred output tokens can
+# produce. An echo is the model retyping recent context; it does not reach
+# back kilobytes.
+_ECHO_MAX_TOKENS = 256
+
+
+def _echo_tokens(text: str) -> list[tuple[str, int]]:
+    """Split TEXT into (TOKEN, RAW_END) pairs for echo comparison.
+
+    A token is a case-folded run of identifier characters, or a single
+    punctuation character; whitespace is dropped entirely rather than
+    tokenized. RAW_END is the index in TEXT just past that token, so a match
+    measured in tokens can be mapped back to an exact cut point in the raw
+    text.
+
+    Tokenizing rather than comparing characters is what makes indentation
+    and keyword casing structurally invisible to the comparison instead of
+    something it has to tolerate: Pascal 1981 is a case-insensitive dialect,
+    so `begin` and `BEGIN` are the same token, and a model that reindents
+    what it retypes has still echoed.
+    """
+    tokens: list[tuple[str, int]] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char.isspace():
+            index += 1
+        elif char.isalnum() or char == '_':
+            run = index
+            while run < length and (text[run].isalnum() or text[run] == '_'):
+                run += 1
+            tokens.append((text[index:run].lower(), run))
+            index = run
+        else:
+            tokens.append((char, index + 1))
+            index += 1
+    return tokens
+
+
+def _is_identifier_char(char: str) -> bool:
+    """Non-nil for a character that can appear inside a Pascal identifier."""
+    return char.isalnum() or char == '_'
+
+
+def _partial_token_echo_cut(buffer: str, candidate: str) -> int:
+    """Index in CANDIDATE just past a restated partial identifier, or 0.
+
+    The case this exists for: the cursor sits part-way through a word, and
+    the model answers by retyping the whole word rather than continuing it.
+    Typing `DISPO` and pressing TAB gets back `DISPOSE(p2);` instead of
+    `SE(p2);`, and accepting that puts `DISPODISPOSE(p2);` in the buffer.
+
+    Neither other pass can see this. The character-level pass finds the
+    overlap exactly -- "DISPO" is 5 characters -- but its floor requires
+    *more* than _ECHO_MIN_OVERLAP, and a partial identifier is routinely
+    shorter than that; lowering the floor to catch it is not an option,
+    since 4 characters is "END;" and that floor is the only thing keeping
+    legitimate structural repetition out. The token-level pass cannot see it
+    either: `DISPO` and `DISPOSE` are simply different tokens to it, and its
+    floors are calibrated for multi-token echoes anyway.
+
+    So this is matched on its own terms. It fires only when the buffer's
+    prefix ends inside a word and the candidate opens with a word having
+    that partial one as a case-insensitive prefix -- Pascal 1981 being a
+    case-insensitive dialect, `dispose` continues `DISPO`. The cut is
+    exactly the length of the partial word, which is the part the model
+    restated.
+
+    Being anchored to a word boundary on both sides is what makes a low
+    threshold safe here, where it would not be for the other passes: a
+    candidate that continues the partial word correctly (`SE(p2);`) does not
+    begin with it and is left alone.
+    """
+    start = len(buffer)
+    while start > 0 and _is_identifier_char(buffer[start - 1]):
+        start -= 1
+    partial = buffer[start:]
+    if not partial:
+        return 0
+
+    end = 0
+    while end < len(candidate) and _is_identifier_char(candidate[end]):
+        end += 1
+    head = candidate[:end]
+    if len(head) < len(partial):
+        return 0
+    if head[:len(partial)].lower() != partial.lower():
+        return 0
+    return len(partial)
+
+
+def _approximate_echo_cut(buffer: str, candidate: str) -> int:
+    """Index in CANDIDATE just past an approximate echo of BUFFER's tail, or
+    0 when there is no such echo worth stripping.
+
+    The character-level pass in `strip_echo` only catches an echo the model
+    reproduced byte for byte, and a small model routinely does not: it
+    retypes the last statement with its own indentation, re-cases the
+    dialect's keywords, renames a loop variable, or drops a modifier. A
+    single differing character anywhere in the overlap collapses an exact
+    match to nothing, and an exact match on *normalized* text is no better
+    -- it still fails on the first substituted or missing token.
+
+    So this is an approximate match, computed as a standard overlap
+    alignment: the minimum edit distance between some suffix of the buffer's
+    token stream and each prefix of the candidate's. The DP's first column
+    is zeroed, which makes starting the buffer-side alignment at any token
+    free -- that is the "some suffix" part -- while the final row is read
+    across, giving the cost of aligning the whole chosen suffix against each
+    candidate prefix in turn. The echo must run to the end of the buffer,
+    because the buffer ends at the cursor and that is precisely where the
+    model resumed writing, so only the final row is meaningful.
+
+    Among candidate prefixes that clear both floors and the similarity
+    threshold, the longest wins: a model that echoed twenty tokens should
+    have all twenty stripped, not the first six.
+    """
+    buffer_tokens = _echo_tokens(buffer)[-_ECHO_MAX_TOKENS:]
+    candidate_tokens = _echo_tokens(candidate)[:_ECHO_MAX_TOKENS]
+    if not buffer_tokens or not candidate_tokens:
+        return 0
+
+    width = len(candidate_tokens)
+    # previous[j] = edit distance between the empty buffer suffix and the
+    # candidate's first j tokens, i.e. j insertions.
+    previous = list(range(width + 1))
+    for buffer_token, _ in buffer_tokens:
+        # Zeroed first column: the buffer-side suffix may start here for
+        # free, so everything consumed before it costs nothing.
+        current = [0]
+        for j in range(1, width + 1):
+            cost = 0 if buffer_token == candidate_tokens[j - 1][0] else 1
+            current.append(
+                min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost))
+        previous = current
+
+    # Pick the *cheapest* qualifying alignment, breaking ties toward the
+    # longest -- not simply the longest that clears the threshold. Those are
+    # not the same choice, and the difference is a real over-strip: where
+    # the candidate echoes seven tokens and then begins its actual
+    # contribution, extending the match to eight tokens costs one insertion
+    # but still scores 1 - 1/8 = 0.875, comfortably over the threshold. The
+    # longest-wins rule would take it and eat the first token of the real
+    # completion. Ranking by edit distance first refuses that: extending
+    # into new material always costs, so the exact end of the echo is the
+    # local minimum.
+    best_cut = 0
+    best_rank: tuple[int, int] | None = None
+    characters = 0
+    for j in range(1, width + 1):
+        characters += len(candidate_tokens[j - 1][0])
+        if j < _ECHO_MIN_APPROX_TOKENS or characters < _ECHO_MIN_APPROX_CHARS:
+            continue
+        if (1.0 - previous[j] / j) < _ECHO_APPROX_MIN_SIMILARITY:
+            continue
+        rank = (previous[j], -j)
+        if best_rank is None or rank < best_rank:
+            best_rank = rank
+            best_cut = candidate_tokens[j - 1][1]
+    return best_cut
+
+
+def strip_echo(buffer: str, candidate: str) -> str:
+    """Strip an echoed prefix of BUFFER's tail from the start of CANDIDATE,
+    returning the residue.
+
+    Two passes, cheapest and strictest first:
+
+    1. A literal, character-level pass. Finds the longest exact match
+       between some suffix of BUFFER and a prefix of CANDIDATE, and only
+       treats it as a genuine echo -- worth stripping -- once that match is
+       longer than _ECHO_MIN_OVERLAP characters. A short overlap is common,
+       legitimate repetition, not the model retyping something already
+       there: two nested blocks closing back-to-back both correctly end in
+       "END;", and treating that kind of short, structurally-required repeat
+       as an echo (an earlier version of this function did, comparing whole
+       words with no minimum length) silently ate real completions down to
+       nothing -- live in Emacs, not hypothetically. A longer overlap is not
+       plausible as coincidence, so it is safe to treat as an echo.
+
+    2. A partial-identifier pass (`_partial_token_echo_cut`), for the cursor
+       sitting part-way through a word and the model retyping the whole word
+       instead of continuing it -- `DISPO` answered with `DISPOSE(p2);`
+       rather than `SE(p2);`. Too short for the first pass's floor and
+       invisible to the third's tokenizer; see that function for why a low
+       threshold is safe there specifically.
+
+    3. An approximate, token-level pass (`_approximate_echo_cut`), run only
+       when the others find nothing. This catches the echo the first pass
+       structurally cannot see: a retype that differs from the buffer by
+       indentation, keyword casing, a renamed identifier, or a dropped
+       token. Any one of those collapses an exact match to nothing, and all
+       of them are ordinary small-model behavior.
+
+    The third pass is deliberately not just a relaxation of the first. It
+    carries its own, much stricter floors (_ECHO_MIN_APPROX_TOKENS,
+    _ECHO_MIN_APPROX_CHARS) and a similarity threshold, for the reason
+    recorded there: approximate matching can only ever make more things
+    match, so reusing the character-level floor here would resurrect the
+    false positive that floor was introduced to kill. The strict pass keeps
+    its low floor and catches short exact echoes; the approximate pass is
+    reserved for long ones, where an accidental match is implausible.
+    """
+    max_check = min(len(buffer), len(candidate))
+    overlap = 0
+    for k in range(max_check, 0, -1):
+        if buffer[-k:] == candidate[:k]:
+            overlap = k
+            break
+    if overlap > _ECHO_MIN_OVERLAP:
+        return candidate[overlap:]
+    partial = _partial_token_echo_cut(buffer, candidate)
+    if partial:
+        return candidate[partial:]
+    return candidate[_approximate_echo_cut(buffer, candidate):]
+
+
 _SPECIAL_TOKEN_MARKER = '<|'
 
+# Hard ceiling on a completion's total size, in characters. `max_lines`
+# bounds the number of lines but says nothing about their length, so it does
+# not bound this at all: a model that loses the plot and emits one
+# unterminated string literal of 200,000 characters produces a single line
+# and sails through the line cap. That text ends up in an Emacs overlay's
+# `after-string`, where it stalls redisplay for the whole editor.
+#
+# 8192 is deliberately far above any plausible real completion (30 lines of
+# Pascal is rarely over 1,500 characters) -- like `max_lines`, this is a
+# safety valve against a runaway response, not a quality lever.
+_MAX_COMPLETION_CHARS = 8192
 
-def sanitize_completion(text: str) -> str:
-    """Enforce the single-line, NUL-free, marker-free output policy.
 
-    A newline in the raw text (the upstream stop sequence should prevent
-    this, but a differently-configured backend might not honor it) truncates
-    the completion at the first line rather than failing the request --
-    trailing whitespace on that first line is preserved.
+def _strip_control_characters(text: str) -> str:
+    """Remove C0 control characters other than newline and tab.
+
+    `sanitize_completion` used to strip only NUL. Everything else in the C0
+    range reaches the buffer intact, and a small model emits more of it than
+    one would hope: a stray carriage return from CRLF-flavored training data
+    lands as a literal ^M in the user's source, and an ESC begins what Emacs
+    renders as an escape sequence. Newline and tab are kept because both are
+    legitimate source characters; DEL (0x7f) is dropped with the rest.
+    """
+    return ''.join(char for char in text
+                   if char in '\n\t' or not (ord(char) < 0x20 or ord(char) == 0x7f))
+
+
+def sanitize_completion(text: str, max_lines: int = 30) -> str:
+    """Enforce the NUL-free, marker-free, at-most-MAX_LINES output policy.
+
+    This is a safety valve, not a quality lever: a completion running
+    longer than a real single-statement or short-block continuation is
+    welcome, not a bug to prevent ("too much completion is better than too
+    little; extra can be stripped in some appropriate way" -- hence
+    MAX_LINES defaults to a generous flat 30, not the old default of 1,
+    which existed to solve a problem that turned out not to be one).
+    MAX_LINES still exists to bound a genuinely runaway response, not to
+    keep completions short.
+
+    Extra lines in the raw text beyond MAX_LINES (the upstream stop sequence
+    should prevent this, but a differently-configured backend might not
+    honor it, and a model can simply overshoot) are truncated rather than
+    failing the request -- trailing whitespace on the last kept line is
+    preserved.
 
     Some backends (observed live: a reasoning/chat-tuned model served over
     the plain-completion endpoint) leak fragments of their internal special-
@@ -707,14 +1013,23 @@ def sanitize_completion(text: str) -> str:
     in with, real source. '<|' does not occur in legitimate Pascal source,
     so truncating there is a safe, backend-agnostic guard: it stops leaked
     formatting from ever reaching the buffer. It is a containment measure,
-    not a fix for a backend/model that is a poor fit for raw single-line
-    completion -- see pascal-completion-plan.md.
+    not a fix for a backend/model that is a poor fit for raw completion --
+    see pascal-completion-plan.md.
+
+    Leading blank lines are dropped. They are not a formatting nicety to
+    preserve: the Emacs client previews only the completion's first line
+    until the user asks for more, so a completion that opens with a blank
+    line previews as nothing at all and reads as a broken TAB, even though a
+    perfectly good completion is sitting one `M-n` away. Trailing whitespace
+    on the last kept line is still preserved.
     """
-    text = text.replace('\0', '')
+    text = _strip_control_characters(text.replace('\0', ''))
     marker_index = text.find(_SPECIAL_TOKEN_MARKER)
     if marker_index != -1:
         text = text[:marker_index]
-    return text.split('\n', 1)[0]
+    text = text.lstrip('\n')
+    text = '\n'.join(text.split('\n')[:max(max_lines, 1)])
+    return text[:_MAX_COMPLETION_CHARS]
 
 
 # --------------------------------------------------------------------------
@@ -761,46 +1076,76 @@ class CompletionHandler(BaseHTTPRequestHandler):
             self._send_json(404, {'error': 'not found'})
             return
 
-        length = int(self.headers.get('Content-Length', '0'))
+        # A missing or non-numeric Content-Length is a malformed request, not
+        # a reason to raise ValueError out of the handler and answer with a
+        # 500 and a traceback.
+        try:
+            length = int(self.headers.get('Content-Length', '0'))
+        except (TypeError, ValueError):
+            self._send_json(400, {'error': 'invalid Content-Length header'})
+            return
         if length <= 0 or length > self.config.buffer_limit * 2:
             self._send_json(413, {'error': 'request body too large'})
             return
-        raw = self.rfile.read(length)
 
+        # rfile.read(n) is not guaranteed to return n bytes in one call, and a
+        # short read here surfaces as a baffling "invalid JSON" rather than as
+        # the truncated request it actually is.
+        chunks = []
+        remaining = length
+        while remaining > 0:
+            chunk = self.rfile.read(remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b''.join(chunks)
+        if remaining > 0:
+            self._send_json(400, {'error': 'request body was truncated'})
+            return
+
+        # json.loads on undecodable bytes raises UnicodeDecodeError, which is
+        # a ValueError but NOT a JSONDecodeError -- catching only the latter
+        # let it escape as a 500.
         try:
             payload = json.loads(raw)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             self._send_json(400, {'error': 'invalid JSON'})
             return
 
         try:
-            goal, buffer, line, column, n = validate_request(
+            goal, buffer, line, column = validate_request(
                 payload, self.config.buffer_limit)
         except RequestError as exc:
             self._send_json(400, {'error': str(exc)})
             return
 
         prefix = compute_prefix(buffer, line, column)
-        multi_prefix = (self.config.multi_user_prefix_template.format(n=n)
-                        if n > 1 else '')
-        prompt = build_prompt(goal, prefix, self.config.grammar_text,
-                              multi_prefix)
 
         try:
+            prompt = build_prompt(goal, prefix, self.config.grammar_text)
             upstream_response = call_upstream(
                 prompt,
                 self.config,
-                max_tokens=self.config.max_tokens * n,
-                system_prompt=(self.config.system_prompt if n <= 1 else
-                              multi_system_prompt(
-                                  n, self.config.multi_system_prompt_template)))
-            texts, model, request_id = extract_completions(upstream_response,
-                                                            n=n)
+                system_prompt=self.config.system_prompt)
+            text, model, request_id = extract_completions(upstream_response)
         except UpstreamError as exc:
             self._send_json(502, {'error': str(exc)})
             return
 
-        completions = [sanitize_completion(t) for t in texts]
+        completion = sanitize_completion(
+            strip_echo(prefix, text), self.config.max_lines)
+
+        # An empty result is a normal outcome, not an error: `strip_echo` can
+        # legitimately consume the entire candidate when the model did
+        # nothing but retype the buffer, and `sanitize_completion` can
+        # legitimately empty it when the model emitted only a special-token
+        # marker. Report that as an empty list rather than as a list holding
+        # an empty string -- a client checking whether it got a completion
+        # cannot distinguish `[""]` from a real one by length, and the Emacs
+        # client used to answer such a response by showing an empty ghost
+        # overlay, which reads as TAB doing nothing at all.
+        completions = [completion] if completion.strip() else []
 
         self._send_json(
             200, {
@@ -810,10 +1155,24 @@ class CompletionHandler(BaseHTTPRequestHandler):
             })
 
 
-def make_server(config: Config) -> ThreadingHTTPServer:
+class ForkingHTTPServer(socketserver.ForkingMixIn, HTTPServer):
+    """One process per connection, not one thread.
+
+    Deliberately forking rather than threading: `Config` is built once at
+    startup and only ever read afterward, and no per-request state lives in
+    this process (the elisp side owns all pending-request tracking) -- so
+    nothing here needs threads' shared-memory semantics. Forking instead
+    makes this reference implementation's concurrency model match what a
+    future native pascal1981 port will actually use (fork-per-connection,
+    proven in tests/integration/posix_pipe_fork.pas), rather than relying on
+    a thread abstraction the dialect's runtime doesn't have.
+    """
+
+
+def make_server(config: Config) -> ForkingHTTPServer:
     handler = type('BoundCompletionHandler', (CompletionHandler,),
                     {'config': config})
-    return ThreadingHTTPServer((config.host, config.port), handler)
+    return ForkingHTTPServer((config.host, config.port), handler)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -867,7 +1226,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=float,
         default=20.0,
         help=('Seconds to wait for the upstream backend before giving up. '
-              'Default: 20.0.'))
+              'Default: 20.0. Keep this equal to (never longer than) '
+              "pascal1981-completion-timeout on the Emacs side, or the "
+              'client gives up first and never sees this proxy\'s error.'))
     parser.add_argument(
         '--reasoning-effort',
         default='auto',
@@ -882,30 +1243,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default='',
         help=('Path to an EBNF grammar file (e.g. docs/ebnf_grammar.md) to '
               'prepend as reference context on every completion request. '
-              'Optional; increases prompt size and upstream latency.'))
+              'Optional; increases prompt size and upstream latency, and '
+              'was independently tested and found not to help completion '
+              'quality -- kept available in case a future prompt shape '
+              'changes that, not because it is currently recommended.'))
     parser.add_argument(
         '--system-prompt-file',
         default='',
-        help=('Path to a text file overriding the single-completion system '
-              'prompt (default: the bundled '
-              'tools/prompts/system_prompt.txt).'))
+        help=('Path to a text file overriding the completion system prompt '
+              '(default: the bundled tools/prompts/system_prompt.txt).'))
     parser.add_argument(
-        '--multi-system-prompt-file',
-        default='',
-        help=('Path to a text file overriding the multi-candidate system '
-              'prompt template (default: the bundled '
-              'tools/prompts/multi_system_prompt.txt). Must contain the '
-              'literal placeholders {n} and {keys}, filled in via '
-              'str.format at request time.'))
-    parser.add_argument(
-        '--multi-user-prefix-file',
-        default='',
-        help=('Path to a text file overriding the short instruction placed '
-              'in the user message immediately before the source text on a '
-              'multi-candidate (n > 1) request (default: the bundled '
-              'tools/prompts/multi_user_prefix.txt). Must contain the '
-              'literal placeholder {n}, filled in via str.format at '
-              'request time.'))
+        '--max-lines',
+        type=int,
+        default=30,
+        help=('Safety-valve cap on completion length, in lines -- not a '
+              'quality lever. A completion longer than this is truncated '
+              'rather than the request failing. Default: 30.'))
     return parser.parse_args(argv)
 
 
@@ -924,12 +1277,7 @@ def main() -> None:
         grammar_file=args.grammar_file,
         system_prompt=(load_prompt_override(args.system_prompt_file)
                       if args.system_prompt_file else None),
-        multi_system_prompt_template=(
-            load_prompt_override(args.multi_system_prompt_file)
-            if args.multi_system_prompt_file else None),
-        multi_user_prefix_template=(
-            load_prompt_override(args.multi_user_prefix_file)
-            if args.multi_user_prefix_file else None),
+        max_lines=args.max_lines,
     )
 
     if config.reasoning_effort == 'auto':

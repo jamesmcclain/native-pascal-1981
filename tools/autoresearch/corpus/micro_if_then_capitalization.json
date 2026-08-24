@@ -1,0 +1,10 @@
+{
+  "id": "micro_if_then_capitalization",
+  "goal": "Finish the conditional: if n is negative, print that it is negative.",
+  "buffer": "PROGRAM Micro(OUTPUT);\nVAR\n  n: INTEGER;\nBEGIN\n  n := -5;\n  if n < 0 ",
+  "cursor": {"line": 6, "column": 8},
+  "reference_continuation": "THEN\n    WRITELN('negative')\nEND.\n",
+  "compiles_when_appended": false,
+  "generated": false,
+  "notes": "Tests aesthetics: the model should complete THEN in the dialect's conventional all-caps keyword style even though the buffer already has a lowercase 'if', matching the surrounding file's dominant convention rather than echoing the lowercase."
+}

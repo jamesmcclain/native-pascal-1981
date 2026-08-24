@@ -1,0 +1,13 @@
+{
+  "id": "argv_mixed_params_split5",
+  "goal": "Continue this Pascal 1981 program plausibly toward a correct, complete, idiomatic finish.",
+  "buffer": "PROGRAM mixed(output, view, scale, tag);\n{ Three bindable heading parameters of different types, all supplied on the\n  command line. OUTPUT occupies no argv position, so 'view' binds to argv[1]\n  even though it is second in the heading (manual 13-5..13-7). }\nVAR\n",
+  "cursor": {
+    "line": 5,
+    "column": 1
+  },
+  "reference_continuation": "  view: INTEGER;\n  scale: REAL;\n  tag: LSTRING(32);\nBEGIN\n  WRITELN('view=', view);\n  WRITELN('scale=', scale);\n  WRITELN('tag=', tag);\nEND.\n",
+  "compiles_when_appended": true,
+  "generated": true,
+  "source_file": "native-pascal-1981/tests/integration/argv_mixed_params.pas"
+}

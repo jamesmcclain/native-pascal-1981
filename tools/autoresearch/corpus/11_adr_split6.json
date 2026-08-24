@@ -1,0 +1,13 @@
+{
+  "id": "11_adr_split6",
+  "goal": "Continue this Pascal 1981 program plausibly toward a correct, complete, idiomatic finish.",
+  "buffer": "PROGRAM AdrTest(OUTPUT);\nTYPE PINT = ^INTEGER;\nVAR\n  x: INTEGER;\n  p: PINT;\n  raw: ADRMEM;\n",
+  "cursor": {
+    "line": 6,
+    "column": 1
+  },
+  "reference_continuation": "BEGIN\n  x := 42;\n  p := ADR x;\n  p^ := 99;\n  WRITELN('x after aliased write = ', x);\n  raw := ADR x;\n  WRITELN('adrmem-typed ADR compiles too');\nEND.\n",
+  "compiles_when_appended": true,
+  "generated": true,
+  "source_file": "native-pascal-1981/tests/golden/11_adr.pas"
+}

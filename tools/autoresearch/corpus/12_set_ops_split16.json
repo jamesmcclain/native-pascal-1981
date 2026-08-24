@@ -1,0 +1,13 @@
+{
+  "id": "12_set_ops_split16",
+  "goal": "Continue this Pascal 1981 program plausibly toward a correct, complete, idiomatic finish.",
+  "buffer": "PROGRAM SetOpsTest(OUTPUT);\nTYPE\n  NumSet = SET OF 1..10;\n  CharSet = SET OF CHAR;\nVAR\n  a, b, u, i, d: NumSet;\n  vowels: CharSet;\nBEGIN\n  a := [1, 2, 3, 4];\n  b := [3, 4, 5, 6];\n\n  u := a + b;\n  IF (1 IN u) AND (5 IN u) AND (3 IN u) THEN\n    WRITELN('union ok');\n\n  i := a * b;\n",
+  "cursor": {
+    "line": 16,
+    "column": 1
+  },
+  "reference_continuation": "  IF (3 IN i) AND (4 IN i) AND NOT (1 IN i) AND NOT (5 IN i) THEN\n    WRITELN('intersection ok');\n\n  d := a - b;\n  IF (1 IN d) AND (2 IN d) AND NOT (3 IN d) AND NOT (5 IN d) THEN\n    WRITELN('difference ok');\n\n  IF a = a THEN\n    WRITELN('eq ok');\n  IF a <> b THEN\n    WRITELN('neq ok');\n  IF [1, 2] <= a THEN\n    WRITELN('le ok');\n  IF a >= [1, 2] THEN\n    WRITELN('ge ok');\n  IF [1, 2] < a THEN\n    WRITELN('lt ok');\n  IF a > [1, 2] THEN\n    WRITELN('gt ok');\n\n  vowels := ['a', 'e', 'i', 'o', 'u'];\n  IF ('e' IN vowels) AND NOT ('b' IN vowels) THEN\n    WRITELN('char set ok');\nEND.\n",
+  "compiles_when_appended": true,
+  "generated": true,
+  "source_file": "native-pascal-1981/tests/golden/12_set_ops.pas"
+}

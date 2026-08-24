@@ -1,0 +1,16 @@
+{
+  "backends": ["PASCAL1981_LLM1_URL", "PASCAL1981_LLM2_URL"],
+  "backend_overrides": {
+    "PASCAL1981_LLM1_URL": {
+      "--max-tokens": "1024"
+    }
+  },
+  "variants": [
+    {"label": "baseline", "n": 3, "proxy_args": {}},
+    {"label": "grammar", "n": 3,
+     "proxy_args": {"--grammar-file": "docs/ebnf_grammar.md"}},
+    {"label": "temp0", "n": 3, "proxy_args": {"--temperature": "0.0"}},
+    {"label": "maxtokens256", "n": 3, "proxy_args": {"--max-tokens": "256"}},
+    {"label": "maxtokens2048", "n": 3, "proxy_args": {"--max-tokens": "2048"}}
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "id": "micro_var_decl_lstring",
+  "goal": "Declare a variable name that can hold up to 32 characters.",
+  "buffer": "PROGRAM Micro(OUTPUT);\nVAR\n  name: ",
+  "cursor": {"line": 3, "column": 9},
+  "reference_continuation": "LSTRING(32);\nBEGIN\n  name := 'Ada';\n  WRITELN(name)\nEND.\n",
+  "compiles_when_appended": false,
+  "generated": false,
+  "notes": "Tests whether the model reaches for the dialect's LSTRING(n) rather than a generic Pascal STRING type it may have seen more of in training."
+}

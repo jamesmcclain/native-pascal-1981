@@ -1,0 +1,13 @@
+{
+  "id": "04_arrays_split8",
+  "goal": "Continue this Pascal 1981 program plausibly toward a correct, complete, idiomatic finish.",
+  "buffer": "PROGRAM ArrayTest(OUTPUT);\nVAR\n  arr: ARRAY [1..4] OF INTEGER;\n  i: INTEGER;\nBEGIN\n  FOR i := 1 TO 4 DO\n    arr[i] := i * 10;\n  FOR i := 1 TO 4 DO\n",
+  "cursor": {
+    "line": 8,
+    "column": 1
+  },
+  "reference_continuation": "    WRITELN('arr[', i, '] = ', arr[i]);\nEND.\n",
+  "compiles_when_appended": true,
+  "generated": true,
+  "source_file": "native-pascal-1981/tests/golden/04_arrays.pas"
+}

@@ -1,0 +1,11 @@
+{
+  "backends": ["PASCAL1981_LLM1_URL", "PASCAL1981_LLM2_URL"],
+  "backend_overrides": {
+    "PASCAL1981_LLM1_URL": {
+      "--max-tokens": "1024"
+    }
+  },
+  "variants": [
+    {"label": "baseline", "n": 1, "proxy_args": {}}
+  ]
+}

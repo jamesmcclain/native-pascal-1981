@@ -1,0 +1,13 @@
+{
+  "id": "06_strings_split7",
+  "goal": "Continue this Pascal 1981 program plausibly toward a correct, complete, idiomatic finish.",
+  "buffer": "PROGRAM StringTest(OUTPUT);\nVAR\n  s1, s2: LSTRING(32);\nBEGIN\n  s1 := 'Pascal';\n  s2 := ' 1981';\n  CONCAT(s1, s2);\n",
+  "cursor": {
+    "line": 7,
+    "column": 1
+  },
+  "reference_continuation": "  WRITELN('concatenated: ', s1);\nEND.\n",
+  "compiles_when_appended": true,
+  "generated": true,
+  "source_file": "native-pascal-1981/tests/golden/06_strings.pas"
+}

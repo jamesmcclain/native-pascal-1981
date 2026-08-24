@@ -1,0 +1,13 @@
+{
+  "id": "05_records_split5",
+  "goal": "Continue this Pascal 1981 program plausibly toward a correct, complete, idiomatic finish.",
+  "buffer": "PROGRAM RecordTest(OUTPUT);\nTYPE\n  Point = RECORD\n    x, y: INTEGER;\n  END;\n",
+  "cursor": {
+    "line": 5,
+    "column": 1
+  },
+  "reference_continuation": "VAR\n  pt: Point;\nBEGIN\n  pt.x := 100;\n  pt.y := 200;\n  WRITELN('pt = (', pt.x, ', ', pt.y, ')');\nEND.\n",
+  "compiles_when_appended": true,
+  "generated": true,
+  "source_file": "native-pascal-1981/tests/golden/05_records.pas"
+}

@@ -1,0 +1,9 @@
+{
+  "id": "micro_for_loop_bound",
+  "goal": "Sum the integers 1 through 100 into total and print it.",
+  "buffer": "PROGRAM Micro(OUTPUT);\nVAR\n  i, total: INTEGER;\nBEGIN\n  total := 0;\n  FOR i := 1 TO ",
+  "cursor": {"line": 6, "column": 15},
+  "reference_continuation": "100 DO\n    total := total + i;\n  WRITELN(total)\nEND.\n",
+  "compiles_when_appended": false,
+  "generated": false
+}

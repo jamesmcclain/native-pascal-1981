@@ -1,0 +1,13 @@
+{
+  "id": "07_sets_split5",
+  "goal": "Continue this Pascal 1981 program plausibly toward a correct, complete, idiomatic finish.",
+  "buffer": "PROGRAM SetTest(OUTPUT);\nTYPE\n  NumSet = SET OF 1..10;\nVAR\n  s: NumSet;\n",
+  "cursor": {
+    "line": 5,
+    "column": 1
+  },
+  "reference_continuation": "BEGIN\n  s := [1, 3, 5, 7, 9];\n  IF 3 IN s THEN\n    WRITELN('3 is in set');\n  IF NOT (4 IN s) THEN\n    WRITELN('4 is not in set');\nEND.\n",
+  "compiles_when_appended": true,
+  "generated": true,
+  "source_file": "native-pascal-1981/tests/golden/07_sets.pas"
+}

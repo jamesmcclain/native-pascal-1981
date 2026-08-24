@@ -112,7 +112,7 @@ flag (`--help` lists them all); point it at a different backend with
 `--llm-base-url`:
 
 ```sh
-python3 tools/pascal1981_completion_proxy.py --llm-base-url http://10.0.0.105:8080/v1
+python3 tools/pascal1981_completion_proxy.py --llm-base-url http://192.0.2.10:8080/v1
 ```
 
 The one setting that stays an environment variable, `LLM_API_KEY`, is the
@@ -122,29 +122,22 @@ save to history. Most local `llama.cpp`/LM Studio setups need no key at
 all.
 
 Optionally pass `--grammar-file docs/ebnf_grammar.md` to give the model the
-dialect's EBNF grammar as reference context. This costs prompt size and
-latency, so it's off unless you ask for it.
+dialect's EBNF grammar as reference context. This was tested and found not
+to help completion quality while costing prompt size and latency; it stays
+available (off by default) in case a future prompt shape changes that, not
+because it's currently recommended.
 
-The prompt wording sent to the model lives in `tools/prompts/` (plain text
-files, not string literals in the proxy), so it can be read and tuned
-without touching code:
-
-- `system_prompt.txt` — instruction for a single-completion (`n == 1`) request.
-- `multi_system_prompt.txt` — instruction for a multi-candidate (`n > 1`)
-  request; must contain the literal placeholders `{n}` and `{keys}`.
-- `multi_user_prefix.txt` — a short line placed in the *user* message,
-  immediately before the buffer text, only on a multi-candidate request;
-  must contain the literal placeholder `{n}`.
-
-Override any of them with `--system-prompt-file`, `--multi-system-prompt-file`,
-or `--multi-user-prefix-file` respectively, without editing the bundled
-files. The `multi_user_prefix.txt` placement (right next to the code, not
-just once in the system prompt) matters in practice: verified live that
-repeating the "give N distinct completions" instruction there, not just in
-the system prompt, took one backend from returning the same completion in
-2-3 of every 3 slots on an obvious-answer case (`VAR count: ` → `Integer;`)
-down to zero duplicates across 40 live trials on two different backends,
-with and without `--grammar-file`.
+The prompt wording sent to the model lives in `tools/prompts/system_prompt.txt`
+(a plain text file, not a string literal in the proxy), so it can be read
+and tuned without touching code. Override it with `--system-prompt-file`
+without editing the bundled file. The bundled prompt is deliberately
+minimal — a full-corpus experiment found that an elaborate, heavily
+instructed prompt was itself the dominant cause of a failure mode where the
+model echoed text already before the cursor instead of continuing past it;
+stripping the prompt down to almost nothing eliminated that failure
+entirely (0/64 occurrences across two different backends, vs. 22-30% under
+the old wording). Resist the urge to add guardrail language back in without
+re-measuring its effect.
 
 If the proxy isn't running, or you haven't started it yet, completion
 requests just fail — TAB falls back to ordinary indentation. There is no
@@ -159,31 +152,107 @@ listening at `pascal1981-completion-proxy-url`.
 ;; (setq pascal1981-completion-proxy-url "http://127.0.0.1:8790/complete")
 ```
 
-Or interactively, `M-x pascal1981-completion-toggle`:
-
-- With no prefix argument, it just toggles `pascal1981-completion-enabled`
-  on or off, leaving the candidate count alone.
-- With a numeric prefix argument (`C-u 5 M-x pascal1981-completion-toggle`,
-  or `C-5 M-x pascal1981-completion-toggle`), it sets
-  `pascal1981-completion-candidates` to that many and enables completion.
-- With a bare `C-u` (no digits), it sets the candidate count to 3 — a
-  reasonable default for turning on cycling without picking a number.
+Or interactively, `M-x pascal1981-completion-toggle` — a plain toggle,
+flipping `pascal1981-completion-enabled` on or off.
 
 Other knobs: `pascal1981-completion-goal` (the instruction sent with every
 request), `pascal1981-completion-timeout` (seconds to wait before giving
-up, default 8), `pascal1981-completion-buffer-limit` (buffers larger than
-this, in characters, are never sent), `pascal1981-completion-candidates`
-(how many candidates to request, default 3 — more candidates cost more
-upstream tokens and latency).
+up, default 20), `pascal1981-completion-buffer-limit` (nothing larger than
+this, in characters, is ever sent — see "Large files" below for what
+actually gets measured against it), and
+`pascal1981-completion-max-chars` (a completion longer than this is
+refused outright, default 8192).
 
-Multiple candidates are requested as one round trip: the proxy asks the
-model for a single JSON object holding all of them, rather than relying on
-the backend's own multi-sample support. This was a deliberate choice, not
-an accident — verified live that backend-level sampling (`"n"` on
-`/chat/completions`) is not reliably usable: one backend silently ignores
-it and returns a single choice regardless, another hard-rejects any value
-other than 1. A single JSON-formatted request avoids depending on that
-support at all.
+**Keep `pascal1981-completion-timeout` equal to the proxy's
+`--upstream-timeout`, and never shorter.** Both default to 20, which is
+why neither normally needs setting. If Emacs gives up first, you never see
+the proxy's own account of what went wrong — only a bare "timed out" — and
+the proxy's forked child goes on holding the upstream call open after
+Emacs has walked away. Emacs adds a small internal grace on top of the
+configured value so that, at equal settings, the proxy's error response
+wins the race.
+
+### When the model returns nothing usable
+
+A low-parameter model does not always answer with Pascal. It can return
+nothing at all, whitespace, an English sentence about the code, a markdown
+fence, a fragment of its own internal formatting, or a retyped copy of
+what is already in the buffer. The proxy strips what it can (see
+`strip_echo`, `_strip_code_fence`, `sanitize_completion`) and reports an
+empty `completions` array when nothing usable survives.
+
+Emacs checks again on its own account rather than trusting that, since
+`pascal1981-completion-proxy-url` may point at something other than the
+bundled proxy: a candidate that is empty, whitespace-only, over
+`pascal1981-completion-max-chars`, or carrying control characters is
+refused. In every one of these cases TAB reports `no usable completion`
+and **leaves the buffer exactly as it was** — it does not fall back to
+indenting, because by then TAB has already been spent on the request.
+Press TAB again to indent.
+
+While a request is in flight, another TAB does not start a second one:
+only the newest response could ever be used, so the extra requests were
+never anything but load on a backend that serves one at a time.
+
+Each request makes exactly one upstream call and gets back exactly one
+completion — there is no multi-candidate ("give me N different
+completions") support. This was tried (packing several distinct
+completions into one JSON response, since backend-level `"n"` sampling
+turned out not reliably usable across backends — one silently ignores it
+and returns a single choice regardless, another hard-rejects any value
+other than 1) and later dropped: browsing one generous completion's lines
+with `M-n`/`M-p` (below) serves the same "give me more to look at" need
+without the complexity, and without ever requiring more than one API call
+per request.
+
+### Browsing a multi-line completion: line reveal with M-n/M-p
+
+Completions are no longer capped at one line by default (see the proxy's
+`--max-lines` flag, default 30) — a completion can be several lines. Only
+the first line is shown in the ghost-text preview at first, though:
+`M-n`/`M-p` reveal more or fewer of the completion's lines, one Fibonacci
+step at a time (1, 2, 3, 5, 8, 13, ... lines — the raw Fibonacci sequence's
+repeated leading 1, 1 collapsed to a single step, since two consecutive
+`M-n` presses revealing the same line count would do nothing). The preview
+shows a `[i/N lines]` suffix whenever the completion is more than one line
+long. `M-n` stops at the full completion rather than wrapping back to one
+line; `M-p` stops at one line rather than wrapping to the full completion.
+
+Accepting with TAB inserts only the lines currently revealed, not
+necessarily the whole completion — what you see in the preview is what
+gets inserted. A multi-line accept re-indents the inserted lines against
+the buffer's normal indentation rules (see `pascal1981--completion-insert`),
+since the raw model text carries no indentation of its own.
+
+### Large files: sending a lexical unit instead of the whole buffer
+
+A request normally sends the whole buffer. Once the buffer exceeds
+`pascal1981-completion-lexical-unit-threshold` (characters, default 4000),
+the mode instead sends only the innermost enclosing `PROCEDURE`/`FUNCTION`
+around point, plus the top-level declarations (the `PROGRAM` header and any
+top-level `CONST`/`TYPE`/`VAR`/`LABEL` section) — not the whole file. This
+is what actually lets completion work on a file far larger than
+`pascal1981-completion-buffer-limit` would otherwise allow: only the
+relevant lexical unit has to fit that limit, not the entire file.
+
+The top-level declarations are always included alongside the unit, not
+just the unit alone — dropping them was found, during this feature's
+design, to measurably hurt completion correctness on at least one backend
+(it started fabricating unrelated logic once it lost sight of what a
+variable was declared as). Cursor position is translated to be relative to
+the sent slice; the proxy never needs to know a slice happened.
+
+If point is not inside any `PROCEDURE`/`FUNCTION` — e.g. it's in the
+top-level declarations or the main `BEGIN...END` block — there is no unit
+to slice to, and the whole buffer is sent regardless of size, same as
+before this feature existed. A crude "some lines around point" fallback
+was considered for that case and rejected: it seemed more likely to
+produce a confusing or syntactically broken excerpt than a clean
+procedure-boundary slice reliably does.
+
+Set `pascal1981-completion-lexical-unit-threshold` very high to disable
+slicing entirely and always send the whole buffer (subject to
+`pascal1981-completion-buffer-limit` as before).
 
 ### TAB behavior
 
@@ -198,10 +267,11 @@ TAB (`pascal1981-indent-or-complete`, remapped from
   away.
 - **No preview, and point is eligible.** Completion must be enabled, point
   must sit before nothing but whitespace on the current line
-  (`(looking-at-p "[ \t]*$")`), and the buffer must not exceed
-  `pascal1981-completion-buffer-limit`. TAB requests a completion; when the
-  (asynchronous) response arrives, it renders as a ghost-text preview rather
-  than inserting immediately.
+  (`(looking-at-p "[ \t]*$")`), and whatever would actually be sent (the
+  whole buffer, or a lexical-unit slice of it — see "Large files" above)
+  must not exceed `pascal1981-completion-buffer-limit`. TAB requests a
+  completion; when the (asynchronous) response arrives, it renders as a
+  ghost-text preview rather than inserting immediately.
 - **Anything else** — completion disabled, mid-line, oversized buffer — TAB
   keeps its ordinary meaning: `pascal1981-indent-line`. This fallback is
   always exactly indentation, never a no-op, so disabling or losing the
@@ -212,10 +282,9 @@ same eligibility rule as the second case above.
 
 While a preview is showing:
 
-- **`M-n` / `M-p`** cycle to the next/previous candidate (only meaningful
-  when `pascal1981-completion-candidates` is greater than 1; the preview
-  shows a `[i/N]` suffix whenever there's more than one candidate to cycle
-  through).
+- **`M-n` / `M-p`** reveal more/fewer of the completion's lines (see
+  "Browsing a multi-line completion" above; only meaningful for a
+  completion longer than one line).
 - **Any other command** — typing a character, moving point, `C-g`,
   switching buffers — dismisses the preview without inserting anything.
 
@@ -240,13 +309,15 @@ responding before troubleshooting from inside Emacs.
 
 - **TAB just indents, no completion happens.** Either
   `pascal1981-completion-enabled` is nil, point isn't at end-of-line-modulo-
-  whitespace, or the buffer is over `pascal1981-completion-buffer-limit` —
-  and no preview was already showing at point, which is the only other
+  whitespace, or what would be sent is over `pascal1981-completion-buffer-limit`
+  even after lexical-unit slicing — and no preview was already showing at
+  point, which is the only other
   thing TAB can do instead of indenting. This is by design, not a failure —
   check `pascal1981-complete-line` directly (`M-x`) to isolate eligibility
   from a proxy problem.
 - **The preview disappeared before I could accept it.** Any command other
-  than TAB (to accept) or `M-n`/`M-p` (to cycle) dismisses the preview —
+  than TAB (to accept) or `M-n`/`M-p` (to reveal more/fewer lines)
+  dismisses the preview —
   including typing, moving point, and `C-g`. This is intentional: a stale
   preview left showing after you kept typing would no longer apply to what's
   at point.
@@ -270,8 +341,9 @@ responding before troubleshooting from inside Emacs.
 
 ### Privacy
 
-Enabling completion sends the buffer's full text, plus the cursor position
-and (if configured) the EBNF grammar, to whatever backend
+Enabling completion sends the buffer's full text (or, on a large buffer, a
+lexical-unit slice of it — see "Large files" above), plus the cursor
+position and (if configured) the EBNF grammar, to whatever backend
 `pascal1981-completion-proxy-url` currently points at through the local
 proxy. For a local backend nothing leaves your machine; for anything else,
 that's on you to configure knowingly.

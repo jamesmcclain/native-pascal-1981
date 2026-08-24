@@ -1,0 +1,9 @@
+{
+  "id": "task_is_prime",
+  "goal": "Write a complete Pascal 1981 program that reads an integer and prints whether it is prime.",
+  "buffer": "",
+  "cursor": {"line": 1, "column": 1},
+  "reference_continuation": "PROGRAM IsPrime(INPUT, OUTPUT);\nVAR\n  n, i: INTEGER;\n  prime: BOOLEAN;\nBEGIN\n  READLN(n);\n  prime := n > 1;\n  i := 2;\n  WHILE (i * i <= n) AND prime DO\n  BEGIN\n    IF n MOD i = 0 THEN\n      prime := FALSE;\n    i := i + 1\n  END;\n  IF prime THEN\n    WRITELN(n, ' is prime')\n  ELSE\n    WRITELN(n, ' is not prime')\nEND.\n",
+  "compiles_when_appended": false,
+  "generated": false
+}

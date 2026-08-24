@@ -1,0 +1,13 @@
+{
+  "id": "problem_0003_split11",
+  "goal": "Continue this Pascal 1981 program plausibly toward a correct, complete, idiomatic finish.",
+  "buffer": "PROGRAM EulerProblem3(OUTPUT);\n\nVAR\n  n, d, largest: INTEGER64;\n\nBEGIN\n  n := 600851475143;\n  largest := 1;\n  WHILE n MOD 2 = 0 DO\n  BEGIN\n    largest := 2;\n",
+  "cursor": {
+    "line": 11,
+    "column": 1
+  },
+  "reference_continuation": "    n := n DIV 2\n  END;\n  d := 3;\n  WHILE d * d <= n DO\n  BEGIN\n    WHILE n MOD d = 0 DO\n    BEGIN\n      largest := d;\n      n := n DIV d\n    END;\n    d := d + 2\n  END;\n  IF n > 1 THEN\n    largest := n;\n  WRITELN(largest)\nEND.\n",
+  "compiles_when_appended": true,
+  "generated": true,
+  "source_file": "project-euler/problem-0003/problem_0003.pas"
+}
