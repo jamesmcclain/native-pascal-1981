@@ -944,7 +944,13 @@ class EndToEndTests(unittest.TestCase):
         conn.close()
         self.assertEqual(status, 404)
 
-    def test_empty_completion_from_upstream_is_returned_as_empty_string(self):
+    def test_empty_completion_from_upstream_is_returned_as_no_completions(
+            self):
+        # Not [''] -- a client cannot tell an empty string from a real
+        # completion by list length, and the Emacs client answered such a
+        # response by showing an empty ghost overlay, which reads as TAB
+        # doing nothing at all. An empty result is reported as the absence
+        # of a completion.
         proxy.call_upstream = (
             lambda prompt, config, max_tokens=None, system_prompt=None:
             chat_response('', model='', request_id=''))
@@ -956,7 +962,21 @@ class EndToEndTests(unittest.TestCase):
             },
         })
         self.assertEqual(status, 200)
-        self.assertEqual(data['completions'], [''])
+        self.assertEqual(data['completions'], [])
+
+    def test_whitespace_only_completion_is_returned_as_no_completions(self):
+        proxy.call_upstream = (
+            lambda prompt, config, max_tokens=None, system_prompt=None:
+            chat_response('   \n\t\n  ', model='', request_id=''))
+        status, data = self._post({
+            'buffer': 'x',
+            'cursor': {
+                'line': 1,
+                'column': 1
+            },
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(data['completions'], [])
 
     def _get(self, path):
         conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=5)
@@ -1074,6 +1094,248 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(data['model'], f'x_{tag}')
             self.assertEqual(data['completions'], [' ok;'])
+
+
+# --------------------------------------------------------------------------
+# Junk-LLM corpus
+# --------------------------------------------------------------------------
+
+# The buffer every junk case is completed against, and the prefix the proxy
+# derives from it. A real program, not a stub, so that echo detection has
+# something realistic to match against.
+_JUNK_BUFFER = ('PROGRAM Demo;\n'
+                'VAR i, total: INTEGER;\n'
+                'BEGIN\n'
+                '  total := 0;\n'
+                '  FOR i := 1 TO 10 DO\n'
+                '    total := total + i;\n')
+_JUNK_LINE = 6
+_JUNK_COLUMN = 24
+
+# What a low-parameter model actually does when it goes wrong. Each entry is
+# (label, upstream message.content). The assertion is deliberately not "this
+# exact output": for most of these there is no single right answer, and
+# pinning one would make the suite a change-detector. What matters is the
+# invariant that the Emacs client depends on -- whatever comes back is either
+# a clean, printable, bounded completion or an explicit absence of one, and
+# the handler never raises either way.
+_JUNK_CONTENTS = [
+    ('empty', ''),
+    ('whitespace only', '   \n\t \n'),
+    ('newlines only', '\n\n\n'),
+    ('leading blank lines', '\n\n  WRITELN(total);'),
+    ('prose preamble then fence',
+     'Here is the completion:\n```pascal\n  WRITELN(total);\n```\nHope that helps!'
+     ),
+    ('bare fence', '```\n  WRITELN(total);\n```'),
+    ('unterminated fence', '```pascal\n  WRITELN(total);'),
+    ('prose only, no code', 'I am not sure what you want me to complete.'),
+    ('harmony channel leak', '<|channel|>analysis<|message|>hmm'),
+    ('marker mid text', '  WRITELN(total);<|end|>'),
+    ('carriage returns', '  WRITELN(total);\r\n  x := 1;\r\n'),
+    ('escape sequence', '  \x1b[31mWRITELN(total);\x1b[0m'),
+    ('nul bytes', '  WRITELN\0(total);'),
+    ('one enormous line', '  WRITELN(' + 'A' * 200000 + ');'),
+    ('runaway line count', '\n'.join(f'  x := {n};' for n in range(5000))),
+    ('exact echo of prefix', '    total := total + i;\n  WRITELN(total);'),
+    ('recased reindented echo', 'total := TOTAL + I;\n  WRITELN(total);'),
+    ('whole buffer retyped', _JUNK_BUFFER + '  WRITELN(total);\nEND.'),
+    ('unicode', '  WRITELN(\'café — naïve\');'),
+    ('tabs for indentation', '\tWRITELN(total);\n\t\tx := 1;'),
+]
+
+# Upstream bodies that are structurally wrong rather than textually junky.
+# Each must produce a clean 502, never a traceback.
+_JUNK_SHAPES = [
+    ('no choices key', {
+        'id': 'x',
+        'model': 'm'
+    }),
+    ('empty choices', {
+        'choices': []
+    }),
+    ('null choice', {
+        'choices': [None]
+    }),
+    ('choice is a string', {
+        'choices': ['nope']
+    }),
+    ('no message', {
+        'choices': [{
+            'finish_reason': 'stop'
+        }]
+    }),
+    ('null content', {
+        'choices': [{
+            'message': {
+                'content': None
+            }
+        }]
+    }),
+    ('content is a number', {
+        'choices': [{
+            'message': {
+                'content': 42
+            }
+        }]
+    }),
+    ('choices is a dict', {
+        'choices': {
+            '0': {}
+        }
+    }),
+    ('body is a list', []),
+]
+
+
+class JunkCompletionTests(EndToEndTests):
+    """Drive a corpus of realistic low-parameter-LLM misbehavior through the
+    real HTTP handler and assert the client-facing invariants hold.
+
+    Subclasses EndToEndTests purely to inherit its loopback-server fixture
+    and `_post`; the upstream is monkeypatched the same way, so no network
+    call leaves the process.
+    """
+
+    def _complete(self, content):
+        proxy.call_upstream = (lambda prompt, config, max_tokens=None,
+                               system_prompt=None: chat_response(content))
+        return self._post({
+            'goal': 'Continue the program.',
+            'buffer': _JUNK_BUFFER,
+            'cursor': {
+                'line': _JUNK_LINE,
+                'column': _JUNK_COLUMN
+            },
+        })
+
+    def test_junk_content_always_yields_a_safe_response(self):
+        for label, content in _JUNK_CONTENTS:
+            with self.subTest(label):
+                status, data = self._complete(content)
+                self.assertEqual(status, 200)
+                completions = data['completions']
+                self.assertIsInstance(completions, list)
+                self.assertLessEqual(len(completions), 1)
+                if not completions:
+                    continue
+                text = completions[0]
+                self.assertIsInstance(text, str)
+                # Never an empty completion dressed up as a present one.
+                self.assertTrue(text.strip())
+                # Bounded in both dimensions.
+                self.assertLessEqual(len(text), proxy._MAX_COMPLETION_CHARS)
+                self.assertLessEqual(len(text.split('\n')),
+                                     self.config.max_lines)
+                # No control characters beyond newline and tab.
+                self.assertFalse([c for c in text if c in '\r\x00\x1b\x7f'],
+                                 f'control characters survived: {text[:80]!r}')
+                # No leaked special-token markers, no surviving fence.
+                self.assertNotIn('<|', text)
+                self.assertNotIn('```', text)
+                # Never opens with a blank line, which previews as nothing.
+                self.assertFalse(text.startswith('\n'))
+
+    def test_junk_upstream_shapes_yield_502_not_a_traceback(self):
+        for label, body in _JUNK_SHAPES:
+            with self.subTest(label):
+                proxy.call_upstream = (lambda prompt, config, max_tokens=None,
+                                       system_prompt=None, _body=body: _body)
+                status, data = self._post({
+                    'buffer': _JUNK_BUFFER,
+                    'cursor': {
+                        'line': _JUNK_LINE,
+                        'column': _JUNK_COLUMN
+                    },
+                })
+                self.assertEqual(status, 502)
+                self.assertIn('error', data)
+
+    def test_prose_preamble_is_discarded_in_favor_of_the_fenced_block(self):
+        # The specific case that used to put an English sentence into the
+        # user's Pascal buffer: the old fence stripper only fired when the
+        # text *started* with a fence.
+        status, data = self._complete(
+            'Sure! Here is the rest:\n```pascal\n  WRITELN(total);\n```')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['completions'], ['WRITELN(total);'])
+
+    def test_echoed_prefix_is_stripped_leaving_the_real_continuation(self):
+        # The echo goes; the real continuation keeps its own indentation.
+        # Only the blank line the strip leaves behind is trimmed, because a
+        # completion opening with one previews as nothing at all.
+        status, data = self._complete(
+            '    total := total + i;\n  WRITELN(total);')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['completions'], ['  WRITELN(total);'])
+
+    def test_reasoning_budget_exhaustion_is_reported_as_502(self):
+        proxy.call_upstream = (
+            lambda prompt, config, max_tokens=None, system_prompt=None:
+            chat_response('',
+                          finish_reason='length',
+                          reasoning_content='thinking very hard'))
+        status, data = self._post({
+            'buffer': _JUNK_BUFFER,
+            'cursor': {
+                'line': _JUNK_LINE,
+                'column': _JUNK_COLUMN
+            },
+        })
+        self.assertEqual(status, 502)
+        self.assertIn('token budget', data['error'])
+
+
+class MalformedRequestTests(EndToEndTests):
+    """Byte-level abuse of the /complete endpoint itself.
+
+    These bypass `_post`, which would only ever send well-formed bytes. Each
+    must produce a 4xx; before this suite existed, every one of them was a
+    500 with a traceback on stderr.
+    """
+
+    def _raw_post(self, body, headers=None):
+        conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=5)
+        conn.request('POST',
+                     '/complete',
+                     body=body,
+                     headers=headers if headers is not None else
+                     {'Content-Type': 'application/json'})
+        response = conn.getresponse()
+        status = response.status
+        response.read()
+        conn.close()
+        return status
+
+    def test_invalid_utf8_body_is_a_400(self):
+        # UnicodeDecodeError is a ValueError but not a JSONDecodeError, so
+        # catching only the latter let it escape the handler as a 500.
+        self.assertEqual(self._raw_post(b'\xff\xfe\x00garbage'), 400)
+
+    def test_non_numeric_content_length_is_a_4xx(self):
+        self.assertEqual(
+            self._raw_post(b'{}', headers={'Content-Length': 'banana'}), 400)
+
+    def test_empty_body_is_a_413(self):
+        self.assertEqual(self._raw_post(b''), 413)
+
+    def test_oversized_body_is_a_413(self):
+        oversized = b'{"buffer": "' + b'x' * (self.config.buffer_limit * 2 +
+                                              16) + b'"}'
+        self.assertEqual(self._raw_post(oversized), 413)
+
+    def test_valid_json_that_is_not_an_object_is_a_400(self):
+        self.assertEqual(self._raw_post(b'[1, 2, 3]'), 400)
+
+    def test_buffer_over_the_limit_is_a_400(self):
+        body = json.dumps({
+            'buffer': 'x' * (self.config.buffer_limit + 1),
+            'cursor': {
+                'line': 1,
+                'column': 1
+            },
+        }).encode('utf-8')
+        self.assertEqual(self._raw_post(body), 400)
 
 
 if __name__ == '__main__':

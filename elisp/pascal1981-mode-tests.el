@@ -996,7 +996,7 @@ the request was sent."
     (insert "x := ")
     (let (sent indented)
       (cl-letf (((symbol-function 'pascal1981--completion-send)
-                 (lambda () (setq sent t)))
+                 (lambda (&rest _) (setq sent t)))
                 ((symbol-function 'pascal1981-indent-line)
                  (lambda () (setq indented t))))
         (pascal1981-indent-or-complete))
@@ -1019,7 +1019,7 @@ the request was sent."
       (pascal1981-tests--completion-respond source response request-id pt tick))
     (let (sent)
       (cl-letf (((symbol-function 'pascal1981--completion-send)
-                 (lambda () (setq sent t))))
+                 (lambda (&rest _) (setq sent t))))
         (pascal1981-indent-or-complete))
       (should-not sent)
       (should (equal (buffer-string) "x := 1;")))))
@@ -1033,7 +1033,7 @@ the request was sent."
     (save-excursion (insert "1"))
     (let (sent indented)
       (cl-letf (((symbol-function 'pascal1981--completion-send)
-                 (lambda () (setq sent t)))
+                 (lambda (&rest _) (setq sent t)))
                 ((symbol-function 'pascal1981-indent-line)
                  (lambda () (setq indented t))))
         (pascal1981-indent-or-complete))
@@ -1048,7 +1048,7 @@ the request was sent."
     (insert "x := ")
     (let (sent indented)
       (cl-letf (((symbol-function 'pascal1981--completion-send)
-                 (lambda () (setq sent t)))
+                 (lambda (&rest _) (setq sent t)))
                 ((symbol-function 'pascal1981-indent-line)
                  (lambda () (setq indented t))))
         (pascal1981-indent-or-complete))
@@ -1064,7 +1064,7 @@ the request was sent."
     (insert "x := ")
     (let (sent indented)
       (cl-letf (((symbol-function 'pascal1981--completion-send)
-                 (lambda () (setq sent t)))
+                 (lambda (&rest _) (setq sent t)))
                 ((symbol-function 'pascal1981-indent-line)
                  (lambda () (setq indented t))))
         (pascal1981-indent-or-complete))
@@ -1332,6 +1332,175 @@ leaves the buffer alone."
     (pascal1981-tests--wait-until
      (lambda () (not pascal1981--completion-pending-id)) 6)
     (should (equal (buffer-string) "FOR i := 1 "))))
+
+;; -------------------------------------------------------------------
+;; LLM completion: junk-response corpus
+;; -------------------------------------------------------------------
+;;
+;; What a low-parameter LLM, or a proxy speaking for one, actually sends
+;; when things go wrong. The proxy sanitizes its own output, but this mode
+;; speaks HTTP to whatever is listening at `pascal1981-completion-proxy-
+;; url' -- which need not be the bundled proxy -- so the client is checked
+;; here against the raw article rather than against the proxy's promises.
+;;
+;; The invariant asserted is the same for every case: no preview appears,
+;; the buffer is untouched, no error is signaled, and the request is
+;; retired rather than left pending forever.
+
+(defconst pascal1981-tests--junk-responses
+  `(("empty completion string" . ((completions . [""])))
+    ("whitespace-only completion" . ((completions . ["   \t  "])))
+    ("newline-only completion" . ((completions . ["\n\n"])))
+    ("empty completions array" . ((completions . [])))
+    ("null inside completions" . ((completions . [:null])))
+    ("completions is a string" . ((completions . "x := 1;")))
+    ("completions is an object" . ((completions . ((text . "x := 1;")))))
+    ("completions holds a number" . ((completions . [42])))
+    ("missing completions key" . ((model . "test-model")))
+    ("carriage return" . ((completions . ["x := 1;\r\ny := 2;"])))
+    ("escape sequence" . ((completions . ["\e[31mx := 1;\e[0m"])))
+    ("control characters" . ((completions . ["x :=\001\002 1;"])))
+    ("oversized completion"
+     . ((completions . [,(make-string 20000 ?A)]))))
+  "Alist of LABEL -> JSON body that must never produce a preview.")
+
+(defun pascal1981-tests--junk-round-trip (response)
+  "Drive one real HTTP round trip against RESPONSE (raw HTTP bytes).
+Return the resulting buffer text; asserts no preview is showing."
+  (pascal1981-tests--with-fake-proxy response
+    (with-temp-buffer
+      (pascal1981-mode)
+      (setq pascal1981-completion-enabled t
+            pascal1981-completion-timeout 3)
+      (insert "FOR i := 1 ")
+      (pascal1981-complete-line)
+      (pascal1981-tests--wait-until
+       (lambda () (not pascal1981--completion-pending-id)) 6)
+      (should-not pascal1981--completion-pending-id)
+      (should-not (pascal1981--completion-overlay-live-p))
+      (buffer-string))))
+
+(ert-deftest pascal1981-tests-junk-completions-never-preview ()
+  "Every entry in `pascal1981-tests--junk-responses' is rejected: no
+preview, no buffer change, no error."
+  (dolist (case pascal1981-tests--junk-responses)
+    (let ((label (car case)))
+      (should (equal (cons label
+                           (pascal1981-tests--junk-round-trip
+                            (pascal1981-tests--http-json-response
+                             200 (cdr case))))
+                     (cons label "FOR i := 1 "))))))
+
+(ert-deftest pascal1981-tests-junk-http-statuses-never-preview ()
+  "A non-200 status is rejected even when its body looks well-formed."
+  (dolist (status '(400 404 500 502 503))
+    (should (equal (pascal1981-tests--junk-round-trip
+                    (pascal1981-tests--http-json-response
+                     status '((completions . ["x := 1;"]))))
+                   "FOR i := 1 "))))
+
+(ert-deftest pascal1981-tests-junk-non-json-body-never-previews ()
+  "A body that is not JSON at all is rejected rather than signaling."
+  (dolist (body '("not json at all"
+                  "<html><body>502 Bad Gateway</body></html>"
+                  ""
+                  "{\"completions\": [\"x := 1;\""))
+    (should (equal (pascal1981-tests--junk-round-trip
+                    (concat "HTTP/1.1 200 OK\r\n"
+                            "Content-Type: application/json\r\n"
+                            (format "Content-Length: %d\r\n"
+                                    (string-bytes body))
+                            "Connection: close\r\n\r\n"
+                            body))
+                   "FOR i := 1 "))))
+
+(ert-deftest pascal1981-tests-usable-completion-predicate ()
+  "`pascal1981--completion-usable-p' accepts real source and rejects the
+empty, the oversized, and the control-character-bearing."
+  (should (pascal1981--completion-usable-p "TO 10 DO"))
+  (should (pascal1981--completion-usable-p "BEGIN\n  x := 1;\nEND;"))
+  (should (pascal1981--completion-usable-p "\tx := 1;"))
+  (should-not (pascal1981--completion-usable-p ""))
+  (should-not (pascal1981--completion-usable-p "   \n\t "))
+  (should-not (pascal1981--completion-usable-p "x := 1;\r"))
+  (should-not (pascal1981--completion-usable-p "x :=\e[0m 1;"))
+  (should-not (pascal1981--completion-usable-p 42))
+  (let ((pascal1981-completion-max-chars 16))
+    (should-not (pascal1981--completion-usable-p (make-string 17 ?A)))
+    (should (pascal1981--completion-usable-p (make-string 16 ?A)))))
+
+(ert-deftest pascal1981-tests-multibyte-completion-round-trips ()
+  "Non-ASCII in a completion survives the round trip as characters, not
+as the raw UTF-8 bytes `json-read' would have handed back undecoded."
+  (pascal1981-tests--with-fake-proxy
+      (pascal1981-tests--http-json-response
+       200 '((completions . ["WRITELN('café')"])))
+    (pascal1981-tests--with-selected-buffer "pascal1981-tests-multibyte"
+      (pascal1981-mode)
+      (setq pascal1981-completion-enabled t
+            pascal1981-completion-timeout 5)
+      (insert "  ")
+      (pascal1981-complete-line)
+      (pascal1981-tests--wait-until
+       (lambda () (not pascal1981--completion-pending-id)) 6)
+      (should (pascal1981--completion-overlay-live-p))
+      (execute-kbd-macro (kbd "TAB"))
+      (should (equal (buffer-string) "  WRITELN('café')")))))
+
+(ert-deftest pascal1981-tests-in-flight-request-blocks-a-second ()
+  "A second TAB while a request is in flight does not fire another one.
+Every TAB used to send its own; the forking proxy accepted them all and
+piled them onto a backend that serves one request at a time."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (insert "FOR i := 1 ")
+    (let ((sends 0))
+      (cl-letf (((symbol-function 'url-retrieve)
+                 (lambda (&rest _) (cl-incf sends) nil)))
+        (pascal1981-complete-line)
+        (pascal1981-complete-line)
+        (pascal1981-complete-line))
+      (should (= sends 1))
+      (should pascal1981--completion-pending-id))))
+
+(ert-deftest pascal1981-tests-failed-send-does-not-wedge-the-in-flight-guard ()
+  "A `url-retrieve' that signals clears the pending id.
+Otherwise the in-flight guard would refuse every later completion in
+this buffer -- a typo in `pascal1981-completion-proxy-url' would
+disable completion until the buffer was killed."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (insert "FOR i := 1 ")
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (&rest _) (error "no handler for this scheme"))))
+      (pascal1981-complete-line))
+    (should-not pascal1981--completion-pending-id)
+    ;; And a later request is still allowed through.
+    (let ((sends 0))
+      (cl-letf (((symbol-function 'url-retrieve)
+                 (lambda (&rest _) (cl-incf sends) nil)))
+        (pascal1981-complete-line))
+      (should (= sends 1)))))
+
+(ert-deftest pascal1981-tests-multiline-accept-preserves-indent-without-lexer ()
+  "Accepting a multi-line completion when the lexer is unavailable leaves
+the surrounding indentation alone.
+
+`pascal1981--compute-indent' answers 0 for every line when the token
+cache is nil, so an unguarded reindent pass does not leave indentation
+as-is -- it flattens it to column 0. A nil cache is the expected case
+here, not a remote one: the inserted text came from an LLM, and a
+partial statement is exactly what makes the lexer fail."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (let ((pascal1981-lexer-program "pascal1981-no-such-lexer-binary")
+          (pascal1981-parser-program "pascal1981-no-such-parser-binary"))
+      (insert "PROGRAM P;\nBEGIN\n    ")
+      (pascal1981--completion-insert "x := 1;\n    y := 2;")
+      (should (equal (buffer-string)
+                     "PROGRAM P;\nBEGIN\n    x := 1;\n    y := 2;")))))
 
 (provide 'pascal1981-mode-tests)
 ;;; pascal1981-mode-tests.el ends here

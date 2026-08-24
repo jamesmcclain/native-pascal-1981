@@ -204,6 +204,17 @@ class Config:
                  # 20s, not the 5-10s a non-reasoning backend would need: a
                  # reasoning-heavy completion at ~90 tokens/s can take
                  # several seconds even before writing an answer.
+                 #
+                 # This value is paired with `pascal1981-completion-timeout`
+                 # in elisp/pascal1981-mode.el, which must not be shorter.
+                 # It used to be: the client gave up at 8s while this budget
+                 # ran to 20s, so every slow request died client-side with a
+                 # blind "timed out" -- the user never saw the proxy's own
+                 # diagnosis, and the forked child went on holding the
+                 # upstream call open after the client had walked away. The
+                 # two now match at 20s, with the client adding a small
+                 # transport grace on top so this side always answers first.
+                 # Change one and change the other.
                  upstream_timeout: float = 20.0,
                  # Sent as a top-level "reasoning_effort" field on every
                  # request to /chat/completions. Set to an empty string to
@@ -602,6 +613,14 @@ def _extract_choice_text(choice: dict) -> str:
     """
     message = choice.get('message')
     text = message.get('content') if isinstance(message, dict) else None
+    # Newer OpenAI-compatible backends may return content as a list of typed
+    # parts ([{"type": "text", "text": "..."}]) instead of a bare string.
+    # Concatenating the text parts costs nothing and turns a hard failure on
+    # such a backend into a normal completion.
+    if isinstance(text, list):
+        text = ''.join(part.get('text', '') for part in text
+                       if isinstance(part, dict) and isinstance(
+                           part.get('text'), str))
     if not isinstance(text, str):
         raise UpstreamError('upstream choice had no message.content field')
     if (not text and choice.get('finish_reason') == 'length'
@@ -614,23 +633,42 @@ def _extract_choice_text(choice: dict) -> str:
 
 
 def _strip_code_fence(text: str) -> str:
-    """Strip a leading/trailing markdown code fence if present.
+    """Return the first markdown-fenced block's contents, or TEXT unchanged
+    when there is no fence.
 
     SYSTEM_PROMPT does not instruct the model to avoid markdown -- that
     instruction was tried and found not to actually prevent fences even
     when present, so it was dropped rather than kept as dead weight (see
     the module docstring's autoresearch notes). Fences are simply stripped
     mechanically instead, unconditionally, on every completion.
+
+    The fence is deliberately searched for anywhere in TEXT, not only at its
+    very start. A small model very commonly answers with a prose preamble
+    ahead of the fence -- "Here is the completion:\\n```pascal\\n..." -- and
+    an earlier version of this function, which only fired when TEXT itself
+    started with '```', passed that whole thing through verbatim: the
+    preamble sentence landed in the user's Pascal buffer as if it were
+    source. Everything outside the first fenced block is prose about the
+    answer, not the answer, so it is discarded rather than kept.
+
+    An unterminated fence (the model ran out of tokens mid-block) still
+    yields the block's contents -- the text after the opening fence line is
+    real source, and dropping it because the closing fence never arrived
+    would throw away a usable completion.
     """
-    stripped = text.strip()
-    if not stripped.startswith('```'):
+    fence_index = text.find('```')
+    if fence_index == -1:
         return text
-    first_newline = stripped.find('\n')
+    # Skip the opening fence line entirely: it carries an optional info
+    # string ('```pascal'), never source.
+    first_newline = text.find('\n', fence_index)
     if first_newline == -1:
-        return text
-    body = stripped[first_newline + 1:]
-    if body.rstrip().endswith('```'):
-        body = body.rstrip()[:-3]
+        # A lone '```' with nothing after it -- no block, nothing to keep.
+        return text[:fence_index] if fence_index else ''
+    body = text[first_newline + 1:]
+    closing = body.find('```')
+    if closing != -1:
+        body = body[:closing]
     return body.strip()
 
 
@@ -641,6 +679,15 @@ def extract_completions(
     verbatim, with any markdown code fence stripped (`_strip_code_fence`) --
     further cleanup (`sanitize_completion`) happens at the call site.
     """
+    # `call_upstream` returns whatever `json.loads` produced, which is not
+    # necessarily an object: a backend answering with a bare JSON array or
+    # string used to reach `.get` here and raise AttributeError -- not an
+    # UpstreamError, so `do_POST` never caught it and the handler died
+    # without sending any response at all, leaving the client to see the
+    # connection drop rather than a 502.
+    if not isinstance(upstream_response, dict):
+        raise UpstreamError('upstream response was not a JSON object')
+
     choices = upstream_response.get('choices')
     if not isinstance(choices, list) or not choices:
         raise UpstreamError('upstream response had no choices')
@@ -660,22 +707,184 @@ def extract_completions(
 
 _ECHO_MIN_OVERLAP = 5
 
+# Floors the approximate pass must clear before it will strip anything,
+# measured on the matched candidate prefix. Both apply: an echo has to be
+# long in tokens *and* substantial in actual characters.
+#
+# These are much stricter than _ECHO_MIN_OVERLAP because approximate
+# matching strictly increases the chance of a match: it deliberately accepts
+# text that merely resembles the buffer's tail. The floor has to rise to
+# compensate, or the approximate pass reintroduces exactly the false
+# positives that the character-level pass's floor exists to prevent.
+#
+# Both floors are calibrated against the concrete false positive that
+# motivated the original floor -- back-to-back structural closers -- and
+# against the shortest thing that is unambiguously a real echo, a retyped
+# assignment statement.
+#
+# "END;" is 1 token pair and 4 characters; two nested blocks closing in a
+# row, the case that ate real completions live, is 4 tokens and 8
+# characters; three in a row is 6 tokens and 12 characters. A retyped
+# "total := total + j;" is 7 tokens and 15 characters. So the floors sit
+# between those two: 7 tokens and 14 characters admits the statement and
+# excludes every run of up to three closers. Note the two floors are not
+# redundant -- tokens alone would admit six one-character closers, and
+# characters alone would admit two long identifiers.
+_ECHO_MIN_APPROX_TOKENS = 7
+_ECHO_MIN_APPROX_CHARS = 14
+
+# Fraction of the matched candidate prefix that must align with the buffer's
+# tail. 0.8 tolerates roughly one differing token in five -- enough for the
+# renamed loop variable or dropped modifier a small model introduces while
+# retyping, not enough for two genuinely different pieces of code to pass.
+_ECHO_APPROX_MIN_SIMILARITY = 0.8
+
+# Token budget for the alignment on each side. The DP below is O(m*n), so
+# these bound its cost outright: 256x256 is ~65k cells, trivially fast, and
+# far longer than any echo a model with a few hundred output tokens can
+# produce. An echo is the model retyping recent context; it does not reach
+# back kilobytes.
+_ECHO_MAX_TOKENS = 256
+
+
+def _echo_tokens(text: str) -> list[tuple[str, int]]:
+    """Split TEXT into (TOKEN, RAW_END) pairs for echo comparison.
+
+    A token is a case-folded run of identifier characters, or a single
+    punctuation character; whitespace is dropped entirely rather than
+    tokenized. RAW_END is the index in TEXT just past that token, so a match
+    measured in tokens can be mapped back to an exact cut point in the raw
+    text.
+
+    Tokenizing rather than comparing characters is what makes indentation
+    and keyword casing structurally invisible to the comparison instead of
+    something it has to tolerate: Pascal 1981 is a case-insensitive dialect,
+    so `begin` and `BEGIN` are the same token, and a model that reindents
+    what it retypes has still echoed.
+    """
+    tokens: list[tuple[str, int]] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char.isspace():
+            index += 1
+        elif char.isalnum() or char == '_':
+            run = index
+            while run < length and (text[run].isalnum() or text[run] == '_'):
+                run += 1
+            tokens.append((text[index:run].lower(), run))
+            index = run
+        else:
+            tokens.append((char, index + 1))
+            index += 1
+    return tokens
+
+
+def _approximate_echo_cut(buffer: str, candidate: str) -> int:
+    """Index in CANDIDATE just past an approximate echo of BUFFER's tail, or
+    0 when there is no such echo worth stripping.
+
+    The character-level pass in `strip_echo` only catches an echo the model
+    reproduced byte for byte, and a small model routinely does not: it
+    retypes the last statement with its own indentation, re-cases the
+    dialect's keywords, renames a loop variable, or drops a modifier. A
+    single differing character anywhere in the overlap collapses an exact
+    match to nothing, and an exact match on *normalized* text is no better
+    -- it still fails on the first substituted or missing token.
+
+    So this is an approximate match, computed as a standard overlap
+    alignment: the minimum edit distance between some suffix of the buffer's
+    token stream and each prefix of the candidate's. The DP's first column
+    is zeroed, which makes starting the buffer-side alignment at any token
+    free -- that is the "some suffix" part -- while the final row is read
+    across, giving the cost of aligning the whole chosen suffix against each
+    candidate prefix in turn. The echo must run to the end of the buffer,
+    because the buffer ends at the cursor and that is precisely where the
+    model resumed writing, so only the final row is meaningful.
+
+    Among candidate prefixes that clear both floors and the similarity
+    threshold, the longest wins: a model that echoed twenty tokens should
+    have all twenty stripped, not the first six.
+    """
+    buffer_tokens = _echo_tokens(buffer)[-_ECHO_MAX_TOKENS:]
+    candidate_tokens = _echo_tokens(candidate)[:_ECHO_MAX_TOKENS]
+    if not buffer_tokens or not candidate_tokens:
+        return 0
+
+    width = len(candidate_tokens)
+    # previous[j] = edit distance between the empty buffer suffix and the
+    # candidate's first j tokens, i.e. j insertions.
+    previous = list(range(width + 1))
+    for buffer_token, _ in buffer_tokens:
+        # Zeroed first column: the buffer-side suffix may start here for
+        # free, so everything consumed before it costs nothing.
+        current = [0]
+        for j in range(1, width + 1):
+            cost = 0 if buffer_token == candidate_tokens[j - 1][0] else 1
+            current.append(
+                min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost))
+        previous = current
+
+    # Pick the *cheapest* qualifying alignment, breaking ties toward the
+    # longest -- not simply the longest that clears the threshold. Those are
+    # not the same choice, and the difference is a real over-strip: where
+    # the candidate echoes seven tokens and then begins its actual
+    # contribution, extending the match to eight tokens costs one insertion
+    # but still scores 1 - 1/8 = 0.875, comfortably over the threshold. The
+    # longest-wins rule would take it and eat the first token of the real
+    # completion. Ranking by edit distance first refuses that: extending
+    # into new material always costs, so the exact end of the echo is the
+    # local minimum.
+    best_cut = 0
+    best_rank: tuple[int, int] | None = None
+    characters = 0
+    for j in range(1, width + 1):
+        characters += len(candidate_tokens[j - 1][0])
+        if j < _ECHO_MIN_APPROX_TOKENS or characters < _ECHO_MIN_APPROX_CHARS:
+            continue
+        if (1.0 - previous[j] / j) < _ECHO_APPROX_MIN_SIMILARITY:
+            continue
+        rank = (previous[j], -j)
+        if best_rank is None or rank < best_rank:
+            best_rank = rank
+            best_cut = candidate_tokens[j - 1][1]
+    return best_cut
+
 
 def strip_echo(buffer: str, candidate: str) -> str:
-    """Strip a literal, character-level echoed prefix of BUFFER's tail
-    from the start of CANDIDATE, returning the residue.
+    """Strip an echoed prefix of BUFFER's tail from the start of CANDIDATE,
+    returning the residue.
 
-    Finds the longest exact match between some suffix of BUFFER and a
-    prefix of CANDIDATE, and only treats it as a genuine echo -- worth
-    stripping -- once that match is longer than _ECHO_MIN_OVERLAP
-    characters. A short overlap is common, legitimate repetition, not
-    the model retyping something already there: two nested blocks
-    closing back-to-back both correctly end in "END;", and treating
-    that kind of short, structurally-required repeat as an echo (an
-    earlier version of this function did, comparing whole words with no
-    minimum length) silently ate real completions down to nothing --
-    live in Emacs, not hypothetically. A longer overlap is not
-    plausible as coincidence, so it is safe to treat as an echo.
+    Two passes, cheapest and strictest first:
+
+    1. A literal, character-level pass. Finds the longest exact match
+       between some suffix of BUFFER and a prefix of CANDIDATE, and only
+       treats it as a genuine echo -- worth stripping -- once that match is
+       longer than _ECHO_MIN_OVERLAP characters. A short overlap is common,
+       legitimate repetition, not the model retyping something already
+       there: two nested blocks closing back-to-back both correctly end in
+       "END;", and treating that kind of short, structurally-required repeat
+       as an echo (an earlier version of this function did, comparing whole
+       words with no minimum length) silently ate real completions down to
+       nothing -- live in Emacs, not hypothetically. A longer overlap is not
+       plausible as coincidence, so it is safe to treat as an echo.
+
+    2. An approximate, token-level pass (`_approximate_echo_cut`), run only
+       when the first finds nothing. This catches the echo the first pass
+       structurally cannot see: a retype that differs from the buffer by
+       indentation, keyword casing, a renamed identifier, or a dropped
+       token. Any one of those collapses an exact match to nothing, and all
+       of them are ordinary small-model behavior.
+
+    The second pass is deliberately not just a relaxation of the first. It
+    carries its own, much stricter floors (_ECHO_MIN_APPROX_TOKENS,
+    _ECHO_MIN_APPROX_CHARS) and a similarity threshold, for the reason
+    recorded there: approximate matching can only ever make more things
+    match, so reusing the character-level floor here would resurrect the
+    false positive that floor was introduced to kill. The strict pass keeps
+    its low floor and catches short exact echoes; the approximate pass is
+    reserved for long ones, where an accidental match is implausible.
     """
     max_check = min(len(buffer), len(candidate))
     overlap = 0
@@ -683,12 +892,38 @@ def strip_echo(buffer: str, candidate: str) -> str:
         if buffer[-k:] == candidate[:k]:
             overlap = k
             break
-    if overlap <= _ECHO_MIN_OVERLAP:
-        return candidate
-    return candidate[overlap:]
+    if overlap > _ECHO_MIN_OVERLAP:
+        return candidate[overlap:]
+    return candidate[_approximate_echo_cut(buffer, candidate):]
 
 
 _SPECIAL_TOKEN_MARKER = '<|'
+
+# Hard ceiling on a completion's total size, in characters. `max_lines`
+# bounds the number of lines but says nothing about their length, so it does
+# not bound this at all: a model that loses the plot and emits one
+# unterminated string literal of 200,000 characters produces a single line
+# and sails through the line cap. That text ends up in an Emacs overlay's
+# `after-string`, where it stalls redisplay for the whole editor.
+#
+# 8192 is deliberately far above any plausible real completion (30 lines of
+# Pascal is rarely over 1,500 characters) -- like `max_lines`, this is a
+# safety valve against a runaway response, not a quality lever.
+_MAX_COMPLETION_CHARS = 8192
+
+
+def _strip_control_characters(text: str) -> str:
+    """Remove C0 control characters other than newline and tab.
+
+    `sanitize_completion` used to strip only NUL. Everything else in the C0
+    range reaches the buffer intact, and a small model emits more of it than
+    one would hope: a stray carriage return from CRLF-flavored training data
+    lands as a literal ^M in the user's source, and an ESC begins what Emacs
+    renders as an escape sequence. Newline and tab are kept because both are
+    legitimate source characters; DEL (0x7f) is dropped with the rest.
+    """
+    return ''.join(char for char in text
+                   if char in '\n\t' or not (ord(char) < 0x20 or ord(char) == 0x7f))
 
 
 def sanitize_completion(text: str, max_lines: int = 30) -> str:
@@ -718,12 +953,21 @@ def sanitize_completion(text: str, max_lines: int = 30) -> str:
     formatting from ever reaching the buffer. It is a containment measure,
     not a fix for a backend/model that is a poor fit for raw completion --
     see pascal-completion-plan.md.
+
+    Leading blank lines are dropped. They are not a formatting nicety to
+    preserve: the Emacs client previews only the completion's first line
+    until the user asks for more, so a completion that opens with a blank
+    line previews as nothing at all and reads as a broken TAB, even though a
+    perfectly good completion is sitting one `M-n` away. Trailing whitespace
+    on the last kept line is still preserved.
     """
-    text = text.replace('\0', '')
+    text = _strip_control_characters(text.replace('\0', ''))
     marker_index = text.find(_SPECIAL_TOKEN_MARKER)
     if marker_index != -1:
         text = text[:marker_index]
-    return '\n'.join(text.split('\n')[:max(max_lines, 1)])
+    text = text.lstrip('\n')
+    text = '\n'.join(text.split('\n')[:max(max_lines, 1)])
+    return text[:_MAX_COMPLETION_CHARS]
 
 
 # --------------------------------------------------------------------------
@@ -770,15 +1014,40 @@ class CompletionHandler(BaseHTTPRequestHandler):
             self._send_json(404, {'error': 'not found'})
             return
 
-        length = int(self.headers.get('Content-Length', '0'))
+        # A missing or non-numeric Content-Length is a malformed request, not
+        # a reason to raise ValueError out of the handler and answer with a
+        # 500 and a traceback.
+        try:
+            length = int(self.headers.get('Content-Length', '0'))
+        except (TypeError, ValueError):
+            self._send_json(400, {'error': 'invalid Content-Length header'})
+            return
         if length <= 0 or length > self.config.buffer_limit * 2:
             self._send_json(413, {'error': 'request body too large'})
             return
-        raw = self.rfile.read(length)
 
+        # rfile.read(n) is not guaranteed to return n bytes in one call, and a
+        # short read here surfaces as a baffling "invalid JSON" rather than as
+        # the truncated request it actually is.
+        chunks = []
+        remaining = length
+        while remaining > 0:
+            chunk = self.rfile.read(remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b''.join(chunks)
+        if remaining > 0:
+            self._send_json(400, {'error': 'request body was truncated'})
+            return
+
+        # json.loads on undecodable bytes raises UnicodeDecodeError, which is
+        # a ValueError but NOT a JSONDecodeError -- catching only the latter
+        # let it escape as a 500.
         try:
             payload = json.loads(raw)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             self._send_json(400, {'error': 'invalid JSON'})
             return
 
@@ -805,9 +1074,20 @@ class CompletionHandler(BaseHTTPRequestHandler):
         completion = sanitize_completion(
             strip_echo(prefix, text), self.config.max_lines)
 
+        # An empty result is a normal outcome, not an error: `strip_echo` can
+        # legitimately consume the entire candidate when the model did
+        # nothing but retype the buffer, and `sanitize_completion` can
+        # legitimately empty it when the model emitted only a special-token
+        # marker. Report that as an empty list rather than as a list holding
+        # an empty string -- a client checking whether it got a completion
+        # cannot distinguish `[""]` from a real one by length, and the Emacs
+        # client used to answer such a response by showing an empty ghost
+        # overlay, which reads as TAB doing nothing at all.
+        completions = [completion] if completion.strip() else []
+
         self._send_json(
             200, {
-                'completions': [completion],
+                'completions': completions,
                 'model': model or self.config.llm_model,
                 'request_id': request_id,
             })
@@ -884,7 +1164,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=float,
         default=20.0,
         help=('Seconds to wait for the upstream backend before giving up. '
-              'Default: 20.0.'))
+              'Default: 20.0. Keep this equal to (never longer than) '
+              "pascal1981-completion-timeout on the Emacs side, or the "
+              'client gives up first and never sees this proxy\'s error.'))
     parser.add_argument(
         '--reasoning-effort',
         default='auto',

@@ -72,9 +72,42 @@ Changing this default away from the corpus-validated style again
 should not be done without re-testing it the same way."
   :type 'string :group 'pascal1981)
 
-(defcustom pascal1981-completion-timeout 8
-  "Seconds to wait for the completion proxy before giving up."
+(defcustom pascal1981-completion-timeout 20
+  "Seconds to wait for the completion proxy before giving up.
+
+Paired with the proxy's own `--upstream-timeout' (same default, 20).
+Keep the two equal; this side must never be the shorter of the pair.
+It used to be -- this defaulted to 8 while the proxy's upstream budget
+ran to 20 -- so every slow request died here with a blind \"timed
+out\": the proxy's own diagnosis of what went wrong never reached the
+user, and its forked child went on holding the upstream call open
+after Emacs had already walked away.
+
+The wait is actually this value plus `pascal1981--completion-timeout-
+grace', so that at equal settings the proxy's own error response wins
+the race rather than the two deadlines expiring together."
   :type 'number :group 'pascal1981)
+
+(defconst pascal1981--completion-timeout-grace 2
+  "Seconds added to `pascal1981-completion-timeout' before giving up.
+
+Not a user knob: it exists only so the client's deadline sits strictly
+after the proxy's identical one, leaving room for the proxy to notice
+its own upstream timeout and send a 502 that says so. Without it, two
+equal deadlines race and the user gets the less informative of the two
+outcomes about half the time.")
+
+(defcustom pascal1981-completion-max-chars 8192
+  "Reject a completion longer than this many characters.
+
+Independent backstop against the proxy's own `_MAX_COMPLETION_CHARS'
+cap, not a duplicate of it: this mode speaks HTTP to whatever is
+listening at `pascal1981-completion-proxy-url', which need not be the
+bundled proxy at all, and a runaway completion becomes an overlay
+`after-string' that stalls redisplay for the whole editor before the
+user can do anything about it.  Deliberately generous -- 30 lines of
+Pascal rarely exceeds 1500 characters."
+  :type 'integer :group 'pascal1981)
 
 (defcustom pascal1981-completion-buffer-limit 65536
   "Maximum size, in characters, of what is actually sent to the completion
@@ -135,24 +168,42 @@ string with stderr / exit info.  PROGRAM is resolved via
   (let ((out-buf (generate-new-buffer " *pascal1981-out*"))
         (err-file (make-temp-file "pascal1981-err")))
     (unwind-protect
+        ;; `call-process-region' signals `file-missing' when PROGRAM is not
+        ;; on `exec-path' -- it does not return non-zero.  An uncaught
+        ;; signal there escapes every caller, including `pascal1981-mode'
+        ;; itself (which refreshes on entry, so visiting any .pas file
+        ;; without the stage binaries installed fails outright) and
+        ;; `pascal1981--completion-insert' (which refreshes from inside an
+        ;; `atomic-change-group', partway through modifying the user's
+        ;; buffer).  A missing binary is an ordinary, expected condition --
+        ;; the mode's whole fallback story rests on it -- so it is reported
+        ;; through the same (error . MESSAGE) channel as any other failure
+        ;; rather than raised.
         (let ((exit-code
-               (with-temp-buffer
-                 (insert stdin-text)
-                 (call-process-region (point-min) (point-max)
-                                      program nil (list out-buf err-file) nil))))
+               (condition-case err
+                   (with-temp-buffer
+                     (insert stdin-text)
+                     (call-process-region (point-min) (point-max)
+                                          program nil (list out-buf err-file) nil))
+                 (error (format "could not run %s: %s"
+                                 program (error-message-string err))))))
           (let ((stdout (with-current-buffer out-buf (buffer-string)))
                 (stderr (with-temp-buffer
                           (insert-file-contents err-file)
                           (buffer-string))))
-            (if (zerop exit-code)
-                (condition-case err
-                    (cons 'ok (json-parse-string stdout
-                                                  :object-type 'alist
-                                                  :array-type 'array))
-                  (error (cons 'error (format "JSON parse failed: %s\nraw: %s" err stdout))))
+            (cond
+             ;; A string exit-code is the condition-case's message above.
+             ((stringp exit-code) (cons 'error exit-code))
+             ((zerop exit-code)
+              (condition-case err
+                  (cons 'ok (json-parse-string stdout
+                                                :object-type 'alist
+                                                :array-type 'array))
+                (error (cons 'error (format "JSON parse failed: %s\nraw: %s" err stdout)))))
+             (t
               (cons 'error (if (string-empty-p stderr)
                                (format "%s exited %d" program exit-code)
-                             stderr)))))
+                             stderr))))))
       (kill-buffer out-buf)
       (ignore-errors (delete-file err-file)))))
 
@@ -510,19 +561,39 @@ model text carries no reliable indentation of its own, so the
 lexer/token cache is refreshed after the insert and each newly
 inserted line is reindented via `pascal1981-indent-line'. A
 single-line TEXT (the common case) skips this entirely and behaves
-exactly as before."
+exactly as before.
+
+Two conditions guard that reindent pass, because getting either wrong
+damages the user's file rather than merely formatting it oddly:
+
+- The refresh must actually have produced a token cache.
+  `pascal1981--compute-indent' answers 0 for every line when
+  `pascal1981--token-cache' is nil, so reindenting against a nil cache
+  does not leave indentation alone -- it flattens every touched line to
+  column 0.  A nil cache here is the expected case, not a remote one:
+  the text just inserted came from an LLM, and a partial statement or
+  an unbalanced quote is exactly what a low-parameter model produces,
+  which is precisely when the lexer fails and the cache goes nil.  The
+  same happens whenever the `lexer' binary is simply not on PATH.
+  Inserting the model's text unreindented is a small cosmetic loss;
+  flattening the surrounding code is not.
+
+- Only lines strictly after START-LINE are touched.  START-LINE holds
+  text the user wrote and did not ask to have reindented; the
+  completion was inserted at point, partway into it."
   (atomic-change-group
     (let ((start-line (line-number-at-pos)))
       (insert text)
       (when (string-match-p "\n" text)
         (let ((end-line (line-number-at-pos)))
           (pascal1981--refresh-caches)
-          (save-excursion
-            (cl-loop for line from start-line to end-line
-                     do (progn
-                          (goto-char (point-min))
-                          (forward-line (1- line))
-                          (pascal1981-indent-line)))))))))
+          (when pascal1981--token-cache
+            (save-excursion
+              (cl-loop for line from (1+ start-line) to end-line
+                       do (progn
+                            (goto-char (point-min))
+                            (forward-line (1- line))
+                            (pascal1981-indent-line))))))))))
 
 ;; -------------------------------------------------------------------
 ;; Lexical-unit slicing -- send an enclosing PROCEDURE/FUNCTION instead
@@ -685,10 +756,17 @@ a clean procedure-boundary one."
         (cons (buffer-substring-no-properties (point-min) (point-max))
               (pascal1981--completion-line-column))))))
 
-(defun pascal1981--completion-oversized-p ()
+(defun pascal1981--completion-oversized-p (&optional request-text)
   "Non-nil when what `pascal1981--completion-request-text' would send
-for point right now exceeds `pascal1981-completion-buffer-limit'."
-  (> (length (car (pascal1981--completion-request-text)))
+for point right now exceeds `pascal1981-completion-buffer-limit'.
+
+REQUEST-TEXT is that function's (TEXT . (LINE . COLUMN)) result,
+computed afresh when not supplied.  Callers pass it in so the answer
+and the request that follows it share one computation: building it
+scans the token cache and may slice out an enclosing lexical unit, and
+every TAB used to do all of that twice -- once to decide, once to
+send."
+  (> (length (car (or request-text (pascal1981--completion-request-text))))
      pascal1981-completion-buffer-limit))
 
 ;; -------------------------------------------------------------------
@@ -800,15 +878,29 @@ on-exit handler instead of from this command's own body -- see that
 function's docstring for why."
   (interactive))
 
+(defvar-local pascal1981--completion-transient-exit nil
+  "Function that retires the preview's transient map, or nil if none.
+`set-transient-map' returns this; keeping it lets a new preview take
+down the previous preview's map instead of stacking on top of it.")
+
 (defun pascal1981--completion-show-ghost (text)
   "Show TEXT (a single completion string) as a line-revealable preview
 at point, starting with just its first line shown."
   (pascal1981--completion-dismiss)
+  ;; Retire any previous preview's transient map before installing this
+  ;; one.  Two maps stacked, and the older one's on-exit handler then ran
+  ;; on the next keystroke and dismissed *this* preview -- so a second
+  ;; completion arriving while a first was showing would vanish the
+  ;; moment the user pressed `M-n'.
+  (when (functionp pascal1981--completion-transient-exit)
+    (funcall pascal1981--completion-transient-exit)
+    (setq pascal1981--completion-transient-exit nil))
   (setq pascal1981--completion-text text
         pascal1981--completion-reveal-lines 1
         pascal1981--completion-overlay (make-overlay (point) (point) nil t nil))
   (pascal1981--completion-render-overlay)
-  (set-transient-map
+  (setq pascal1981--completion-transient-exit
+   (set-transient-map
    (let ((map (make-sparse-keymap)))
      (define-key map (kbd "TAB") #'pascal1981--completion-accept)
      (define-key map (kbd "<tab>") #'pascal1981--completion-accept)
@@ -819,9 +911,10 @@ at point, starting with just its first line shown."
    (lambda () (memq this-command '(pascal1981-completion-reveal-more
                                     pascal1981-completion-reveal-fewer)))
    (lambda ()
+     (setq pascal1981--completion-transient-exit nil)
      (if (eq this-command #'pascal1981--completion-accept)
          (pascal1981--completion-do-accept)
-       (pascal1981--completion-dismiss)))))
+       (pascal1981--completion-dismiss))))))
 
 (defun pascal1981-completion-reveal-more ()
   "Show more of the current completion preview.
@@ -854,23 +947,68 @@ DIRECTION (1 for more, -1 for fewer), then redraw."
           (setq pascal1981--completion-reveal-lines (nth new-pos steps)))))
     (pascal1981--completion-render-overlay)))
 
+(defun pascal1981--completion-usable-p (text)
+  "Non-nil when TEXT is safe to preview and insert into the buffer.
+
+An independent check, not a restatement of the proxy's own
+sanitization: this mode speaks HTTP to whatever is listening at
+`pascal1981-completion-proxy-url', which need not be the bundled
+proxy, so nothing about what arrives can be assumed.  A candidate is
+rejected when it
+
+- has no printable content (empty, or only whitespace).  Such a
+  candidate used to produce a ghost overlay with an empty
+  `after-string', which reads as TAB doing nothing at all;
+- exceeds `pascal1981-completion-max-chars'; or
+- contains a C0 control character other than newline or tab -- a
+  stray carriage return lands in the source as a literal ^M, and an
+  ESC begins what the display renders as an escape sequence."
+  (and (stringp text)
+       (string-match-p "[^ \t\n]" text)
+       (<= (length text) pascal1981-completion-max-chars)
+       ;; C0 minus tab (9) and newline (10), plus DEL (127).  Note that
+       ;; carriage return (13) is inside the rejected range on purpose:
+       ;; it is the control character a model is most likely to emit, and
+       ;; it lands in the source as a literal ^M.
+       (not (string-match-p "[\0-\010\013-\037\177]" text))))
+
 (defun pascal1981--completion-parse-response (response-buffer)
   "Return (STATUS-CODE . CANDIDATES-OR-NIL) parsed from RESPONSE-BUFFER.
-CANDIDATES-OR-NIL is a list of strings, or nil when the body is not
-valid JSON with a \"completions\" array of strings."
+CANDIDATES-OR-NIL is a list of usable completion strings, or nil when
+the body is not valid JSON with a \"completions\" array holding at
+least one string that satisfies `pascal1981--completion-usable-p'.
+
+The body is decoded as UTF-8 before parsing.  `url-retrieve' hands its
+callback the raw response bytes, so `json-read' over them yields
+unibyte strings: any non-ASCII in a completion -- in a comment, or a
+string literal -- would otherwise be inserted into a multibyte buffer
+as mojibake rather than as the characters the model actually sent."
   (with-current-buffer response-buffer
     (let ((status-code (url-http-symbol-value-in-buffer
                          'url-http-response-status response-buffer)))
       (goto-char (if (boundp 'url-http-end-of-headers)
                      (or url-http-end-of-headers (point-min))
                    (point-min)))
-      (let* ((body (ignore-errors (json-read)))
-             (completions (and (listp body) (alist-get 'completions body))))
-        (cons status-code
-              (and (sequencep completions)
-                   (> (length completions) 0)
-                   (cl-every #'stringp completions)
-                   (append completions nil)))))))
+      (let* ((body-text (buffer-substring-no-properties (point) (point-max)))
+             (decoded (decode-coding-string
+                       (if (multibyte-string-p body-text)
+                           (encode-coding-string body-text 'utf-8)
+                         body-text)
+                       'utf-8))
+             (body (ignore-errors
+                     (json-parse-string decoded
+                                        :object-type 'alist
+                                        :array-type 'list)))
+             ;; `ignore-errors' because BODY need not be an alist at all:
+             ;; a JSON array parses to a list whose elements are not
+             ;; conses, and `alist-get' signals on that rather than
+             ;; answering nil.
+             (completions (ignore-errors
+                            (and (listp body) (alist-get 'completions body))))
+             (usable (and (listp completions)
+                          (cl-remove-if-not #'pascal1981--completion-usable-p
+                                            completions))))
+        (cons status-code usable)))))
 
 (defun pascal1981--completion-handle-timeout (source-buffer request-id
                                                               response-buffer)
@@ -921,11 +1059,16 @@ rule still holds there."
           (let* ((parsed (pascal1981--completion-parse-response response-buffer))
                  (status-code (car parsed))
                  (candidates (cdr parsed)))
-            (when (and status-code (/= status-code 200))
-              (message "pascal1981: completion proxy returned HTTP %s" status-code)
+            ;; A nil status is a failure, not a success: it means url.el
+            ;; never recorded a response status for this buffer at all.
+            ;; Treating nil as "not an error" let a body that never came
+            ;; from a real HTTP response fall through to be parsed.
+            (unless (eql status-code 200)
+              (message "pascal1981: completion proxy returned HTTP %s"
+                        (or status-code "no response"))
               (throw 'pascal1981--completion-done nil))
             (unless candidates
-              (message "pascal1981: completion response was empty or malformed")
+              (message "pascal1981: no usable completion")
               (throw 'pascal1981--completion-done nil))
             (with-current-buffer source-buffer
               (unless (and pascal1981-completion-enabled
@@ -937,18 +1080,41 @@ rule still holds there."
       (when (buffer-live-p response-buffer)
         (kill-buffer response-buffer)))))
 
-(defun pascal1981--completion-send ()
+(defun pascal1981--completion-send (&optional request-text)
   "Send an asynchronous `/complete' request for the current buffer/point.
 Captures the source buffer, point, buffer modification tick, and
 1-based line/column before sending; `pascal1981--completion-callback'
 re-validates all of it before inserting anything, so a response that
 arrives after the buffer changed underneath it is discarded rather
-than inserted somewhere it no longer belongs."
+than inserted somewhere it no longer belongs.
+
+REQUEST-TEXT is the (TEXT . (LINE . COLUMN)) pair from
+`pascal1981--completion-request-text', computed afresh when not
+supplied.  Callers that already had to build it in order to decide
+whether to call at all -- checking the size limit means building it --
+pass it through instead of paying for the token-cache scan and the
+slicing a second time.
+
+Does nothing when a request for this buffer is already in flight.
+Every TAB used to fire its own request; the bundled proxy forks per
+connection and accepts them all, so a held-down TAB piled a queue of
+requests onto a backend that serves one at a time, and the whole queue
+then timed out.  Only the newest response could ever have been used
+anyway -- the rest lose the request-id race below and are discarded
+unread -- so the earlier ones were never anything but load."
+  (if pascal1981--completion-pending-id
+      (message "pascal1981: a completion request is already in flight")
+    (pascal1981--completion-send-1 (or request-text
+                                       (pascal1981--completion-request-text)))))
+
+(defun pascal1981--completion-send-1 (request-text)
+  "Unconditionally send a `/complete' request for REQUEST-TEXT.
+See `pascal1981--completion-send', which is the entry point that
+applies the in-flight guard."
   (let* ((source-buffer (current-buffer))
          (request-id (cl-incf pascal1981--completion-request-counter))
          (point-at-request (point))
          (tick-at-request (buffer-modified-tick))
-         (request-text (pascal1981--completion-request-text))
          (buffer-text (car request-text))
          (line-column (cdr request-text))
          (url-request-method "POST")
@@ -961,16 +1127,31 @@ than inserted somewhere it no longer belongs."
            'utf-8)))
     (setq pascal1981--completion-pending-id request-id)
     (letrec ((response-buffer
-              (url-retrieve
-               pascal1981-completion-proxy-url
-               #'pascal1981--completion-callback
-               (list source-buffer request-id point-at-request tick-at-request)
-               t)))
+              ;; `url-retrieve' signals on a URL it cannot parse or whose
+              ;; scheme it has no handler for -- an ordinary typo in
+              ;; `pascal1981-completion-proxy-url' is enough.  The pending
+              ;; id is already set at this point, and no timeout timer is
+              ;; armed yet to clear it, so letting the signal escape would
+              ;; leave the id set forever and the in-flight guard would
+              ;; then refuse every future completion in this buffer.
+              (condition-case err
+                  (url-retrieve
+                   pascal1981-completion-proxy-url
+                   #'pascal1981--completion-callback
+                   (list source-buffer request-id point-at-request tick-at-request)
+                   t)
+                (error
+                 (setq pascal1981--completion-pending-id nil)
+                 (message "pascal1981: completion request failed: %s"
+                           (error-message-string err))
+                 nil))))
       (when (timerp pascal1981--completion-timeout-timer)
         (cancel-timer pascal1981--completion-timeout-timer))
       (setq pascal1981--completion-timeout-timer
             (run-at-time
-             pascal1981-completion-timeout nil
+             (+ pascal1981-completion-timeout
+                pascal1981--completion-timeout-grace)
+             nil
              #'pascal1981--completion-handle-timeout
              source-buffer request-id response-buffer)))))
 
@@ -991,11 +1172,13 @@ its lines with `M-n'/`M-p'."
     (message "pascal1981: completion is disabled"))
    ((not (pascal1981--completion-allowed-at-point-p))
     (message "pascal1981: completion is not offered mid-line"))
-   ((pascal1981--completion-oversized-p)
-    (message "pascal1981: buffer exceeds completion size limit (%d)"
-              pascal1981-completion-buffer-limit))
    (t
-    (pascal1981--completion-send))))
+    ;; Built once here and handed to both the size check and the send.
+    (let ((request-text (pascal1981--completion-request-text)))
+      (if (pascal1981--completion-oversized-p request-text)
+          (message "pascal1981: buffer exceeds completion size limit (%d)"
+                    pascal1981-completion-buffer-limit)
+        (pascal1981--completion-send request-text))))))
 
 (defun pascal1981-indent-or-complete ()
   "Accept a showing completion preview, request one, or indent.
@@ -1017,9 +1200,12 @@ proxy never costs TAB its normal behavior."
    ((pascal1981--completion-overlay-live-p)
     (pascal1981--completion-do-accept))
    ((and pascal1981-completion-enabled
-         (pascal1981--completion-allowed-at-point-p)
-         (not (pascal1981--completion-oversized-p)))
-    (pascal1981--completion-send))
+         (pascal1981--completion-allowed-at-point-p))
+    ;; Built once here and handed to both the size check and the send.
+    (let ((request-text (pascal1981--completion-request-text)))
+      (if (pascal1981--completion-oversized-p request-text)
+          (pascal1981-indent-line)
+        (pascal1981--completion-send request-text))))
    (t
     (pascal1981-indent-line))))
 

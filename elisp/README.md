@@ -157,9 +157,42 @@ flipping `pascal1981-completion-enabled` on or off.
 
 Other knobs: `pascal1981-completion-goal` (the instruction sent with every
 request), `pascal1981-completion-timeout` (seconds to wait before giving
-up, default 8), `pascal1981-completion-buffer-limit` (nothing larger than
+up, default 20), `pascal1981-completion-buffer-limit` (nothing larger than
 this, in characters, is ever sent — see "Large files" below for what
-actually gets measured against it).
+actually gets measured against it), and
+`pascal1981-completion-max-chars` (a completion longer than this is
+refused outright, default 8192).
+
+**Keep `pascal1981-completion-timeout` equal to the proxy's
+`--upstream-timeout`, and never shorter.** Both default to 20, which is
+why neither normally needs setting. If Emacs gives up first, you never see
+the proxy's own account of what went wrong — only a bare "timed out" — and
+the proxy's forked child goes on holding the upstream call open after
+Emacs has walked away. Emacs adds a small internal grace on top of the
+configured value so that, at equal settings, the proxy's error response
+wins the race.
+
+### When the model returns nothing usable
+
+A low-parameter model does not always answer with Pascal. It can return
+nothing at all, whitespace, an English sentence about the code, a markdown
+fence, a fragment of its own internal formatting, or a retyped copy of
+what is already in the buffer. The proxy strips what it can (see
+`strip_echo`, `_strip_code_fence`, `sanitize_completion`) and reports an
+empty `completions` array when nothing usable survives.
+
+Emacs checks again on its own account rather than trusting that, since
+`pascal1981-completion-proxy-url` may point at something other than the
+bundled proxy: a candidate that is empty, whitespace-only, over
+`pascal1981-completion-max-chars`, or carrying control characters is
+refused. In every one of these cases TAB reports `no usable completion`
+and **leaves the buffer exactly as it was** — it does not fall back to
+indenting, because by then TAB has already been spent on the request.
+Press TAB again to indent.
+
+While a request is in flight, another TAB does not start a second one:
+only the newest response could ever be used, so the extra requests were
+never anything but load on a backend that serves one at a time.
 
 Each request makes exactly one upstream call and gets back exactly one
 completion — there is no multi-candidate ("give me N different
