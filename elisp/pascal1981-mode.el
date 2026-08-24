@@ -31,7 +31,11 @@ Assumed to be on `exec-path' / PATH."
   :type 'string :group 'pascal1981)
 
 (defcustom pascal1981-idle-delay 0.4
-  "Seconds of idle time before refreshing highlighting / indentation."
+  "Seconds to debounce highlighting / indentation refreshes."
+  :type 'number :group 'pascal1981)
+
+(defcustom pascal1981-refresh-timeout 5
+  "Maximum seconds allowed for one asynchronous lexer or parser stage."
   :type 'number :group 'pascal1981)
 
 (defcustom pascal1981-completion-enabled nil
@@ -152,8 +156,19 @@ gone -- this command is now a plain toggle."
   "Buffer-local cache of last parser AST.")
 (make-variable-buffer-local 'pascal1981--ast-cache)
 
-(defvar pascal1981--idle-timer nil)
-(make-variable-buffer-local 'pascal1981--idle-timer)
+(defvar-local pascal1981--idle-timer nil
+  "Pending debounced cache-refresh timer for this buffer.")
+(defvar-local pascal1981--refresh-process nil
+  "Current asynchronous lexer or parser process for this buffer.")
+(defvar-local pascal1981--refresh-generation 0
+  "Generation number used to discard superseded refresh results.")
+(defvar-local pascal1981--refresh-reindent nil
+  "(START-LINE END-LINE TICK) for deferred completion reindentation.")
+(defvar-local pascal1981--refresh-inhibit nil
+  "Non-nil while a refresh-owned edit must not schedule another refresh.")
+(defvar-local pascal1981--completion-accept-barrier nil)
+(defvar-local pascal1981--completion-accept-tick nil)
+(defvar-local pascal1981--completion-accept-point nil)
 
 ;; -------------------------------------------------------------------
 ;; Low-level process helpers — pipe text through stage binaries
@@ -328,17 +343,102 @@ point to LIMIT after the tokens are painted."
   (when (fboundp 'font-lock-ensure)
     (font-lock-ensure)))
 
+(defun pascal1981--refresh-json (program stdin callback)
+  "Run PROGRAM asynchronously with STDIN, then call CALLBACK with its result."
+  (let ((out (generate-new-buffer " *pascal1981-refresh-out*"))
+        (err (generate-new-buffer " *pascal1981-refresh-err*")))
+    (condition-case problem
+        (let ((proc
+               (make-process
+                :name (format "pascal1981-%s" program) :buffer out :stderr err
+                :command (list program) :connection-type 'pipe :noquery t
+                :sentinel
+                (lambda (process _event)
+                  (when (memq (process-status process) '(exit signal))
+                    (let ((timer (process-get process 'pascal1981-timeout)))
+                      (when timer (cancel-timer timer)))
+                    (let ((status (process-exit-status process))
+                          (stdout (with-current-buffer out (buffer-string)))
+                          (stderr (with-current-buffer err (buffer-string))))
+                      (unwind-protect
+                          (funcall callback
+                                   (if (zerop status)
+                                       (condition-case json-error
+                                           (cons 'ok (json-parse-string stdout :object-type 'alist :array-type 'array))
+                                         (error (cons 'error (error-message-string json-error))))
+                                     (cons 'error (if (string-empty-p stderr)
+                                                      (format "%s exited %d" program status)
+                                                    stderr))))
+                        (kill-buffer out) (kill-buffer err))))))))
+          (process-send-string proc stdin)
+          (process-send-eof proc)
+          (process-put proc 'pascal1981-timeout
+                       (run-at-time pascal1981-refresh-timeout nil
+                                    (lambda (process)
+                                      (when (process-live-p process)
+                                        (delete-process process)))
+                                    proc))
+          proc)
+      (error (kill-buffer out) (kill-buffer err)
+             (funcall callback (cons 'error (error-message-string problem)))
+             nil))))
+
+(defun pascal1981--refresh-apply-lexer (buf generation tick result)
+  "Apply lexer RESULT for BUF only if its snapshot is still current."
+  (when (buffer-live-p buf)
+    (with-current-buffer buf
+      (when (and (= generation pascal1981--refresh-generation)
+                 (= tick (buffer-modified-tick)))
+        (if (eq (car result) 'error)
+            (setq pascal1981--token-cache nil pascal1981--ast-cache nil)
+          (setq pascal1981--token-cache (cdr result))
+          (pascal1981--apply-token-highlighting)
+          (let ((reindent pascal1981--refresh-reindent))
+            (when (and reindent (= tick (nth 2 reindent)))
+              (setq pascal1981--refresh-inhibit t)
+              (unwind-protect
+                  (save-excursion
+                    (cl-loop for line from (1+ (nth 0 reindent)) to (nth 1 reindent)
+                             do (goto-char (point-min))
+                             do (forward-line (1- line))
+                             do (pascal1981-indent-line)))
+                (setq pascal1981--refresh-inhibit nil
+                      pascal1981--refresh-reindent nil))))
+          (let ((tokens (json-serialize (cdr result))))
+            (setq pascal1981--refresh-process
+                  (pascal1981--refresh-json
+                   pascal1981-parser-program tokens
+                   (lambda (parse-result)
+                     (when (and (buffer-live-p buf)
+                                (with-current-buffer buf
+                                  (and (= generation pascal1981--refresh-generation)
+                                       (= tick (buffer-modified-tick)))))
+                       (with-current-buffer buf
+                         (setq pascal1981--ast-cache
+                               (when (eq (car parse-result) 'ok) (cdr parse-result))))))))))))))
+
+(defun pascal1981--refresh-start (buf generation)
+  "Start the current asynchronous lexer refresh for BUF."
+  (when (buffer-live-p buf)
+    (with-current-buffer buf
+      (when (= generation pascal1981--refresh-generation)
+        (let ((tick (buffer-modified-tick))
+              (source (buffer-substring-no-properties (point-min) (point-max))))
+          (setq pascal1981--refresh-process
+                (pascal1981--refresh-json
+                 pascal1981-lexer-program source
+                 (lambda (result)
+                   (pascal1981--refresh-apply-lexer buf generation tick result)))))))))
+
 (defun pascal1981--schedule-refresh ()
-  "Debounce: refresh caches and highlighting after `pascal1981-idle-delay'."
-  (when pascal1981--idle-timer (cancel-timer pascal1981--idle-timer))
-  (setq pascal1981--idle-timer
-        (run-with-idle-timer pascal1981-idle-delay nil
-                             (lambda (buf)
-                               (when (buffer-live-p buf)
-                                 (with-current-buffer buf
-                                   (pascal1981--refresh-caches)
-                                   (pascal1981--apply-token-highlighting))))
-                             (current-buffer))))
+  "Debounce an asynchronous cache refresh after `pascal1981-idle-delay'."
+  (unless pascal1981--refresh-inhibit
+    (cl-incf pascal1981--refresh-generation)
+    (when (timerp pascal1981--idle-timer) (cancel-timer pascal1981--idle-timer))
+    (let ((buf (current-buffer)) (generation pascal1981--refresh-generation))
+      (setq pascal1981--idle-timer
+            (run-at-time pascal1981-idle-delay nil
+                         #'pascal1981--refresh-start buf generation)))))
 
 ;; -------------------------------------------------------------------
 ;; Syntax table
@@ -557,11 +657,9 @@ decodes on the way back."
   "Insert TEXT at point as a single atomic undo step.
 When TEXT spans multiple lines (the proxy's completions are no longer
 capped at one line by default -- see its `--max-lines' flag), the raw
-model text carries no reliable indentation of its own, so the
-lexer/token cache is refreshed after the insert and each newly
-inserted line is reindented via `pascal1981-indent-line'. A
-single-line TEXT (the common case) skips this entirely and behaves
-exactly as before.
+model text carries no reliable indentation of its own.  Reindentation
+therefore waits for the next asynchronous lexer refresh; TAB itself
+only inserts text and returns.
 
 Two conditions guard that reindent pass, because getting either wrong
 damages the user's file rather than merely formatting it oddly:
@@ -585,15 +683,14 @@ damages the user's file rather than merely formatting it oddly:
     (let ((start-line (line-number-at-pos)))
       (insert text)
       (when (string-match-p "\n" text)
-        (let ((end-line (line-number-at-pos)))
-          (pascal1981--refresh-caches)
-          (when pascal1981--token-cache
-            (save-excursion
-              (cl-loop for line from (1+ start-line) to end-line
-                       do (progn
-                            (goto-char (point-min))
-                            (forward-line (1- line))
-                            (pascal1981-indent-line))))))))))
+        ;; The lexer/parser must not run in TAB's command path.  The next
+        ;; asynchronous refresh reindents these lines only if this exact edit
+        ;; is still current when lexer output arrives.
+        (setq pascal1981--refresh-reindent
+              (list start-line (line-number-at-pos) nil))))
+    (when pascal1981--refresh-reindent
+      (setf (nth 2 pascal1981--refresh-reindent) (buffer-modified-tick)))
+    (pascal1981--schedule-refresh)))
 
 ;; -------------------------------------------------------------------
 ;; Lexical-unit slicing -- send an enclosing PROCEDURE/FUNCTION instead
@@ -868,7 +965,16 @@ race entirely."
   (when (pascal1981--completion-overlay-live-p)
     (let ((text (pascal1981--completion-visible-text)))
       (pascal1981--completion-dismiss)
-      (when text (pascal1981--completion-insert text)))))
+      (when text
+        (setq pascal1981--completion-accept-barrier t)
+        (pascal1981--completion-insert text)
+        ;; Insertion runs `after-change-functions', which deliberately
+        ;; clears barriers for ordinary user edits.  Reinstate this one:
+        ;; it represents the acceptance command, not a subsequent edit.
+        (setq pascal1981--completion-accept-barrier t
+              pascal1981--completion-accept-tick (buffer-modified-tick)
+              pascal1981--completion-accept-point (point))
+        (redisplay)))))
 
 (defun pascal1981--completion-accept ()
   "Bound to TAB in the completion-preview transient map.
@@ -1199,6 +1305,10 @@ proxy never costs TAB its normal behavior."
   (cond
    ((pascal1981--completion-overlay-live-p)
     (pascal1981--completion-do-accept))
+   ((and pascal1981--completion-accept-barrier
+         (= (buffer-modified-tick) pascal1981--completion-accept-tick)
+         (= (point) pascal1981--completion-accept-point))
+    (message "pascal1981: completion accepted; edit or move before requesting another"))
    ((and pascal1981-completion-enabled
          (pascal1981--completion-allowed-at-point-p))
     ;; Built once here and handed to both the size check and the send.
@@ -1366,7 +1476,12 @@ CHECKER and CALLBACK are the flycheck start-function arguments."
   ;; Trigger initial lex/parse and hook up idle refresh.
   (pascal1981--refresh-caches)
   (pascal1981--apply-token-highlighting)
-  (add-hook 'after-change-functions (lambda (&rest _) (pascal1981--schedule-refresh)) nil t))
+  (add-hook 'after-change-functions #'pascal1981--after-change nil t))
+
+(defun pascal1981--after-change (&rest _)
+  "Schedule refreshes and retire the TAB acceptance barrier after edits."
+  (setq pascal1981--completion-accept-barrier nil)
+  (pascal1981--schedule-refresh))
 
 ;; `define-derived-mode' above auto-creates `pascal1981-mode-map'; the TAB
 ;; remap has to be installed after that map exists.

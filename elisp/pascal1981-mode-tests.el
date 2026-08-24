@@ -988,6 +988,39 @@ the request was sent."
 ;; LLM completion: TAB dispatcher
 ;; -------------------------------------------------------------------
 
+(ert-deftest pascal1981-tests-multiline-accept-schedules-not-blocks-refresh ()
+  "Accepting multiline text schedules refresh instead of running it in TAB."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (let (scheduled)
+      (cl-letf (((symbol-function 'pascal1981--schedule-refresh)
+                 (lambda () (setq scheduled t)))
+                ((symbol-function 'pascal1981--refresh-caches)
+                 (lambda () (error "refresh ran synchronously"))))
+        (pascal1981--completion-show-ghost "alpha\nbeta")
+        (pascal1981-completion-reveal-more)
+        (pascal1981--completion-do-accept))
+      (should scheduled)
+      (should (equal (buffer-string) "alpha\nbeta"))
+      (should pascal1981--completion-accept-barrier))))
+
+(ert-deftest pascal1981-tests-acceptance-barrier-blocks-second-tab-request ()
+  "A second TAB at accepted text cannot immediately request completion."
+  (with-temp-buffer
+    (pascal1981-mode)
+    (setq pascal1981-completion-enabled t)
+    (let (sent)
+      (cl-letf (((symbol-function 'pascal1981--schedule-refresh) #'ignore)
+                ((symbol-function 'pascal1981--completion-send)
+                 (lambda (&rest _) (setq sent t))))
+        (pascal1981--completion-show-ghost "1;")
+        (pascal1981--completion-do-accept)
+        (pascal1981-indent-or-complete)
+        (should-not sent)
+        (insert " ")
+        (pascal1981-indent-or-complete))
+      (should sent))))
+
 (ert-deftest pascal1981-tests-indent-or-complete-dispatches-to-completion ()
   "Enabled and eligible, no preview showing: TAB requests, doesn't indent."
   (with-temp-buffer
@@ -1240,8 +1273,8 @@ the buffer."
 
 (ert-deftest pascal1981-tests-end-to-end-multiline-accept-reindents ()
   "Accepting a multi-line candidate, after revealing all of its lines,
-reindents the inserted lines via the lexer/token cache, instead of
-leaving the model's raw, unindented text. (Only its first line is
+reindents the inserted lines via the asynchronous lexer/token cache,
+instead of leaving the model's raw, unindented text. (Only its first line is
 shown by default; `M-n' reveals the rest first -- see the reveal
 tests above for that behavior in isolation.)"
   (pascal1981-tests--with-fake-proxy
@@ -1258,6 +1291,10 @@ tests above for that behavior in isolation.)"
        (lambda () (not pascal1981--completion-pending-id)) 5)
       (should (pascal1981--completion-overlay-live-p))
       (execute-kbd-macro (kbd "M-n M-n TAB"))
+      (pascal1981-tests--wait-until
+       (lambda () (equal (buffer-string)
+                          "PROGRAM Demo;\nBEGIN\n  BEGIN\n    total := total + i;\n  END;"))
+       5)
       (should (equal (buffer-string)
                      "PROGRAM Demo;\nBEGIN\n  BEGIN\n    total := total + i;\n  END;")))))
 
