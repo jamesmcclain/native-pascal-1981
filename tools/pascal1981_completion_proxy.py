@@ -781,6 +781,58 @@ def _echo_tokens(text: str) -> list[tuple[str, int]]:
     return tokens
 
 
+def _is_identifier_char(char: str) -> bool:
+    """Non-nil for a character that can appear inside a Pascal identifier."""
+    return char.isalnum() or char == '_'
+
+
+def _partial_token_echo_cut(buffer: str, candidate: str) -> int:
+    """Index in CANDIDATE just past a restated partial identifier, or 0.
+
+    The case this exists for: the cursor sits part-way through a word, and
+    the model answers by retyping the whole word rather than continuing it.
+    Typing `DISPO` and pressing TAB gets back `DISPOSE(p2);` instead of
+    `SE(p2);`, and accepting that puts `DISPODISPOSE(p2);` in the buffer.
+
+    Neither other pass can see this. The character-level pass finds the
+    overlap exactly -- "DISPO" is 5 characters -- but its floor requires
+    *more* than _ECHO_MIN_OVERLAP, and a partial identifier is routinely
+    shorter than that; lowering the floor to catch it is not an option,
+    since 4 characters is "END;" and that floor is the only thing keeping
+    legitimate structural repetition out. The token-level pass cannot see it
+    either: `DISPO` and `DISPOSE` are simply different tokens to it, and its
+    floors are calibrated for multi-token echoes anyway.
+
+    So this is matched on its own terms. It fires only when the buffer's
+    prefix ends inside a word and the candidate opens with a word having
+    that partial one as a case-insensitive prefix -- Pascal 1981 being a
+    case-insensitive dialect, `dispose` continues `DISPO`. The cut is
+    exactly the length of the partial word, which is the part the model
+    restated.
+
+    Being anchored to a word boundary on both sides is what makes a low
+    threshold safe here, where it would not be for the other passes: a
+    candidate that continues the partial word correctly (`SE(p2);`) does not
+    begin with it and is left alone.
+    """
+    start = len(buffer)
+    while start > 0 and _is_identifier_char(buffer[start - 1]):
+        start -= 1
+    partial = buffer[start:]
+    if not partial:
+        return 0
+
+    end = 0
+    while end < len(candidate) and _is_identifier_char(candidate[end]):
+        end += 1
+    head = candidate[:end]
+    if len(head) < len(partial):
+        return 0
+    if head[:len(partial)].lower() != partial.lower():
+        return 0
+    return len(partial)
+
+
 def _approximate_echo_cut(buffer: str, candidate: str) -> int:
     """Index in CANDIDATE just past an approximate echo of BUFFER's tail, or
     0 when there is no such echo worth stripping.
@@ -870,14 +922,21 @@ def strip_echo(buffer: str, candidate: str) -> str:
        nothing -- live in Emacs, not hypothetically. A longer overlap is not
        plausible as coincidence, so it is safe to treat as an echo.
 
-    2. An approximate, token-level pass (`_approximate_echo_cut`), run only
-       when the first finds nothing. This catches the echo the first pass
+    2. A partial-identifier pass (`_partial_token_echo_cut`), for the cursor
+       sitting part-way through a word and the model retyping the whole word
+       instead of continuing it -- `DISPO` answered with `DISPOSE(p2);`
+       rather than `SE(p2);`. Too short for the first pass's floor and
+       invisible to the third's tokenizer; see that function for why a low
+       threshold is safe there specifically.
+
+    3. An approximate, token-level pass (`_approximate_echo_cut`), run only
+       when the others find nothing. This catches the echo the first pass
        structurally cannot see: a retype that differs from the buffer by
        indentation, keyword casing, a renamed identifier, or a dropped
        token. Any one of those collapses an exact match to nothing, and all
        of them are ordinary small-model behavior.
 
-    The second pass is deliberately not just a relaxation of the first. It
+    The third pass is deliberately not just a relaxation of the first. It
     carries its own, much stricter floors (_ECHO_MIN_APPROX_TOKENS,
     _ECHO_MIN_APPROX_CHARS) and a similarity threshold, for the reason
     recorded there: approximate matching can only ever make more things
@@ -894,6 +953,9 @@ def strip_echo(buffer: str, candidate: str) -> str:
             break
     if overlap > _ECHO_MIN_OVERLAP:
         return candidate[overlap:]
+    partial = _partial_token_echo_cut(buffer, candidate)
+    if partial:
+        return candidate[partial:]
     return candidate[_approximate_echo_cut(buffer, candidate):]
 
 

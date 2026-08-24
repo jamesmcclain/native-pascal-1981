@@ -305,7 +305,15 @@ class StripEchoTests(unittest.TestCase):
 
     def test_overlap_at_minimum_not_stripped(self):
         # Exactly at the threshold (not over it) must not strip.
-        buf = 'x' * proxy._ECHO_MIN_OVERLAP
+        #
+        # The overlap deliberately ends at a delimiter rather than inside a
+        # word. Identifier-shaped data would engage
+        # `_partial_token_echo_cut' instead, which is a different rule with
+        # a different (word-anchored) threshold -- and would therefore stop
+        # exercising the character-level floor this test is about. A
+        # delimiter is also the realistic shape here: the false positive the
+        # floor exists to prevent is a structural closer, "END;".
+        buf = ';' * proxy._ECHO_MIN_OVERLAP
         cand = buf + 'y'
         self.assertEqual(proxy.strip_echo(buf, cand), cand)
 
@@ -338,6 +346,68 @@ class StripEchoTests(unittest.TestCase):
         buf = 'PROGRAM Demo;\nBEGIN\n  x := 1;\n'
         cand = '  x := 1;\n  y := 2;'
         self.assertEqual(proxy.strip_echo(buf, cand), '  y := 2;')
+
+
+class PartialTokenEchoTests(unittest.TestCase):
+    """The cursor part-way through a word, and the model retyping the whole
+    word instead of continuing it."""
+
+    # The buffer from the reported failure, cursor after a half-typed
+    # DISPOSE.
+    BUFFER = ('PROGRAM D;\n'
+              'VAR p1, p2: ^INTEGER;\n'
+              'BEGIN\n'
+              '  NEW(p1); NEW(p2);\n'
+              '  DISPOSE(p1);\n'
+              '  DISPO')
+
+    def test_restated_partial_identifier_is_stripped(self):
+        # Accepting the unstripped candidate produced "DISPODISPOSE(p2);".
+        # The overlap is exactly 5 characters, one short of the
+        # character-level pass's floor, and lowering that floor is not an
+        # option -- 4 characters is "END;".
+        self.assertEqual(proxy.strip_echo(self.BUFFER, 'DISPOSE(p2);\nEND.'),
+                         'SE(p2);\nEND.')
+
+    def test_correct_continuation_is_left_alone(self):
+        # The model that got it right does not begin with the partial word,
+        # so nothing matches and nothing is stripped.
+        self.assertEqual(proxy.strip_echo(self.BUFFER, 'SE(p2);\nEND.'),
+                         'SE(p2);\nEND.')
+
+    def test_match_is_case_insensitive_in_both_directions(self):
+        # Pascal 1981 is a case-insensitive dialect: dispose continues
+        # DISPO, and DISPOSE continues dispo.
+        self.assertEqual(proxy.strip_echo(self.BUFFER, 'dispose(p2);'),
+                         'se(p2);')
+        self.assertEqual(
+            proxy.strip_echo(self.BUFFER[:-5] + 'dispo', 'DISPOSE(p2);'),
+            'SE(p2);')
+
+    def test_single_character_partial(self):
+        self.assertEqual(proxy.strip_echo('BEGIN\n  x', 'x := 1;'), ' := 1;')
+
+    def test_partial_number(self):
+        self.assertEqual(proxy.strip_echo('FOR i := 1 TO 1', '10 DO'), '0 DO')
+
+    def test_unrelated_word_is_not_stripped(self):
+        self.assertEqual(proxy.strip_echo(self.BUFFER, 'WRITELN(x);'),
+                         'WRITELN(x);')
+
+    def test_candidate_word_shorter_than_partial_is_not_stripped(self):
+        self.assertEqual(proxy.strip_echo(self.BUFFER + 'SE', 'DISP'), 'DISP')
+
+    def test_prefix_ending_at_a_delimiter_does_not_engage(self):
+        # No partial word to restate, so this pass must not fire at all.
+        self.assertEqual(proxy.strip_echo('  DISPOSE(', 'p2);'), 'p2);')
+        self.assertEqual(proxy.strip_echo('FOR i := 1 ', 'TO 10 DO'),
+                         'TO 10 DO')
+
+    def test_structural_closer_still_survives(self):
+        # The false positive the character-level floor exists to prevent
+        # must stay prevented: the prefix ends at a newline, not mid-word.
+        self.assertEqual(proxy.strip_echo('BEGIN\n  x := 1;\n', 'END;'),
+                         'END;')
 
 
 class SanitizeCompletionTests(unittest.TestCase):
