@@ -86,13 +86,15 @@ VAR
                 ParseFactor -> ParseExpression, about 37KB per level
     statement   ParseStatement -> ParseStatement (ELSE branches, loop and
                 CASE bodies), about 7.6KB per level
+    type        ParseType -> ParseType (pointer, array, file, and record
+                members), about 40KB per level
 
-  At the ceilings below the worst case is 64*37KB + 256*7.6KB, about 4.3MB
-  -- comfortably inside a default 8MB stack, so the ceiling is what is
-  reached first and it is reached with a message. Real code is nowhere near
-  either: the deepest of the five self-hosting sources needs about 512KB.
+  Each ceiling stays comfortably inside a default 8MB stack, so the parser
+  reaches the ceiling first and prints a message. Real code is nowhere near
+  the limits: the five self-hosting sources need only a small fraction of
+  the available stack.
 
-  Both figures assume the stage is built optimized (scripts/build-native-stage.sh
+  All figures assume the stage is built optimized (scripts/build-native-stage.sh
   passes -O1). Unoptimized, every by-value Str255 argument gets its own spill
   slot and a level costs roughly 8x more.
 
@@ -105,9 +107,10 @@ VAR
 CONST
   MAX_EXPR_DEPTH = 64;
   MAX_STMT_DEPTH = 256;
+  MAX_TYPE_DEPTH = 128;
 
 VAR
-  expr_depth, stmt_depth: INTEGER;
+  expr_depth, stmt_depth, type_depth: INTEGER;
 
 FUNCTION ReadBoolFlag(flags_json: ADRMEM; key_str: Str255): BOOLEAN;
 VAR
@@ -604,6 +607,23 @@ END;
 PROCEDURE LeaveStmtLevel;
 BEGIN
   stmt_depth := stmt_depth - 1;
+END;
+
+PROCEDURE EnterTypeLevel;
+VAR
+  res_c: CINT;
+BEGIN
+  type_depth := type_depth + 1;
+  IF type_depth > MAX_TYPE_DEPTH THEN
+  BEGIN
+    EPrint('Parser Error: type nested too deeply (deeper than 128); try defining intermediate named types');
+    exit(1);
+  END;
+END;
+
+PROCEDURE LeaveTypeLevel;
+BEGIN
+  type_depth := type_depth - 1;
 END;
 
 { AST Builder Parser Stubs }
@@ -1340,14 +1360,21 @@ END;
 FUNCTION ParseCompoundStmt: ADRMEM;
 VAR
   node, stmts_arr: ADRMEM;
+  start_pos: INTEGER32;
 BEGIN
   Expect('BEGIN');
   node := CreateNode('CompoundStmt');
   stmts_arr := cJSON_CreateArray;
   WHILE (CurKind <> 'END') AND (CurKind <> 'EOF') DO
   BEGIN
+    start_pos := pos;
     cJSON_AddItemToArray(stmts_arr, ParseStatement);
     IF CurKind = 'SEMICOLON' THEN pos := pos + 1;
+    IF pos = start_pos THEN
+    BEGIN
+      EPrint('Parser Error: statement failed to advance token stream');
+      exit(1);
+    END;
   END;
   Expect('END');
   AddField(node, 'stmts', stmts_arr);
@@ -1357,13 +1384,20 @@ END;
 FUNCTION ParseCompoundStmtList: ADRMEM;
 VAR
   arr: ADRMEM;
+  start_pos: INTEGER32;
 BEGIN
   Expect('BEGIN');
   arr := cJSON_CreateArray;
   WHILE (CurKind <> 'END') AND (CurKind <> 'EOF') DO
   BEGIN
+    start_pos := pos;
     cJSON_AddItemToArray(arr, ParseStatement);
     IF CurKind = 'SEMICOLON' THEN pos := pos + 1;
+    IF pos = start_pos THEN
+    BEGIN
+      EPrint('Parser Error: statement failed to advance token stream');
+      exit(1);
+    END;
   END;
   Expect('END');
   ParseCompoundStmtList := arr;
@@ -1710,7 +1744,7 @@ BEGIN
   ELSE IF k = 'IDENTIFIER' THEN
     ParseStatement := ParseAssignOrCallStmt
   ELSE IF (k = 'SEMICOLON') OR (k = 'END') OR (k = 'UNTIL') OR
-          (k = 'ELSE') OR (k = 'OTHERWISE') OR (k = 'RPAREN') THEN
+          (k = 'ELSE') OR (k = 'OTHERWISE') THEN
     ParseStatement := CreateNode('EmptyStmt')
   ELSE
   BEGIN
@@ -1831,6 +1865,7 @@ VAR
   max_len: INTEGER;
   res_c: CINT;
 BEGIN
+  EnterTypeLevel;
   packed_flag := Match('PACKED');
   IF (CurKind = 'ARRAY') OR (CurKind = 'SUPER') THEN
   BEGIN
@@ -2046,6 +2081,7 @@ BEGIN
     EPrint('Parser Error: expected type');
     exit(1);
   END;
+  LeaveTypeLevel;
 END;
 
 FUNCTION ParseAttributeItem: ADRMEM;
