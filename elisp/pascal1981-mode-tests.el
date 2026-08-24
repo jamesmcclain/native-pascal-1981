@@ -645,6 +645,41 @@ the callback itself decides which buffer is \"the response\" from
       (when (buffer-live-p response-buffer)
         (kill-buffer response-buffer)))))
 
+(ert-deftest pascal1981-tests-completion-send-logging-mocked-round-trip ()
+  "A mocked completion response leaves one timestamped send record."
+  (let ((log-buffer-name "*pascal1981-completion-log*")
+        (response-buffer (pascal1981-tests--fake-response-buffer
+                          200 '((completions . ["1;"])))))
+    (unwind-protect
+        (with-temp-buffer
+          (pascal1981-mode)
+          (setq pascal1981-completion-enabled t)
+          (insert "x := ")
+          (let ((pascal1981-completion-debug-log t)
+                (started (float-time)))
+            (cl-letf (((symbol-function 'url-retrieve)
+                       (lambda (_url callback callback-args &rest _)
+                         (with-current-buffer response-buffer
+                           (apply callback nil callback-args))
+                         response-buffer)))
+              (pascal1981--completion-send-1
+               (cons (buffer-string) (cons 1 (point)))))
+            (let ((finished (float-time))
+                  (log (with-current-buffer (get-buffer log-buffer-name)
+                         (buffer-string))))
+              (should (pascal1981--completion-overlay-live-p))
+              (should (string-match "^SEND time=\\([0-9.]+\\) " log))
+              (let ((sent-at (string-to-number (match-string 1 log))))
+                ;; The log keeps microsecond precision, so allow rounding
+                ;; at the lower bound.
+                (should (<= started (+ sent-at 0.000001)))
+                (should (<= sent-at finished))))
+          (cancel-timer pascal1981--completion-timeout-timer)))
+      (when (get-buffer log-buffer-name)
+        (kill-buffer log-buffer-name))
+      (when (buffer-live-p response-buffer)
+        (kill-buffer response-buffer)))))
+
 (ert-deftest pascal1981-tests-completion-send-logging-disabled ()
   "Disabled request logging does not create a diagnostic buffer."
   (let ((log-buffer-name "*pascal1981-completion-log*")
