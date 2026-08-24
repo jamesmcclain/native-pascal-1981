@@ -166,6 +166,22 @@ class TestNativeFixtureParity(unittest.TestCase):
             with self.subTest(source=source.name):
                 self._assert_same_acceptance(source, stages=2)
 
+    def test_native_type_depth_limit(self):
+        max_depth = 128
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "nested_pointer_type.pas"
+            source.write_text("PROGRAM TypeDepth;\nVAR p: " + "^" *
+                              (max_depth - 1) + "INTEGER;\nBEGIN\nEND.\n")
+            accepted = _native_pipeline(source, stages=2)
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+
+            source.write_text("PROGRAM TypeDepth;\nVAR p: " + "^" * max_depth +
+                              "INTEGER;\nBEGIN\nEND.\n")
+            rejected = _native_pipeline(source, stages=2)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("type nested too deeply", rejected.stderr)
+
     def test_stray_rparen_parser_failure_is_bounded(self):
         source = (FIXTURES / "parser" / "should_fail" /
                   "16_stray_rparen_in_compound.pas")
