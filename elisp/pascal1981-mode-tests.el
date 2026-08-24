@@ -617,6 +617,55 @@ the callback itself decides which buffer is \"the response\" from
       (pascal1981-complete-line))
     (should (equal (buffer-string) "x := "))))
 
+(ert-deftest pascal1981-tests-completion-send-logging ()
+  "An outgoing completion request logs its captured request state when enabled."
+  (let ((log-buffer-name "*pascal1981-completion-log*")
+        (response-buffer (generate-new-buffer " *pascal1981-test-response*")))
+    (unwind-protect
+        (with-temp-buffer
+          (pascal1981-mode)
+          (insert "x := ")
+          (let ((pascal1981-completion-debug-log t)
+                (source-name (buffer-name))
+                (tick (buffer-modified-tick))
+                (pt (point)))
+            (cl-letf (((symbol-function 'url-retrieve)
+                       (lambda (&rest _) response-buffer)))
+              (pascal1981--completion-send-1
+               (cons (buffer-string) (cons 1 pt))))
+            (let ((log (with-current-buffer (get-buffer log-buffer-name)
+                         (buffer-string))))
+              (should (string-match-p "^SEND time=[0-9.]+ request=1 " log))
+              (should (string-match-p (regexp-quote (format "buffer=%S" source-name)) log))
+              (should (string-match-p (format "tick=%d point=%d" tick pt) log))
+              (should (string-match-p (format "line=1 column=%d" pt) log)))
+            (cancel-timer pascal1981--completion-timeout-timer)))
+      (when (get-buffer log-buffer-name)
+        (kill-buffer log-buffer-name))
+      (when (buffer-live-p response-buffer)
+        (kill-buffer response-buffer)))))
+
+(ert-deftest pascal1981-tests-completion-send-logging-disabled ()
+  "Disabled request logging does not create a diagnostic buffer."
+  (let ((log-buffer-name "*pascal1981-completion-log*")
+        (response-buffer (generate-new-buffer " *pascal1981-test-response*")))
+    (unwind-protect
+        (with-temp-buffer
+          (pascal1981-mode)
+          (insert "x := ")
+          (when (get-buffer log-buffer-name)
+            (kill-buffer log-buffer-name))
+          (cl-letf (((symbol-function 'url-retrieve)
+                     (lambda (&rest _) response-buffer)))
+            (pascal1981--completion-send-1
+             (cons (buffer-string) (cons 1 (point)))))
+          (should-not (get-buffer log-buffer-name))
+          (cancel-timer pascal1981--completion-timeout-timer))
+      (when (get-buffer log-buffer-name)
+        (kill-buffer log-buffer-name))
+      (when (buffer-live-p response-buffer)
+        (kill-buffer response-buffer)))))
+
 (ert-deftest pascal1981-tests-completion-mid-line-sends-no-request ()
   "Mid-line point never calls `url-retrieve', even when enabled."
   (with-temp-buffer

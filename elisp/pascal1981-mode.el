@@ -54,6 +54,14 @@ falls back to indentation."
   "URL of the local completion proxy's `/complete' endpoint."
   :type 'string :group 'pascal1981)
 
+(defcustom pascal1981-completion-debug-log nil
+  "When non-nil, log completion requests to `*pascal1981-completion-log*'.
+
+Each record identifies the request, source buffer, modification tick, and
+point.  This is diagnostic instrumentation for correlating Emacs requests
+with completion-proxy or LLM-call logs."
+  :type 'boolean :group 'pascal1981)
+
 (defcustom pascal1981-completion-goal
   "Continue this Pascal 1981 program plausibly toward a correct, complete, idiomatic finish."
   "Goal text sent to the completion proxy with each request, as a leading
@@ -1213,6 +1221,15 @@ unread -- so the earlier ones were never anything but load."
     (pascal1981--completion-send-1 (or request-text
                                        (pascal1981--completion-request-text)))))
 
+(defun pascal1981--completion-log-send (source-buffer request-id tick point line-column)
+  "Log completion request diagnostics when `pascal1981-completion-debug-log' is set."
+  (when pascal1981-completion-debug-log
+    (with-current-buffer (get-buffer-create "*pascal1981-completion-log*")
+      (goto-char (point-max))
+      (insert (format "SEND time=%.6f request=%d buffer=%S tick=%d point=%d line=%d column=%d\n"
+                      (float-time) request-id (buffer-name source-buffer) tick point
+                      (car line-column) (cdr line-column))))))
+
 (defun pascal1981--completion-send-1 (request-text)
   "Unconditionally send a `/complete' request for REQUEST-TEXT.
 See `pascal1981--completion-send', which is the entry point that
@@ -1231,6 +1248,8 @@ applies the in-flight guard."
             pascal1981-completion-goal buffer-text
             (car line-column) (cdr line-column))
            'utf-8)))
+    (pascal1981--completion-log-send source-buffer request-id tick-at-request
+                                     point-at-request line-column)
     (setq pascal1981--completion-pending-id request-id)
     (letrec ((response-buffer
               ;; `url-retrieve' signals on a URL it cannot parse or whose
