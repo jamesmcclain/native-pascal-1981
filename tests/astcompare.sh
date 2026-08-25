@@ -83,6 +83,15 @@ expect_mismatch 'missing files fail' 'cannot read expected file' \
 expect_mismatch 'invalid command lines fail' 'Usage: astcompare' --bad-option \
   "$work_dir/expected.json" "$work_dir/actual.json"
 
+if bin/lexer < tests/reference/ast/with_stmt.pas |
+   bin/parser > "$work_dir/with_stmt.actual.json" &&
+   bin/astcompare tests/reference/ast/with_stmt.ast.json \
+     "$work_dir/with_stmt.actual.json"; then
+  pass 'native parser matches the frozen WITH-statement AST'
+else
+  fail 'native parser matches the frozen WITH-statement AST'
+fi
+
 echo "========================================"
 echo "astcompare results: $passed passed, $failed failed"
 echo "========================================"
