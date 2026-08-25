@@ -47,7 +47,8 @@ This directory contains the automated test suites for the native Pascal 1981 com
 ### 5. Native Depth Test Suite (`tests/depth.sh`)
 
 - **Runner**: [`tests/depth.sh`](./depth.sh)
-- **Description**: Checks expression, statement, and type nesting boundaries in the native parser. It also checks depth unwinding between sibling expressions. The malformed-input test limits the parser to 128 MiB and five seconds.
+- **Description**: Checks expression, statement, and type nesting boundaries in the native parser. It checks depth unwinding between sibling expressions. It also sends frozen oversized ASTs to the native typechecker and code generator. Bounded tests use a five-second timeout; parser and typechecker tests also use a 128 MiB address-space limit.
+- **Artifact updates**: Run `PYTHONPATH=. ./scripts/update-reference-depth.py`. Review changes under `tests/reference/depth/` before you commit them. Routine tests do not run this maintenance command.
 - **Running**:
   ```bash
   ./tests/depth.sh
