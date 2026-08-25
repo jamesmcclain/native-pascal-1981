@@ -58,8 +58,8 @@ This directory contains the automated test suites for the native Pascal 1981 com
 
 - **Runner**: [`tests/astcompare.sh`](./astcompare.sh)
 - **Tool**: `bin/astcompare`
-- **Description**: Checks structural JSON comparison without Python. Object keys are unordered, arrays are ordered, and `--ignore-key KEY` applies recursively. Mismatches report a JSON path. The suite also compares native parser output with a frozen Python-reference AST.
-- **Artifact updates**: Run `./scripts/update-reference-ast.sh`. Review the Pascal source and JSON under `tests/reference/ast/` before you commit changes. Routine tests do not run this Python-based maintenance command.
+- **Description**: Checks structural JSON comparison without Python. Object keys are unordered, arrays are ordered, and `--ignore-key KEY` applies recursively. Mismatches report a JSON path. The suite also compares native parser and typechecker output with frozen Python-reference ASTs. Typed comparisons ignore the output-only `resolved_type` field.
+- **Artifact updates**: Run `./scripts/update-reference-ast.sh`. Review the Pascal sources and JSON under `tests/reference/ast/` before you commit changes. Routine tests do not run this Python-based maintenance command.
 - **Running**:
   ```bash
   ./tests/astcompare.sh

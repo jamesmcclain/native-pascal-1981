@@ -83,14 +83,33 @@ expect_mismatch 'missing files fail' 'cannot read expected file' \
 expect_mismatch 'invalid command lines fail' 'Usage: astcompare' --bad-option \
   "$work_dir/expected.json" "$work_dir/actual.json"
 
-if bin/lexer < tests/reference/ast/with_stmt.pas |
-   bin/parser > "$work_dir/with_stmt.actual.json" &&
-   bin/astcompare tests/reference/ast/with_stmt.ast.json \
-     "$work_dir/with_stmt.actual.json"; then
-  pass 'native parser matches the frozen WITH-statement AST'
-else
-  fail 'native parser matches the frozen WITH-statement AST'
-fi
+check_frozen_ast() {
+  local name=$1 label=$2
+  local reference=tests/reference/ast/$name
+  local actual_ast="$work_dir/$name.ast.json"
+  local actual_typed="$work_dir/$name.typed.json"
+
+  if bin/lexer < "$reference.pas" | bin/parser > "$actual_ast" &&
+     bin/astcompare "$reference.ast.json" "$actual_ast"; then
+    pass "native parser matches the frozen $label AST"
+  else
+    fail "native parser matches the frozen $label AST"
+  fi
+
+  if bin/typechecker < "$actual_ast" > "$actual_typed" &&
+     bin/astcompare --ignore-key resolved_type \
+       "$reference.typed.json" "$actual_typed"; then
+    pass "native typechecker matches the frozen $label AST"
+  else
+    fail "native typechecker matches the frozen $label AST"
+  fi
+}
+
+check_frozen_ast with_stmt 'WITH-statement'
+check_frozen_ast case_stmt 'CASE-statement'
+check_frozen_ast enum_types 'enumerated-type'
+check_frozen_ast forward_decl 'forward-declaration'
+check_frozen_ast pointer_record_graph 'pointer-record'
 
 echo "========================================"
 echo "astcompare results: $passed passed, $failed failed"
