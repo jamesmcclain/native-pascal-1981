@@ -74,9 +74,24 @@ Supported options:
 
 ## Running Tests
 
-To run all automated test suites (golden-file tests and parity test suite):
+Run the routine test suites:
+
 ```bash
 make test
 ```
 
-See [tests/README.md](tests/README.md) for detailed descriptions of test suites and running options.
+This target runs the driver, native, checklit, and pre-commit-hook tests. It does not run the reference-parity, bootstrap, or Emacs tests.
+
+Use these targets for a specific test group:
+
+| Target | Test group |
+| --- | --- |
+| `make test-driver` | Driver command-line behavior |
+| `make test-native` | Driver, golden-file, integration, dialect, LLVM IR, and PTX tests |
+| `make test-reference-parity` | Native compiler parity with the Python reference compiler |
+| `make test-elisp` | Emacs major-mode ERT tests |
+| `make test-bootstrap` | Clean bootstrap and fixed-point comparison |
+
+The `test-reference-parity` target requires Python and pytest. The `test-elisp` target requires Emacs and builds the compiler stages first.
+
+See [tests/README.md](tests/README.md) for more information about the compiler test suites.
