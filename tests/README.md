@@ -44,7 +44,16 @@ This directory contains the automated test suites for the native Pascal 1981 com
   ./tests/checklit.sh
   ```
 
-### 5. Pre-Commit Hook Test Suite (`tests/test_precommit_hook.sh`)
+### 5. Native Depth Test Suite (`tests/depth.sh`)
+
+- **Runner**: [`tests/depth.sh`](./depth.sh)
+- **Description**: Checks expression, statement, and type nesting boundaries in the native parser. It also checks depth unwinding between sibling expressions. The malformed-input test limits the parser to 128 MiB and five seconds.
+- **Running**:
+  ```bash
+  ./tests/depth.sh
+  ```
+
+### 6. Pre-Commit Hook Test Suite (`tests/test_precommit_hook.sh`)
 
 - **Runner**: [`tests/test_precommit_hook.sh`](./test_precommit_hook.sh)
 - **Description**: Checks hook restaging, partial staging, tool errors, optional tools, and the executable file mode. Each behavior test uses an isolated Git repository.
