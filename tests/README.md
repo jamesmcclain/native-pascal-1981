@@ -35,8 +35,10 @@ This directory contains the automated test suites for the native Pascal 1981 com
 
 ### 4. Checklit Directive Suite (`tests/checklit/)`
 - **Runner**: [`tests/checklit.sh`](./checklit.sh)
-- **Description**: Zero-dependency, zero-Python assertions on emitted LLVM IR / PTX text, in the spirit of LLVM's `lit`/`FileCheck` but minimal (unordered substring matching, no DAG/COUNT vocabulary). This is the native-runner path for the class of test that otherwise lives only in `tests/parity/` as a Python string assertion on codegen output (kernel launch ABI, attribute placement, PTX directives) -- coverage that doesn't need the Python reference as an oracle, it just needs to inspect what native codegen emitted. New coverage of that shape can go here without adding a Python dependency; existing `tests/parity/` coverage of the same shape hasn't been migrated away, to avoid losing anything mid-transition.
-- **Fixture format**: a `.pas` file with `{ CHECK: <substring> }` directive comments (and optional `{ CHECK-ENV: NAME=value }` for codegen env vars like `PASCAL_EMIT_PTX=1`); see `tests/checklit/byval_c_aggregate.pas`.
+- **Description**: Makes zero-Python assertions on emitted LLVM IR or PTX text. The runner supports required, forbidden, and counted substrings. It does not enforce check order.
+- **Pascal fixture format**: Put directive comments in a `.pas` file. Use `{ CHECK: text }`, `{ CHECK-NOT: text }`, or `{ CHECK-COUNT: N text }`. Use `{ CHECK-ENV: NAME=value }` to set a codegen environment variable.
+- **Frozen AST format**: A `.check` file can use `{ CHECK-INPUT: path.json }`. The runner sends that typed AST to native codegen. Sources and frozen Python reference ASTs are in `tests/reference/codegen/`.
+- **Artifact updates**: Run `PYTHONPATH=. ./scripts/update-reference-codegen.sh`. Review all JSON changes before you commit them. Routine tests do not run this Python-based maintenance command.
 - **Running**:
   ```bash
   ./tests/checklit.sh
