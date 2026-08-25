@@ -168,6 +168,10 @@ def _build_cuda_runtime(tmpdir: str) -> str:
     return out
 
 
+# RETIREMENT MARKER: Remove this Python predecessor after it and
+# tests/gpu_orchestration.sh both pass on the same real NVIDIA GPU. Keep it
+# until that side-by-side run confirms compilation, linking, execution, and
+# exact vector output in both implementations.
 @requires_gpu
 @unittest.skipUnless(NATIVE_CODEGEN and os.access(NATIVE_CODEGEN, os.X_OK),
                      "requires NATIVE_CODEGEN")
