@@ -11,6 +11,8 @@
 # frozen typed AST directly to native codegen with CHECK-INPUT.
 #
 #   { CHECK: <substring that must appear in the emitted IR/PTX text> }
+#   { CHECK-NOT: <substring that must not appear> }
+#   { CHECK-COUNT: N <substring that must appear exactly N times> }
 #   { CHECK-ENV: NAME=value }   (optional, sets an env var for this fixture's
 #                                 codegen invocation, e.g. PASCAL_EMIT_PTX=1)
 #   { CHECK-INPUT: path.json }  (required for .check files; path is relative
@@ -42,16 +44,29 @@ for fixture in "${FIXTURES[@]}"; do
   env_args=()
   while IFS= read -r line; do
     env_args+=("$line")
-  done < <(grep -oE '\{ *CHECK-ENV: *[A-Za-z_][A-Za-z0-9_]*=[^}]*\}' "$fixture" \
-              | sed -E 's/\{ *CHECK-ENV: *//; s/ *\}//')
+  done < <(grep -E '\{ *CHECK-ENV: *[A-Za-z_][A-Za-z0-9_]*=' "$fixture" \
+              | sed -E 's/^.*\{ *CHECK-ENV: *//; s/ *\}[[:space:]]*$//')
 
   checks=()
   while IFS= read -r line; do
     checks+=("$line")
-  done < <(grep -oE '\{ *CHECK: *[^}]*\}' "$fixture" \
-              | sed -E 's/\{ *CHECK: *//; s/ *\}$//')
+  done < <(grep -E '\{ *CHECK: *' "$fixture" \
+              | sed -E 's/^.*\{ *CHECK: *//; s/ *\}[[:space:]]*$//')
 
-  if [ ${#checks[@]} -eq 0 ]; then
+  checks_not=()
+  while IFS= read -r line; do
+    checks_not+=("$line")
+  done < <(grep -E '\{ *CHECK-NOT: *' "$fixture" \
+              | sed -E 's/^.*\{ *CHECK-NOT: *//; s/ *\}[[:space:]]*$//')
+
+  checks_count=()
+  while IFS= read -r line; do
+    checks_count+=("$line")
+  done < <(grep -E '\{ *CHECK-COUNT: *[0-9]+ +' "$fixture" \
+              | sed -E 's/^.*\{ *CHECK-COUNT: *//; s/ *\}[[:space:]]*$//')
+
+  if [ ${#checks[@]} -eq 0 ] && [ ${#checks_not[@]} -eq 0 ] &&
+     [ ${#checks_count[@]} -eq 0 ]; then
     echo "FAIL: $fixture (no CHECK directives found)" >&2
     FAILED=$((FAILED + 1))
     continue
@@ -63,8 +78,9 @@ for fixture in "${FIXTURES[@]}"; do
 
   command=("$DRIVER" -S "$fixture" -o "$out_ll")
   if [[ "$fixture" = *.check ]]; then
-    input=$(grep -oE '\{ *CHECK-INPUT: *[^}]*\}' "$fixture" \
-              | sed -E 's/\{ *CHECK-INPUT: *//; s/ *\}$//' | head -n 1)
+    input=$(grep -E '\{ *CHECK-INPUT: *' "$fixture" \
+              | sed -E 's/^.*\{ *CHECK-INPUT: *//; s/ *\}[[:space:]]*$//' \
+              | head -n 1)
     if [ -z "$input" ] || [ ! -f "$input" ]; then
       echo "FAIL: $fixture (missing or invalid CHECK-INPUT)" >&2
       FAILED=$((FAILED + 1))
@@ -89,6 +105,21 @@ for fixture in "${FIXTURES[@]}"; do
     for pattern in "${checks[@]}"; do
       if ! grep -qF -- "$pattern" "$out_ll"; then
         echo "FAIL: $fixture (missing CHECK: $pattern)" >&2
+        ok=0
+      fi
+    done
+    for pattern in "${checks_not[@]}"; do
+      if grep -qF -- "$pattern" "$out_ll"; then
+        echo "FAIL: $fixture (present CHECK-NOT: $pattern)" >&2
+        ok=0
+      fi
+    done
+    for count_check in "${checks_count[@]}"; do
+      expected=${count_check%% *}
+      pattern=${count_check#* }
+      actual=$(grep -oF -- "$pattern" "$out_ll" | wc -l || true)
+      if [ "$actual" -ne "$expected" ]; then
+        echo "FAIL: $fixture (CHECK-COUNT $pattern: expected $expected, got $actual)" >&2
         ok=0
       fi
     done
