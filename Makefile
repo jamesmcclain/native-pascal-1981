@@ -97,6 +97,7 @@ test-driver: $(DRIVER_BIN)
 test-native: test-driver
 	./tests/run.sh
 	./tests/checklit.sh
+	./tests/depth.sh
 
 # Compare the native compiler stages with the Python reference implementation.
 # Kept separate from `test` because it requires the reference Python toolchain.
