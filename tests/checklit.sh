@@ -7,11 +7,14 @@
 # this gives new coverage of that shape a path that needs no Python.
 #
 # Fixture format: a .pas file under tests/checklit/ with one or more
-# directive comments anywhere in the file:
+# directive comments anywhere in the file. A .check file can instead feed a
+# frozen typed AST directly to native codegen with CHECK-INPUT.
 #
 #   { CHECK: <substring that must appear in the emitted IR/PTX text> }
 #   { CHECK-ENV: NAME=value }   (optional, sets an env var for this fixture's
 #                                 codegen invocation, e.g. PASCAL_EMIT_PTX=1)
+#   { CHECK-INPUT: path.json }  (required for .check files; path is relative
+#                                 to the repository root)
 #
 # All CHECK substrings must be present somewhere in the output (order is
 # not enforced -- this is deliberately simpler than real FileCheck; expand
@@ -25,7 +28,7 @@ if [ ! -x "$DRIVER" ]; then
   exit 1
 fi
 
-mapfile -t FIXTURES < <(find tests/checklit -name '*.pas' 2>/dev/null | sort)
+mapfile -t FIXTURES < <(find tests/checklit \( -name '*.pas' -o -name '*.check' \) 2>/dev/null | sort)
 
 if [ ${#FIXTURES[@]} -eq 0 ]; then
   echo "No checklit fixtures found in tests/checklit/."
@@ -58,7 +61,30 @@ for fixture in "${FIXTURES[@]}"; do
   trap 'rm -rf "$work_dir"' EXIT
   out_ll="$work_dir/out.ll"
 
-  if env "${env_args[@]}" "$DRIVER" -S "$fixture" -o "$out_ll" > "$work_dir/compile.out" 2> "$work_dir/compile.err"; then
+  command=("$DRIVER" -S "$fixture" -o "$out_ll")
+  if [[ "$fixture" = *.check ]]; then
+    input=$(grep -oE '\{ *CHECK-INPUT: *[^}]*\}' "$fixture" \
+              | sed -E 's/\{ *CHECK-INPUT: *//; s/ *\}$//' | head -n 1)
+    if [ -z "$input" ] || [ ! -f "$input" ]; then
+      echo "FAIL: $fixture (missing or invalid CHECK-INPUT)" >&2
+      FAILED=$((FAILED + 1))
+      rm -rf "$work_dir"
+      trap - EXIT
+      continue
+    fi
+    command=(bin/codegen)
+  fi
+
+  status=0
+  if [[ "$fixture" = *.check ]]; then
+    env "${env_args[@]}" "${command[@]}" < "$input" > "$out_ll" \
+      2> "$work_dir/compile.err" || status=$?
+  else
+    env "${env_args[@]}" "${command[@]}" > "$work_dir/compile.out" \
+      2> "$work_dir/compile.err" || status=$?
+  fi
+
+  if [ "$status" -eq 0 ]; then
     ok=1
     for pattern in "${checks[@]}"; do
       if ! grep -qF -- "$pattern" "$out_ll"; then

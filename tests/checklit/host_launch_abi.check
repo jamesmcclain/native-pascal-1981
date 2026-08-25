@@ -1,0 +1,5 @@
+{ CHECK-INPUT: tests/reference/codegen/host_launch_abi.ast.json }
+{ CHECK: call ptr @pas_dev_module_load(ptr @__pas_klaunch_registry }
+{ CHECK: @pas_dev_module_get_function }
+{ CHECK: @pas_dev_launch }
+{ CHECK: launch_argv }
