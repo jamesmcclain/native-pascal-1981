@@ -1,0 +1,9 @@
+DEVICE INTERFACE;
+UNIT KH (scale, via_helper, via_writer);
+TYPE BUF = ADS(GLOBAL) OF ARRAY [0..255] OF INTEGER32;
+PROCEDURE scale(inp: BUF; outp: BUF; n: INTEGER32);
+PROCEDURE via_helper(inp: BUF; outp: BUF; n: INTEGER32);
+PROCEDURE via_writer(inp: BUF; n: INTEGER32);
+PROCEDURE helper(b: BUF; n: INTEGER32);
+PROCEDURE writer(b: BUF);
+END;
