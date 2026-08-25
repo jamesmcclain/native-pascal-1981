@@ -26,7 +26,7 @@ GEN4_BINS := $(addprefix $(BUILD_DIR)/gen4/,$(STAGES))
 BOOTSTRAP_BINS := $(addprefix $(BIN_DIR)/,$(STAGES))
 FIXED_POINT := $(BUILD_DIR)/.fixed-point-verified
 
-.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-driver test-native test-reference-parity test-elisp test-bootstrap
+.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-driver test-native test-gpu test-reference-parity test-elisp test-bootstrap
 
 all: runtime driver bootstrap
 
@@ -103,6 +103,11 @@ test-native: test-driver $(ASTCOMPARE_BIN)
 	./tests/checklit.sh
 	./tests/depth.sh
 	./tests/astcompare.sh
+
+# Run the real-GPU CUDA integration test. The runner exits successfully with a
+# clear skip reason when its hardware or toolchain prerequisites are absent.
+test-gpu: bootstrap
+	./tests/gpu_orchestration.sh
 
 # Compare the native compiler stages with the Python reference implementation.
 # Kept separate from `test` because it requires the reference Python toolchain.

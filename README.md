@@ -89,10 +89,13 @@ Use these targets for a specific test group:
 | Target | Test group |
 | --- | --- |
 | `make test-driver` | Driver command-line behavior |
-| `make test-native` | Driver, golden-file, integration, dialect, LLVM IR, and PTX tests |
+| `make test-native` | Routine native compiler tests |
+| `make test-gpu` | CUDA compilation and execution on an NVIDIA GPU |
 | `make test-reference-parity` | Native compiler parity with the Python reference compiler |
 | `make test-elisp` | Emacs major-mode ERT tests |
 | `make test-bootstrap` | Clean bootstrap and fixed-point comparison |
+
+The `test-gpu` target skips the test if a CUDA prerequisite is not available.
 
 The `test-reference-parity` target requires Python and pytest. The `test-elisp` target requires Emacs and builds the compiler stages first.
 

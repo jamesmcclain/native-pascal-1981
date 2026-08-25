@@ -65,7 +65,17 @@ This directory contains the automated test suites for the native Pascal 1981 com
   ./tests/astcompare.sh
   ```
 
-### 7. Pre-Commit Hook Test Suite (`tests/test_precommit_hook.sh`)
+### 7. GPU Orchestration Suite (`tests/gpu_orchestration.sh`)
+
+- **Runner**: [`tests/gpu_orchestration.sh`](./gpu_orchestration.sh)
+- **Description**: Compiles and runs vector addition with the CUDA backend. The runner uses frozen typed ASTs from the independent Python front end. It checks each GPU and CUDA prerequisite. It prints one skip reason if a prerequisite is not available.
+- **Artifact updates**: Run `./scripts/update-reference-gpu.sh`. Review the Pascal sources and typed ASTs under `tests/gpu/` before you commit changes.
+- **Running**:
+  ```bash
+  make test-gpu
+  ```
+
+### 8. Pre-Commit Hook Test Suite (`tests/test_precommit_hook.sh`)
 
 - **Runner**: [`tests/test_precommit_hook.sh`](./test_precommit_hook.sh)
 - **Description**: Checks hook restaging, partial staging, tool errors, optional tools, and the executable file mode. Each behavior test uses an isolated Git repository.
