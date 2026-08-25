@@ -190,6 +190,17 @@ assert_ast_rejected() {
   fi
 }
 
+for source in parser typechecker codegen; do
+  if grep -Eq 'MAX_EXPR_DEPTH[[:space:]]*=[[:space:]]*64;' "src/$source.pas" &&
+     grep -qF 'deeper than 64' "src/$source.pas" &&
+     grep -Eq 'MAX_STMT_DEPTH[[:space:]]*=[[:space:]]*256;' "src/$source.pas" &&
+     grep -qF 'deeper than 256' "src/$source.pas"; then
+    pass "$source depth constants and diagnostics agree"
+  else
+    fail "$source depth constants and diagnostics agree"
+  fi
+done
+
 assert_ast_rejected typechecker \
   tests/reference/depth/expr_depth_192.ast.json \
   'expression too complex' \

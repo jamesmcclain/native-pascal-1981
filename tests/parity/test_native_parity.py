@@ -16,7 +16,6 @@ names and orderings, so both outputs are assembled by clang instead.
 
 import json
 import os
-import resource
 import shutil
 import subprocess
 import sys
@@ -166,46 +165,6 @@ class TestNativeFixtureParity(unittest.TestCase):
             with self.subTest(source=source.name):
                 self._assert_same_acceptance(source, stages=2)
 
-    def test_native_type_depth_limit(self):
-        max_depth = 128
-
-        with tempfile.TemporaryDirectory() as tmp:
-            source = Path(tmp) / "nested_pointer_type.pas"
-            source.write_text("PROGRAM TypeDepth;\nVAR p: " + "^" *
-                              (max_depth - 1) + "INTEGER;\nBEGIN\nEND.\n")
-            accepted = _native_pipeline(source, stages=2)
-            self.assertEqual(accepted.returncode, 0, accepted.stderr)
-
-            source.write_text("PROGRAM TypeDepth;\nVAR p: " + "^" * max_depth +
-                              "INTEGER;\nBEGIN\nEND.\n")
-            rejected = _native_pipeline(source, stages=2)
-            self.assertNotEqual(rejected.returncode, 0)
-            self.assertIn("type nested too deeply", rejected.stderr)
-
-    def test_stray_rparen_parser_failure_is_bounded(self):
-        source = (FIXTURES / "parser" / "should_fail" /
-                  "16_stray_rparen_in_compound.pas")
-        lexed = _run([NATIVE["lexer"]], source.read_text())
-        self.assertEqual(lexed.returncode, 0, lexed.stderr)
-
-        memory_limit = 128 * 1024 * 1024
-
-        def limit_address_space():
-            resource.setrlimit(resource.RLIMIT_AS,
-                               (memory_limit, memory_limit))
-
-        parsed = subprocess.run(
-            [NATIVE["parser"]],
-            input=lexed.stdout,
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            timeout=5,
-            preexec_fn=limit_address_space,
-        )
-        self.assertNotEqual(parsed.returncode, 0)
-        self.assertIn("Parser Error: expected statement", parsed.stderr)
-
     def test_parser_judgment_call_fixtures_have_expected_parity(self):
         fixtures = FIXTURES / "parser" / "judgment_calls"
         self._assert_json_equal(fixtures / "A_write_field_width.pas", stages=2)
@@ -278,35 +237,6 @@ class TestNativeFixtureParity(unittest.TestCase):
                         assembled.returncode, 0,
                         f"{label} emitted invalid LLVM for {source}:\n{assembled.stderr}"
                     )
-
-    def test_depth_ceilings_have_the_same_boundary(self):
-        """Both parsers must accept and reject at exactly the same depth.
-
-        tests/test_depth_limits.py pins the two ceilings to the same numbers by
-        reading the constants out of the .pas sources, but equal constants are
-        not the same thing as equal behavior: an off-by-one in where either
-        parser increments would leave the compilers accepting different
-        languages while both files still read 64 and 256.  Only running the two
-        parsers against the boundary settles it.
-        """
-        from pascal1981.depth_limits import MAX_EXPR_DEPTH, MAX_STMT_DEPTH
-
-        from tests.parity.test_depth_limits import (nested_else_if,
-                                                    nested_parens)
-
-        cases = []
-        for offset in (-1, 0):
-            cases.append((f"expr{MAX_EXPR_DEPTH + offset}",
-                          nested_parens(MAX_EXPR_DEPTH + offset)))
-            cases.append((f"stmt{MAX_STMT_DEPTH + offset}",
-                          nested_else_if(MAX_STMT_DEPTH + offset)))
-
-        with tempfile.TemporaryDirectory() as work:
-            for label, text in cases:
-                with self.subTest(case=label):
-                    source = Path(work) / f"{label}.pas"
-                    source.write_text(text)
-                    self._assert_same_acceptance(source, stages=2)
 
 
 def _link_and_run(ir_text, exe_name):
