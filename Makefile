@@ -15,6 +15,7 @@ BIN_DIR := bin
 BUILD_DIR := build
 DRIVER_BIN := $(BIN_DIR)/pascal1981-native
 DRIVER_ALIAS := $(BIN_DIR)/pascal1981
+ASTCOMPARE_BIN := $(BIN_DIR)/astcompare
 RUNTIME_LIB := runtime/build/libpascalrt.a
 RUNTIME_SRCS := $(wildcard runtime/*.c runtime/*.h) runtime/Makefile
 STAGES := lexer parser typechecker codegen
@@ -39,6 +40,9 @@ driver: $(DRIVER_BIN)
 $(DRIVER_BIN): src/driver.pas src/jsonutil.pas scripts/build-stage.sh $(GEN4_BINS) $(FIXED_POINT) $(RUNTIME_LIB) | $(BIN_DIR)
 	NATIVE_LEXER="$(abspath $(BUILD_DIR)/gen4/lexer)" NATIVE_PARSER="$(abspath $(BUILD_DIR)/gen4/parser)" NATIVE_TYPECHECKER="$(abspath $(BUILD_DIR)/gen4/typechecker)" NATIVE_CODEGEN="$(abspath $(BUILD_DIR)/gen4/codegen)" ./scripts/build-stage.sh $< $@
 	ln -sf pascal1981-native $(DRIVER_ALIAS)
+
+$(ASTCOMPARE_BIN): src/astcompare.pas src/jsonutil.pas scripts/build-stage.sh $(GEN4_BINS) $(FIXED_POINT) $(RUNTIME_LIB) | $(BIN_DIR)
+	NATIVE_LEXER="$(abspath $(BUILD_DIR)/gen4/lexer)" NATIVE_PARSER="$(abspath $(BUILD_DIR)/gen4/parser)" NATIVE_TYPECHECKER="$(abspath $(BUILD_DIR)/gen4/typechecker)" NATIVE_CODEGEN="$(abspath $(BUILD_DIR)/gen4/codegen)" ./scripts/build-stage.sh $< $@
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
@@ -80,7 +84,7 @@ clean:
 	rm -rf build
 
 cleaner: clean
-	rm -rf bin/lexer bin/parser bin/typechecker bin/codegen bin/pascal1981-native bin/pascal1981
+	rm -rf bin/lexer bin/parser bin/typechecker bin/codegen bin/astcompare bin/pascal1981-native bin/pascal1981
 	$(MAKE) -C runtime cleaner
 
 cleanest: cleaner
@@ -94,10 +98,11 @@ test: test-native
 test-driver: $(DRIVER_BIN)
 	./tests/driver.sh
 
-test-native: test-driver
+test-native: test-driver $(ASTCOMPARE_BIN)
 	./tests/run.sh
 	./tests/checklit.sh
 	./tests/depth.sh
+	./tests/astcompare.sh
 
 # Compare the native compiler stages with the Python reference implementation.
 # Kept separate from `test` because it requires the reference Python toolchain.

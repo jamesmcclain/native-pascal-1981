@@ -54,7 +54,17 @@ This directory contains the automated test suites for the native Pascal 1981 com
   ./tests/depth.sh
   ```
 
-### 6. Pre-Commit Hook Test Suite (`tests/test_precommit_hook.sh`)
+### 6. Native JSON Comparator Suite (`tests/astcompare.sh`)
+
+- **Runner**: [`tests/astcompare.sh`](./astcompare.sh)
+- **Tool**: `bin/astcompare`
+- **Description**: Checks structural JSON comparison without Python. Object keys are unordered, arrays are ordered, and `--ignore-key KEY` applies recursively. Mismatches report a JSON path.
+- **Running**:
+  ```bash
+  ./tests/astcompare.sh
+  ```
+
+### 7. Pre-Commit Hook Test Suite (`tests/test_precommit_hook.sh`)
 
 - **Runner**: [`tests/test_precommit_hook.sh`](./test_precommit_hook.sh)
 - **Description**: Checks hook restaging, partial staging, tool errors, optional tools, and the executable file mode. Each behavior test uses an isolated Git repository.
