@@ -392,6 +392,16 @@ test_partially_staged_file_warns() {
     fi
 }
 
+missing_tools=()
+for tool in isort yapf; do
+    command -v "$tool" >/dev/null 2>&1 || missing_tools+=("$tool")
+done
+if [ ${#missing_tools[@]} -ne 0 ]; then
+    echo "ERROR: pre-commit hook tests require: ${missing_tools[*]}" >&2
+    echo "Install the missing Python formatters and run this test again." >&2
+    exit 1
+fi
+
 test_hook_is_tracked_and_executable
 test_broken_indent
 test_missing_indent
