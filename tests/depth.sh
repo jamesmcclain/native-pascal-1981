@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Native parser depth and resource-limit tests. No Python is required.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+for stage in lexer parser; do
+  if [ ! -x "bin/$stage" ]; then
+    echo "error: bin/$stage not found; run make bootstrap first" >&2
+    exit 1
+  fi
+done
+
+work_dir=$(mktemp -d)
+trap 'rm -rf "$work_dir"' EXIT
+passed=0
+failed=0
+
+pass() {
+  echo "PASS: $1"
+  passed=$((passed + 1))
+}
+
+fail() {
+  echo "FAIL: $1" >&2
+  failed=$((failed + 1))
+}
+
+make_pointer_type() {
+  local depth=$1 output=$2 i
+  {
+    printf 'PROGRAM TypeDepth;\nVAR p: '
+    for ((i = 0; i < depth; i++)); do printf '^'; done
+    printf 'INTEGER;\nBEGIN\nEND.\n'
+  } > "$output"
+}
+
+run_parser() {
+  local source=$1 stem=$2
+  if ! bin/lexer < "$source" > "$work_dir/$stem.tokens" \
+       2> "$work_dir/$stem.lex.err"; then
+    return 125
+  fi
+  bin/parser < "$work_dir/$stem.tokens" > "$work_dir/$stem.ast" \
+    2> "$work_dir/$stem.err"
+}
+
+make_pointer_type 127 "$work_dir/type127.pas"
+if run_parser "$work_dir/type127.pas" type127; then
+  pass "type nesting accepts depth 127"
+else
+  fail "type nesting accepts depth 127"
+  cat "$work_dir/type127.err" >&2
+fi
+
+make_pointer_type 128 "$work_dir/type128.pas"
+status=0
+run_parser "$work_dir/type128.pas" type128 || status=$?
+if [ "$status" -ne 0 ] &&
+   grep -qF 'type nested too deeply' "$work_dir/type128.err"; then
+  pass "type nesting rejects depth 128"
+else
+  fail "type nesting rejects depth 128 with its diagnostic"
+  cat "$work_dir/type128.err" >&2
+fi
+
+bounded_source=tests/fixtures/parser/should_fail/16_stray_rparen_in_compound.pas
+if bin/lexer < "$bounded_source" > "$work_dir/stray.tokens" \
+     2> "$work_dir/stray.lex.err"; then
+  status=0
+  (
+    ulimit -v 131072
+    timeout 5 bin/parser < "$work_dir/stray.tokens" \
+      > "$work_dir/stray.ast" 2> "$work_dir/stray.err"
+  ) || status=$?
+  if [ "$status" -ne 0 ] && [ "$status" -ne 124 ] &&
+     grep -qF 'Parser Error: expected statement' "$work_dir/stray.err"; then
+    pass "stray right parenthesis fails within time and memory limits"
+  else
+    fail "stray right parenthesis has a bounded parser failure"
+    echo "parser status: $status" >&2
+    cat "$work_dir/stray.err" >&2
+  fi
+else
+  fail "lexer accepts stray-parenthesis regression fixture"
+  cat "$work_dir/stray.lex.err" >&2
+fi
+
+echo "========================================"
+echo "Depth results: $passed passed, $failed failed"
+echo "========================================"
+[ "$failed" -eq 0 ]
