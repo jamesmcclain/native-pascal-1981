@@ -103,15 +103,18 @@ class TestNativeAgreement:
     added to avoid.
     """
 
-    @pytest.mark.parametrize('source', ['parser.pas', 'codegen.pas'])
+    @pytest.mark.parametrize('source',
+                             ['parser.pas', 'typechecker.pas', 'codegen.pas'])
     def test_expr_ceiling_matches(self, source):
         assert read_pascal_const(source, 'MAX_EXPR_DEPTH') == MAX_EXPR_DEPTH
 
-    @pytest.mark.parametrize('source', ['parser.pas', 'codegen.pas'])
+    @pytest.mark.parametrize('source',
+                             ['parser.pas', 'typechecker.pas', 'codegen.pas'])
     def test_stmt_ceiling_matches(self, source):
         assert read_pascal_const(source, 'MAX_STMT_DEPTH') == MAX_STMT_DEPTH
 
-    @pytest.mark.parametrize('source', ['parser.pas', 'codegen.pas'])
+    @pytest.mark.parametrize('source',
+                             ['parser.pas', 'typechecker.pas', 'codegen.pas'])
     def test_diagnostics_quote_the_ceilings(self, source):
         """Both messages must name the number they enforce.
 
