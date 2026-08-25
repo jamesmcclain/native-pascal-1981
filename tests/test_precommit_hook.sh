@@ -195,11 +195,208 @@ test_missing_python_formatters() {
     fi
 }
 
+have_end_to_end_tools() {
+    local tool
+    for tool in git indent isort yapf; do
+        command -v "$tool" >/dev/null 2>&1 || return 1
+    done
+}
+
+setup_git_repo() {
+    local name=$1
+    TEST_REPO="$work_dir/$name/repo"
+    TEST_HOME="$work_dir/$name/home"
+    TEST_LOG_DIR="$work_dir/$name/log"
+    mkdir -p "$TEST_REPO/runtime" "$TEST_REPO/tests" \
+        "$TEST_REPO/scripts/hooks" "$TEST_HOME" "$TEST_LOG_DIR"
+    cp "$BEAUTIFY" "$TEST_REPO/scripts/beautify.sh"
+    cp "$HOOK" "$TEST_REPO/scripts/hooks/pre-commit"
+
+    git_run init -q || return 1
+    git_run config user.email test@example.invalid || return 1
+    git_run config user.name Test || return 1
+    git_run config commit.gpgsign false || return 1
+    git_run config core.hooksPath scripts/hooks || return 1
+    git_run add -A || return 1
+    git_run commit -m initial || return 1
+}
+
+git_run() {
+    GIT_STATUS=0
+    GIT_CONFIG_NOSYSTEM=1 HOME="$TEST_HOME" GIT_TERMINAL_PROMPT=0 \
+        env -u GIT_DIR git -C "$TEST_REPO" "$@" \
+        > "$TEST_LOG_DIR/git.stdout" 2> "$TEST_LOG_DIR/git.stderr" || GIT_STATUS=$?
+    return "$GIT_STATUS"
+}
+
+write_ugly_c() {
+    printf 'int   f( int x ){return x   ;}\n' > "$1"
+}
+
+write_tidy_c() {
+    printf 'int f(int x)\n{\n    return x;\n}\n' > "$1"
+}
+
+skip_end_to_end_test() {
+    local name=$1
+    if ! have_end_to_end_tools; then
+        skip_test "$name" 'git, indent, isort, and yapf are required'
+        return 0
+    fi
+    return 1
+}
+
+test_reformats_and_restages_staged_file() {
+    local name='staged file is reformatted and restaged'
+    skip_end_to_end_test "$name" && return
+    setup_git_repo restage || { fail_test "$name" 'repository setup failed'; return; }
+    write_ugly_c "$TEST_REPO/runtime/a.c"
+    git_run add runtime/a.c
+    if ! git_run commit -m 'add a.c'; then
+        fail_test "$name" "commit returned $GIT_STATUS"
+        cat "$TEST_LOG_DIR/git.stderr" >&2
+        return
+    fi
+    git_run show HEAD:runtime/a.c
+    write_tidy_c "$TEST_REPO/expected.c"
+    if cmp -s "$TEST_REPO/expected.c" "$TEST_LOG_DIR/git.stdout"; then
+        pass_test "$name"
+    else
+        fail_test "$name" 'committed content was not formatted'
+    fi
+}
+
+test_worktree_clean_after_commit() {
+    local name='worktree is clean after commit'
+    skip_end_to_end_test "$name" && return
+    setup_git_repo clean-worktree || { fail_test "$name" 'repository setup failed'; return; }
+    write_ugly_c "$TEST_REPO/runtime/a.c"
+    git_run add runtime/a.c
+    git_run commit -m 'add a.c'
+    git_run status --porcelain
+    if [ "$GIT_STATUS" -eq 0 ] && [ ! -s "$TEST_LOG_DIR/git.stdout" ]; then
+        pass_test "$name"
+    else
+        fail_test "$name" 'the worktree is not clean'
+        cat "$TEST_LOG_DIR/git.stdout" >&2
+    fi
+}
+
+test_unstaged_file_is_not_committed() {
+    local name='unstaged file is not added to commit'
+    skip_end_to_end_test "$name" && return
+    setup_git_repo loose-file || { fail_test "$name" 'repository setup failed'; return; }
+    write_ugly_c "$TEST_REPO/runtime/staged.c"
+    write_ugly_c "$TEST_REPO/runtime/loose.c"
+    git_run add runtime/staged.c
+    git_run commit -m 'add staged.c'
+    git_run show --name-only --format= HEAD
+    local files
+    files=$(tr -d '\r' < "$TEST_LOG_DIR/git.stdout")
+    git_run status --porcelain
+    if [ "$files" != 'runtime/staged.c' ]; then
+        fail_test "$name" "unexpected committed paths: $files"
+    elif ! grep -qF '?? runtime/loose.c' "$TEST_LOG_DIR/git.stdout"; then
+        fail_test "$name" 'the loose file is not untracked'
+    else
+        pass_test "$name"
+    fi
+}
+
+test_python_file_is_restaged() {
+    local name='formatted Python file is restaged'
+    skip_end_to_end_test "$name" && return
+    setup_git_repo python-restage || { fail_test "$name" 'repository setup failed'; return; }
+    printf 'x = {   "a":1 }\n' > "$TEST_REPO/tests/z_fmt.py"
+    git_run add tests/z_fmt.py
+    git_run commit -m 'add py'
+    git_run show HEAD:tests/z_fmt.py
+    if [ "$(cat "$TEST_LOG_DIR/git.stdout")" != 'x = {"a": 1}' ]; then
+        fail_test "$name" 'committed Python content was not formatted'
+    else
+        git_run status --porcelain
+        if [ -s "$TEST_LOG_DIR/git.stdout" ]; then
+            fail_test "$name" 'the worktree is not clean'
+        else
+            pass_test "$name"
+        fi
+    fi
+}
+
+test_formatted_file_is_quiet() {
+    local name='formatted file produces no hook output'
+    skip_end_to_end_test "$name" && return
+    setup_git_repo quiet || { fail_test "$name" 'repository setup failed'; return; }
+    write_tidy_c "$TEST_REPO/runtime/tidy.c"
+    git_run add runtime/tidy.c
+    git_run commit -m 'add tidy.c'
+    local status=$GIT_STATUS
+    cat "$TEST_LOG_DIR/git.stdout" "$TEST_LOG_DIR/git.stderr" > "$TEST_LOG_DIR/commit.output"
+    if [ "$status" -ne 0 ]; then
+        fail_test "$name" "commit returned $status"
+    elif grep -qF 're-staged' "$TEST_LOG_DIR/commit.output"; then
+        fail_test "$name" 'the hook reported a restaged file'
+    else
+        git_run status --porcelain
+        if [ -s "$TEST_LOG_DIR/git.stdout" ]; then
+            fail_test "$name" 'the worktree is not clean'
+        else
+            pass_test "$name"
+        fi
+    fi
+}
+
+test_empty_stage() {
+    local name='empty stage does not fail under set -u'
+    skip_end_to_end_test "$name" && return
+    setup_git_repo empty-stage || { fail_test "$name" 'repository setup failed'; return; }
+    git_run commit --allow-empty -m empty
+    assert_status "$name" 0 "$GIT_STATUS"
+}
+
+test_partially_staged_file_warns() {
+    local name='partially staged file warns and commits'
+    skip_end_to_end_test "$name" && return
+    setup_git_repo partial || { fail_test "$name" 'repository setup failed'; return; }
+    write_tidy_c "$TEST_REPO/runtime/p.c"
+    git_run add runtime/p.c
+    git_run commit -m 'seed p.c'
+
+    { write_tidy_c /dev/stdout; echo; write_ugly_c /dev/stdout; } > "$TEST_REPO/runtime/p.c"
+    git_run add runtime/p.c
+    {
+        write_tidy_c /dev/stdout
+        echo
+        write_ugly_c /dev/stdout
+        echo
+        printf 'int c(void)\n{\n    return 3;\n}\n'
+    } > "$TEST_REPO/runtime/p.c"
+
+    git_run commit -m partial
+    local status=$GIT_STATUS
+    if [ "$status" -ne 0 ]; then
+        fail_test "$name" "commit returned $status"
+    elif ! grep -qF 'partially staged' "$TEST_LOG_DIR/git.stderr" ||
+         ! grep -qF 'runtime/p.c' "$TEST_LOG_DIR/git.stderr"; then
+        fail_test "$name" 'the expected warning was not produced'
+        cat "$TEST_LOG_DIR/git.stderr" >&2
+    else
+        pass_test "$name"
+    fi
+}
+
 test_hook_is_tracked_and_executable
 test_broken_indent
 test_missing_indent
 test_broken_isort
 test_missing_python_formatters
+test_reformats_and_restages_staged_file
+test_worktree_clean_after_commit
+test_unstaged_file_is_not_committed
+test_python_file_is_restaged
+test_formatted_file_is_quiet
+test_empty_stage
+test_partially_staged_file_warns
 
 echo "$pass passed, $fail failed, $skip skipped"
 [ "$fail" -eq 0 ]
