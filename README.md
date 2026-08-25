@@ -80,7 +80,9 @@ Run the routine test suites:
 make test
 ```
 
-This target runs the driver, native, checklit, and pre-commit-hook tests. It does not run the reference-parity, bootstrap, or Emacs tests.
+This target runs the driver, native, checklit, and pre-commit-hook tests. The test runners do not require pytest.
+
+This target does not run the reference-parity, bootstrap, or Emacs tests.
 
 Use these targets for a specific test group:
 

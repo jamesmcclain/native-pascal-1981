@@ -42,12 +42,29 @@ This directory contains the automated test suites for the native Pascal 1981 com
   ./tests/checklit.sh
   ```
 
+### 5. Pre-Commit Hook Test Suite (`tests/test_precommit_hook.sh`)
+
+- **Runner**: [`tests/test_precommit_hook.sh`](./test_precommit_hook.sh)
+- **Description**: Checks hook restaging, partial staging, tool errors, optional tools, and the executable file mode. Each behavior test uses an isolated Git repository.
+- **Running**:
+  ```bash
+  ./tests/test_precommit_hook.sh
+  ```
+
 ---
 
-## Running All Tests
+## Running the Routine Tests
 
-You can run all three test suites together via the top-level `Makefile`:
+Run the routine compiler and hook tests:
 
 ```bash
 make test
+```
+
+This target does not require pytest. It does not run the reference-parity suite.
+
+Run the Python reference-parity suite separately:
+
+```bash
+make test-reference-parity
 ```
