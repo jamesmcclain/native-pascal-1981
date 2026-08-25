@@ -123,6 +123,8 @@ CONST
   MAX_FIELDS  = 2000;
   MAX_ERRORS  = 200;
   MAX_PARAMS  = 16;
+  MAX_EXPR_DEPTH = 64;
+  MAX_STMT_DEPTH = 256;
 
 TYPE
   SymRec = RECORD
@@ -188,6 +190,7 @@ VAR
 
   errors: ARRAY [1..MAX_ERRORS] OF Str255;
   nerrors: INTEGER32;
+  expr_depth, stmt_depth: INTEGER;
 
   cur_func_ret_tk: INTEGER; { TK_VOID when not inside a function }
   cur_func_aux, cur_func_aux2: INTEGER;
@@ -873,6 +876,13 @@ VAR
   elems_arr, elem_node: ADRMEM;
   n_elems, ei: INTEGER32;
 BEGIN
+  expr_depth := expr_depth + 1;
+  IF expr_depth > MAX_EXPR_DEPTH THEN
+  BEGIN
+    AddError('expression too complex (nesting deeper than 64); try breaking it up with intermediate value assigns');
+    CheckExpr := TK_UNKNOWN;
+  END
+  ELSE BEGIN
   nt := NodeType(node);
   IF nt = 'IntLiteral' THEN
   BEGIN
@@ -1053,6 +1063,8 @@ BEGIN
   END
   ELSE
     CheckExpr := TK_UNKNOWN;
+  END;
+  expr_depth := expr_depth - 1;
 END;
 
 { =============================== statements ============================= }
@@ -1099,6 +1111,10 @@ VAR
   n_with_targets, wi, fi, pushed: INTEGER32;
   with_tk, rec_id: INTEGER;
 BEGIN
+  stmt_depth := stmt_depth + 1;
+  IF stmt_depth > MAX_STMT_DEPTH THEN
+    AddError('statements nested too deeply (deeper than 256); try splitting the routine up')
+  ELSE BEGIN
   IF node = NIL THEN
     nt := ''
   ELSE
@@ -1403,6 +1419,8 @@ BEGIN
     FOR wi := 1 TO pushed DO
       PopScope;
   END;
+  END;
+  stmt_depth := stmt_depth - 1;
 END;
 
 { ============================== declarations ============================ }
@@ -2004,6 +2022,8 @@ BEGIN
   nfields := 0;
   next_record_id := 1;
   nerrors := 0;
+  expr_depth := 0;
+  stmt_depth := 0;
   cur_func_ret_tk := TK_VOID;
   cur_func_aux := 0;
   cur_func_aux2 := 0;

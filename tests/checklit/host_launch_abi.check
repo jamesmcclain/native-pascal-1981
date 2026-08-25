@@ -1,0 +1,9 @@
+{ CHECK-INPUT: tests/reference/codegen/host_launch_abi.ast.json }
+{ CHECK: call ptr @pas_dev_module_load(ptr @__pas_klaunch_registry }
+{ CHECK: @pas_dev_module_get_function }
+{ CHECK: @pas_dev_launch }
+{ CHECK: launch_argv }
+{ CHECK-COUNT: 1 define internal void @__pas_klaunch_bump( }
+{ CHECK-NOT: __pas_klaunch_bump.1 }
+{ CHECK: @__pas_kregnames = constant [1 x ptr] }
+{ CHECK: i64 1 } }

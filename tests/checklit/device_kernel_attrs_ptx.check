@@ -1,0 +1,5 @@
+{ CHECK-INPUT: tests/reference/codegen/device_kernel_attrs/kh.ast.json }
+{ CHECK-ENV: PASCAL_DEVICE_TRIPLE=nvptx64-nvidia-cuda }
+{ CHECK-ENV: PASCAL_EMIT_PTX=1 }
+{ CHECK: .visible .entry scale }
+{ CHECK: .ptr .global .align 4 }

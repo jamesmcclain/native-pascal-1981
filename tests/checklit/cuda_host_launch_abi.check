@@ -1,0 +1,6 @@
+{ CHECK-INPUT: tests/reference/codegen/host_launch_abi.ast.json }
+{ CHECK-ENV: PASCAL_DEVICE_BACKEND=cuda }
+{ CHECK-NOT: __pas_klaunch_bump }
+{ CHECK-NOT: __pas_kregnames }
+{ CHECK: @__pas_device_ptx = external constant }
+{ CHECK: call ptr @pas_dev_module_load(ptr null }

@@ -15,6 +15,7 @@ BIN_DIR := bin
 BUILD_DIR := build
 DRIVER_BIN := $(BIN_DIR)/pascal1981-native
 DRIVER_ALIAS := $(BIN_DIR)/pascal1981
+ASTCOMPARE_BIN := $(BIN_DIR)/astcompare
 RUNTIME_LIB := runtime/build/libpascalrt.a
 RUNTIME_SRCS := $(wildcard runtime/*.c runtime/*.h) runtime/Makefile
 STAGES := lexer parser typechecker codegen
@@ -25,7 +26,7 @@ GEN4_BINS := $(addprefix $(BUILD_DIR)/gen4/,$(STAGES))
 BOOTSTRAP_BINS := $(addprefix $(BIN_DIR)/,$(STAGES))
 FIXED_POINT := $(BUILD_DIR)/.fixed-point-verified
 
-.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-driver test-native test-bootstrap
+.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-driver test-native test-gpu test-reference-parity test-elisp test-bootstrap
 
 all: runtime driver bootstrap
 
@@ -39,6 +40,9 @@ driver: $(DRIVER_BIN)
 $(DRIVER_BIN): src/driver.pas src/jsonutil.pas scripts/build-stage.sh $(GEN4_BINS) $(FIXED_POINT) $(RUNTIME_LIB) | $(BIN_DIR)
 	NATIVE_LEXER="$(abspath $(BUILD_DIR)/gen4/lexer)" NATIVE_PARSER="$(abspath $(BUILD_DIR)/gen4/parser)" NATIVE_TYPECHECKER="$(abspath $(BUILD_DIR)/gen4/typechecker)" NATIVE_CODEGEN="$(abspath $(BUILD_DIR)/gen4/codegen)" ./scripts/build-stage.sh $< $@
 	ln -sf pascal1981-native $(DRIVER_ALIAS)
+
+$(ASTCOMPARE_BIN): src/astcompare.pas src/jsonutil.pas scripts/build-stage.sh $(GEN4_BINS) $(FIXED_POINT) $(RUNTIME_LIB) | $(BIN_DIR)
+	NATIVE_LEXER="$(abspath $(BUILD_DIR)/gen4/lexer)" NATIVE_PARSER="$(abspath $(BUILD_DIR)/gen4/parser)" NATIVE_TYPECHECKER="$(abspath $(BUILD_DIR)/gen4/typechecker)" NATIVE_CODEGEN="$(abspath $(BUILD_DIR)/gen4/codegen)" ./scripts/build-stage.sh $< $@
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
@@ -80,26 +84,40 @@ clean:
 	rm -rf build
 
 cleaner: clean
-	rm -rf bin/lexer bin/parser bin/typechecker bin/codegen bin/pascal1981-native bin/pascal1981
+	rm -rf bin/lexer bin/parser bin/typechecker bin/codegen bin/astcompare bin/pascal1981-native bin/pascal1981
 	$(MAKE) -C runtime cleaner
 
 cleanest: cleaner
 	rm -rf .pytest_cache
 
-test: $(DRIVER_BIN)
-	./tests/driver.sh
-	./tests/run.sh
-	./tests/checklit.sh
-	PYTHONPATH=. $(PYTHON) -m pytest tests/parity/ tests/test_precommit_hook.py
+test: test-native
+	./tests/test_precommit_hook.sh
 
 # The zero-Python subset of `test`: driver, golden-file behavioral, and
 # IR/PTX-text directive tests. It does not run pytest or Python.
 test-driver: $(DRIVER_BIN)
 	./tests/driver.sh
 
-test-native: test-driver
+test-native: test-driver $(ASTCOMPARE_BIN)
 	./tests/run.sh
 	./tests/checklit.sh
+	./tests/depth.sh
+	./tests/astcompare.sh
+
+# Run the real-GPU CUDA integration test. The runner exits successfully with a
+# clear skip reason when its hardware or toolchain prerequisites are absent.
+test-gpu: bootstrap
+	./tests/gpu_orchestration.sh
+
+# Compare the native compiler stages with the Python reference implementation.
+# Kept separate from `test` because it requires the reference Python toolchain.
+test-reference-parity:
+	PYTHONPATH=. $(PYTHON) -m pytest tests/parity/
+
+# Run the Emacs major-mode ERT suite. Kept separate from `test` because Emacs
+# is not a dependency of the compiler toolchain.
+test-elisp: bootstrap
+	$(MAKE) -C elisp test
 
 # Full fixed-point regression: force a clean gen1->gen4 rebuild (not reusing
 # any cached generation) and fail if gen3/gen4 aren't byte-identical. Separate

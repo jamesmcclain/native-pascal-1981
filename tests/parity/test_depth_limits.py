@@ -12,7 +12,6 @@ Three things need to hold, and each is easy to break silently:
    generator can be handed a tree the parser never saw.
 """
 
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -85,43 +84,6 @@ def parse_deeper_than_allowed(tmp_path, text):
         return parser.parse()
     finally:
         sys.setrecursionlimit(original)
-
-
-def read_pascal_const(source_name, const_name):
-    text = (PASCAL_SRC / source_name).read_text()
-    match = re.search(rf'^\s*{const_name}\s*=\s*(\d+)\s*;', text, re.M)
-    assert match, f'{const_name} not found in {source_name}'
-    return int(match.group(1))
-
-
-class TestNativeAgreement:
-    """The native stages hard-code the same numbers; they must not drift.
-
-    The native compiler is written in the dialect it compiles, so it cannot
-    import depth_limits.  If these ever disagree the two compilers accept
-    different languages, which is exactly the divergence the ceilings were
-    added to avoid.
-    """
-
-    @pytest.mark.parametrize('source', ['parser.pas', 'codegen.pas'])
-    def test_expr_ceiling_matches(self, source):
-        assert read_pascal_const(source, 'MAX_EXPR_DEPTH') == MAX_EXPR_DEPTH
-
-    @pytest.mark.parametrize('source', ['parser.pas', 'codegen.pas'])
-    def test_stmt_ceiling_matches(self, source):
-        assert read_pascal_const(source, 'MAX_STMT_DEPTH') == MAX_STMT_DEPTH
-
-    @pytest.mark.parametrize('source', ['parser.pas', 'codegen.pas'])
-    def test_diagnostics_quote_the_ceilings(self, source):
-        """Both messages must name the number they enforce.
-
-        The native messages are string literals, so a changed ceiling with an
-        unchanged message would tell the user to stay under a bound that is no
-        longer the one being applied.
-        """
-        text = (PASCAL_SRC / source).read_text()
-        assert f'deeper than {MAX_EXPR_DEPTH}' in text
-        assert f'deeper than {MAX_STMT_DEPTH}' in text
 
 
 class TestCeilingIsTheBindingLimit:
