@@ -308,11 +308,18 @@ test_python_file_is_restaged() {
     skip_end_to_end_test "$name" && return
     setup_git_repo python-restage || { fail_test "$name" 'repository setup failed'; return; }
     printf 'x = {   "a":1 }\n' > "$TEST_REPO/tests/z_fmt.py"
+    printf 'x = {   "a":1 }\n' > "$TEST_LOG_DIR/expected.py"
+    HOME="$TEST_HOME" yapf -i "$TEST_LOG_DIR/expected.py"
     git_run add tests/z_fmt.py
-    git_run commit -m 'add py'
+    if ! git_run commit -m 'add py'; then
+        fail_test "$name" "commit returned $GIT_STATUS"
+        cat "$TEST_LOG_DIR/git.stderr" >&2
+        return
+    fi
     git_run show HEAD:tests/z_fmt.py
-    if [ "$(cat "$TEST_LOG_DIR/git.stdout")" != 'x = {"a": 1}' ]; then
-        fail_test "$name" 'committed Python content was not formatted'
+    if ! cmp -s "$TEST_LOG_DIR/expected.py" "$TEST_LOG_DIR/git.stdout"; then
+        fail_test "$name" 'committed Python content does not match yapf output'
+        diff -u "$TEST_LOG_DIR/expected.py" "$TEST_LOG_DIR/git.stdout" >&2 || true
     else
         git_run status --porcelain
         if [ -s "$TEST_LOG_DIR/git.stdout" ]; then
