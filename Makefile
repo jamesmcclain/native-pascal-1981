@@ -87,7 +87,7 @@ cleanest: cleaner
 	rm -rf .pytest_cache
 
 test: test-native
-	PYTHONPATH=. $(PYTHON) -m pytest tests/test_precommit_hook.py
+	./tests/test_precommit_hook.sh
 
 # The zero-Python subset of `test`: driver, golden-file behavioral, and
 # IR/PTX-text directive tests. It does not run pytest or Python.
