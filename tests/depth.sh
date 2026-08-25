@@ -34,6 +34,43 @@ make_pointer_type() {
   } > "$output"
 }
 
+make_expression() {
+  local depth=$1 output=$2 i
+  {
+    printf 'PROGRAM D;\nVAR a: INTEGER;\nBEGIN\n  a := '
+    for ((i = 0; i < depth; i++)); do printf '('; done
+    printf '1'
+    for ((i = 0; i < depth; i++)); do printf ')'; done
+    printf ';\nEND.\n'
+  } > "$output"
+}
+
+make_statements() {
+  local depth=$1 output=$2 i
+  {
+    printf 'PROGRAM S;\nVAR a: INTEGER;\nBEGIN\n  a := 0;\n'
+    for ((i = 0; i < depth; i++)); do
+      printf '  IF a = %d THEN a := 1 ELSE\n' "$i"
+    done
+    printf '  a := 2;\nEND.\n'
+  } > "$output"
+}
+
+make_sibling_expressions() {
+  local output=$1 sibling i
+  {
+    printf 'PROGRAM D;\nVAR a: INTEGER;\nBEGIN\n'
+    for ((sibling = 0; sibling < 6; sibling++)); do
+      printf '  a := '
+      for ((i = 0; i < 62; i++)); do printf '('; done
+      printf '1'
+      for ((i = 0; i < 62; i++)); do printf ')'; done
+      printf ';\n'
+    done
+    printf 'END.\n'
+  } > "$output"
+}
+
 run_parser() {
   local source=$1 stem=$2
   if ! bin/lexer < "$source" > "$work_dir/$stem.tokens" \
@@ -43,6 +80,52 @@ run_parser() {
   bin/parser < "$work_dir/$stem.tokens" > "$work_dir/$stem.ast" \
     2> "$work_dir/$stem.err"
 }
+
+make_expression 63 "$work_dir/expr63.pas"
+if run_parser "$work_dir/expr63.pas" expr63; then
+  pass "expression nesting accepts depth 63"
+else
+  fail "expression nesting accepts depth 63"
+  cat "$work_dir/expr63.err" >&2
+fi
+
+make_expression 64 "$work_dir/expr64.pas"
+status=0
+run_parser "$work_dir/expr64.pas" expr64 || status=$?
+if [ "$status" -ne 0 ] &&
+   grep -qF 'expression too complex' "$work_dir/expr64.err"; then
+  pass "expression nesting rejects depth 64"
+else
+  fail "expression nesting rejects depth 64 with its diagnostic"
+  cat "$work_dir/expr64.err" >&2
+fi
+
+make_statements 255 "$work_dir/stmt255.pas"
+if run_parser "$work_dir/stmt255.pas" stmt255; then
+  pass "statement nesting accepts depth 255"
+else
+  fail "statement nesting accepts depth 255"
+  cat "$work_dir/stmt255.err" >&2
+fi
+
+make_statements 256 "$work_dir/stmt256.pas"
+status=0
+run_parser "$work_dir/stmt256.pas" stmt256 || status=$?
+if [ "$status" -ne 0 ] &&
+   grep -qF 'statements nested too deeply' "$work_dir/stmt256.err"; then
+  pass "statement nesting rejects depth 256"
+else
+  fail "statement nesting rejects depth 256 with its diagnostic"
+  cat "$work_dir/stmt256.err" >&2
+fi
+
+make_sibling_expressions "$work_dir/siblings.pas"
+if run_parser "$work_dir/siblings.pas" siblings; then
+  pass "expression depth unwinds between siblings"
+else
+  fail "expression depth unwinds between siblings"
+  cat "$work_dir/siblings.err" >&2
+fi
 
 make_pointer_type 127 "$work_dir/type127.pas"
 if run_parser "$work_dir/type127.pas" type127; then
