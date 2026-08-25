@@ -12,6 +12,7 @@
 #
 #   { CHECK: <substring that must appear in the emitted IR/PTX text> }
 #   { CHECK-NOT: <substring that must not appear> }
+#   { CHECK-ANY: <substring> || <alternative substring> }
 #   { CHECK-COUNT: N <substring that must appear exactly N times> }
 #   { CHECK-ENV: NAME=value }   (optional, sets an env var for this fixture's
 #                                 codegen invocation, e.g. PASCAL_EMIT_PTX=1)
@@ -59,6 +60,12 @@ for fixture in "${FIXTURES[@]}"; do
   done < <(grep -E '\{ *CHECK-NOT: *' "$fixture" \
               | sed -E 's/^.*\{ *CHECK-NOT: *//; s/ *\}[[:space:]]*$//')
 
+  checks_any=()
+  while IFS= read -r line; do
+    checks_any+=("$line")
+  done < <(grep -E '\{ *CHECK-ANY: *' "$fixture" \
+              | sed -E 's/^.*\{ *CHECK-ANY: *//; s/ *\}[[:space:]]*$//')
+
   checks_count=()
   while IFS= read -r line; do
     checks_count+=("$line")
@@ -66,7 +73,7 @@ for fixture in "${FIXTURES[@]}"; do
               | sed -E 's/^.*\{ *CHECK-COUNT: *//; s/ *\}[[:space:]]*$//')
 
   if [ ${#checks[@]} -eq 0 ] && [ ${#checks_not[@]} -eq 0 ] &&
-     [ ${#checks_count[@]} -eq 0 ]; then
+     [ ${#checks_any[@]} -eq 0 ] && [ ${#checks_count[@]} -eq 0 ]; then
     echo "FAIL: $fixture (no CHECK directives found)" >&2
     FAILED=$((FAILED + 1))
     continue
@@ -111,6 +118,19 @@ for fixture in "${FIXTURES[@]}"; do
     for pattern in "${checks_not[@]}"; do
       if grep -qF -- "$pattern" "$out_ll"; then
         echo "FAIL: $fixture (present CHECK-NOT: $pattern)" >&2
+        ok=0
+      fi
+    done
+    for alternatives in "${checks_any[@]}"; do
+      found=0
+      while IFS= read -r pattern; do
+        if grep -qF -- "$pattern" "$out_ll"; then
+          found=1
+          break
+        fi
+      done < <(printf '%s\n' "$alternatives" | sed 's/ || /\n/g')
+      if [ "$found" -eq 0 ]; then
+        echo "FAIL: $fixture (missing CHECK-ANY: $alternatives)" >&2
         ok=0
       fi
     done

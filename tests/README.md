@@ -36,7 +36,7 @@ This directory contains the automated test suites for the native Pascal 1981 com
 ### 4. Checklit Directive Suite (`tests/checklit/)`
 - **Runner**: [`tests/checklit.sh`](./checklit.sh)
 - **Description**: Makes zero-Python assertions on emitted LLVM IR or PTX text. The runner supports required, forbidden, and counted substrings. It does not enforce check order.
-- **Pascal fixture format**: Put directive comments in a `.pas` file. Use `{ CHECK: text }`, `{ CHECK-NOT: text }`, or `{ CHECK-COUNT: N text }`. Use `{ CHECK-ENV: NAME=value }` to set a codegen environment variable.
+- **Pascal fixture format**: Put directive comments in a `.pas` file. Use `{ CHECK: text }`, `{ CHECK-NOT: text }`, or `{ CHECK-COUNT: N text }`. Use `{ CHECK-ANY: text || alternative }` when LLVM versions use different text for the same contract. Use `{ CHECK-ENV: NAME=value }` to set a codegen environment variable.
 - **Frozen AST format**: A `.check` file can use `{ CHECK-INPUT: path.json }`. The runner sends that typed AST to native codegen. Sources and frozen Python reference ASTs are in `tests/reference/codegen/`.
 - **Artifact updates**: Run `PYTHONPATH=. ./scripts/update-reference-codegen.sh`. Review all JSON changes before you commit them. Routine tests do not run this Python-based maintenance command.
 - **Running**:
