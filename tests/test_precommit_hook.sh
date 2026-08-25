@@ -81,10 +81,23 @@ run_beautify() {
     return "$status"
 }
 
-test_hook_is_tracked_and_executable() {
-    local name='hook is tracked and executable'
+test_hook_is_executable() {
+    local name='hook is executable'
+    if [ -x "$HOOK" ]; then
+        pass_test "$name"
+    else
+        fail_test "$name" 'scripts/hooks/pre-commit is not executable'
+    fi
+}
+
+test_hook_has_executable_git_mode() {
+    local name='hook has executable Git mode'
     if ! command -v git >/dev/null 2>&1; then
         skip_test "$name" 'git is not available'
+        return
+    fi
+    if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        skip_test "$name" 'source tree has no Git metadata'
         return
     fi
 
@@ -402,7 +415,8 @@ if [ ${#missing_tools[@]} -ne 0 ]; then
     exit 1
 fi
 
-test_hook_is_tracked_and_executable
+test_hook_is_executable
+test_hook_has_executable_git_mode
 test_broken_indent
 test_missing_indent
 test_broken_isort
