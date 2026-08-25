@@ -1,0 +1,6 @@
+{ CHECK-INPUT: tests/reference/codegen/host_device_attrs/kc.ast.json }
+{ CHECK: define void @copy0( }
+{ CHECK-NOT: dereferenceable }
+{ CHECK-NOT: readonly }
+{ CHECK-NOT: noalias }
+{ CHECK-NOT: ptx_kernel }

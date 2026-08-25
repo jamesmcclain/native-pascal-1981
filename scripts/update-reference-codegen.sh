@@ -23,3 +23,5 @@ update_ast tests/reference/codegen/host_launch_abi.pas \
   tests/reference/codegen/host_launch_abi.ast.json
 update_ast tests/reference/codegen/device_kernel_attrs/kh.pas \
   tests/reference/codegen/device_kernel_attrs/kh.ast.json
+update_ast tests/reference/codegen/host_device_attrs/kc.pas \
+  tests/reference/codegen/host_device_attrs/kc.ast.json
