@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-for stage in lexer parser; do
+for stage in lexer parser typechecker codegen; do
   if [ ! -x "bin/$stage" ]; then
     echo "error: bin/$stage not found; run make bootstrap first" >&2
     exit 1
@@ -167,6 +167,45 @@ else
   fail "lexer accepts stray-parenthesis regression fixture"
   cat "$work_dir/stray.lex.err" >&2
 fi
+
+assert_ast_rejected() {
+  local stage=$1 input=$2 diagnostic=$3 label=$4 status=0
+  if [ "$stage" = typechecker ]; then
+    (
+      ulimit -v 131072
+      timeout 5 "bin/$stage" < "$input" > "$work_dir/$label.out" \
+        2> "$work_dir/$label.err"
+    ) || status=$?
+  else
+    timeout 5 "bin/$stage" < "$input" > "$work_dir/$label.out" \
+      2> "$work_dir/$label.err" || status=$?
+  fi
+  if [ "$status" -ne 0 ] && [ "$status" -ne 124 ] &&
+     grep -qF "$diagnostic" "$work_dir/$label.err"; then
+    pass "$label"
+  else
+    fail "$label"
+    echo "$stage status: $status" >&2
+    cat "$work_dir/$label.err" >&2
+  fi
+}
+
+assert_ast_rejected typechecker \
+  tests/reference/depth/expr_depth_192.ast.json \
+  'expression too complex' \
+  'typechecker rejects an oversized expression AST'
+assert_ast_rejected typechecker \
+  tests/reference/depth/stmt_depth_512.ast.json \
+  'statements nested too deeply' \
+  'typechecker rejects an oversized statement AST'
+assert_ast_rejected codegen \
+  tests/reference/depth/expr_depth_192.typed.json \
+  'codegen: expression too complex' \
+  'codegen rejects an oversized expression AST'
+assert_ast_rejected codegen \
+  tests/reference/depth/stmt_depth_512.typed.json \
+  'codegen: statements nested too deeply' \
+  'codegen rejects an oversized statement AST'
 
 echo "========================================"
 echo "Depth results: $passed passed, $failed failed"
