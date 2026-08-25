@@ -25,7 +25,7 @@ GEN4_BINS := $(addprefix $(BUILD_DIR)/gen4/,$(STAGES))
 BOOTSTRAP_BINS := $(addprefix $(BIN_DIR)/,$(STAGES))
 FIXED_POINT := $(BUILD_DIR)/.fixed-point-verified
 
-.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-driver test-native test-bootstrap
+.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-driver test-native test-reference-parity test-elisp test-bootstrap
 
 all: runtime driver bootstrap
 
@@ -86,11 +86,8 @@ cleaner: clean
 cleanest: cleaner
 	rm -rf .pytest_cache
 
-test: $(DRIVER_BIN)
-	./tests/driver.sh
-	./tests/run.sh
-	./tests/checklit.sh
-	PYTHONPATH=. $(PYTHON) -m pytest tests/parity/ tests/test_precommit_hook.py
+test: test-native
+	PYTHONPATH=. $(PYTHON) -m pytest tests/test_precommit_hook.py
 
 # The zero-Python subset of `test`: driver, golden-file behavioral, and
 # IR/PTX-text directive tests. It does not run pytest or Python.
@@ -100,6 +97,16 @@ test-driver: $(DRIVER_BIN)
 test-native: test-driver
 	./tests/run.sh
 	./tests/checklit.sh
+
+# Compare the native compiler stages with the Python reference implementation.
+# Kept separate from `test` because it requires the reference Python toolchain.
+test-reference-parity:
+	PYTHONPATH=. $(PYTHON) -m pytest tests/parity/
+
+# Run the Emacs major-mode ERT suite. Kept separate from `test` because Emacs
+# is not a dependency of the compiler toolchain.
+test-elisp: bootstrap
+	$(MAKE) -C elisp test
 
 # Full fixed-point regression: force a clean gen1->gen4 rebuild (not reusing
 # any cached generation) and fail if gen3/gen4 aren't byte-identical. Separate
