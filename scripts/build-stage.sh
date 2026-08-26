@@ -53,17 +53,14 @@ component_objs=()
 native_codegen="${NATIVE_CODEGEN:-}"
 native_jsonutil="${NATIVE_JSONUTIL:-$native_codegen}"
 
-# Gen1 is built by the installed Python frontend, which predates separately
-# compiled Pascal units.  Use the preserved monolith there.  Once a native
-# code generator exists, build the real composition root and its units.
+# codegen is a composition root over the cg_base unit, so its implementation
+# is compiled to its own object and linked alongside.  This holds for gen1 too:
+# the Python reference understands separately compiled units, so there is no
+# monolithic fallback source to maintain.
 stage_file="$(basename "$stage_src")"
 component_units=()
 if [ "$stage_file" = "codegen.pas" ]; then
-  if [ -n "$native_codegen" ]; then
-    component_units=(cg_base.pas)
-  else
-    stage_file="codegen_gen1.pas"
-  fi
+  component_units=(cg_base.pas)
 fi
 
 # The unit objects are compiled inside the ( cd "$src_dir" ... ) subshell below,

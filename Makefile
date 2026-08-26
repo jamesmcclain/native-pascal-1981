@@ -19,6 +19,13 @@ ASTCOMPARE_BIN := $(BIN_DIR)/astcompare
 RUNTIME_LIB := runtime/build/libpascalrt.a
 RUNTIME_SRCS := $(wildcard runtime/*.c runtime/*.h) runtime/Makefile
 STAGES := lexer parser typechecker codegen
+# Every stage splices jsonutil.inc, so a change to the interface must rebuild
+# all of them -- $INCLUDE is textual, and make cannot see through it.
+STAGE_SRCS := src/jsonutil.pas src/jsonutil.inc scripts/build-stage.sh
+# codegen additionally splices cg_base.inc and the codegen_*.inc fragments, and
+# links cg_base.pas as a component object. These are attached to the codegen
+# targets alone, below, rather than to every stage.
+CODEGEN_SRCS := src/cg_base.pas src/cg_base.inc $(wildcard src/codegen_*.inc)
 GEN1_BINS := $(addprefix $(BUILD_DIR)/gen1/,$(STAGES))
 GEN2_BINS := $(addprefix $(BUILD_DIR)/gen2/,$(STAGES))
 GEN3_BINS := $(addprefix $(BUILD_DIR)/gen3/,$(STAGES))
@@ -37,11 +44,11 @@ $(RUNTIME_LIB): $(RUNTIME_SRCS)
 
 driver: $(DRIVER_BIN)
 
-$(DRIVER_BIN): src/driver.pas src/jsonutil.pas scripts/build-stage.sh $(GEN4_BINS) $(FIXED_POINT) $(RUNTIME_LIB) | $(BIN_DIR)
+$(DRIVER_BIN): src/driver.pas $(STAGE_SRCS) $(GEN4_BINS) $(FIXED_POINT) $(RUNTIME_LIB) | $(BIN_DIR)
 	NATIVE_LEXER="$(abspath $(BUILD_DIR)/gen4/lexer)" NATIVE_PARSER="$(abspath $(BUILD_DIR)/gen4/parser)" NATIVE_TYPECHECKER="$(abspath $(BUILD_DIR)/gen4/typechecker)" NATIVE_CODEGEN="$(abspath $(BUILD_DIR)/gen4/codegen)" ./scripts/build-stage.sh $< $@
 	ln -sf pascal1981-native $(DRIVER_ALIAS)
 
-$(ASTCOMPARE_BIN): src/astcompare.pas src/jsonutil.pas scripts/build-stage.sh $(GEN4_BINS) $(FIXED_POINT) $(RUNTIME_LIB) | $(BIN_DIR)
+$(ASTCOMPARE_BIN): src/astcompare.pas $(STAGE_SRCS) $(GEN4_BINS) $(FIXED_POINT) $(RUNTIME_LIB) | $(BIN_DIR)
 	NATIVE_LEXER="$(abspath $(BUILD_DIR)/gen4/lexer)" NATIVE_PARSER="$(abspath $(BUILD_DIR)/gen4/parser)" NATIVE_TYPECHECKER="$(abspath $(BUILD_DIR)/gen4/typechecker)" NATIVE_CODEGEN="$(abspath $(BUILD_DIR)/gen4/codegen)" ./scripts/build-stage.sh $< $@
 
 $(BIN_DIR):
@@ -49,17 +56,21 @@ $(BIN_DIR):
 
 bootstrap: $(BOOTSTRAP_BINS)
 
-$(BUILD_DIR)/gen1/%: src/%.pas src/jsonutil.pas src/cg_base.pas src/cg_base.inc scripts/build-stage.sh $(RUNTIME_LIB) | $(BUILD_DIR)/gen1
+$(BUILD_DIR)/gen1/%: src/%.pas $(STAGE_SRCS) $(RUNTIME_LIB) | $(BUILD_DIR)/gen1
 	./scripts/build-stage.sh $< $@ $(if $(filter codegen,$*),$(LLVM_LINK_FLAGS))
 
-$(BUILD_DIR)/gen2/%: src/%.pas src/jsonutil.pas src/cg_base.pas src/cg_base.inc scripts/build-stage.sh $(GEN1_BINS) $(RUNTIME_LIB) | $(BUILD_DIR)/gen2
+$(BUILD_DIR)/gen2/%: src/%.pas $(STAGE_SRCS) $(GEN1_BINS) $(RUNTIME_LIB) | $(BUILD_DIR)/gen2
 	NATIVE_LEXER="$(abspath $(BUILD_DIR)/gen1/lexer)" NATIVE_PARSER="$(abspath $(BUILD_DIR)/gen1/parser)" NATIVE_TYPECHECKER="$(abspath $(BUILD_DIR)/gen1/typechecker)" NATIVE_CODEGEN="$(abspath $(BUILD_DIR)/gen1/codegen)" ./scripts/build-stage.sh $< $@ $(if $(filter codegen,$*),$(LLVM_LINK_FLAGS))
 
-$(BUILD_DIR)/gen3/%: src/%.pas src/jsonutil.pas src/cg_base.pas src/cg_base.inc scripts/build-stage.sh $(GEN2_BINS) $(RUNTIME_LIB) | $(BUILD_DIR)/gen3
+$(BUILD_DIR)/gen3/%: src/%.pas $(STAGE_SRCS) $(GEN2_BINS) $(RUNTIME_LIB) | $(BUILD_DIR)/gen3
 	NATIVE_LEXER="$(abspath $(BUILD_DIR)/gen2/lexer)" NATIVE_PARSER="$(abspath $(BUILD_DIR)/gen2/parser)" NATIVE_TYPECHECKER="$(abspath $(BUILD_DIR)/gen2/typechecker)" NATIVE_CODEGEN="$(abspath $(BUILD_DIR)/gen2/codegen)" ./scripts/build-stage.sh $< $@ $(if $(filter codegen,$*),$(LLVM_LINK_FLAGS))
 
-$(BUILD_DIR)/gen4/%: src/%.pas src/jsonutil.pas src/cg_base.pas src/cg_base.inc scripts/build-stage.sh $(GEN3_BINS) $(RUNTIME_LIB) | $(BUILD_DIR)/gen4
+$(BUILD_DIR)/gen4/%: src/%.pas $(STAGE_SRCS) $(GEN3_BINS) $(RUNTIME_LIB) | $(BUILD_DIR)/gen4
 	NATIVE_LEXER="$(abspath $(BUILD_DIR)/gen3/lexer)" NATIVE_PARSER="$(abspath $(BUILD_DIR)/gen3/parser)" NATIVE_TYPECHECKER="$(abspath $(BUILD_DIR)/gen3/typechecker)" NATIVE_CODEGEN="$(abspath $(BUILD_DIR)/gen3/codegen)" ./scripts/build-stage.sh $< $@ $(if $(filter codegen,$*),$(LLVM_LINK_FLAGS))
+
+# Extra prerequisites for the codegen stage only. A recipe-less rule augments
+# the pattern rules above rather than overriding them.
+$(BUILD_DIR)/gen1/codegen $(BUILD_DIR)/gen2/codegen $(BUILD_DIR)/gen3/codegen $(BUILD_DIR)/gen4/codegen: $(CODEGEN_SRCS)
 
 $(BUILD_DIR) $(BUILD_DIR)/gen1 $(BUILD_DIR)/gen2 $(BUILD_DIR)/gen3 $(BUILD_DIR)/gen4:
 	mkdir -p $@
