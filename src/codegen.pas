@@ -163,6 +163,7 @@ FUNCTION LLVMAppendBasicBlockInContext(ctx: ADRMEM; fn: ADRMEM; name: ADRMEM): A
 FUNCTION LLVMCreateBuilderInContext(ctx: ADRMEM): ADRMEM [C]; EXTERN;
 PROCEDURE LLVMPositionBuilderAtEnd(b: ADRMEM; bb: ADRMEM) [C]; EXTERN;
 PROCEDURE LLVMSetTarget(m: ADRMEM; triple: ADRMEM) [C]; EXTERN;
+PROCEDURE LLVMSetDataLayout(m: ADRMEM; layout: ADRMEM) [C]; EXTERN;
 PROCEDURE LLVMSetFunctionCallConv(fn: ADRMEM; cc: CINT) [C]; EXTERN;
 FUNCTION LLVMMDStringInContext2(ctx: ADRMEM; str: ADRMEM; slen: CLONG): ADRMEM [C]; EXTERN;
 FUNCTION LLVMMDNodeInContext2(ctx: ADRMEM; mds: ADRMEM; nmds: CLONG): ADRMEM [C]; EXTERN;
@@ -8534,7 +8535,14 @@ BEGIN
 
   ctx := LLVMContextCreate;
   modl := LLVMModuleCreateWithNameInContext(MakeCStr('pascal_program'), ctx);
-  IF is_nvptx_device THEN LLVMSetTarget(modl, device_triple_raw);
+  IF is_nvptx_device THEN LLVMSetTarget(modl, device_triple_raw)
+  ELSE
+  BEGIN
+    { These must stay synchronized with TypeSizeBytes/TypeAlignBytes's
+      x86-64 SysV layout assumptions. }
+    LLVMSetTarget(modl, MakeCStr('x86_64-pc-linux-gnu'));
+    LLVMSetDataLayout(modl, MakeCStr('e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128'));
+  END;
   IF emit_ptx AND (NOT is_nvptx_device) THEN
     AbortWith('codegen: PASCAL_EMIT_PTX requires a DEVICE compiland with PASCAL_DEVICE_TRIPLE=nvptx64-nvidia-cuda');
   i32ty := LLVMInt32TypeInContext(ctx);
