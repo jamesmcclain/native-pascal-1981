@@ -399,25 +399,6 @@ BEGIN
   CodegenStringBinOp := res;
 END;
 
-FUNCTION IsIntegerFamilyTk(tk: INTEGER): BOOLEAN;
-BEGIN
-  IsIntegerFamilyTk := (tk = TK_INTEGER) OR (tk = TK_WORD) OR (tk = TK_INTEGER8) OR (tk = TK_WORD8) OR
-    (tk = TK_INTEGER32) OR (tk = TK_WORD32) OR (tk = TK_INTEGER64) OR (tk = TK_WORD64);
-END;
-
-FUNCTION IsUnsignedWordTk(tk: INTEGER): BOOLEAN;
-BEGIN
-  IsUnsignedWordTk := (tk = TK_WORD) OR (tk = TK_WORD8) OR (tk = TK_WORD32) OR (tk = TK_WORD64);
-END;
-
-FUNCTION IntFamilyWidth(tk: INTEGER): INTEGER;
-BEGIN
-  IF (tk = TK_INTEGER8) OR (tk = TK_WORD8) THEN IntFamilyWidth := 8
-  ELSE IF (tk = TK_INTEGER) OR (tk = TK_WORD) THEN IntFamilyWidth := 16
-  ELSE IF (tk = TK_INTEGER32) OR (tk = TK_WORD32) THEN IntFamilyWidth := 32
-  ELSE IntFamilyWidth := 64;
-END;
-
 FUNCTION VariadicPromote(v: ADRMEM; tk: INTEGER; name: Str255): ADRMEM;
 { C's default argument promotions (C11 6.5.2.2 p7), applied to one value in
   a variadic call's tail -- mirrors the Python reference's

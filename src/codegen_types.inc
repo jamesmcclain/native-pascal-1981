@@ -303,9 +303,24 @@ BEGIN
     storage the same way it adapts to any wider integer target. }
 END;
 
-FUNCTION IsIntegerFamilyTk(tk: INTEGER): BOOLEAN; FORWARD;
-FUNCTION IsUnsignedWordTk(tk: INTEGER): BOOLEAN; FORWARD;
-FUNCTION IntFamilyWidth(tk: INTEGER): INTEGER; FORWARD;
+FUNCTION IsIntegerFamilyTk(tk: INTEGER): BOOLEAN;
+BEGIN
+  IsIntegerFamilyTk := (tk = TK_INTEGER) OR (tk = TK_WORD) OR (tk = TK_INTEGER8) OR (tk = TK_WORD8) OR
+    (tk = TK_INTEGER32) OR (tk = TK_WORD32) OR (tk = TK_INTEGER64) OR (tk = TK_WORD64);
+END;
+
+FUNCTION IsUnsignedWordTk(tk: INTEGER): BOOLEAN;
+BEGIN
+  IsUnsignedWordTk := (tk = TK_WORD) OR (tk = TK_WORD8) OR (tk = TK_WORD32) OR (tk = TK_WORD64);
+END;
+
+FUNCTION IntFamilyWidth(tk: INTEGER): INTEGER;
+BEGIN
+  IF (tk = TK_INTEGER8) OR (tk = TK_WORD8) THEN IntFamilyWidth := 8
+  ELSE IF (tk = TK_INTEGER) OR (tk = TK_WORD) THEN IntFamilyWidth := 16
+  ELSE IF (tk = TK_INTEGER32) OR (tk = TK_WORD32) THEN IntFamilyWidth := 32
+  ELSE IntFamilyWidth := 64;
+END;
 
 FUNCTION CoerceForAssign(v: ADRMEM; from_tid, to_tid: INTEGER; expr_node: ADRMEM; ctx_name: Str255): ADRMEM;
 { Resolve an assignment's RHS value against its target type, mirroring the
