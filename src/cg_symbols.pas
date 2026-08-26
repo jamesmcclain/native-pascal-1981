@@ -1,3 +1,12 @@
+{ Implementations for cg_symbols. }
+
+(*$INCLUDE:'jsonutil.inc'*)
+(*$INCLUDE:'cg_base.inc'*)
+(*$INCLUDE:'cg_util.inc'*)
+(*$INCLUDE:'cg_types.inc'*)
+(*$INCLUDE:'cg_symbols.inc'*)
+IMPLEMENTATION OF cg_symbols;
+
 { ============================ symbol table ============================== }
 
 FUNCTION LookupSym(name: Str255): INTEGER32;
@@ -133,3 +142,6 @@ BEGIN
         FuncRetAggClass := SysVAggClass(routines[routi].ret_tk);
 END;
 
+
+BEGIN
+END.

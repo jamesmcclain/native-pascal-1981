@@ -135,13 +135,10 @@
 (*$INCLUDE:'cg_base.inc'*)
 (*$INCLUDE:'cg_util.inc'*)
 (*$INCLUDE:'cg_types.inc'*)
+(*$INCLUDE:'cg_symbols.inc'*)
 PROGRAM pascal1981_codegen(input, output);
 
-USES jsonutil, cg_base, cg_util, cg_types;
-
-{ ============================ symbol table ============================== }
-
-(*$INCLUDE:'codegen_symbols.inc'*)
+USES jsonutil, cg_base, cg_util, cg_types, cg_symbols;
 
 { ============================== expressions =============================== }
 
