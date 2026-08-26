@@ -1,4 +1,12 @@
-{ ============================== expressions =============================== }
+{ Implementations for cg_expr. }
+
+(*$INCLUDE:'jsonutil.inc'*)
+(*$INCLUDE:'cg_base.inc'*)
+(*$INCLUDE:'cg_util.inc'*)
+(*$INCLUDE:'cg_types.inc'*)
+(*$INCLUDE:'cg_symbols.inc'*)
+(*$INCLUDE:'cg_expr.inc'*)
+IMPLEMENTATION OF cg_expr;
 
 FUNCTION CodegenExpr(node: ADRMEM): ADRMEM; FORWARD;
 FUNCTION LaunchI64(v: ADRMEM; tk: INTEGER): ADRMEM; FORWARD;
@@ -7,6 +15,12 @@ FUNCTION CodegenPositn(args: ADRMEM): ADRMEM; FORWARD;
 FUNCTION CodegenScan(stop_on_equal: INTEGER; args: ADRMEM): ADRMEM; FORWARD;
 FUNCTION CodegenEncode(args: ADRMEM): ADRMEM; FORWARD;
 FUNCTION CodegenDecode(args: ADRMEM): ADRMEM; FORWARD;
+PROCEDURE ResolveStringExprCharsLen(expr: ADRMEM; VAR chars_ptr: ADRMEM; VAR len_val: ADRMEM); FORWARD;
+PROCEDURE CodegenLStringLiteralAssign(dest_addr: ADRMEM; dest_tid: INTEGER; s: Str255); FORWARD;
+PROCEDURE CodegenStringLiteralAssign(dest_addr: ADRMEM; dest_tid: INTEGER; s: Str255); FORWARD;
+
+{ ============================== expressions =============================== }
+
 
 { ------------------------------ sets --------------------------------------
   Every SET, regardless of its declared base range, is represented the same
@@ -231,7 +245,6 @@ BEGIN
   END;
 END;
 
-PROCEDURE ResolveStringExprCharsLen(expr: ADRMEM; VAR chars_ptr: ADRMEM; VAR len_val: ADRMEM); FORWARD;
 
 FUNCTION StaticDesignatorType(node: ADRMEM): INTEGER;
 { Type-only counterpart of ComputeDesignatorAddress: walks the same
@@ -778,8 +791,6 @@ BEGIN
   CodegenUnaryOp := res;
 END;
 
-PROCEDURE CodegenLStringLiteralAssign(dest_addr: ADRMEM; dest_tid: INTEGER; s: Str255); FORWARD;
-PROCEDURE CodegenStringLiteralAssign(dest_addr: ADRMEM; dest_tid: INTEGER; s: Str255); FORWARD;
 
 FUNCTION CodegenCallCommon(name: Str255; args_arr: ADRMEM): ADRMEM;
 { Shared by a FuncCall expression and a bare ProcCallStmt that isn't
@@ -2272,3 +2283,6 @@ BEGIN
   ELSE LaunchI64 := LLVMBuildSExt(builder, v, i64ty, MakeCStr(''));
 END;
 
+
+BEGIN
+END.
