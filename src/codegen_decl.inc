@@ -976,9 +976,15 @@ BEGIN
     { A prior FORWARD (or, degenerately, EXTERN) placeholder for this same
       name -- reuse its already-declared LLVM function/type rather than
       calling LLVMAddFunction again (which would just silently uniquify the
-      name into a second, wrong function). A second placeholder, or a
-      second real definition, for the same name is still an error. }
-    IF routines[existing].has_body OR (NOT has_block_body) THEN
+      name into a second, wrong function). A second *definition* is still an
+      error; a second body-less declaration is not. A unit implementation
+      must re-state, as a FORWARD, any routine its own INTERFACE already
+      declared and whose definition it uses before reaching it -- an
+      interface entry does not itself forward-declare, so the mutually
+      recursive routines of a lowering unit have no other way to compile.
+      That FORWARD lands here against the interface's own placeholder, and
+      is a no-op rather than a redeclaration. Matches the reference. }
+    IF routines[existing].has_body THEN
       AbortWith2('codegen: duplicate routine declaration: ', name);
     ridx := existing;
     fn := routines[ridx].fn;
@@ -998,7 +1004,8 @@ BEGIN
     END;
     params_arr := GetObj(decl, 'params');
     FlattenParams(params_arr, n, names, tks, isvar, needs_copy);
-    routines[ridx].has_body := TRUE;
+    routines[ridx].has_body := has_block_body; { still a placeholder when
+      this pass is itself another body-less declaration -- see above. }
     is_c := routines[ridx].is_c; { source of truth once ridx is known -- see note above }
     is_vararg := routines[ridx].is_vararg; { likewise }
     { The already-built fnty is reused verbatim here, so it must already
