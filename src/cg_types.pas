@@ -1,3 +1,11 @@
+{ Implementations for cg_types. }
+
+(*$INCLUDE:'jsonutil.inc'*)
+(*$INCLUDE:'cg_base.inc'*)
+(*$INCLUDE:'cg_util.inc'*)
+(*$INCLUDE:'cg_types.inc'*)
+IMPLEMENTATION OF cg_types;
+
 { ============================== type model =============================== }
 
 FUNCTION LLVMTypeForTk(tk: INTEGER): ADRMEM;
@@ -137,8 +145,55 @@ BEGIN
   LookupConst := found;
 END;
 
-FUNCTION Real64ToInt64(val: REAL): INTEGER64; FORWARD;
+FUNCTION MakeRadix64: INTEGER64;
+{ Builds the INTEGER64 value 1000000000 via small in-range INTEGER64
+  arithmetic -- the literal 1000000000 itself is out of range for this
+  compiler's default INTEGER (16-bit) and this file has no typed CONST
+  syntax to declare it directly as INTEGER64. }
+VAR
+  r: INTEGER64;
+BEGIN
+  r := 1000;
+  r := r * r;
+  r := r * 1000;
+  MakeRadix64 := r;
+END;
 
+FUNCTION Real64ToInt64(val: REAL): INTEGER64;
+{ TRUNC(x) for a REAL x outside INTEGER32's range is not usable directly
+  here: this host Pascal compiler's TRUNC always lowers to a 32-bit
+  float-to-int conversion regardless of the surrounding INTEGER64 context,
+  so a magnitude like 5000000000.0 overflows it (fptosi poison, observed
+  in practice as INTEGER32's MIN value) well before the result ever
+  reaches a 64-bit variable. Split into a base-1e9 high/low pair instead --
+  each TRUNC call only ever sees a magnitude comfortably inside INTEGER32's
+  range this way -- and recombine via INTEGER64 multiply/add, neither of
+  which goes through TRUNC. Sufficient for every literal this AST's JSON
+  encoding can represent exactly as a double in the first place (up to
+  2^53), which covers every wide-integer literal this file can compile. }
+CONST
+  RADIX = 1000000000.0;
+VAR
+  neg: BOOLEAN;
+  hi: INTEGER; { Only plain INTEGER (and INTEGER8) mix implicitly with REAL
+                  arithmetic in this dialect (type_system.py's "INTEGER op
+                  REAL" rule) -- INTEGER32/64 do not, and FLOAT() only
+                  accepts plain INTEGER too -- so hi*RADIX below needs hi
+                  kept at this native 16-bit width, even though it is then
+                  widened to INTEGER64 for the final recombination. Safe
+                  for any literal whose magnitude is less than roughly
+                  32767 * 1e9, comfortably covering every practical
+                  INTEGER64/WORD64 literal. }
+  lo: INTEGER64;
+  mag: REAL;
+BEGIN
+  neg := val < 0.0;
+  IF neg THEN mag := 0.0 - val ELSE mag := val;
+  hi := TRUNC(mag / RADIX);
+  lo := TRUNC(mag - hi * RADIX);
+  IF neg THEN Real64ToInt64 := 0 - (hi * MakeRadix64 + lo)
+  ELSE Real64ToInt64 := hi * MakeRadix64 + lo;
+END;
 FUNCTION FoldConstInt(expr_node: ADRMEM; VAR folded: INTEGER64): BOOLEAN;
 { Fold the integer-only constant-expression subset used by the reference
   typechecker's _fold_const_int: literals, unary +/-, arithmetic, earlier
@@ -225,55 +280,6 @@ BEGIN
   IsIntLiteralLike := FoldConstInt(expr_node, folded);
 END;
 
-FUNCTION MakeRadix64: INTEGER64;
-{ Builds the INTEGER64 value 1000000000 via small in-range INTEGER64
-  arithmetic -- the literal 1000000000 itself is out of range for this
-  compiler's default INTEGER (16-bit) and this file has no typed CONST
-  syntax to declare it directly as INTEGER64. }
-VAR
-  r: INTEGER64;
-BEGIN
-  r := 1000;
-  r := r * r;
-  r := r * 1000;
-  MakeRadix64 := r;
-END;
-
-FUNCTION Real64ToInt64(val: REAL): INTEGER64;
-{ TRUNC(x) for a REAL x outside INTEGER32's range is not usable directly
-  here: this host Pascal compiler's TRUNC always lowers to a 32-bit
-  float-to-int conversion regardless of the surrounding INTEGER64 context,
-  so a magnitude like 5000000000.0 overflows it (fptosi poison, observed
-  in practice as INTEGER32's MIN value) well before the result ever
-  reaches a 64-bit variable. Split into a base-1e9 high/low pair instead --
-  each TRUNC call only ever sees a magnitude comfortably inside INTEGER32's
-  range this way -- and recombine via INTEGER64 multiply/add, neither of
-  which goes through TRUNC. Sufficient for every literal this AST's JSON
-  encoding can represent exactly as a double in the first place (up to
-  2^53), which covers every wide-integer literal this file can compile. }
-CONST
-  RADIX = 1000000000.0;
-VAR
-  neg: BOOLEAN;
-  hi: INTEGER; { Only plain INTEGER (and INTEGER8) mix implicitly with REAL
-                  arithmetic in this dialect (type_system.py's "INTEGER op
-                  REAL" rule) -- INTEGER32/64 do not, and FLOAT() only
-                  accepts plain INTEGER too -- so hi*RADIX below needs hi
-                  kept at this native 16-bit width, even though it is then
-                  widened to INTEGER64 for the final recombination. Safe
-                  for any literal whose magnitude is less than roughly
-                  32767 * 1e9, comfortably covering every practical
-                  INTEGER64/WORD64 literal. }
-  lo: INTEGER64;
-  mag: REAL;
-BEGIN
-  neg := val < 0.0;
-  IF neg THEN mag := 0.0 - val ELSE mag := val;
-  hi := TRUNC(mag / RADIX);
-  lo := TRUNC(mag - hi * RADIX);
-  IF neg THEN Real64ToInt64 := 0 - (hi * MakeRadix64 + lo)
-  ELSE Real64ToInt64 := hi * MakeRadix64 + lo;
-END;
 
 FUNCTION IntLiteralValue(expr_node: ADRMEM): INTEGER64;
 { The full signed value of an IsIntLiteralLike expression. }
@@ -524,28 +530,6 @@ BEGIN
   IsAggregateTk := (TypeKind(tk) = TK_ARRAY) OR (TypeKind(tk) = TK_RECORD) OR
                    (TypeKind(tk) = TK_LSTRING) OR (TypeKind(tk) = TK_STRING);
 END;
-
-CONST
-  SYSV_CLASS_MEMORY = 1;
-  SYSV_CLASS_COERCED = 2; { <=16-byte aggregate whose eightbytes all classify
-    INTEGER and/or SSE: passed/returned in one or two registers, each register
-    holding one "piece" (see SYSV_PIECE_* below). }
-
-  { Eightbyte classes, the NONE/INTEGER/SSE/MEMORY lattice merged by
-    SysVMergeClass below. }
-  SYSV_EB_NONE = 0;
-  SYSV_EB_INTEGER = 1;
-  SYSV_EB_SSE = 2;
-  SYSV_EB_MEMORY = 3;
-
-  { Per-eightbyte register piece kinds for a COERCED aggregate. The byte width
-    that goes with a piece is reported separately: it is meaningful only for
-    SYSV_PIECE_INTEGER (an integer of that many bytes); the float/double/vector
-    kinds have their width implied (4/8/8). }
-  SYSV_PIECE_INTEGER = 1;
-  SYSV_PIECE_FLOAT = 2;
-  SYSV_PIECE_DOUBLE = 3;
-  SYSV_PIECE_SSEVEC = 4; { two packed floats, i.e. <2 x float> }
 
 FUNCTION SysVMergeClass(a: INTEGER; b: INTEGER): INTEGER;
 { The System V AMD64 class-merge lattice. }
@@ -1179,3 +1163,6 @@ BEGIN
   ResolveTypeExpr := tid;
 END;
 
+
+BEGIN
+END.
