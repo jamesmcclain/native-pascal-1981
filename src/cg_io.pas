@@ -1,3 +1,16 @@
+{ Implementations for cg_io. }
+
+(*$INCLUDE:'jsonutil.inc'*)
+(*$INCLUDE:'cg_base.inc'*)
+(*$INCLUDE:'cg_util.inc'*)
+(*$INCLUDE:'cg_types.inc'*)
+(*$INCLUDE:'cg_symbols.inc'*)
+(*$INCLUDE:'cg_expr.inc'*)
+(*$INCLUDE:'cg_io.inc'*)
+IMPLEMENTATION OF cg_io;
+
+{ ============================ WRITE/WRITELN =============================== }
+
 { ============================ WRITE/WRITELN =============================== }
 
 FUNCTION EvalPrintfIntArg(node: ADRMEM): ADRMEM;
@@ -854,3 +867,6 @@ BEGIN
   discard := LLVMBuildCall2(builder, freadset_fnty, freadset_fn, call_args, 4, MakeCStr(''));
 END;
 
+
+BEGIN
+END.

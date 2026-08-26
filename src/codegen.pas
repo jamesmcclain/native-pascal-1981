@@ -137,13 +137,10 @@
 (*$INCLUDE:'cg_types.inc'*)
 (*$INCLUDE:'cg_symbols.inc'*)
 (*$INCLUDE:'cg_expr.inc'*)
+(*$INCLUDE:'cg_io.inc'*)
 PROGRAM pascal1981_codegen(input, output);
 
-USES jsonutil, cg_base, cg_util, cg_types, cg_symbols, cg_expr;
-
-{ ============================ WRITE/WRITELN =============================== }
-
-(*$INCLUDE:'codegen_io.inc'*)
+USES jsonutil, cg_base, cg_util, cg_types, cg_symbols, cg_expr, cg_io;
 
 { ============================== statements ================================ }
 
