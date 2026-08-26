@@ -15,7 +15,7 @@ Install these packages before you build the toolchain (for example, on Debian or
 - `indent` (C code formatting tool)
 - `python3` and `pip3` with the reference compiler package:
   ```bash
-  pip3 install 'https://github.com/jamesmcclain/pascal-1981/archive/99a8f3f4b4f5259a43301c9b8879f3fc891d3503.zip'
+  pip3 install 'https://github.com/jamesmcclain/pascal-1981/archive/7a6933647fedf53f35aa27a615a2e91cc350d485.zip'
   ```
 
 ## Repository Layout
