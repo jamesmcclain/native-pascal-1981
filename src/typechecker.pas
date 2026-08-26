@@ -291,12 +291,39 @@ BEGIN
   DefineSymbol := nsymbols;
 END;
 
+FUNCTION UpperStr(s: Str255): Str255;
+{ ASCII case fold, matching codegen's cg_util.pas UpperStr. Type names are
+  matched case-insensitively per the manual: "Lowercase and uppercase letters
+  are interchangeable, except in string literals" (IBM Pascal, Aug 1981,
+  Syntax and Vocabulary). }
+VAR
+  i, len: INTEGER;
+  res: Str255;
+  ch: CHAR;
+BEGIN
+  len := ORD(s[0]);
+  res[0] := CHR(len);
+  FOR i := 1 TO len DO
+  BEGIN
+    ch := s[i];
+    IF (ch >= 'a') AND (ch <= 'z') THEN
+      res[i] := CHR(ORD(ch) - 32)
+    ELSE
+      res[i] := ch;
+  END;
+  UpperStr := res;
+END;
+
 FUNCTION LookupType(name: Str255): INTEGER32;
+{ Case-insensitive -- see UpperStr. Both sides are folded rather than the
+  table being stored folded, so types[].name keeps the program's spelling. }
 VAR
   i: INTEGER32;
+  uname: Str255;
 BEGIN
+  uname := UpperStr(name);
   i := ntypes;
-  WHILE (i >= 1) AND THEN (types[i].name <> name) DO
+  WHILE (i >= 1) AND THEN (UpperStr(types[i].name) <> uname) DO
     i := i - 1;
   LookupType := i;
 END;
@@ -360,7 +387,7 @@ END;
 
 PROCEDURE ResolveTypeExpr(node: ADRMEM; VAR tk, aux, aux2, idx_tk: INTEGER);
 VAR
-  nt, name: Str255;
+  nt, name, uname: Str255;
   base_node, elem_node, fields_arr, tup, items, names_arr, ftype_node: ADRMEM;
   variants_arr, arm_node, tag_type_node: ADRMEM;
   inner_tk, inner_aux, inner_aux2, inner_idx: INTEGER;
@@ -377,6 +404,7 @@ BEGIN
   IF nt = 'NamedType' THEN
   BEGIN
     name := GetStr(node, 'name');
+    uname := UpperStr(name);
     { A user TYPE of this name wins over the predeclared meaning. IBM Pascal,
       Aug 1981, p.3-7: predeclared identifiers "can be re-defined by the
       programmer, but doing this is not recommended" -- and none of them is a
@@ -397,24 +425,24 @@ BEGIN
       aux2 := types[ti].aux2;
       idx_tk := types[ti].idx_tk;
     END
-    ELSE IF name = 'INTEGER' THEN tk := TK_INTEGER
-    ELSE IF name = 'WORD' THEN tk := TK_WORD
-    ELSE IF name = 'REAL' THEN tk := TK_REAL
-    ELSE IF name = 'BOOLEAN' THEN tk := TK_BOOLEAN
-    ELSE IF name = 'CHAR' THEN tk := TK_CHAR
-    ELSE IF name = 'STRING' THEN tk := TK_STRING
-    ELSE IF name = 'LSTRING' THEN tk := TK_STRING
+    ELSE IF uname = 'INTEGER' THEN tk := TK_INTEGER
+    ELSE IF uname = 'WORD' THEN tk := TK_WORD
+    ELSE IF uname = 'REAL' THEN tk := TK_REAL
+    ELSE IF uname = 'BOOLEAN' THEN tk := TK_BOOLEAN
+    ELSE IF uname = 'CHAR' THEN tk := TK_CHAR
+    ELSE IF uname = 'STRING' THEN tk := TK_STRING
+    ELSE IF uname = 'LSTRING' THEN tk := TK_STRING
     { Wide-integer/real extension names (feature-gated under the extended
       dialect): this v1 type-kind model doesn't track width, so each just
       aliases to its base kind -- matching how INTEGER32/WORD32/etc. behave
       identically to INTEGER/WORD for every check this stage performs. }
-    ELSE IF (name = 'INTEGER8') OR (name = 'INTEGER16') OR (name = 'INTEGER32') OR (name = 'INTEGER64') THEN tk := TK_INTEGER
-    ELSE IF (name = 'WORD8') OR (name = 'WORD16') OR (name = 'WORD32') OR (name = 'WORD64') THEN tk := TK_WORD
-    ELSE IF (name = 'REAL32') OR (name = 'REAL64') THEN tk := TK_REAL
+    ELSE IF (uname = 'INTEGER8') OR (uname = 'INTEGER16') OR (uname = 'INTEGER32') OR (uname = 'INTEGER64') THEN tk := TK_INTEGER
+    ELSE IF (uname = 'WORD8') OR (uname = 'WORD16') OR (uname = 'WORD32') OR (uname = 'WORD64') THEN tk := TK_WORD
+    ELSE IF (uname = 'REAL32') OR (uname = 'REAL64') THEN tk := TK_REAL
     { ADRMEM/ADSMEM (and the CPTR C-ABI alias) are address types -- codegen's
       opaque-pointer model treats them as "pointer to CHAR" (see
       types_resolve.py's resolve_type: ADRMEM -> PointerType(CHAR_TYPE)). }
-    ELSE IF (name = 'ADRMEM') OR (name = 'ADSMEM') OR (name = 'CPTR') THEN
+    ELSE IF (uname = 'ADRMEM') OR (uname = 'ADSMEM') OR (uname = 'CPTR') THEN
     BEGIN
       tk := TK_POINTER;
       aux := TK_CHAR;
@@ -422,10 +450,10 @@ BEGIN
     { C-ABI fixed-width scalar aliases (builtins_registry.py's
       C_ABI_TYPE_ALIASES): each resolves to the vintage type of matching
       flavor, since this stage doesn't distinguish integer/real width. }
-    ELSE IF name = 'CCHAR' THEN tk := TK_CHAR
-    ELSE IF (name = 'CSHORT') OR (name = 'CINT') OR (name = 'CLONG') OR (name = 'CSIZE_T') THEN tk := TK_INTEGER
-    ELSE IF name = 'CDOUBLE' THEN tk := TK_REAL
-    ELSE IF name = 'TEXT' THEN
+    ELSE IF uname = 'CCHAR' THEN tk := TK_CHAR
+    ELSE IF (uname = 'CSHORT') OR (uname = 'CINT') OR (uname = 'CLONG') OR (uname = 'CSIZE_T') THEN tk := TK_INTEGER
+    ELSE IF uname = 'CDOUBLE' THEN tk := TK_REAL
+    ELSE IF uname = 'TEXT' THEN
     BEGIN
       tk := TK_FILE;
       aux := TK_CHAR;
@@ -544,15 +572,16 @@ BEGIN
     END
     ELSE BEGIN
       name := GetStr(node, 'name');
+      uname := UpperStr(name);
       { Same shadowing rule as the NamedType branch above. }
       ti := 0;
       IF GetObjOrNil(node, 'param') = NIL THEN ti := LookupType(name);
       IF ti <> 0 THEN
         tk := types[ti].tk
-      ELSE IF name = 'CHAR' THEN tk := TK_CHAR
-      ELSE IF name = 'BOOLEAN' THEN tk := TK_BOOLEAN
-      ELSE IF name = 'WORD' THEN tk := TK_WORD
-      ELSE IF name = 'INTEGER' THEN tk := TK_INTEGER
+      ELSE IF uname = 'CHAR' THEN tk := TK_CHAR
+      ELSE IF uname = 'BOOLEAN' THEN tk := TK_BOOLEAN
+      ELSE IF uname = 'WORD' THEN tk := TK_WORD
+      ELSE IF uname = 'INTEGER' THEN tk := TK_INTEGER
       ELSE BEGIN
         AddError('SET OF <base> requires an ordinal base type');
         tk := TK_UNKNOWN;

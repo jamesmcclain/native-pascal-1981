@@ -40,12 +40,19 @@ BEGIN
 END;
 
 FUNCTION LookupNamedType(name: Str255): INTEGER;
+{ Case-insensitive, per the manual's "Lowercase and uppercase letters are
+  interchangeable, except in string literals" (IBM Pascal, Aug 1981, Syntax
+  and Vocabulary). Both sides are folded rather than the table being stored
+  folded, so types[].name keeps the spelling the program used for
+  diagnostics. }
 VAR
   i, found: INTEGER;
+  uname: Str255;
 BEGIN
   found := 0;
+  uname := UpperStr(name);
   FOR i := 14 TO ntypes DO
-    IF types[i].name = name THEN found := i;
+    IF UpperStr(types[i].name) = uname THEN found := i;
   LookupNamedType := found;
 END;
 
@@ -845,18 +852,20 @@ FUNCTION TypeNameStrToTk(nm: Str255): INTEGER;
   this only needs to answer "what integer width is this". }
 VAR
   tid: INTEGER;
+  unm: Str255;
 BEGIN
-  IF (nm = 'INTEGER') OR (nm = 'INTEGER16') THEN tid := TK_INTEGER
-  ELSE IF (nm = 'WORD') OR (nm = 'WORD16') THEN tid := TK_WORD
-  ELSE IF nm = 'INTEGER8' THEN tid := TK_INTEGER8
-  ELSE IF nm = 'WORD8' THEN tid := TK_WORD8
-  ELSE IF nm = 'INTEGER32' THEN tid := TK_INTEGER32
-  ELSE IF nm = 'WORD32' THEN tid := TK_WORD32
-  ELSE IF nm = 'INTEGER64' THEN tid := TK_INTEGER64
-  ELSE IF nm = 'WORD64' THEN tid := TK_WORD64
-  ELSE IF nm = 'CSHORT' THEN tid := TK_INTEGER
-  ELSE IF nm = 'CINT' THEN tid := TK_INTEGER32
-  ELSE IF (nm = 'CLONG') OR (nm = 'CSIZE_T') THEN tid := TK_INTEGER64
+  unm := UpperStr(nm);
+  IF (unm = 'INTEGER') OR (unm = 'INTEGER16') THEN tid := TK_INTEGER
+  ELSE IF (unm = 'WORD') OR (unm = 'WORD16') THEN tid := TK_WORD
+  ELSE IF unm = 'INTEGER8' THEN tid := TK_INTEGER8
+  ELSE IF unm = 'WORD8' THEN tid := TK_WORD8
+  ELSE IF unm = 'INTEGER32' THEN tid := TK_INTEGER32
+  ELSE IF unm = 'WORD32' THEN tid := TK_WORD32
+  ELSE IF unm = 'INTEGER64' THEN tid := TK_INTEGER64
+  ELSE IF unm = 'WORD64' THEN tid := TK_WORD64
+  ELSE IF unm = 'CSHORT' THEN tid := TK_INTEGER
+  ELSE IF unm = 'CINT' THEN tid := TK_INTEGER32
+  ELSE IF (unm = 'CLONG') OR (unm = 'CSIZE_T') THEN tid := TK_INTEGER64
   ELSE
   BEGIN
     AbortWith2('codegen: RETYPE target type not supported: ', nm);
@@ -867,7 +876,7 @@ END;
 
 FUNCTION ResolveTypeExpr(te: ADRMEM): INTEGER;
 VAR
-  nm, flavor, space_name: Str255;
+  nm, unm, flavor, space_name: Str255;
   nt: Str255;
   tid: INTEGER;
   elem_tid, lo, hi, space_code: INTEGER;
@@ -891,6 +900,7 @@ BEGIN
   IF nt = 'NamedType' THEN
   BEGIN
     nm := GetStr(te, 'name');
+    unm := UpperStr(nm);
     { A user TYPE of this name wins over the predeclared meaning. IBM Pascal,
       Aug 1981, p.3-7: predeclared identifiers "can be re-defined by the
       programmer, but doing this is not recommended" -- and none of them is a
@@ -905,31 +915,31 @@ BEGIN
     named_tid := 0;
     IF GetObjOrNil(te, 'param') = NIL THEN named_tid := LookupNamedType(nm);
     IF named_tid <> 0 THEN tid := named_tid
-    ELSE IF (nm = 'INTEGER') OR (nm = 'INTEGER16') THEN tid := TK_INTEGER
-    ELSE IF nm = 'REAL' THEN tid := TK_REAL
-    ELSE IF nm = 'BOOLEAN' THEN tid := TK_BOOLEAN
-    ELSE IF nm = 'CHAR' THEN tid := TK_CHAR
-    ELSE IF (nm = 'WORD') OR (nm = 'WORD16') THEN tid := TK_WORD
-    ELSE IF nm = 'INTEGER8' THEN tid := TK_INTEGER8
-    ELSE IF nm = 'WORD8' THEN tid := TK_WORD8
-    ELSE IF nm = 'INTEGER32' THEN tid := TK_INTEGER32
-    ELSE IF nm = 'WORD32' THEN tid := TK_WORD32
-    ELSE IF nm = 'INTEGER64' THEN tid := TK_INTEGER64
-    ELSE IF nm = 'WORD64' THEN tid := TK_WORD64
-    ELSE IF (nm = 'REAL32') THEN tid := TK_REAL32
-    ELSE IF nm = 'REAL64' THEN tid := TK_REAL
-    ELSE IF nm = 'ADRMEM' THEN tid := TK_ADRMEM
+    ELSE IF (unm = 'INTEGER') OR (unm = 'INTEGER16') THEN tid := TK_INTEGER
+    ELSE IF unm = 'REAL' THEN tid := TK_REAL
+    ELSE IF unm = 'BOOLEAN' THEN tid := TK_BOOLEAN
+    ELSE IF unm = 'CHAR' THEN tid := TK_CHAR
+    ELSE IF (unm = 'WORD') OR (unm = 'WORD16') THEN tid := TK_WORD
+    ELSE IF unm = 'INTEGER8' THEN tid := TK_INTEGER8
+    ELSE IF unm = 'WORD8' THEN tid := TK_WORD8
+    ELSE IF unm = 'INTEGER32' THEN tid := TK_INTEGER32
+    ELSE IF unm = 'WORD32' THEN tid := TK_WORD32
+    ELSE IF unm = 'INTEGER64' THEN tid := TK_INTEGER64
+    ELSE IF unm = 'WORD64' THEN tid := TK_WORD64
+    ELSE IF (unm = 'REAL32') THEN tid := TK_REAL32
+    ELSE IF unm = 'REAL64' THEN tid := TK_REAL
+    ELSE IF unm = 'ADRMEM' THEN tid := TK_ADRMEM
     { C-ABI fixed-width aliases for [C]; EXTERN declarations, mapped the
       same way the Python reference's BUILTIN_TYPE_ALIASES does: CCHAR->i8,
       CSHORT->i16, CINT->i32, CLONG/CSIZE_T->i64 (LP64), CDOUBLE->f64. }
-    ELSE IF nm = 'CCHAR' THEN tid := TK_CHAR
-    ELSE IF nm = 'CSHORT' THEN tid := TK_INTEGER
-    ELSE IF nm = 'CINT' THEN tid := TK_INTEGER32
-    ELSE IF (nm = 'CLONG') OR (nm = 'CSIZE_T') THEN tid := TK_INTEGER64
-    ELSE IF nm = 'CDOUBLE' THEN tid := TK_REAL
-    ELSE IF nm = 'TEXT' THEN
+    ELSE IF unm = 'CCHAR' THEN tid := TK_CHAR
+    ELSE IF unm = 'CSHORT' THEN tid := TK_INTEGER
+    ELSE IF unm = 'CINT' THEN tid := TK_INTEGER32
+    ELSE IF (unm = 'CLONG') OR (unm = 'CSIZE_T') THEN tid := TK_INTEGER64
+    ELSE IF unm = 'CDOUBLE' THEN tid := TK_REAL
+    ELSE IF unm = 'TEXT' THEN
       tid := RegisterType(TK_FILE, TK_CHAR, 0, 1, i8ptrty)
-    ELSE IF nm = 'STRING' THEN
+    ELSE IF unm = 'STRING' THEN
     BEGIN
       IF GetObjOrNil(te, 'param') = NIL THEN hi := 256
       ELSE hi := GetInt(te, 'param');
@@ -1130,9 +1140,10 @@ BEGIN
     ELSE IF (NodeType(GetObj(te, 'base')) = 'NamedType') OR (NodeType(GetObj(te, 'base')) = 'BuiltinType') THEN
     BEGIN
       nm := GetStr(GetObj(te, 'base'), 'name');
-      IF nm = 'CHAR' THEN tid := RegisterType(TK_SET, TK_CHAR, 0, 255, setty)
-      ELSE IF nm = 'BOOLEAN' THEN tid := RegisterType(TK_SET, TK_BOOLEAN, 0, 1, setty)
-      ELSE IF (nm = 'INTEGER') OR (nm = 'WORD') THEN tid := RegisterType(TK_SET, TK_INTEGER, 0, 255, setty)
+      unm := UpperStr(nm);
+      IF unm = 'CHAR' THEN tid := RegisterType(TK_SET, TK_CHAR, 0, 255, setty)
+      ELSE IF unm = 'BOOLEAN' THEN tid := RegisterType(TK_SET, TK_BOOLEAN, 0, 1, setty)
+      ELSE IF (unm = 'INTEGER') OR (unm = 'WORD') THEN tid := RegisterType(TK_SET, TK_INTEGER, 0, 255, setty)
       ELSE
       BEGIN
         AbortWith2('codegen: SET OF <base> requires an ordinal base type (INTEGER subrange, CHAR, WORD, or BOOLEAN), got: ', nm);
