@@ -5,6 +5,7 @@ UNIT cg_symbols;
 USES jsonutil, cg_base, cg_util, cg_types;
 
 FUNCTION LookupSym(name: Str255): INTEGER32;
+FUNCTION LoadFileFcbPtr(name: Str255): ADRMEM;
 PROCEDURE PushScope;
 PROCEDURE PopScope;
 FUNCTION CurScopeBase: INTEGER32;

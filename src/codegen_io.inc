@@ -177,22 +177,6 @@ BEGIN
   END;
 END;
 
-FUNCTION LoadFileFcbPtr(name: Str255): ADRMEM;
-{ Loads a FILE variable's opaque i8* handle and bitcasts it to filefcbty* --
-  every RESET/REWRITE/GET/PUT/CLOSE/DISCARD/ASSIGN/EOF/EOLN call site's
-  first step. }
-VAR
-  symi: INTEGER32;
-  handle: ADRMEM;
-BEGIN
-  symi := LookupSym(name);
-  IF symi = 0 THEN AbortWith2('codegen: undefined variable: ', name);
-  IF TypeKind(symbols[symi].tk) <> TK_FILE THEN
-    AbortWith2('codegen: not a FILE variable: ', name);
-  handle := LLVMBuildLoad2(builder, i8ptrty, symbols[symi].llvm_val, MakeCStr(''));
-  LoadFileFcbPtr := LLVMBuildBitCast(builder, handle, LLVMPointerType(filefcbty, 0), MakeCStr(''));
-END;
-
 FUNCTION GetDefaultInputFcbPtr: ADRMEM;
 { Loads the predeclared INPUT/OUTPUT FCBs (registered unconditionally for
   every PROGRAM by RegisterPredeclaredFiles) and lazily binds them to real

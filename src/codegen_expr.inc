@@ -232,7 +232,6 @@ BEGIN
 END;
 
 PROCEDURE ResolveStringExprCharsLen(expr: ADRMEM; VAR chars_ptr: ADRMEM; VAR len_val: ADRMEM); FORWARD;
-FUNCTION LoadFileFcbPtr(name: Str255): ADRMEM; FORWARD;
 
 FUNCTION StaticDesignatorType(node: ADRMEM): INTEGER;
 { Type-only counterpart of ComputeDesignatorAddress: walks the same
