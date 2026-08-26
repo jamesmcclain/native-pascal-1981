@@ -22,10 +22,13 @@ STAGES := lexer parser typechecker codegen
 # Every stage splices jsonutil.inc, so a change to the interface must rebuild
 # all of them -- $INCLUDE is textual, and make cannot see through it.
 STAGE_SRCS := src/jsonutil.pas src/jsonutil.inc scripts/build-stage.sh
-# codegen additionally splices cg_base.inc and the codegen_*.inc fragments, and
-# links cg_base.pas as a component object. These are attached to the codegen
-# targets alone, below, rather than to every stage.
-CODEGEN_SRCS := src/cg_base.pas src/cg_base.inc src/cg_util.pas src/cg_util.inc src/cg_types.pas src/cg_types.inc src/cg_symbols.pas src/cg_symbols.inc src/cg_expr.pas src/cg_expr.inc src/cg_io.pas src/cg_io.inc src/cg_stmt.pas src/cg_stmt.inc src/cg_decl.pas src/cg_decl.inc $(wildcard src/codegen_*.inc)
+# codegen is a composition root over these units: it splices every one of
+# their .inc interfaces and links every .pas as a component object. Listed
+# lowest layer first -- the same order scripts/build-stage.sh compiles and
+# links them in. Attached to the codegen targets alone, below, rather than to
+# every stage.
+CODEGEN_UNITS := cg_base cg_util cg_types cg_symbols cg_expr cg_io cg_stmt cg_decl
+CODEGEN_SRCS := $(foreach u,$(CODEGEN_UNITS),src/$(u).pas src/$(u).inc)
 GEN1_BINS := $(addprefix $(BUILD_DIR)/gen1/,$(STAGES))
 GEN2_BINS := $(addprefix $(BUILD_DIR)/gen2/,$(STAGES))
 GEN3_BINS := $(addprefix $(BUILD_DIR)/gen3/,$(STAGES))

@@ -53,10 +53,14 @@ component_objs=()
 native_codegen="${NATIVE_CODEGEN:-}"
 native_jsonutil="${NATIVE_JSONUTIL:-$native_codegen}"
 
-# codegen is a composition root over the cg_base unit, so its implementation
-# is compiled to its own object and linked alongside.  This holds for gen1 too:
-# the Python reference understands separately compiled units, so there is no
-# monolithic fallback source to maintain.
+# codegen is a composition root over the cg_* units, so each one's
+# implementation is compiled to its own object and linked alongside. Listed
+# lowest layer first: cg_base holds the shared state and the LLVM-C/libc
+# prototypes, then utilities, the type model and symbol tables, then the four
+# lowering layers (expressions, I/O, statements, declarations), each of which
+# only ever reaches downward. This holds for gen1 too: the Python reference
+# understands separately compiled units, so there is no monolithic fallback
+# source to maintain.
 stage_file="$(basename "$stage_src")"
 component_units=()
 if [ "$stage_file" = "codegen.pas" ]; then
