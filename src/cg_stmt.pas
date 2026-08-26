@@ -1,3 +1,17 @@
+{ Implementations for cg_stmt. }
+
+(*$INCLUDE:'jsonutil.inc'*)
+(*$INCLUDE:'cg_base.inc'*)
+(*$INCLUDE:'cg_util.inc'*)
+(*$INCLUDE:'cg_types.inc'*)
+(*$INCLUDE:'cg_symbols.inc'*)
+(*$INCLUDE:'cg_expr.inc'*)
+(*$INCLUDE:'cg_io.inc'*)
+(*$INCLUDE:'cg_stmt.inc'*)
+IMPLEMENTATION OF cg_stmt;
+
+{ ============================== statements ================================ }
+
 { ============================== statements ================================ }
 
 PROCEDURE CodegenStmt(stmt: ADRMEM); FORWARD;
@@ -1554,3 +1568,6 @@ BEGIN
   LeaveStmtLevel;
 END;
 
+
+BEGIN
+END.
