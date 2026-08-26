@@ -2409,6 +2409,34 @@ BEGIN
   END;
 END;
 
+PROCEDURE ParseInterfaceDirectiveInto(node: ADRMEM);
+{ An interface routine header is body-less by construction, so a directive is
+  never required here -- but EXTERN/EXTERNAL may still be written to say that
+  the body lives in a C library or another object rather than in this unit's
+  own IMPLEMENTATION (the routine_directive production in
+  docs/ebnf_grammar.md). The typechecker's IsForeignRoutineDecl reads it, as
+  does codegen's IsCForeignDecl for the SysV C ABI.
+
+  FORWARD is deliberately not accepted: it promises a definition later in the
+  same declaration part, which an INTERFACE does not have. }
+VAR
+  directive_str: Str255;
+  has_directive: BOOLEAN;
+BEGIN
+  has_directive := FALSE;
+  IF (CurKind = 'EXTERN') OR (CurKind = 'EXTERNAL') THEN
+  BEGIN
+    directive_str := CurKind;
+    has_directive := TRUE;
+    pos := pos + 1;
+    Expect('SEMICOLON');
+  END;
+  IF has_directive THEN
+    AddStringField(node, 'directive', directive_str)
+  ELSE
+    AddNullField(node, 'directive');
+END;
+
 FUNCTION ParseInterfaceProcDecl: ADRMEM;
 VAR
   node, params_arr, attrs_arr: ADRMEM;
@@ -2430,7 +2458,7 @@ BEGIN
   AddField(node, 'params', params_arr);
   AddField(node, 'attributes', attrs_arr);
   AddNullField(node, 'body');
-  AddNullField(node, 'directive');
+  ParseInterfaceDirectiveInto(node);
   AddBoolField(node, 'is_exported_entry', FALSE);
   ParseInterfaceProcDecl := node;
 END;
@@ -2459,7 +2487,7 @@ BEGIN
   AddField(node, 'return_type', ret_type);
   AddField(node, 'attributes', attrs_arr);
   AddNullField(node, 'body');
-  AddNullField(node, 'directive');
+  ParseInterfaceDirectiveInto(node);
   AddBoolField(node, 'is_exported_entry', FALSE);
   ParseInterfaceFuncDecl := node;
 END;

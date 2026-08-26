@@ -945,7 +945,7 @@ BEGIN
     END;
 END;
 
-PROCEDURE CodegenRoutineDecl(decl: ADRMEM; is_func: BOOLEAN);
+PROCEDURE CodegenRoutineDeclInner(decl: ADRMEM; is_func: BOOLEAN);
 VAR
   name: Str255;
   params_arr, body_blk: ADRMEM;
@@ -1430,6 +1430,58 @@ BEGIN
     cur_fn := main_fn;
     LLVMPositionBuilderAtEnd(builder, entry_bb);
   END;
+END;
+
+FUNCTION IsExternDirectiveDecl(decl: ADRMEM): BOOLEAN;
+{ True when this declaration carries the EXTERN/EXTERNAL directive in the
+  slot a block would occupy -- as opposed to the [C]/[EXTERN] attribute form
+  IsCForeignDecl looks at. }
+VAR
+  directive: Str255;
+  found: BOOLEAN;
+BEGIN
+  found := FALSE;
+  directive := GetStr(decl, 'directive');
+  IF directive = 'EXTERN' THEN found := TRUE;
+  IF directive = 'EXTERNAL' THEN found := TRUE;
+  IsExternDirectiveDecl := found;
+END;
+
+PROCEDURE CodegenRoutineDecl(decl: ADRMEM; is_func: BOOLEAN);
+{ The 1981 manual's mechanism for a UNIT whose IMPLEMENTATION does not supply
+  every body itself: "any implementation section that does not implement all
+  interface procedures and functions must declare those not implemented with
+  the EXTERN directive at the start of the implementation" (IBM Pascal, Aug
+  1981, Units chapter), which is how one INTERFACE is split across several
+  IMPLEMENTATIONs, or shared with assembly / another language.
+
+  Such a redeclaration names a routine the spliced INTERFACE header has
+  already declared, and carries no body of its own, so the inner routine
+  would reject it as a duplicate. It is a no-op here instead: the placeholder
+  the interface created is already exactly the LLVM declaration this EXTERN
+  asks for, and re-lowering it would re-apply the SysV byval/sret parameter
+  attributes to the same function a second time.
+
+  Deliberately narrow -- only a body-less EXTERN/EXTERNAL directive against
+  an existing body-less placeholder is absorbed. A second real definition, or
+  a bare bodyless redeclaration with no directive, still aborts in the inner
+  routine, and the typechecker has already checked this declaration's
+  signature against the interface's (ValidateRoutineExport). }
+VAR
+  existing: INTEGER32;
+  absorb: BOOLEAN;
+BEGIN
+  absorb := FALSE;
+  { Plain AND is not short-circuit in this dialect, so routines[existing] must
+    not be indexed in the same expression that tests existing <> 0. }
+  IF NodeType(GetObj(decl, 'body')) <> 'Block' THEN
+    IF IsExternDirectiveDecl(decl) THEN
+    BEGIN
+      existing := LookupRoutine(GetStr(decl, 'name'));
+      IF existing <> 0 THEN
+        IF NOT routines[existing].has_body THEN absorb := TRUE;
+    END;
+  IF NOT absorb THEN CodegenRoutineDeclInner(decl, is_func);
 END;
 
 PROCEDURE CodegenTypeDecl(decl: ADRMEM);

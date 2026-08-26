@@ -1735,6 +1735,52 @@ BEGIN
   FindVarDeclContainingName := found;
 END;
 
+FUNCTION IsForeignRoutineDecl(decl: ADRMEM): BOOLEAN;
+{ True for a routine whose body deliberately lives outside this compiland --
+  a [C] library entry (puts, malloc, the LLVM-C API), or an EXTERN/EXTERNAL
+  Pascal routine defined in a separately compiled object. An IMPLEMENTATION
+  cannot supply a body for one of these, so ValidateImplementationContract
+  below must not demand one.
+
+  Mirrors codegen_decl.inc's IsCForeignDecl, but deliberately broader: that
+  one answers "does this need the SysV C ABI", which requires [C] *and* an
+  extern marker, whereas this one answers "is a Pascal body impossible", for
+  which either marker alone is enough.
+
+  Note this checks the interface's own declarations rather than filtering by
+  the UNIT export list. The Python reference validates the contract by
+  looping the export list instead, which would also let a [C] declaration
+  through -- but it silently skips validation entirely for a unit written
+  `UNIT foo;` with no parenthesised list, which is exactly the shape
+  src/cg_base.inc uses. Exempting by kind keeps the contract enforced there. }
+VAR
+  attrs_arr, item: ADRMEM;
+  i, nattrs: INTEGER32;
+  attr_nm, directive: Str255;
+  found: BOOLEAN;
+BEGIN
+  found := FALSE;
+  attrs_arr := GetObj(decl, 'attributes');
+  nattrs := cJSON_GetArraySize(attrs_arr);
+  FOR i := 0 TO nattrs - 1 DO
+  BEGIN
+    item := cJSON_GetArrayItem(attrs_arr, i);
+    attr_nm := GetStr(item, 'name');
+    { A bare `attr_nm = 'C'` comparison doesn't typecheck: a single-quoted
+      single-character literal lexes as CHAR, not a length-1 LSTRING, so
+      LSTRING = CHAR has no defined comparison. Compare the length byte
+      (index 0, per the LSTRING index-0-is-length-as-CHAR convention) and
+      the first character instead -- same idiom as codegen_decl.inc:504. }
+    IF (ORD(attr_nm[0]) = 1) AND (attr_nm[1] = 'C') THEN found := TRUE;
+    IF attr_nm = 'EXTERN' THEN found := TRUE;
+    IF attr_nm = 'EXTERNAL' THEN found := TRUE;
+  END;
+  directive := GetStr(decl, 'directive');
+  IF directive = 'EXTERN' THEN found := TRUE;
+  IF directive = 'EXTERNAL' THEN found := TRUE;
+  IsForeignRoutineDecl := found;
+END;
+
 PROCEDURE ValidateRoutineExport(iface_decl, impl_decls: ADRMEM; name: Str255);
 { An exported PROCEDURE/FUNCTION needs a same-named, same-shaped definition
   in the IMPLEMENTATION -- missing entirely, or present with a different
@@ -1834,7 +1880,9 @@ PROCEDURE ValidateImplementationContract(root, own_iface: ADRMEM);
   there is nothing further to validate here in that case. Every exported
   PROCEDURE/FUNCTION/VAR must have a matching, conformant declaration in
   root's own decls; TYPE/CONST are shared by reference from the splice and
-  are deliberately not required to be redeclared (see ValidateVarExport). }
+  are deliberately not required to be redeclared (see ValidateVarExport), and
+  a [C]/EXTERN routine is exempt because its body is in another object
+  entirely (see IsForeignRoutineDecl). }
 VAR
   iface_decls, impl_decls, decl, names_arr: ADRMEM;
   n, i, m, j: INTEGER32;
@@ -1849,8 +1897,13 @@ BEGIN
     BEGIN
       decl := cJSON_GetArrayItem(iface_decls, i);
       dnt := NodeType(decl);
+      { A [C]/EXTERN routine is declared here only so callers can bind to it;
+        its body is in a C library or another object, so it is exempt. }
       IF (dnt = 'ProcDecl') OR (dnt = 'FuncDecl') THEN
-        ValidateRoutineExport(decl, impl_decls, GetStr(decl, 'name'))
+      BEGIN
+        IF NOT IsForeignRoutineDecl(decl) THEN
+          ValidateRoutineExport(decl, impl_decls, GetStr(decl, 'name'));
+      END
       ELSE IF dnt = 'VarDecl' THEN
       BEGIN
         names_arr := GetObj(decl, 'names');

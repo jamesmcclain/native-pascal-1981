@@ -1,0 +1,26 @@
+(*$INCLUDE:'units_cextern.cwrap.inc'*)
+IMPLEMENTATION OF cwrap;
+
+{ Tally gets its one definition here; the spliced header gave every importer
+  an extern declaration of it.  abs is deliberately NOT defined: it is the
+  [C] EXTERN declared in the interface, resolved at link time against libc. }
+VAR
+  Tally: INTEGER;
+
+PROCEDURE Bump;
+BEGIN
+  Tally := Tally + 1;
+END;
+
+FUNCTION TagLen(t: Tag): INTEGER;
+BEGIN
+  TagLen := ORD(t[0]);
+END;
+
+FUNCTION Magnitude(x: INTEGER32): INTEGER32;
+BEGIN
+  Magnitude := abs(x);
+END;
+
+BEGIN
+END.
