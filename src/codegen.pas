@@ -133,13 +133,10 @@
 
 (*$INCLUDE:'jsonutil.inc'*)
 (*$INCLUDE:'cg_base.inc'*)
+(*$INCLUDE:'cg_util.inc'*)
 PROGRAM pascal1981_codegen(input, output);
 
-USES jsonutil, cg_base;
-
-{ ============================== utilities ============================== }
-
-(*$INCLUDE:'codegen_util.inc'*)
+USES jsonutil, cg_base, cg_util;
 
 { ============================== type model =============================== }
 

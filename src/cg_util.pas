@@ -1,3 +1,13 @@
+{ Implementations for cg_util. }
+
+(*$INCLUDE:'jsonutil.inc'*)
+(*$INCLUDE:'cg_base.inc'*)
+(*$INCLUDE:'cg_util.inc'*)
+IMPLEMENTATION OF cg_util;
+
+VAR
+  expr_depth, stmt_depth: INTEGER;
+
 { ============================== utilities ============================== }
 
 PROCEDURE AbortWith(msg: Str255);
@@ -81,13 +91,6 @@ END;
   ("Expression too complex", Aug-1981 manual, appendix A). The reference
   compiler enforces the same ceilings on its own AST walks, for the same
   reason: it too can be handed an AST from stdin. }
-
-CONST
-  MAX_EXPR_DEPTH = 64;
-  MAX_STMT_DEPTH = 256;
-
-VAR
-  expr_depth, stmt_depth: INTEGER;
 
 PROCEDURE EnterExprLevel;
 BEGIN
@@ -201,3 +204,5 @@ BEGIN
   copy_result := LLVMBuildCall2(builder, memmove_fnty, memmove_fn, copy_call_args, 3, MakeCStr(''));
 END;
 
+BEGIN
+END.
