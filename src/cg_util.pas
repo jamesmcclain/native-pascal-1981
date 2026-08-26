@@ -167,6 +167,25 @@ BEGIN
   END;
 END;
 
+FUNCTION UpperStr(s: Str255): Str255;
+VAR
+  i, len: INTEGER;
+  res: Str255;
+  ch: CHAR;
+BEGIN
+  len := ORD(s[0]);
+  res[0] := CHR(len);
+  FOR i := 1 TO len DO
+  BEGIN
+    ch := s[i];
+    IF (ch >= 'a') AND (ch <= 'z') THEN
+      res[i] := CHR(ORD(ch) - 32)
+    ELSE
+      res[i] := ch;
+  END;
+  UpperStr := res;
+END;
+
 FUNCTION AllocPtrArray(n: INTEGER32): ADRMEM;
 { The N-element generalization of the malloc-and-cast idiom jsonutil.pas
   already uses for C strings: llvm-c takes LLVMTypeRef*/LLVMValueRef*

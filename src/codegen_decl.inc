@@ -279,25 +279,6 @@ BEGIN
   BuildUnitInitOrder(root, local_ifaces);
 END;
 
-FUNCTION UpperStr(s: Str255): Str255;
-VAR
-  i, len: INTEGER;
-  res: Str255;
-  ch: CHAR;
-BEGIN
-  len := ORD(s[0]);
-  res[0] := CHR(len);
-  FOR i := 1 TO len DO
-  BEGIN
-    ch := s[i];
-    IF (ch >= 'a') AND (ch <= 'z') THEN
-      res[i] := CHR(ORD(ch) - 32)
-    ELSE
-      res[i] := ch;
-  END;
-  UpperStr := res;
-END;
-
 PROCEDURE InitFileStorage(slot: ADRMEM; elem_tid, structure: INTEGER; var_name: Str255);
 { Allocates the FCB + inline element buffer at the file variable's own
   storage site and stores an opaque i8* to the FCB into `slot` -- mirrors

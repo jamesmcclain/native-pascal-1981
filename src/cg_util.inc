@@ -21,6 +21,7 @@ PROCEDURE EnterStmtLevel;
 PROCEDURE LeaveStmtLevel;
 FUNCTION DecodeStringLiteral(raw: Str255): Str255;
 PROCEDURE AppendChar(VAR s: Str255; ch: CHAR);
+FUNCTION UpperStr(s: Str255): Str255;
 FUNCTION AllocPtrArray(n: INTEGER32): ADRMEM;
 PROCEDURE SetPtrArrayElem(arr: ADRMEM; idx: INTEGER32; v: ADRMEM);
 PROCEDURE EmitBlockCopy(dst: ADRMEM; src: ADRMEM; nbytes: INTEGER32);

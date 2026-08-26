@@ -192,11 +192,16 @@ assert_ast_rejected() {
 
 for source in parser typechecker codegen; do
   source_file="src/$source.pas"
-  if [ "$source" = codegen ]; then source_file=src/codegen_util.inc; fi
+  if [ "$source" = codegen ]; then
+    source_file=src/cg_util.inc
+    diagnostic_file=src/cg_util.pas
+  else
+    diagnostic_file="$source_file"
+  fi
   if grep -Eq 'MAX_EXPR_DEPTH[[:space:]]*=[[:space:]]*64;' "$source_file" &&
-     grep -qF 'deeper than 64' "$source_file" &&
+     grep -qF 'deeper than 64' "$diagnostic_file" &&
      grep -Eq 'MAX_STMT_DEPTH[[:space:]]*=[[:space:]]*256;' "$source_file" &&
-     grep -qF 'deeper than 256' "$source_file"; then
+     grep -qF 'deeper than 256' "$diagnostic_file"; then
     pass "$source depth constants and diagnostics agree"
   else
     fail "$source depth constants and diagnostics agree"

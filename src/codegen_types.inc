@@ -138,7 +138,6 @@ BEGIN
 END;
 
 FUNCTION Real64ToInt64(val: REAL): INTEGER64; FORWARD;
-FUNCTION UpperStr(s: Str255): Str255; FORWARD;
 
 FUNCTION FoldConstInt(expr_node: ADRMEM; VAR folded: INTEGER64): BOOLEAN;
 { Fold the integer-only constant-expression subset used by the reference
