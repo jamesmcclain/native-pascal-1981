@@ -48,9 +48,32 @@ fi
 
 jsonutil_obj="$work_dir/jsonutil.o"
 stage_ll="$work_dir/$(basename "$stage_src" .pas).ll"
+component_objs=()
 
 native_codegen="${NATIVE_CODEGEN:-}"
 native_jsonutil="${NATIVE_JSONUTIL:-$native_codegen}"
+
+# Gen1 is built by the installed Python frontend, which predates separately
+# compiled Pascal units.  Use the preserved monolith there.  Once a native
+# code generator exists, build the real composition root and its units.
+stage_file="$(basename "$stage_src")"
+component_units=()
+if [ "$stage_file" = "codegen.pas" ]; then
+  if [ -n "$native_codegen" ]; then
+    component_units=(cg_base.pas)
+  else
+    stage_file="codegen_gen1.pas"
+  fi
+fi
+
+# The unit objects are compiled inside the ( cd "$src_dir" ... ) subshell below,
+# but an array appended to inside a subshell does not survive it -- doing that
+# silently dropped every component object from the link line, so the stage
+# failed with undefined references to cg_base's exported state. Compute the
+# paths here, in the parent shell, and let the subshell only create the files.
+for unit_src in "${component_units[@]}"; do
+  component_objs+=("$work_dir/${unit_src%.pas}.o")
+done
 
 PYTHON="${PYTHON:-python3}"
 
@@ -76,15 +99,26 @@ CLANG="${CLANG:-${CC:-clang}}"
   else
     pascal1981 --dialect extended -c jsonutil.pas -o "$jsonutil_obj"
   fi
+  for unit_src in "${component_units[@]}"; do
+    unit_name="${unit_src%.pas}"
+    unit_ll="$work_dir/$unit_name.ll"
+    unit_obj="$work_dir/$unit_name.o"
+    if [ -n "$native_codegen" ]; then
+      run_frontend "$unit_src" | "$native_codegen" > "$unit_ll"
+    else
+      pascal1981 --dialect extended -S "$unit_src" -o "$unit_ll"
+    fi
+    "$CLANG" $STAGE_OPT -c "$unit_ll" -o "$unit_obj"
+  done
   if [ -n "$native_codegen" ]; then
-    run_frontend "$(basename "$stage_src")" | "$native_codegen" > "$stage_ll"
+    run_frontend "$stage_file" | "$native_codegen" > "$stage_ll"
   else
-    pascal1981 --dialect extended -S "$(basename "$stage_src")" -o "$stage_ll"
+    pascal1981 --dialect extended -S "$stage_file" -o "$stage_ll"
   fi
 )
 
 mkdir -p "$(dirname "$out_bin")"
-"$CLANG" $STAGE_OPT "$stage_ll" "$jsonutil_obj" -lcjson \
+"$CLANG" $STAGE_OPT "$stage_ll" "$jsonutil_obj" "${component_objs[@]}" -lcjson \
   "${extra_args[@]}" \
   "$runtime_lib" \
   -o "$out_bin"

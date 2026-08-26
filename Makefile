@@ -49,16 +49,16 @@ $(BIN_DIR):
 
 bootstrap: $(BOOTSTRAP_BINS)
 
-$(BUILD_DIR)/gen1/%: src/%.pas src/jsonutil.pas scripts/build-stage.sh $(RUNTIME_LIB) | $(BUILD_DIR)/gen1
+$(BUILD_DIR)/gen1/%: src/%.pas src/jsonutil.pas src/cg_base.pas src/cg_base.inc scripts/build-stage.sh $(RUNTIME_LIB) | $(BUILD_DIR)/gen1
 	./scripts/build-stage.sh $< $@ $(if $(filter codegen,$*),$(LLVM_LINK_FLAGS))
 
-$(BUILD_DIR)/gen2/%: src/%.pas src/jsonutil.pas scripts/build-stage.sh $(GEN1_BINS) $(RUNTIME_LIB) | $(BUILD_DIR)/gen2
+$(BUILD_DIR)/gen2/%: src/%.pas src/jsonutil.pas src/cg_base.pas src/cg_base.inc scripts/build-stage.sh $(GEN1_BINS) $(RUNTIME_LIB) | $(BUILD_DIR)/gen2
 	NATIVE_LEXER="$(abspath $(BUILD_DIR)/gen1/lexer)" NATIVE_PARSER="$(abspath $(BUILD_DIR)/gen1/parser)" NATIVE_TYPECHECKER="$(abspath $(BUILD_DIR)/gen1/typechecker)" NATIVE_CODEGEN="$(abspath $(BUILD_DIR)/gen1/codegen)" ./scripts/build-stage.sh $< $@ $(if $(filter codegen,$*),$(LLVM_LINK_FLAGS))
 
-$(BUILD_DIR)/gen3/%: src/%.pas src/jsonutil.pas scripts/build-stage.sh $(GEN2_BINS) $(RUNTIME_LIB) | $(BUILD_DIR)/gen3
+$(BUILD_DIR)/gen3/%: src/%.pas src/jsonutil.pas src/cg_base.pas src/cg_base.inc scripts/build-stage.sh $(GEN2_BINS) $(RUNTIME_LIB) | $(BUILD_DIR)/gen3
 	NATIVE_LEXER="$(abspath $(BUILD_DIR)/gen2/lexer)" NATIVE_PARSER="$(abspath $(BUILD_DIR)/gen2/parser)" NATIVE_TYPECHECKER="$(abspath $(BUILD_DIR)/gen2/typechecker)" NATIVE_CODEGEN="$(abspath $(BUILD_DIR)/gen2/codegen)" ./scripts/build-stage.sh $< $@ $(if $(filter codegen,$*),$(LLVM_LINK_FLAGS))
 
-$(BUILD_DIR)/gen4/%: src/%.pas src/jsonutil.pas scripts/build-stage.sh $(GEN3_BINS) $(RUNTIME_LIB) | $(BUILD_DIR)/gen4
+$(BUILD_DIR)/gen4/%: src/%.pas src/jsonutil.pas src/cg_base.pas src/cg_base.inc scripts/build-stage.sh $(GEN3_BINS) $(RUNTIME_LIB) | $(BUILD_DIR)/gen4
 	NATIVE_LEXER="$(abspath $(BUILD_DIR)/gen3/lexer)" NATIVE_PARSER="$(abspath $(BUILD_DIR)/gen3/parser)" NATIVE_TYPECHECKER="$(abspath $(BUILD_DIR)/gen3/typechecker)" NATIVE_CODEGEN="$(abspath $(BUILD_DIR)/gen3/codegen)" ./scripts/build-stage.sh $< $@ $(if $(filter codegen,$*),$(LLVM_LINK_FLAGS))
 
 $(BUILD_DIR) $(BUILD_DIR)/gen1 $(BUILD_DIR)/gen2 $(BUILD_DIR)/gen3 $(BUILD_DIR)/gen4:

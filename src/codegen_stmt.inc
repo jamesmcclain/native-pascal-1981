@@ -1385,7 +1385,7 @@ PROCEDURE EmitLaunchRegistry;
   struct the shim's by-name lookup walks. A no-op for a compiland that
   performed no launches, so launch-free output is unchanged. }
 VAR
-  names_vals, ent_vals, fields: ADRMEM;
+  names_vals, ent_vals, reg_fields: ADRMEM;
   names_gv, ent_gv: ADRMEM;
   i: INTEGER32;
 BEGIN
@@ -1405,11 +1405,11 @@ BEGIN
     ent_gv := LLVMAddGlobal(modl, LLVMArrayType(i8ptrty, nkernels), MakeCStr('__pas_kregentries'));
     LLVMSetGlobalConstant(ent_gv, 1);
     LLVMSetInitializer(ent_gv, LLVMConstArray(i8ptrty, ent_vals, nkernels));
-    fields := AllocPtrArray(3);
-    SetPtrArrayElem(fields, 0, LLVMConstBitCast(names_gv, LLVMPointerType(i8ptrty, 0)));
-    SetPtrArrayElem(fields, 1, LLVMConstBitCast(ent_gv, LLVMPointerType(i8ptrty, 0)));
-    SetPtrArrayElem(fields, 2, LLVMConstInt(i64ty, nkernels, 0));
-    LLVMSetInitializer(klaunch_registry_gv, LLVMConstStructInContext(ctx, fields, 3, 0));
+    reg_fields := AllocPtrArray(3);
+    SetPtrArrayElem(reg_fields, 0, LLVMConstBitCast(names_gv, LLVMPointerType(i8ptrty, 0)));
+    SetPtrArrayElem(reg_fields, 1, LLVMConstBitCast(ent_gv, LLVMPointerType(i8ptrty, 0)));
+    SetPtrArrayElem(reg_fields, 2, LLVMConstInt(i64ty, nkernels, 0));
+    LLVMSetInitializer(klaunch_registry_gv, LLVMConstStructInContext(ctx, reg_fields, 3, 0));
   END;
 END;
 
