@@ -16,6 +16,7 @@ IMPLEMENTATION OF cg_decl;
 { ============================== declarations =============================== }
 
 PROCEDURE CodegenDecl(decl: ADRMEM); FORWARD;
+FUNCTION IsExternDirectiveDecl(decl: ADRMEM): BOOLEAN; FORWARD;
 
 PROCEDURE CodegenDeclList(decls_arr: ADRMEM);
 VAR
@@ -215,6 +216,7 @@ BEGIN
     END;
     routines[nroutines].has_body := routines[ri].has_body;
     routines[nroutines].is_c := routines[ri].is_c;
+    routines[nroutines].is_extern := routines[ri].is_extern;
     routines[nroutines].is_vararg := routines[ri].is_vararg;
   END
   ELSE
@@ -1001,6 +1003,14 @@ BEGIN
       is a no-op rather than a redeclaration. Matches the reference. }
     IF routines[existing].has_body THEN
       AbortWith2('codegen: duplicate routine declaration: ', name);
+    { EXTERN promises the body lives elsewhere, so this is not a placeholder
+      awaiting completion -- FORWARD is the directive for that. The
+      typechecker rejects this first and is the diagnostic users see; this
+      guard keeps the stage from being silently permissive when driven
+      directly, the same belt-and-braces the duplicate check above is. }
+    IF routines[existing].is_extern THEN
+      IF has_block_body THEN
+        AbortWith2('codegen: EXTERN routine cannot be defined here (use FORWARD): ', name);
     ridx := existing;
     fn := routines[ridx].fn;
     fnty := routines[ridx].fnty;
@@ -1207,6 +1217,7 @@ BEGIN
     END;
     routines[ridx].has_body := has_block_body;
     routines[ridx].is_c := is_c;
+    routines[ridx].is_extern := IsExternDirectiveDecl(decl) OR IsCForeignDecl(decl);
     routines[ridx].is_vararg := is_vararg;
 
     { Attach byval(ty)/align (and sret(ty)/noalias/align for a MEMORY-class

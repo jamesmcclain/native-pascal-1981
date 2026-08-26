@@ -353,6 +353,13 @@ TYPE
                       such a routine crosses the C ABI as SysV MEMORY-class
                       byval, not as the plain-Pascal first-class-aggregate
                       convention the rest of param_needs_copy documents. }
+    is_extern: BOOLEAN; { TRUE when this routine was declared EXTERN/EXTERNAL
+                          (the directive, or the [C]/[EXTERN] attribute form).
+                          Its body lives in another compiland, so -- unlike a
+                          FORWARD placeholder, which has_body=FALSE cannot
+                          distinguish it from -- a later Block-bodied
+                          declaration of the same name is an error rather
+                          than the completion of the placeholder. }
     is_vararg: BOOLEAN; { TRUE for a [C] EXTERN routine carrying the
                           [VARARGS] attribute -- see IsVarargsDecl. nparams
                           is then only the FIXED prefix: the LLVM function

@@ -151,6 +151,10 @@ TYPE
                            prefix and a call may pass extra trailing
                            arguments, which have no formal to check against
                            (C's own variadic tail -- see CheckFuncCall). }
+    is_extern: BOOLEAN;  { TRUE for a routine declared EXTERN/EXTERNAL (or
+                           [C]): its body lives in another compiland, so --
+                           unlike a FORWARD -- a later body for the same name
+                           in this same scope is an error, not a completion. }
   END;
 
   TypeRec = RECORD
@@ -218,6 +222,17 @@ BEGIN
   END;
 END;
 
+PROCEDURE AddError2(msg: Str255; name: Str255);
+{ AddError with the offending identifier appended -- mirrors the codegen
+  units' own AbortWith2. }
+VAR
+  buf: Str255;
+BEGIN
+  buf := msg;
+  CONCAT(buf, name);
+  AddError(buf);
+END;
+
 { ============================ symbol table ============================= }
 
 PROCEDURE PushScope;
@@ -242,6 +257,24 @@ BEGIN
   LookupSymbol := i;
 END;
 
+FUNCTION LookupSymbolInScope(name: Str255): INTEGER32;
+{ LookupSymbol above searches every live scope, answering "is this name
+  visible". This one stops at the current scope's low-water mark, answering
+  "was this name already declared *here*" -- the question a redeclaration
+  rule has to ask, since shadowing an outer declaration is not one. Returns 0
+  when the name was not declared in this scope. }
+VAR
+  i, base: INTEGER32;
+BEGIN
+  IF scope_top = 0 THEN base := 0
+  ELSE base := scope_stack[scope_top];
+  i := nsymbols;
+  WHILE (i > base) AND THEN (symbols[i].name <> name) DO
+    i := i - 1;
+  IF i > base THEN LookupSymbolInScope := i
+  ELSE LookupSymbolInScope := 0;
+END;
+
 FUNCTION DefineSymbol(name: Str255; kind: Str255; tk, aux, aux2, idx_tk: INTEGER): INTEGER32;
 BEGIN
   nsymbols := nsymbols + 1;
@@ -254,6 +287,7 @@ BEGIN
   symbols[nsymbols].nparams := 0;
   symbols[nsymbols].ret_tk := TK_VOID;
   symbols[nsymbols].is_vararg := FALSE;
+  symbols[nsymbols].is_extern := FALSE;
   DefineSymbol := nsymbols;
 END;
 
@@ -503,6 +537,7 @@ END;
 
 FUNCTION CheckExpr(node: ADRMEM): INTEGER; FORWARD;
 PROCEDURE CheckStmt(node: ADRMEM); FORWARD;
+FUNCTION IsForeignRoutineDecl(decl: ADRMEM): BOOLEAN; FORWARD;
 
 { =============================== expressions ============================ }
 
@@ -1444,6 +1479,7 @@ VAR
   attrs_arr, attr_item: ADRMEM;
   nattrs, ai: INTEGER32;
   is_vararg: BOOLEAN;
+  prior: INTEGER32;
 BEGIN
   nt := NodeType(decl);
   IF nt = 'VarDecl' THEN
@@ -1505,12 +1541,36 @@ BEGIN
     END
     ELSE
       ret_tk := TK_VOID;
+
+    { EXTERN promises the body lives in another compiland, so supplying one
+      here is an error rather than the completion of a placeholder -- that is
+      what FORWARD is for. The reference rejects this at the same layer
+      (typecheck/decls.py: only a FORWARD sets is_forward, so a body-bearing
+      redeclaration falls through to "already declared").
+
+      Deliberately narrow: a prior EXTERN *in this same scope*, and only when
+      this declaration actually carries a body. Everything else that
+      legitimately redeclares a name stays legal -- FORWARD then body, a
+      spliced INTERFACE header then the IMPLEMENTATION's body, and the
+      manual's split-implementation form where an IMPLEMENTATION redeclares
+      an interface routine `; EXTERN;` because the body is in another
+      compiland. That last one has no body of its own, so the body <> NIL
+      half already excludes it. Plain AND is not short-circuit in this
+      dialect, hence the nested IFs rather than one conjunction. }
+    body := GetObj(decl, 'body');
+    prior := LookupSymbolInScope(dname);
+    IF prior >= 1 THEN
+      IF symbols[prior].is_extern THEN
+        IF body <> NIL THEN
+          AddError2('EXTERN routine cannot be defined here (use FORWARD): ', dname);
+
     si := DefineSymbol(dname, nt, TK_UNKNOWN, 0, 0, 0);
     IF nt = 'FuncDecl' THEN
       symbols[si].kind := 'FUNC'
     ELSE
       symbols[si].kind := 'PROC';
     symbols[si].ret_tk := ret_tk;
+    symbols[si].is_extern := IsForeignRoutineDecl(decl);
     ppi := 0;
     FOR pi := 0 TO np - 1 DO
     BEGIN
@@ -1548,7 +1608,6 @@ BEGIN
       set so `F := expr` inside F's own body resolves as a return-slot
       assignment (see CheckStmt's AssignStmt case) without a shadow symbol
       that would otherwise hide F's own FUNC entry from recursive calls. }
-    body := GetObj(decl, 'body');
     IF body <> NIL THEN
     BEGIN
       PushScope;
