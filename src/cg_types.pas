@@ -885,12 +885,27 @@ VAR
   has_variants: BOOLEAN;
   values_arr: ADRMEM; { EnumType's member identifier list }
   mi: INTEGER32;
+  named_tid: INTEGER;
 BEGIN
   nt := NodeType(te);
   IF nt = 'NamedType' THEN
   BEGIN
     nm := GetStr(te, 'name');
-    IF (nm = 'INTEGER') OR (nm = 'INTEGER16') THEN tid := TK_INTEGER
+    { A user TYPE of this name wins over the predeclared meaning. IBM Pascal,
+      Aug 1981, p.3-7: predeclared identifiers "can be re-defined by the
+      programmer, but doing this is not recommended" -- and none of them is a
+      reserved word, the contrast the manual draws for NIL. The compiler's own
+      internal uses of the built-in meaning are unaffected (p.6228, on
+      BOOLEAN: "the old type is implicitly used by the compiler for things
+      like the IF statement"). Matches the reference's resolve_type.
+
+      STRING(n) arrives as a NamedType carrying a param and is the built-in
+      super-array constructor, never the shadowing user type, so it skips this
+      probe. LSTRING(n) is its own LStringType node and never reaches here. }
+    named_tid := 0;
+    IF GetObjOrNil(te, 'param') = NIL THEN named_tid := LookupNamedType(nm);
+    IF named_tid <> 0 THEN tid := named_tid
+    ELSE IF (nm = 'INTEGER') OR (nm = 'INTEGER16') THEN tid := TK_INTEGER
     ELSE IF nm = 'REAL' THEN tid := TK_REAL
     ELSE IF nm = 'BOOLEAN' THEN tid := TK_BOOLEAN
     ELSE IF nm = 'CHAR' THEN tid := TK_CHAR
@@ -923,6 +938,8 @@ BEGIN
     END
     ELSE
     BEGIN
+      { Unparameterised names were already probed above; a NamedType carrying
+        a param that is not STRING(n) still has to resolve by name. }
       tid := LookupNamedType(nm);
       IF tid = 0 THEN
       BEGIN

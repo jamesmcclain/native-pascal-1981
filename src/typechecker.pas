@@ -301,6 +301,20 @@ BEGIN
   LookupType := i;
 END;
 
+FUNCTION GetObjOrNil(obj: ADRMEM; key: Str255): ADRMEM;
+{ GetObj, but folding a "present but JSON null" field (e.g. an unparenthesized
+  `USES unit;`'s 'imports', serialized as null rather than omitted) down to
+  NIL too -- matches codegen.pas's own GetObjOrNil, needed here for the same
+  reason: a bare GetObj<>NIL check would otherwise treat "no imports" as "an
+  empty, non-NIL imports list" and filter every declaration out. }
+VAR
+  v: ADRMEM;
+BEGIN
+  v := GetObj(obj, key);
+  IF (v <> NIL) AND (cJSON_IsNull(v) <> 0) THEN v := NIL;
+  GetObjOrNil := v;
+END;
+
 PROCEDURE AddFieldEntry(record_id: INTEGER; fname: Str255; ftk, faux, faux2: INTEGER);
 BEGIN
   IF nfields < MAX_FIELDS THEN
@@ -363,7 +377,27 @@ BEGIN
   IF nt = 'NamedType' THEN
   BEGIN
     name := GetStr(node, 'name');
-    IF name = 'INTEGER' THEN tk := TK_INTEGER
+    { A user TYPE of this name wins over the predeclared meaning. IBM Pascal,
+      Aug 1981, p.3-7: predeclared identifiers "can be re-defined by the
+      programmer, but doing this is not recommended" -- and none of them is a
+      reserved word, the contrast the manual draws for NIL. The compiler's own
+      internal uses of the built-in meaning are unaffected (p.6228, on
+      BOOLEAN: "the old type is implicitly used by the compiler for things
+      like the IF statement"). Matches the reference's resolve_type.
+
+      STRING(n) arrives as a NamedType carrying a param and is the built-in
+      super-array constructor, never the shadowing user type, so it skips this
+      probe. LSTRING(n) is its own LStringType node and never reaches here. }
+    ti := 0;
+    IF GetObjOrNil(node, 'param') = NIL THEN ti := LookupType(name);
+    IF ti <> 0 THEN
+    BEGIN
+      tk := types[ti].tk;
+      aux := types[ti].aux;
+      aux2 := types[ti].aux2;
+      idx_tk := types[ti].idx_tk;
+    END
+    ELSE IF name = 'INTEGER' THEN tk := TK_INTEGER
     ELSE IF name = 'WORD' THEN tk := TK_WORD
     ELSE IF name = 'REAL' THEN tk := TK_REAL
     ELSE IF name = 'BOOLEAN' THEN tk := TK_BOOLEAN
@@ -510,7 +544,12 @@ BEGIN
     END
     ELSE BEGIN
       name := GetStr(node, 'name');
-      IF name = 'CHAR' THEN tk := TK_CHAR
+      { Same shadowing rule as the NamedType branch above. }
+      ti := 0;
+      IF GetObjOrNil(node, 'param') = NIL THEN ti := LookupType(name);
+      IF ti <> 0 THEN
+        tk := types[ti].tk
+      ELSE IF name = 'CHAR' THEN tk := TK_CHAR
       ELSE IF name = 'BOOLEAN' THEN tk := TK_BOOLEAN
       ELSE IF name = 'WORD' THEN tk := TK_WORD
       ELSE IF name = 'INTEGER' THEN tk := TK_INTEGER
@@ -2013,20 +2052,6 @@ END;
 
 { ============================== I/O driver =============================== }
 { ReadAllStdin now lives in jsonutil. }
-
-FUNCTION GetObjOrNil(obj: ADRMEM; key: Str255): ADRMEM;
-{ GetObj, but folding a "present but JSON null" field (e.g. an unparenthesized
-  `USES unit;`'s 'imports', serialized as null rather than omitted) down to
-  NIL too -- matches codegen.pas's own GetObjOrNil, needed here for the same
-  reason: a bare GetObj<>NIL check would otherwise treat "no imports" as "an
-  empty, non-NIL imports list" and filter every declaration out. }
-VAR
-  v: ADRMEM;
-BEGIN
-  v := GetObj(obj, key);
-  IF (v <> NIL) AND (cJSON_IsNull(v) <> 0) THEN v := NIL;
-  GetObjOrNil := v;
-END;
 
 PROCEDURE BindUsesAlias(alias, ename: Str255);
 { `USES unit(alias)` binds alias to whatever ename (the export at that
