@@ -13,10 +13,12 @@ FUNCTION LookupSym(name: Str255): INTEGER32;
 VAR
   i: INTEGER32;
   found: INTEGER32;
+  uname: Str255;
 BEGIN
+  uname := UpperStr(name);
   found := 0;
   FOR i := 1 TO nsymbols DO
-    IF symbols[i].name = name THEN found := i;
+    IF UpperStr(symbols[i].name) = uname THEN found := i;
   LookupSym := found;
 END;
 
@@ -43,7 +45,9 @@ VAR
   gvar, zero: ADRMEM;
   i, base: INTEGER32;
   dup, reuse_decl: BOOLEAN;
+  uname: Str255;
 BEGIN
+  uname := UpperStr(name);
   { Only the current scope's own slice of the symbol table can collide --
     a local is allowed (expected, even) to shadow an outer/global variable
     of the same name, matching ordinary Pascal scoping. }
@@ -51,7 +55,7 @@ BEGIN
   dup := FALSE;
   reuse_decl := FALSE;
   FOR i := base + 1 TO nsymbols DO
-    IF symbols[i].name = name THEN dup := TRUE;
+    IF UpperStr(symbols[i].name) = uname THEN dup := TRUE;
   IF dup THEN
   BEGIN
     { An IMPLEMENTATION repeats interface VAR declarations.  The spliced
@@ -120,10 +124,12 @@ FUNCTION LookupRoutine(name: Str255): INTEGER32;
 VAR
   i: INTEGER32;
   found: INTEGER32;
+  uname: Str255;
 BEGIN
+  uname := UpperStr(name);
   found := 0;
   FOR i := 1 TO nroutines DO
-    IF routines[i].name = name THEN found := i;
+    IF UpperStr(routines[i].name) = uname THEN found := i;
   LookupRoutine := found;
 END;
 
