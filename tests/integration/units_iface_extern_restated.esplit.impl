@@ -1,0 +1,13 @@
+(*$INCLUDE:'units_iface_extern_restated.esplit.inc'*)
+IMPLEMENTATION OF esplit;
+
+{ Re-states the interface's own EXTERN, at the start, as the manual asks. }
+FUNCTION Helper(x: INTEGER32): INTEGER32; EXTERN;
+
+FUNCTION Local(x: INTEGER32): INTEGER32;
+BEGIN
+  Local := Helper(x) + 1;
+END;
+
+BEGIN
+END.

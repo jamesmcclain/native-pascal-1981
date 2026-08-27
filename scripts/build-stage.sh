@@ -48,9 +48,33 @@ fi
 
 jsonutil_obj="$work_dir/jsonutil.o"
 stage_ll="$work_dir/$(basename "$stage_src" .pas).ll"
+component_objs=()
 
 native_codegen="${NATIVE_CODEGEN:-}"
 native_jsonutil="${NATIVE_JSONUTIL:-$native_codegen}"
+
+# codegen is a composition root over the cg_* units, so each one's
+# implementation is compiled to its own object and linked alongside. Listed
+# lowest layer first: cg_base holds the shared state and the LLVM-C/libc
+# prototypes, then utilities, the type model and symbol tables, then the four
+# lowering layers (expressions, I/O, statements, declarations), each of which
+# only ever reaches downward. This holds for gen1 too: the Python reference
+# understands separately compiled units, so there is no monolithic fallback
+# source to maintain.
+stage_file="$(basename "$stage_src")"
+component_units=()
+if [ "$stage_file" = "codegen.pas" ]; then
+  component_units=(cg_base.pas cg_util.pas cg_types.pas cg_symbols.pas cg_expr.pas cg_io.pas cg_stmt.pas cg_decl.pas)
+fi
+
+# The unit objects are compiled inside the ( cd "$src_dir" ... ) subshell below,
+# but an array appended to inside a subshell does not survive it -- doing that
+# silently dropped every component object from the link line, so the stage
+# failed with undefined references to cg_base's exported state. Compute the
+# paths here, in the parent shell, and let the subshell only create the files.
+for unit_src in "${component_units[@]}"; do
+  component_objs+=("$work_dir/${unit_src%.pas}.o")
+done
 
 PYTHON="${PYTHON:-python3}"
 
@@ -76,15 +100,26 @@ CLANG="${CLANG:-${CC:-clang}}"
   else
     pascal1981 --dialect extended -c jsonutil.pas -o "$jsonutil_obj"
   fi
+  for unit_src in "${component_units[@]}"; do
+    unit_name="${unit_src%.pas}"
+    unit_ll="$work_dir/$unit_name.ll"
+    unit_obj="$work_dir/$unit_name.o"
+    if [ -n "$native_codegen" ]; then
+      run_frontend "$unit_src" | "$native_codegen" > "$unit_ll"
+    else
+      pascal1981 --dialect extended -S "$unit_src" -o "$unit_ll"
+    fi
+    "$CLANG" $STAGE_OPT -c "$unit_ll" -o "$unit_obj"
+  done
   if [ -n "$native_codegen" ]; then
-    run_frontend "$(basename "$stage_src")" | "$native_codegen" > "$stage_ll"
+    run_frontend "$stage_file" | "$native_codegen" > "$stage_ll"
   else
-    pascal1981 --dialect extended -S "$(basename "$stage_src")" -o "$stage_ll"
+    pascal1981 --dialect extended -S "$stage_file" -o "$stage_ll"
   fi
 )
 
 mkdir -p "$(dirname "$out_bin")"
-"$CLANG" $STAGE_OPT "$stage_ll" "$jsonutil_obj" -lcjson \
+"$CLANG" $STAGE_OPT "$stage_ll" "$jsonutil_obj" "${component_objs[@]}" -lcjson \
   "${extra_args[@]}" \
   "$runtime_lib" \
   -o "$out_bin"

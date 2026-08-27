@@ -151,6 +151,10 @@ TYPE
                            prefix and a call may pass extra trailing
                            arguments, which have no formal to check against
                            (C's own variadic tail -- see CheckFuncCall). }
+    is_extern: BOOLEAN;  { TRUE for a routine declared EXTERN/EXTERNAL (or
+                           [C]): its body lives in another compiland, so --
+                           unlike a FORWARD -- a later body for the same name
+                           in this same scope is an error, not a completion. }
   END;
 
   TypeRec = RECORD
@@ -218,6 +222,17 @@ BEGIN
   END;
 END;
 
+PROCEDURE AddError2(msg: Str255; name: Str255);
+{ AddError with the offending identifier appended -- mirrors the codegen
+  units' own AbortWith2. }
+VAR
+  buf: Str255;
+BEGIN
+  buf := msg;
+  CONCAT(buf, name);
+  AddError(buf);
+END;
+
 { ============================ symbol table ============================= }
 
 PROCEDURE PushScope;
@@ -242,6 +257,24 @@ BEGIN
   LookupSymbol := i;
 END;
 
+FUNCTION LookupSymbolInScope(name: Str255): INTEGER32;
+{ LookupSymbol above searches every live scope, answering "is this name
+  visible". This one stops at the current scope's low-water mark, answering
+  "was this name already declared *here*" -- the question a redeclaration
+  rule has to ask, since shadowing an outer declaration is not one. Returns 0
+  when the name was not declared in this scope. }
+VAR
+  i, base: INTEGER32;
+BEGIN
+  IF scope_top = 0 THEN base := 0
+  ELSE base := scope_stack[scope_top];
+  i := nsymbols;
+  WHILE (i > base) AND THEN (symbols[i].name <> name) DO
+    i := i - 1;
+  IF i > base THEN LookupSymbolInScope := i
+  ELSE LookupSymbolInScope := 0;
+END;
+
 FUNCTION DefineSymbol(name: Str255; kind: Str255; tk, aux, aux2, idx_tk: INTEGER): INTEGER32;
 BEGIN
   nsymbols := nsymbols + 1;
@@ -254,17 +287,59 @@ BEGIN
   symbols[nsymbols].nparams := 0;
   symbols[nsymbols].ret_tk := TK_VOID;
   symbols[nsymbols].is_vararg := FALSE;
+  symbols[nsymbols].is_extern := FALSE;
   DefineSymbol := nsymbols;
 END;
 
+FUNCTION UpperStr(s: Str255): Str255;
+{ ASCII case fold, matching codegen's cg_util.pas UpperStr. Type names are
+  matched case-insensitively per the manual: "Lowercase and uppercase letters
+  are interchangeable, except in string literals" (IBM Pascal, Aug 1981,
+  Syntax and Vocabulary). }
+VAR
+  i, len: INTEGER;
+  res: Str255;
+  ch: CHAR;
+BEGIN
+  len := ORD(s[0]);
+  res[0] := CHR(len);
+  FOR i := 1 TO len DO
+  BEGIN
+    ch := s[i];
+    IF (ch >= 'a') AND (ch <= 'z') THEN
+      res[i] := CHR(ORD(ch) - 32)
+    ELSE
+      res[i] := ch;
+  END;
+  UpperStr := res;
+END;
+
 FUNCTION LookupType(name: Str255): INTEGER32;
+{ Case-insensitive -- see UpperStr. Both sides are folded rather than the
+  table being stored folded, so types[].name keeps the program's spelling. }
 VAR
   i: INTEGER32;
+  uname: Str255;
 BEGIN
+  uname := UpperStr(name);
   i := ntypes;
-  WHILE (i >= 1) AND THEN (types[i].name <> name) DO
+  WHILE (i >= 1) AND THEN (UpperStr(types[i].name) <> uname) DO
     i := i - 1;
   LookupType := i;
+END;
+
+FUNCTION GetObjOrNil(obj: ADRMEM; key: Str255): ADRMEM;
+{ GetObj, but folding a "present but JSON null" field (e.g. an unparenthesized
+  `USES unit;`'s 'imports', serialized as null rather than omitted) down to
+  NIL too -- matches codegen.pas's own GetObjOrNil, needed here for the same
+  reason: a bare GetObj<>NIL check would otherwise treat "no imports" as "an
+  empty, non-NIL imports list" and filter every declaration out. }
+VAR
+  v: ADRMEM;
+BEGIN
+  v := GetObj(obj, key);
+  IF (v <> NIL) AND (cJSON_IsNull(v) <> 0) THEN v := NIL;
+  GetObjOrNil := v;
 END;
 
 PROCEDURE AddFieldEntry(record_id: INTEGER; fname: Str255; ftk, faux, faux2: INTEGER);
@@ -312,7 +387,7 @@ END;
 
 PROCEDURE ResolveTypeExpr(node: ADRMEM; VAR tk, aux, aux2, idx_tk: INTEGER);
 VAR
-  nt, name: Str255;
+  nt, name, uname: Str255;
   base_node, elem_node, fields_arr, tup, items, names_arr, ftype_node: ADRMEM;
   variants_arr, arm_node, tag_type_node: ADRMEM;
   inner_tk, inner_aux, inner_aux2, inner_idx: INTEGER;
@@ -329,24 +404,45 @@ BEGIN
   IF nt = 'NamedType' THEN
   BEGIN
     name := GetStr(node, 'name');
-    IF name = 'INTEGER' THEN tk := TK_INTEGER
-    ELSE IF name = 'WORD' THEN tk := TK_WORD
-    ELSE IF name = 'REAL' THEN tk := TK_REAL
-    ELSE IF name = 'BOOLEAN' THEN tk := TK_BOOLEAN
-    ELSE IF name = 'CHAR' THEN tk := TK_CHAR
-    ELSE IF name = 'STRING' THEN tk := TK_STRING
-    ELSE IF name = 'LSTRING' THEN tk := TK_STRING
+    uname := UpperStr(name);
+    { A user TYPE of this name wins over the predeclared meaning. IBM Pascal,
+      Aug 1981, p.3-7: predeclared identifiers "can be re-defined by the
+      programmer, but doing this is not recommended" -- and none of them is a
+      reserved word, the contrast the manual draws for NIL. The compiler's own
+      internal uses of the built-in meaning are unaffected (p.6228, on
+      BOOLEAN: "the old type is implicitly used by the compiler for things
+      like the IF statement"). Matches the reference's resolve_type.
+
+      STRING(n) arrives as a NamedType carrying a param and is the built-in
+      super-array constructor, never the shadowing user type, so it skips this
+      probe. LSTRING(n) is its own LStringType node and never reaches here. }
+    ti := 0;
+    IF GetObjOrNil(node, 'param') = NIL THEN ti := LookupType(name);
+    IF ti <> 0 THEN
+    BEGIN
+      tk := types[ti].tk;
+      aux := types[ti].aux;
+      aux2 := types[ti].aux2;
+      idx_tk := types[ti].idx_tk;
+    END
+    ELSE IF uname = 'INTEGER' THEN tk := TK_INTEGER
+    ELSE IF uname = 'WORD' THEN tk := TK_WORD
+    ELSE IF uname = 'REAL' THEN tk := TK_REAL
+    ELSE IF uname = 'BOOLEAN' THEN tk := TK_BOOLEAN
+    ELSE IF uname = 'CHAR' THEN tk := TK_CHAR
+    ELSE IF uname = 'STRING' THEN tk := TK_STRING
+    ELSE IF uname = 'LSTRING' THEN tk := TK_STRING
     { Wide-integer/real extension names (feature-gated under the extended
       dialect): this v1 type-kind model doesn't track width, so each just
       aliases to its base kind -- matching how INTEGER32/WORD32/etc. behave
       identically to INTEGER/WORD for every check this stage performs. }
-    ELSE IF (name = 'INTEGER8') OR (name = 'INTEGER16') OR (name = 'INTEGER32') OR (name = 'INTEGER64') THEN tk := TK_INTEGER
-    ELSE IF (name = 'WORD8') OR (name = 'WORD16') OR (name = 'WORD32') OR (name = 'WORD64') THEN tk := TK_WORD
-    ELSE IF (name = 'REAL32') OR (name = 'REAL64') THEN tk := TK_REAL
+    ELSE IF (uname = 'INTEGER8') OR (uname = 'INTEGER16') OR (uname = 'INTEGER32') OR (uname = 'INTEGER64') THEN tk := TK_INTEGER
+    ELSE IF (uname = 'WORD8') OR (uname = 'WORD16') OR (uname = 'WORD32') OR (uname = 'WORD64') THEN tk := TK_WORD
+    ELSE IF (uname = 'REAL32') OR (uname = 'REAL64') THEN tk := TK_REAL
     { ADRMEM/ADSMEM (and the CPTR C-ABI alias) are address types -- codegen's
       opaque-pointer model treats them as "pointer to CHAR" (see
       types_resolve.py's resolve_type: ADRMEM -> PointerType(CHAR_TYPE)). }
-    ELSE IF (name = 'ADRMEM') OR (name = 'ADSMEM') OR (name = 'CPTR') THEN
+    ELSE IF (uname = 'ADRMEM') OR (uname = 'ADSMEM') OR (uname = 'CPTR') THEN
     BEGIN
       tk := TK_POINTER;
       aux := TK_CHAR;
@@ -354,10 +450,10 @@ BEGIN
     { C-ABI fixed-width scalar aliases (builtins_registry.py's
       C_ABI_TYPE_ALIASES): each resolves to the vintage type of matching
       flavor, since this stage doesn't distinguish integer/real width. }
-    ELSE IF name = 'CCHAR' THEN tk := TK_CHAR
-    ELSE IF (name = 'CSHORT') OR (name = 'CINT') OR (name = 'CLONG') OR (name = 'CSIZE_T') THEN tk := TK_INTEGER
-    ELSE IF name = 'CDOUBLE' THEN tk := TK_REAL
-    ELSE IF name = 'TEXT' THEN
+    ELSE IF uname = 'CCHAR' THEN tk := TK_CHAR
+    ELSE IF (uname = 'CSHORT') OR (uname = 'CINT') OR (uname = 'CLONG') OR (uname = 'CSIZE_T') THEN tk := TK_INTEGER
+    ELSE IF uname = 'CDOUBLE' THEN tk := TK_REAL
+    ELSE IF uname = 'TEXT' THEN
     BEGIN
       tk := TK_FILE;
       aux := TK_CHAR;
@@ -476,10 +572,26 @@ BEGIN
     END
     ELSE BEGIN
       name := GetStr(node, 'name');
-      IF name = 'CHAR' THEN tk := TK_CHAR
-      ELSE IF name = 'BOOLEAN' THEN tk := TK_BOOLEAN
-      ELSE IF name = 'WORD' THEN tk := TK_WORD
-      ELSE IF name = 'INTEGER' THEN tk := TK_INTEGER
+      uname := UpperStr(name);
+      { Same shadowing rule as the NamedType branch above. }
+      ti := 0;
+      IF GetObjOrNil(node, 'param') = NIL THEN ti := LookupType(name);
+      IF ti <> 0 THEN
+      BEGIN
+        { Copy the whole entry, not just the kind -- the payload fields carry
+          an element/base kind (aux), a width or capacity (aux2) and an index
+          kind (idx_tk), and dropping them silently loses e.g. an LSTRING
+          alias's capacity. Same four assignments as the NamedType branch
+          above; that they agree is the point. }
+        tk := types[ti].tk;
+        aux := types[ti].aux;
+        aux2 := types[ti].aux2;
+        idx_tk := types[ti].idx_tk;
+      END
+      ELSE IF uname = 'CHAR' THEN tk := TK_CHAR
+      ELSE IF uname = 'BOOLEAN' THEN tk := TK_BOOLEAN
+      ELSE IF uname = 'WORD' THEN tk := TK_WORD
+      ELSE IF uname = 'INTEGER' THEN tk := TK_INTEGER
       ELSE BEGIN
         AddError('SET OF <base> requires an ordinal base type');
         tk := TK_UNKNOWN;
@@ -503,6 +615,8 @@ END;
 
 FUNCTION CheckExpr(node: ADRMEM): INTEGER; FORWARD;
 PROCEDURE CheckStmt(node: ADRMEM); FORWARD;
+FUNCTION HasExternMarkerDecl(decl: ADRMEM): BOOLEAN; FORWARD;
+FUNCTION IsForeignRoutineDecl(decl: ADRMEM): BOOLEAN; FORWARD;
 
 { =============================== expressions ============================ }
 
@@ -1444,6 +1558,8 @@ VAR
   attrs_arr, attr_item: ADRMEM;
   nattrs, ai: INTEGER32;
   is_vararg: BOOLEAN;
+  has_block_body: BOOLEAN;
+  prior: INTEGER32;
 BEGIN
   nt := NodeType(decl);
   IF nt = 'VarDecl' THEN
@@ -1505,12 +1621,44 @@ BEGIN
     END
     ELSE
       ret_tk := TK_VOID;
+
+    { EXTERN promises the body lives in another compiland, so supplying one
+      here is an error rather than the completion of a placeholder -- that is
+      what FORWARD is for. The reference rejects this at the same layer
+      (typecheck/decls.py: only a FORWARD sets is_forward, so a body-bearing
+      redeclaration falls through to "already declared").
+
+      Deliberately narrow: a prior EXTERN *in this same scope*, and only when
+      this declaration actually carries a body. Everything else that
+      legitimately redeclares a name stays legal -- FORWARD then body, a
+      spliced INTERFACE header then the IMPLEMENTATION's body, and the
+      manual's split-implementation form where an IMPLEMENTATION redeclares
+      an interface routine `; EXTERN;` because the body is in another
+      compiland. That last one has no body of its own, so the
+      has_block_body half already excludes it. Plain AND is not
+      short-circuit in this dialect, hence the nested IFs rather than one
+      conjunction.
+
+      A body-less declaration is *not* a NIL 'body' slot: the parser writes
+      the slot with AddNullField (parser.pas:2329), and jsonutil.pas's
+      GetObj hands back that cJSON null item unchanged, so `body <> NIL` is
+      true for every routine decl ever parsed. Test the node type instead,
+      exactly as cg_decl.pas:978 does for the same question. }
+    body := GetObj(decl, 'body');
+    has_block_body := NodeType(body) = 'Block';
+    prior := LookupSymbolInScope(dname);
+    IF prior >= 1 THEN
+      IF symbols[prior].is_extern THEN
+        IF has_block_body THEN
+          AddError2('EXTERN routine cannot be defined here (use FORWARD): ', dname);
+
     si := DefineSymbol(dname, nt, TK_UNKNOWN, 0, 0, 0);
     IF nt = 'FuncDecl' THEN
       symbols[si].kind := 'FUNC'
     ELSE
       symbols[si].kind := 'PROC';
     symbols[si].ret_tk := ret_tk;
+    symbols[si].is_extern := HasExternMarkerDecl(decl);
     ppi := 0;
     FOR pi := 0 TO np - 1 DO
     BEGIN
@@ -1547,9 +1695,10 @@ BEGIN
       bound and -- for a FUNCTION -- cur_func_name/cur_func_ret_tk/aux/aux2
       set so `F := expr` inside F's own body resolves as a return-slot
       assignment (see CheckStmt's AssignStmt case) without a shadow symbol
-      that would otherwise hide F's own FUNC entry from recursive calls. }
-    body := GetObj(decl, 'body');
-    IF body <> NIL THEN
+      that would otherwise hide F's own FUNC entry from recursive calls.
+      Same null-slot caveat as the EXTERN check above -- a body-less decl
+      reaches here with a non-NIL cJSON null, not NIL. }
+    IF has_block_body THEN
     BEGIN
       PushScope;
       saved_func_name := cur_func_name;
@@ -1735,6 +1884,95 @@ BEGIN
   FindVarDeclContainingName := found;
 END;
 
+FUNCTION HasExternMarkerDecl(decl: ADRMEM): BOOLEAN;
+{ True for a routine carrying an EXTERN/EXTERNAL marker in either of its two
+  spellings -- the [EXTERN] attribute or the `; EXTERN;` directive. This is
+  the "a body cannot legally appear for this name" question, and it is the
+  one CheckDecl's is_extern must answer.
+
+  The [C] attribute on its own is deliberately NOT enough here, unlike in
+  IsForeignRoutineDecl below. [C] answers a different question -- "call this
+  with the SysV C ABI" -- and by itself says nothing about where the body
+  lives: `FUNCTION twice(x: CINT): CINT [C];` in an INTERFACE is an ordinary
+  Pascal routine, exported with the C convention so C callers can reach it,
+  whose body this compiland is expected to supply. Codegen agrees, setting
+  routines[].is_extern from IsExternDirectiveDecl OR IsCForeignDecl
+  (cg_decl.pas:1220), and IsCForeignDecl requires [C] *and* an extern
+  marker. Marking bare [C] extern here rejected such a routine's own body
+  with "EXTERN routine cannot be defined here" while codegen lowered it
+  happily. }
+VAR
+  attrs_arr, item: ADRMEM;
+  i, nattrs: INTEGER32;
+  attr_nm, directive: Str255;
+  found: BOOLEAN;
+BEGIN
+  found := FALSE;
+  attrs_arr := GetObj(decl, 'attributes');
+  nattrs := cJSON_GetArraySize(attrs_arr);
+  FOR i := 0 TO nattrs - 1 DO
+  BEGIN
+    item := cJSON_GetArrayItem(attrs_arr, i);
+    attr_nm := GetStr(item, 'name');
+    IF attr_nm = 'EXTERN' THEN found := TRUE;
+    IF attr_nm = 'EXTERNAL' THEN found := TRUE;
+  END;
+  directive := GetStr(decl, 'directive');
+  IF directive = 'EXTERN' THEN found := TRUE;
+  IF directive = 'EXTERNAL' THEN found := TRUE;
+  HasExternMarkerDecl := found;
+END;
+
+FUNCTION IsForeignRoutineDecl(decl: ADRMEM): BOOLEAN;
+{ True for a routine an IMPLEMENTATION is not obliged to define, so that
+  ValidateImplementationContract below does not demand a body for it:
+  anything HasExternMarkerDecl accepts, plus a bare [C] declaration.
+
+  The bare-[C] half is a concession to the established interface convention
+  rather than a claim about the language. src/cg_base.inc declares all 123
+  of its libc and LLVM-C entries as `FUNCTION LLVMBuildRet(...): ADRMEM [C];`
+  with no EXTERN marker -- the marker is spelled only in the .pas program
+  headers -- so under a marker-only rule this compiler fails to typecheck
+  itself, every one of those entries reported as a missing implementation.
+  ParseInterfaceDirectiveInto's acceptance of `; EXTERN;` inside an
+  INTERFACE is new in this branch and the out-of-repo Python reference gen1
+  builds with may not take it, so the .inc files cannot be respelled yet.
+
+  The cost is that a bare-[C] routine genuinely meant to be defined in the
+  IMPLEMENTATION escapes the export check, and a missing definition surfaces
+  as a link-time undefined symbol instead. Once the .inc convention moves to
+  an explicit marker, this predicate should collapse into
+  HasExternMarkerDecl.
+
+  Note this checks the interface's own declarations rather than filtering by
+  the UNIT export list. The Python reference validates the contract by
+  looping the export list instead, which would also let a [C] declaration
+  through -- but it silently skips validation entirely for a unit written
+  `UNIT foo;` with no parenthesised list, which is exactly the shape
+  src/cg_base.inc uses. Exempting by kind keeps the contract enforced there. }
+VAR
+  attrs_arr, item: ADRMEM;
+  i, nattrs: INTEGER32;
+  attr_nm: Str255;
+  found: BOOLEAN;
+BEGIN
+  found := HasExternMarkerDecl(decl);
+  attrs_arr := GetObj(decl, 'attributes');
+  nattrs := cJSON_GetArraySize(attrs_arr);
+  FOR i := 0 TO nattrs - 1 DO
+  BEGIN
+    item := cJSON_GetArrayItem(attrs_arr, i);
+    attr_nm := GetStr(item, 'name');
+    { A bare `attr_nm = 'C'` comparison doesn't typecheck: a single-quoted
+      single-character literal lexes as CHAR, not a length-1 LSTRING, so
+      LSTRING = CHAR has no defined comparison. Compare the length byte
+      (index 0, per the LSTRING index-0-is-length-as-CHAR convention) and
+      the first character instead -- same idiom as codegen_decl.inc:504. }
+    IF (ORD(attr_nm[0]) = 1) AND (attr_nm[1] = 'C') THEN found := TRUE;
+  END;
+  IsForeignRoutineDecl := found;
+END;
+
 PROCEDURE ValidateRoutineExport(iface_decl, impl_decls: ADRMEM; name: Str255);
 { An exported PROCEDURE/FUNCTION needs a same-named, same-shaped definition
   in the IMPLEMENTATION -- missing entirely, or present with a different
@@ -1834,7 +2072,9 @@ PROCEDURE ValidateImplementationContract(root, own_iface: ADRMEM);
   there is nothing further to validate here in that case. Every exported
   PROCEDURE/FUNCTION/VAR must have a matching, conformant declaration in
   root's own decls; TYPE/CONST are shared by reference from the splice and
-  are deliberately not required to be redeclared (see ValidateVarExport). }
+  are deliberately not required to be redeclared (see ValidateVarExport), and
+  a [C]/EXTERN routine is exempt because its body is in another object
+  entirely (see IsForeignRoutineDecl). }
 VAR
   iface_decls, impl_decls, decl, names_arr: ADRMEM;
   n, i, m, j: INTEGER32;
@@ -1849,8 +2089,13 @@ BEGIN
     BEGIN
       decl := cJSON_GetArrayItem(iface_decls, i);
       dnt := NodeType(decl);
+      { A [C]/EXTERN routine is declared here only so callers can bind to it;
+        its body is in a C library or another object, so it is exempt. }
       IF (dnt = 'ProcDecl') OR (dnt = 'FuncDecl') THEN
-        ValidateRoutineExport(decl, impl_decls, GetStr(decl, 'name'))
+      BEGIN
+        IF NOT IsForeignRoutineDecl(decl) THEN
+          ValidateRoutineExport(decl, impl_decls, GetStr(decl, 'name'));
+      END
       ELSE IF dnt = 'VarDecl' THEN
       BEGIN
         names_arr := GetObj(decl, 'names');
@@ -1901,20 +2146,6 @@ END;
 
 { ============================== I/O driver =============================== }
 { ReadAllStdin now lives in jsonutil. }
-
-FUNCTION GetObjOrNil(obj: ADRMEM; key: Str255): ADRMEM;
-{ GetObj, but folding a "present but JSON null" field (e.g. an unparenthesized
-  `USES unit;`'s 'imports', serialized as null rather than omitted) down to
-  NIL too -- matches codegen.pas's own GetObjOrNil, needed here for the same
-  reason: a bare GetObj<>NIL check would otherwise treat "no imports" as "an
-  empty, non-NIL imports list" and filter every declaration out. }
-VAR
-  v: ADRMEM;
-BEGIN
-  v := GetObj(obj, key);
-  IF (v <> NIL) AND (cJSON_IsNull(v) <> 0) THEN v := NIL;
-  GetObjOrNil := v;
-END;
 
 PROCEDURE BindUsesAlias(alias, ename: Str255);
 { `USES unit(alias)` binds alias to whatever ename (the export at that

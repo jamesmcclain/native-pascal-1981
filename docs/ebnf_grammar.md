@@ -16,7 +16,23 @@ uses_import = identifier [ "(" identifier_list ")" ] ;
 
 block = { declaration } [ compound_statement ] ;
 declaration = const_section | type_section | var_section | label_section | procedure_declaration | function_declaration ;
-interface_declaration = const_section | type_section | var_section | label_section | procedure_header ";" | function_header ";" ;
+interface_declaration = const_section | type_section | var_section | label_section
+                      | procedure_header ";" [ interface_directive ";" ]
+                      | function_header ";" [ interface_directive ";" ] ;
+(* An interface routine header is body-less by construction, so a directive is
+   optional -- the Aug 1981 manual notes that "in a unit's interface, EXTERN or
+   FORWARD is given automatically to all constituents", so writing it is
+   redundant there rather than required. Accepted anyway, and taken to mean the
+   body lives in a C library or another object, which exempts the routine from
+   the implementation contract. FORWARD is excluded: it promises a definition
+   later in the same declaration part, and an INTERFACE has none.
+
+   The manual's own mechanism for the same need is the other way round: the
+   IMPLEMENTATION declares any routine it does not define with the EXTERN
+   directive, at the start, so one INTERFACE can be split across several
+   IMPLEMENTATIONs or shared with assembly. That form uses the ordinary
+   procedure_declaration production below and is also supported. *)
+interface_directive = "EXTERN" | "EXTERNAL" ;
 const_section = "CONST" { identifier "=" constant ";" } ;
 type_section = "TYPE" { identifier "=" type ";" } ;
 var_section = "VAR" { [ attributes ] identifier_list ":" type ";" } ;

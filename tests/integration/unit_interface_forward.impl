@@ -1,0 +1,21 @@
+(*$INCLUDE:'unit_interface_forward.inc'*)
+IMPLEMENTATION OF mutualrec;
+
+{ Repeats an interface declaration. This must be accepted as a no-op
+  placeholder, not rejected as a duplicate routine declaration. }
+FUNCTION IsOdd(n: INTEGER): BOOLEAN; FORWARD;
+
+FUNCTION IsEven(n: INTEGER): BOOLEAN;
+BEGIN
+  IF n = 0 THEN IsEven := TRUE
+  ELSE IsEven := IsOdd(n - 1);
+END;
+
+FUNCTION IsOdd(n: INTEGER): BOOLEAN;
+BEGIN
+  IF n = 0 THEN IsOdd := FALSE
+  ELSE IsOdd := IsEven(n - 1);
+END;
+
+BEGIN
+END.

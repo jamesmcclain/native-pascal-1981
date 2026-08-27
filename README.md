@@ -15,12 +15,17 @@ Install these packages before you build the toolchain (for example, on Debian or
 - `indent` (C code formatting tool)
 - `python3` and `pip3` with the reference compiler package:
   ```bash
-  pip3 install 'https://github.com/jamesmcclain/pascal-1981/archive/99a8f3f4b4f5259a43301c9b8879f3fc891d3503.zip'
+  pip3 install 'https://github.com/jamesmcclain/pascal-1981/archive/7a6933647fedf53f35aa27a615a2e91cc350d485.zip'
   ```
 
 ## Repository Layout
 
-- `src/`: Native compiler stages and driver in Pascal (`lexer.pas`, `parser.pas`, `typechecker.pas`, `codegen.pas`, `driver.pas`, `jsonutil.pas`, `jsonutil.inc`).
+- `src/`: Native compiler stages and driver in Pascal (`lexer.pas`, `parser.pas`, `typechecker.pas`, `codegen.pas`, `driver.pas`, `jsonutil.pas`, `jsonutil.inc`). The codegen stage is a composition root over eight separately compiled units, each a `.inc` interface plus a `.pas` implementation, layered lowest first and only ever depending downward:
+  - `cg_base`: shared compiler state, LLVM-C and libc prototypes, constants and record types.
+  - `cg_util`: diagnostics, depth guards, string and pointer-array helpers.
+  - `cg_types`: the type registry, sizing and layout, constant folding, SysV classification.
+  - `cg_symbols`: symbol, scope and routine tables.
+  - `cg_expr`, `cg_io`, `cg_stmt`, `cg_decl`: the four lowering layers (expressions, WRITE/READ, statements, declarations).
 - `runtime/`: C runtime static library and headers (`libpascalrt.a`, `pascalrt.h`).
 - `bin/`: Compiler driver (`pascal1981-native`, alias `pascal1981`) and stage binaries (`lexer`, `parser`, `typechecker`, `codegen`).
 - `scripts/`: Build scripts (`build-stage.sh`), formatting scripts (`beautify.sh`), and git hooks (run `git config core.hooksPath scripts/hooks` once per clone to enable the pre-commit formatting hook — it's local config, so a fresh checkout won't run it until you do). The multi-generation bootstrap itself is driven by the root `Makefile`'s `bootstrap` target, not a standalone script.

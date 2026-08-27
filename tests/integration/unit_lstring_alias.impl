@@ -1,0 +1,14 @@
+(*$INCLUDE:'unit_lstring_alias.inc'*)
+IMPLEMENTATION OF aliasstate;
+VAR
+  saved: NameRecord;
+PROCEDURE SetName(input_name: Name);
+BEGIN
+  saved.text := input_name;
+END;
+PROCEDURE GetName(VAR output_name: Name);
+BEGIN
+  output_name := saved.text;
+END;
+BEGIN
+END.

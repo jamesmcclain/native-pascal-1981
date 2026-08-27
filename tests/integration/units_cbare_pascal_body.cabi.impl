@@ -1,0 +1,15 @@
+(*$INCLUDE:'units_cbare_pascal_body.cabi.inc'*)
+IMPLEMENTATION OF cabi;
+
+FUNCTION Twice(x: CINT): CINT [C];
+BEGIN
+  Twice := x + x;
+END;
+
+FUNCTION Quad(x: CINT): CINT;
+BEGIN
+  Quad := Twice(Twice(x));
+END;
+
+BEGIN
+END.
