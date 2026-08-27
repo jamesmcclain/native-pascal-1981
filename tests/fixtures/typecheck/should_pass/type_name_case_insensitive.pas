@@ -1,26 +1,45 @@
-PROGRAM TypeNameCaseInsensitive(output);
+PROGRAM IdentifierCaseInsensitive(output);
 
 { "Lowercase and uppercase letters are interchangeable, except in string
-  literals" -- IBM Pascal, Aug 1981, Syntax and Vocabulary -- so a predeclared
-  type name resolves however it is spelled, including as a SET OF base and as
-  a RETYPE target. User-declared type names fold too; that half lives in
-  tests/golden/type_name_case_insensitive.pas because the Python reference
-  still matches its own symbol table case-sensitively. }
+  literals" -- IBM Pascal, Aug 1981, Syntax and Vocabulary. Type, variable,
+  procedure, and function identifiers therefore resolve in any case. }
+
+TYPE
+  MixedRec = RECORD
+    a: integer;
+    b: Real;
+  END;
+  CharSet = set of Char;
 
 VAR
-  x: integer;
+  Counter: integer;
   y: rEaL;
-  c: Char;
-  s: set of CHAR;
+  c: char;
+  r: mixedrec;
+  s: CHARSET;
   w: Word;
 
+PROCEDURE Greet;
 BEGIN
-  x := 3;
+  counter := COUNTER + 1;
+END;
+
+FUNCTION DoubleIt(number: INTEGER): INTEGER;
+BEGIN
+  DoubleIt := number * 2;
+END;
+
+BEGIN
+  counter := 3;
   y := 1.5;
   c := 'q';
+  r.a := COUNTER;
+  r.b := y;
   s := ['q'];
-  w := RETYPE(word, x);
+  w := RETYPE(word, counter);
+  greet;
+  Counter := DOUBLEIT(counter);
   IF c IN s THEN
     WRITELN('in set');
-  WRITELN(x, ' ', y:0:2, ' ', c, ' ', w);
+  WRITELN(r.a, ' ', r.b:0:2, ' ', c, ' ', w, ' ', COUNTER);
 END.

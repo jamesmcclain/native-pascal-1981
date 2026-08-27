@@ -943,6 +943,27 @@ BEGIN
     END;
 END;
 
+FUNCTION RoutineTypeMatches(left_tk, right_tk: INTEGER): BOOLEAN;
+{ Re-resolving an anonymous pointer type allocates a fresh type-table entry.
+  Interface/FORWARD signature matching must compare its Pascal identity, not
+  that allocation identity. Keep this stricter than assignment compatibility:
+  no INTEGER-to-REAL promotion belongs in a routine redeclaration. }
+BEGIN
+  IF left_tk = right_tk THEN
+    RoutineTypeMatches := TRUE
+  ELSE IF (TypeKind(left_tk) = TK_POINTER) AND
+          (TypeKind(right_tk) = TK_POINTER) THEN
+  BEGIN
+    IF types[left_tk].ptr_space <> types[right_tk].ptr_space THEN
+      RoutineTypeMatches := FALSE
+    ELSE
+      RoutineTypeMatches := RoutineTypeMatches(types[left_tk].elem_tid,
+                                               types[right_tk].elem_tid);
+  END
+  ELSE
+    RoutineTypeMatches := FALSE;
+END;
+
 PROCEDURE CodegenRoutineDeclInner(decl: ADRMEM; is_func: BOOLEAN);
 VAR
   name: Str255;
@@ -1039,12 +1060,14 @@ BEGIN
     IF sig_ok THEN
       FOR i := 1 TO n DO
       BEGIN
-        IF tks[i] <> routines[ridx].param_tk[i] THEN sig_ok := FALSE;
+        IF NOT RoutineTypeMatches(tks[i], routines[ridx].param_tk[i]) THEN
+          sig_ok := FALSE;
         IF isvar[i] <> routines[ridx].param_is_var[i] THEN sig_ok := FALSE;
         IF needs_copy[i] <> routines[ridx].param_needs_copy[i] THEN sig_ok := FALSE;
       END;
     IF is_func THEN
-      IF ResolveTypeExpr(GetObj(decl, 'return_type')) <> ret_tk THEN sig_ok := FALSE;
+      IF NOT RoutineTypeMatches(ResolveTypeExpr(GetObj(decl, 'return_type')), ret_tk) THEN
+        sig_ok := FALSE;
     IF NOT sig_ok THEN
       AbortWith2('codegen: redeclaration does not match the earlier declaration: ', name);
     routines[ridx].has_body := has_block_body; { still a placeholder when

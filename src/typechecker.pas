@@ -235,64 +235,8 @@ END;
 
 { ============================ symbol table ============================= }
 
-PROCEDURE PushScope;
-BEGIN
-  scope_top := scope_top + 1;
-  scope_stack[scope_top] := nsymbols;
-END;
-
-PROCEDURE PopScope;
-BEGIN
-  nsymbols := scope_stack[scope_top];
-  scope_top := scope_top - 1;
-END;
-
-FUNCTION LookupSymbol(name: Str255): INTEGER32;
-VAR
-  i: INTEGER32;
-BEGIN
-  i := nsymbols;
-  WHILE (i >= 1) AND THEN (symbols[i].name <> name) DO
-    i := i - 1;
-  LookupSymbol := i;
-END;
-
-FUNCTION LookupSymbolInScope(name: Str255): INTEGER32;
-{ LookupSymbol above searches every live scope, answering "is this name
-  visible". This one stops at the current scope's low-water mark, answering
-  "was this name already declared *here*" -- the question a redeclaration
-  rule has to ask, since shadowing an outer declaration is not one. Returns 0
-  when the name was not declared in this scope. }
-VAR
-  i, base: INTEGER32;
-BEGIN
-  IF scope_top = 0 THEN base := 0
-  ELSE base := scope_stack[scope_top];
-  i := nsymbols;
-  WHILE (i > base) AND THEN (symbols[i].name <> name) DO
-    i := i - 1;
-  IF i > base THEN LookupSymbolInScope := i
-  ELSE LookupSymbolInScope := 0;
-END;
-
-FUNCTION DefineSymbol(name: Str255; kind: Str255; tk, aux, aux2, idx_tk: INTEGER): INTEGER32;
-BEGIN
-  nsymbols := nsymbols + 1;
-  symbols[nsymbols].name := name;
-  symbols[nsymbols].kind := kind;
-  symbols[nsymbols].tk := tk;
-  symbols[nsymbols].aux := aux;
-  symbols[nsymbols].aux2 := aux2;
-  symbols[nsymbols].idx_tk := idx_tk;
-  symbols[nsymbols].nparams := 0;
-  symbols[nsymbols].ret_tk := TK_VOID;
-  symbols[nsymbols].is_vararg := FALSE;
-  symbols[nsymbols].is_extern := FALSE;
-  DefineSymbol := nsymbols;
-END;
-
 FUNCTION UpperStr(s: Str255): Str255;
-{ ASCII case fold, matching codegen's cg_util.pas UpperStr. Type names are
+{ ASCII case fold, matching codegen's cg_util.pas UpperStr. Identifiers are
   matched case-insensitively per the manual: "Lowercase and uppercase letters
   are interchangeable, except in string literals" (IBM Pascal, Aug 1981,
   Syntax and Vocabulary). }
@@ -312,6 +256,66 @@ BEGIN
       res[i] := ch;
   END;
   UpperStr := res;
+END;
+
+PROCEDURE PushScope;
+BEGIN
+  scope_top := scope_top + 1;
+  scope_stack[scope_top] := nsymbols;
+END;
+
+PROCEDURE PopScope;
+BEGIN
+  nsymbols := scope_stack[scope_top];
+  scope_top := scope_top - 1;
+END;
+
+FUNCTION LookupSymbol(name: Str255): INTEGER32;
+VAR
+  i: INTEGER32;
+  uname: Str255;
+BEGIN
+  uname := UpperStr(name);
+  i := nsymbols;
+  WHILE (i >= 1) AND THEN (UpperStr(symbols[i].name) <> uname) DO
+    i := i - 1;
+  LookupSymbol := i;
+END;
+
+FUNCTION LookupSymbolInScope(name: Str255): INTEGER32;
+{ LookupSymbol above searches every live scope, answering "is this name
+  visible". This one stops at the current scope's low-water mark, answering
+  "was this name already declared *here*" -- the question a redeclaration
+  rule has to ask, since shadowing an outer declaration is not one. Returns 0
+  when the name was not declared in this scope. }
+VAR
+  i, base: INTEGER32;
+  uname: Str255;
+BEGIN
+  uname := UpperStr(name);
+  IF scope_top = 0 THEN base := 0
+  ELSE base := scope_stack[scope_top];
+  i := nsymbols;
+  WHILE (i > base) AND THEN (UpperStr(symbols[i].name) <> uname) DO
+    i := i - 1;
+  IF i > base THEN LookupSymbolInScope := i
+  ELSE LookupSymbolInScope := 0;
+END;
+
+FUNCTION DefineSymbol(name: Str255; kind: Str255; tk, aux, aux2, idx_tk: INTEGER): INTEGER32;
+BEGIN
+  nsymbols := nsymbols + 1;
+  symbols[nsymbols].name := name;
+  symbols[nsymbols].kind := kind;
+  symbols[nsymbols].tk := tk;
+  symbols[nsymbols].aux := aux;
+  symbols[nsymbols].aux2 := aux2;
+  symbols[nsymbols].idx_tk := idx_tk;
+  symbols[nsymbols].nparams := 0;
+  symbols[nsymbols].ret_tk := TK_VOID;
+  symbols[nsymbols].is_vararg := FALSE;
+  symbols[nsymbols].is_extern := FALSE;
+  DefineSymbol := nsymbols;
 END;
 
 FUNCTION LookupType(name: Str255): INTEGER32;
