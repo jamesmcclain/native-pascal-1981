@@ -577,7 +577,17 @@ BEGIN
       ti := 0;
       IF GetObjOrNil(node, 'param') = NIL THEN ti := LookupType(name);
       IF ti <> 0 THEN
-        tk := types[ti].tk
+      BEGIN
+        { Copy the whole entry, not just the kind -- the payload fields carry
+          an element/base kind (aux), a width or capacity (aux2) and an index
+          kind (idx_tk), and dropping them silently loses e.g. an LSTRING
+          alias's capacity. Same four assignments as the NamedType branch
+          above; that they agree is the point. }
+        tk := types[ti].tk;
+        aux := types[ti].aux;
+        aux2 := types[ti].aux2;
+        idx_tk := types[ti].idx_tk;
+      END
       ELSE IF uname = 'CHAR' THEN tk := TK_CHAR
       ELSE IF uname = 'BOOLEAN' THEN tk := TK_BOOLEAN
       ELSE IF uname = 'WORD' THEN tk := TK_WORD
