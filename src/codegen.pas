@@ -209,7 +209,17 @@ BEGIN
   ELSE
   BEGIN
     { These must stay synchronized with TypeSizeBytes/TypeAlignBytes's
-      x86-64 SysV layout assumptions. }
+      x86-64 SysV layout assumptions.
+
+      Stating the triple rather than leaving the module untargeted (which
+      let clang substitute the host's) makes an assumption this stage
+      already had explicit: SysVAggClass, the byval/sret classification and
+      the size/align tables are all x86-64 SysV, so IR produced here was
+      never host-portable -- it merely used to be mislabelled on a non-x86-64
+      host. On such a host clang now warns and overrides instead of silently
+      compiling x86-64-classified IR under another layout. README scopes the
+      toolchain to Ubuntu x86_64; a second target needs those tables
+      parameterised, not just this string. }
     LLVMSetTarget(modl, MakeCStr('x86_64-pc-linux-gnu'));
     LLVMSetDataLayout(modl, MakeCStr('e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128'));
   END;
