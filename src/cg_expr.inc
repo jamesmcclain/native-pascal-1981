@@ -9,8 +9,6 @@ USES jsonutil, cg_base, cg_util, cg_types, cg_symbols;
 PROCEDURE SetRuntimeBit(slot: ADRMEM; ordinal_val: ADRMEM);
 PROCEDURE EmitSetRangeLoop(slot: ADRMEM; low_node, high_node: ADRMEM);
 FUNCTION CodegenSetConstructor(node: ADRMEM): ADRMEM;
-FUNCTION CodegenSetMember(ordinal_val, set_val: ADRMEM): ADRMEM;
-FUNCTION CodegenSetBinOp(op: Str255; lval, rval: ADRMEM): ADRMEM;
 FUNCTION CodegenStringBinOp(op: Str255; left_node, right_node: ADRMEM): ADRMEM;
 FUNCTION VariadicPromote(v: ADRMEM; tk: INTEGER; name: Str255): ADRMEM;
 FUNCTION CodegenShortCircuitBinOp(op: Str255; left_node, right_node: ADRMEM): ADRMEM;
