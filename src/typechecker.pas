@@ -615,6 +615,7 @@ END;
 
 FUNCTION CheckExpr(node: ADRMEM): INTEGER; FORWARD;
 PROCEDURE CheckStmt(node: ADRMEM); FORWARD;
+FUNCTION HasExternMarkerDecl(decl: ADRMEM): BOOLEAN; FORWARD;
 FUNCTION IsForeignRoutineDecl(decl: ADRMEM): BOOLEAN; FORWARD;
 
 { =============================== expressions ============================ }
@@ -1557,6 +1558,7 @@ VAR
   attrs_arr, attr_item: ADRMEM;
   nattrs, ai: INTEGER32;
   is_vararg: BOOLEAN;
+  has_block_body: BOOLEAN;
   prior: INTEGER32;
 BEGIN
   nt := NodeType(decl);
@@ -1632,14 +1634,22 @@ BEGIN
       spliced INTERFACE header then the IMPLEMENTATION's body, and the
       manual's split-implementation form where an IMPLEMENTATION redeclares
       an interface routine `; EXTERN;` because the body is in another
-      compiland. That last one has no body of its own, so the body <> NIL
-      half already excludes it. Plain AND is not short-circuit in this
-      dialect, hence the nested IFs rather than one conjunction. }
+      compiland. That last one has no body of its own, so the
+      has_block_body half already excludes it. Plain AND is not
+      short-circuit in this dialect, hence the nested IFs rather than one
+      conjunction.
+
+      A body-less declaration is *not* a NIL 'body' slot: the parser writes
+      the slot with AddNullField (parser.pas:2329), and jsonutil.pas's
+      GetObj hands back that cJSON null item unchanged, so `body <> NIL` is
+      true for every routine decl ever parsed. Test the node type instead,
+      exactly as cg_decl.pas:978 does for the same question. }
     body := GetObj(decl, 'body');
+    has_block_body := NodeType(body) = 'Block';
     prior := LookupSymbolInScope(dname);
     IF prior >= 1 THEN
       IF symbols[prior].is_extern THEN
-        IF body <> NIL THEN
+        IF has_block_body THEN
           AddError2('EXTERN routine cannot be defined here (use FORWARD): ', dname);
 
     si := DefineSymbol(dname, nt, TK_UNKNOWN, 0, 0, 0);
@@ -1648,7 +1658,7 @@ BEGIN
     ELSE
       symbols[si].kind := 'PROC';
     symbols[si].ret_tk := ret_tk;
-    symbols[si].is_extern := IsForeignRoutineDecl(decl);
+    symbols[si].is_extern := HasExternMarkerDecl(decl);
     ppi := 0;
     FOR pi := 0 TO np - 1 DO
     BEGIN
@@ -1685,8 +1695,10 @@ BEGIN
       bound and -- for a FUNCTION -- cur_func_name/cur_func_ret_tk/aux/aux2
       set so `F := expr` inside F's own body resolves as a return-slot
       assignment (see CheckStmt's AssignStmt case) without a shadow symbol
-      that would otherwise hide F's own FUNC entry from recursive calls. }
-    IF body <> NIL THEN
+      that would otherwise hide F's own FUNC entry from recursive calls.
+      Same null-slot caveat as the EXTERN check above -- a body-less decl
+      reaches here with a non-NIL cJSON null, not NIL. }
+    IF has_block_body THEN
     BEGIN
       PushScope;
       saved_func_name := cur_func_name;
@@ -1872,24 +1884,23 @@ BEGIN
   FindVarDeclContainingName := found;
 END;
 
-FUNCTION IsForeignRoutineDecl(decl: ADRMEM): BOOLEAN;
-{ True for a routine whose body deliberately lives outside this compiland --
-  a [C] library entry (puts, malloc, the LLVM-C API), or an EXTERN/EXTERNAL
-  Pascal routine defined in a separately compiled object. An IMPLEMENTATION
-  cannot supply a body for one of these, so ValidateImplementationContract
-  below must not demand one.
+FUNCTION HasExternMarkerDecl(decl: ADRMEM): BOOLEAN;
+{ True for a routine carrying an EXTERN/EXTERNAL marker in either of its two
+  spellings -- the [EXTERN] attribute or the `; EXTERN;` directive. This is
+  the "a body cannot legally appear for this name" question, and it is the
+  one CheckDecl's is_extern must answer.
 
-  Mirrors codegen_decl.inc's IsCForeignDecl, but deliberately broader: that
-  one answers "does this need the SysV C ABI", which requires [C] *and* an
-  extern marker, whereas this one answers "is a Pascal body impossible", for
-  which either marker alone is enough.
-
-  Note this checks the interface's own declarations rather than filtering by
-  the UNIT export list. The Python reference validates the contract by
-  looping the export list instead, which would also let a [C] declaration
-  through -- but it silently skips validation entirely for a unit written
-  `UNIT foo;` with no parenthesised list, which is exactly the shape
-  src/cg_base.inc uses. Exempting by kind keeps the contract enforced there. }
+  The [C] attribute on its own is deliberately NOT enough here, unlike in
+  IsForeignRoutineDecl below. [C] answers a different question -- "call this
+  with the SysV C ABI" -- and by itself says nothing about where the body
+  lives: `FUNCTION twice(x: CINT): CINT [C];` in an INTERFACE is an ordinary
+  Pascal routine, exported with the C convention so C callers can reach it,
+  whose body this compiland is expected to supply. Codegen agrees, setting
+  routines[].is_extern from IsExternDirectiveDecl OR IsCForeignDecl
+  (cg_decl.pas:1220), and IsCForeignDecl requires [C] *and* an extern
+  marker. Marking bare [C] extern here rejected such a routine's own body
+  with "EXTERN routine cannot be defined here" while codegen lowered it
+  happily. }
 VAR
   attrs_arr, item: ADRMEM;
   i, nattrs: INTEGER32;
@@ -1903,18 +1914,62 @@ BEGIN
   BEGIN
     item := cJSON_GetArrayItem(attrs_arr, i);
     attr_nm := GetStr(item, 'name');
-    { A bare `attr_nm = 'C'` comparison doesn't typecheck: a single-quoted
-      single-character literal lexes as CHAR, not a length-1 LSTRING, so
-      LSTRING = CHAR has no defined comparison. Compare the length byte
-      (index 0, per the LSTRING index-0-is-length-as-CHAR convention) and
-      the first character instead -- same idiom as codegen_decl.inc:504. }
-    IF (ORD(attr_nm[0]) = 1) AND (attr_nm[1] = 'C') THEN found := TRUE;
     IF attr_nm = 'EXTERN' THEN found := TRUE;
     IF attr_nm = 'EXTERNAL' THEN found := TRUE;
   END;
   directive := GetStr(decl, 'directive');
   IF directive = 'EXTERN' THEN found := TRUE;
   IF directive = 'EXTERNAL' THEN found := TRUE;
+  HasExternMarkerDecl := found;
+END;
+
+FUNCTION IsForeignRoutineDecl(decl: ADRMEM): BOOLEAN;
+{ True for a routine an IMPLEMENTATION is not obliged to define, so that
+  ValidateImplementationContract below does not demand a body for it:
+  anything HasExternMarkerDecl accepts, plus a bare [C] declaration.
+
+  The bare-[C] half is a concession to the established interface convention
+  rather than a claim about the language. src/cg_base.inc declares all 123
+  of its libc and LLVM-C entries as `FUNCTION LLVMBuildRet(...): ADRMEM [C];`
+  with no EXTERN marker -- the marker is spelled only in the .pas program
+  headers -- so under a marker-only rule this compiler fails to typecheck
+  itself, every one of those entries reported as a missing implementation.
+  ParseInterfaceDirectiveInto's acceptance of `; EXTERN;` inside an
+  INTERFACE is new in this branch and the out-of-repo Python reference gen1
+  builds with may not take it, so the .inc files cannot be respelled yet.
+
+  The cost is that a bare-[C] routine genuinely meant to be defined in the
+  IMPLEMENTATION escapes the export check, and a missing definition surfaces
+  as a link-time undefined symbol instead. Once the .inc convention moves to
+  an explicit marker, this predicate should collapse into
+  HasExternMarkerDecl.
+
+  Note this checks the interface's own declarations rather than filtering by
+  the UNIT export list. The Python reference validates the contract by
+  looping the export list instead, which would also let a [C] declaration
+  through -- but it silently skips validation entirely for a unit written
+  `UNIT foo;` with no parenthesised list, which is exactly the shape
+  src/cg_base.inc uses. Exempting by kind keeps the contract enforced there. }
+VAR
+  attrs_arr, item: ADRMEM;
+  i, nattrs: INTEGER32;
+  attr_nm: Str255;
+  found: BOOLEAN;
+BEGIN
+  found := HasExternMarkerDecl(decl);
+  attrs_arr := GetObj(decl, 'attributes');
+  nattrs := cJSON_GetArraySize(attrs_arr);
+  FOR i := 0 TO nattrs - 1 DO
+  BEGIN
+    item := cJSON_GetArrayItem(attrs_arr, i);
+    attr_nm := GetStr(item, 'name');
+    { A bare `attr_nm = 'C'` comparison doesn't typecheck: a single-quoted
+      single-character literal lexes as CHAR, not a length-1 LSTRING, so
+      LSTRING = CHAR has no defined comparison. Compare the length byte
+      (index 0, per the LSTRING index-0-is-length-as-CHAR convention) and
+      the first character instead -- same idiom as codegen_decl.inc:504. }
+    IF (ORD(attr_nm[0]) = 1) AND (attr_nm[1] = 'C') THEN found := TRUE;
+  END;
   IsForeignRoutineDecl := found;
 END;
 

@@ -2414,7 +2414,7 @@ PROCEDURE ParseInterfaceDirectiveInto(node: ADRMEM);
   never required here -- but EXTERN/EXTERNAL may still be written to say that
   the body lives in a C library or another object rather than in this unit's
   own IMPLEMENTATION (the routine_directive production in
-  docs/ebnf_grammar.md). The typechecker's IsForeignRoutineDecl reads it, as
+  docs/ebnf_grammar.md). The typechecker's HasExternMarkerDecl reads it, as
   does codegen's IsCForeignDecl for the SysV C ABI.
 
   FORWARD is deliberately not accepted: it promises a definition later in the
