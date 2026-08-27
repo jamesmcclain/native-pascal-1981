@@ -245,7 +245,6 @@ BEGIN
   ELSE IF kw = 'RECORD' THEN GetKeywordCode := 39
   ELSE IF kw = 'SET' THEN GetKeywordCode := 40
   ELSE IF kw = 'FILE' THEN GetKeywordCode := 41
-  ELSE IF kw = 'LSTRING' THEN GetKeywordCode := 42
   ELSE IF kw = 'ORIGIN' THEN GetKeywordCode := 43
   ELSE IF kw = 'READONLY' THEN GetKeywordCode := 44
   ELSE IF kw = 'PUBLIC' THEN GetKeywordCode := 45

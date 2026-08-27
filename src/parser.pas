@@ -1995,17 +1995,6 @@ BEGIN
     AddField(node, 'values', values_arr);
     ParseType := node;
   END
-  ELSE IF CurKind = 'LSTRING' THEN
-  BEGIN
-    pos := pos + 1;
-    Expect('LPAREN');
-    max_len_expr := ParseConstant;
-    Expect('RPAREN');
-    max_len := TRUNC(cJSON_GetNumberValue(cJSON_GetObjectItem(max_len_expr, MakeCStr('value'))));
-    node := CreateNode('LStringType');
-    AddIntField(node, 'max_len', max_len);
-    ParseType := node;
-  END
   ELSE IF CurKind = 'POINTER' THEN
   BEGIN
     pos := pos + 1;

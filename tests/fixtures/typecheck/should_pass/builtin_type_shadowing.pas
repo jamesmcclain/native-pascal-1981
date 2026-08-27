@@ -12,15 +12,20 @@ TYPE
   STRING = RECORD
     tag: INTEGER;
   END;
+  LSTRING = RECORD
+    tag: INTEGER;
+  END;
 VAR
   w: WORD;
   b: BOOLEAN;
+  l: LSTRING;
   r: STRING;
   s: STRING(16);
   n: INTEGER;
 BEGIN
   w := 'shadowed';
   b.x := 1;
+  l.tag := 3;
   r.tag := 2;
   s := 'sixteen chars   ';
   n := 3

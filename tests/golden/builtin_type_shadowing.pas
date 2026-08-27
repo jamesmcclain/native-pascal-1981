@@ -13,10 +13,14 @@ TYPE
   STRING = RECORD
     tag: INTEGER;
   END;
+  LSTRING = RECORD
+    tag: INTEGER;
+  END;
 
 VAR
   current: WORD;
   flag: BOOLEAN;
+  lrec: LSTRING;
   rec: STRING;
   s: STRING(16);
   n: INTEGER;
@@ -26,6 +30,8 @@ BEGIN
   WRITELN(current);
   flag.x := 42;
   WRITELN(flag.x);
+  lrec.tag := 9;
+  WRITELN(lrec.tag);
   rec.tag := 7;
   WRITELN(rec.tag);
   s := 'still builtin   ';
