@@ -972,6 +972,8 @@ VAR
   ret_pk: SysVPieceArr;
   ret_pb: SysVPieceSzArr;
   sret_attr, noalias_attr: ADRMEM;
+  prev_n: INTEGER32;
+  sig_ok: BOOLEAN;
 BEGIN
   name := GetStr(decl, 'name');
   body_blk := GetObj(decl, 'body');
@@ -1020,15 +1022,31 @@ BEGIN
       no case for TK_UNKNOWN, so it must not be called for a void routine. }
     IF is_func THEN ret_llvm_ty := LLVMTypeForTk(ret_tk)
     ELSE ret_llvm_ty := voidty;
-    n := routines[ridx].nparams;
-    FOR i := 1 TO n DO
-    BEGIN
-      tks[i] := routines[ridx].param_tk[i];
-      isvar[i] := routines[ridx].param_is_var[i];
-      needs_copy[i] := routines[ridx].param_needs_copy[i];
-    END;
+    { The reused fn/fnty carry the FIRST declaration's parameter shape, but
+      everything below -- the entry-block allocas, the byval/align attribute
+      attachment -- reads the arrays FlattenParams fills from THIS decl. The
+      two agreeing is a load-bearing assumption, not something the LLVM side
+      re-checks: a disagreeing pair silently lowers a body whose allocas and
+      attributes do not match the function type it is being emitted into.
+      Every redeclaration in this dialect restates the whole heading (the
+      parser has no param-less repeat form -- ParseFuncDecl even requires
+      the `: type`), so demanding agreement costs a conforming program
+      nothing. ret_tk stays the table's; it is compared, not overwritten. }
+    prev_n := routines[ridx].nparams;
     params_arr := GetObj(decl, 'params');
     FlattenParams(params_arr, n, names, tks, isvar, needs_copy);
+    sig_ok := n = prev_n;
+    IF sig_ok THEN
+      FOR i := 1 TO n DO
+      BEGIN
+        IF tks[i] <> routines[ridx].param_tk[i] THEN sig_ok := FALSE;
+        IF isvar[i] <> routines[ridx].param_is_var[i] THEN sig_ok := FALSE;
+        IF needs_copy[i] <> routines[ridx].param_needs_copy[i] THEN sig_ok := FALSE;
+      END;
+    IF is_func THEN
+      IF ResolveTypeExpr(GetObj(decl, 'return_type')) <> ret_tk THEN sig_ok := FALSE;
+    IF NOT sig_ok THEN
+      AbortWith2('codegen: redeclaration does not match the earlier declaration: ', name);
     routines[ridx].has_body := has_block_body; { still a placeholder when
       this pass is itself another body-less declaration -- see above. }
     is_c := routines[ridx].is_c; { source of truth once ridx is known -- see note above }
