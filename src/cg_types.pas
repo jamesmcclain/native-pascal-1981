@@ -939,9 +939,14 @@ BEGIN
     ELSE IF unm = 'CDOUBLE' THEN tid := TK_REAL
     ELSE IF unm = 'TEXT' THEN
       tid := RegisterType(TK_FILE, TK_CHAR, 0, 1, i8ptrty)
-    ELSE IF (unm = 'LSTRING') AND (GetObjOrNil(te, 'param') <> NIL) THEN
+    ELSE IF unm = 'LSTRING' THEN
     BEGIN
-      hi := GetInt(te, 'param');
+      { A bare LSTRING is LSTRING(256), the same default STRING takes below --
+        the reference resolves it that way. Reaching here at all means no user
+        TYPE of the name shadowed it: the probe above only skips a NamedType
+        carrying a param. }
+      IF GetObjOrNil(te, 'param') = NIL THEN hi := 256
+      ELSE hi := GetInt(te, 'param');
       arr_ty := LLVMArrayType(i8ty, hi + 1);
       tid := RegisterType(TK_LSTRING, TK_CHAR, 0, hi, arr_ty);
     END
