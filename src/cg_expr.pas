@@ -7,12 +7,12 @@
 (*$INCLUDE:'cg_symbols.inc'*)
 (*$INCLUDE:'cg_expr_shape.inc'*)
 (*$INCLUDE:'cg_expr_sets.inc'*)
+(*$INCLUDE:'cg_expr_support.inc'*)
 (*$INCLUDE:'cg_expr.inc'*)
 IMPLEMENTATION OF cg_expr;
-USES cg_expr_shape, cg_expr_sets;
+USES cg_expr_shape, cg_expr_sets, cg_expr_support;
 
 FUNCTION CodegenExpr(node: ADRMEM): ADRMEM; FORWARD;
-FUNCTION LaunchI64(v: ADRMEM; tk: INTEGER): ADRMEM; FORWARD;
 FUNCTION ComputeDesignatorAddress(node: ADRMEM): ADRMEM; FORWARD;
 FUNCTION CodegenPositn(args: ADRMEM): ADRMEM; FORWARD;
 FUNCTION CodegenScan(stop_on_equal: INTEGER; args: ADRMEM): ADRMEM; FORWARD;
@@ -185,43 +185,6 @@ BEGIN
     res := NIL;
   END;
   CodegenStringBinOp := res;
-END;
-
-FUNCTION VariadicPromote(v: ADRMEM; tk: INTEGER; name: Str255): ADRMEM;
-{ C's default argument promotions (C11 6.5.2.2 p7), applied to one value in
-  a variadic call's tail -- mirrors the Python reference's
-  _c_abi_variadic_promote (c_abi.py):
-    - REAL32 (float) widens to REAL (double) via fpext.
-    - Anything narrower than C's int -- BOOLEAN (i1), CHAR/INTEGER8/WORD8
-      (i8) and this dialect's own 16-bit INTEGER/WORD -- widens to i32. The
-      extension follows the SOURCE Pascal type, not the LLVM width, which
-      cannot tell a WORD from an INTEGER: the WORD family zero-extends (a
-      WORD of 60000 must stay 60000, not become -5536) and everything else
-      sign-extends. BOOLEAN is always zero-extended.
-    - INTEGER32/WORD32, the 64-bit family, REAL, enums and pointers are
-      already at least as wide as the promoted types and pass through.
-  An aggregate has no scalar promotion at all (the reference doesn't handle
-  one either), so it is refused rather than silently mispassed. }
-BEGIN
-  IF IsAggregateTk(tk) THEN
-  BEGIN
-    AbortWith2('codegen: an aggregate cannot be a variadic argument, calling: ', name);
-    VariadicPromote := v;
-  END
-  ELSE IF tk = TK_REAL32 THEN
-    VariadicPromote := LLVMBuildFPExt(builder, v, dblty, MakeCStr(''))
-  ELSE IF tk = TK_BOOLEAN THEN
-    VariadicPromote := LLVMBuildZExt(builder, v, i32ty, MakeCStr(''))
-  ELSE IF (tk = TK_CHAR) OR (tk = TK_INTEGER8) OR (tk = TK_WORD8)
-          OR (tk = TK_INTEGER) OR (tk = TK_WORD) THEN
-  BEGIN
-    IF IsUnsignedWordTk(tk) THEN
-      VariadicPromote := LLVMBuildZExt(builder, v, i32ty, MakeCStr(''))
-    ELSE
-      VariadicPromote := LLVMBuildSExt(builder, v, i32ty, MakeCStr(''));
-  END
-  ELSE
-    VariadicPromote := v;
 END;
 
 FUNCTION CodegenShortCircuitBinOp(op: Str255; left_node, right_node: ADRMEM): ADRMEM;
@@ -1069,15 +1032,6 @@ BEGIN
   END;
 END;
 
-FUNCTION MakeArgs1(v: ADRMEM): ADRMEM;
-VAR
-  a: ADRMEM;
-BEGIN
-  a := AllocPtrArray(1);
-  SetPtrArrayElem(a, 0, v);
-  MakeArgs1 := a;
-END;
-
 FUNCTION CodegenSimpleBuiltin(nm: Str255; args: ADRMEM): ADRMEM;
 { The math/ordinal builtins that need no libpascalrt support: pure inline
   LLVM IR (CHR/ORD/ODD/SUCC/PRED/ABS/SQR), or a single libm call
@@ -1253,82 +1207,6 @@ BEGIN
     res := NIL;
   END;
   CodegenSimpleBuiltin := res;
-END;
-
-FUNCTION CodegenHostDeviceIndex(nm: Str255): ADRMEM;
-{ Read one thread/block index on the CPU-device (host-triple) path: a load
-  from the CPU shim's external thread-local i32 (cpu_device_shim.c), which
-  pas_dev_launch sets per shim-driven call before invoking the kernel
-  thunk. Mirrors the Python reference's exprs.py CPU fallback branch. }
-VAR
-  gv_name: Str255;
-  gv: ADRMEM;
-BEGIN
-  IF nm = 'THREADIDX_X' THEN gv_name := '__pas_tid_x'
-  ELSE IF nm = 'THREADIDX_Y' THEN gv_name := '__pas_tid_y'
-  ELSE IF nm = 'THREADIDX_Z' THEN gv_name := '__pas_tid_z'
-  ELSE IF nm = 'BLOCKIDX_X' THEN gv_name := '__pas_ctaid_x'
-  ELSE IF nm = 'BLOCKIDX_Y' THEN gv_name := '__pas_ctaid_y'
-  ELSE IF nm = 'BLOCKIDX_Z' THEN gv_name := '__pas_ctaid_z'
-  ELSE IF nm = 'BLOCKDIM_X' THEN gv_name := '__pas_ntid_x'
-  ELSE IF nm = 'BLOCKDIM_Y' THEN gv_name := '__pas_ntid_y'
-  ELSE IF nm = 'BLOCKDIM_Z' THEN gv_name := '__pas_ntid_z'
-  ELSE IF nm = 'GRIDDIM_X' THEN gv_name := '__pas_nctaid_x'
-  ELSE IF nm = 'GRIDDIM_Y' THEN gv_name := '__pas_nctaid_y'
-  ELSE IF nm = 'GRIDDIM_Z' THEN gv_name := '__pas_nctaid_z'
-  ELSE AbortWith2('codegen: unknown device index builtin: ', nm);
-  gv := LLVMGetNamedGlobal(modl, MakeCStr(gv_name));
-  IF gv = NIL THEN
-  BEGIN
-    gv := LLVMAddGlobal(modl, i32ty, MakeCStr(gv_name));
-    LLVMSetLinkage(gv, 0); { LLVMExternalLinkage: defined in cpu_device_shim.c,
-                             linked in via libpascalrt.a, not this module. }
-    LLVMSetThreadLocal(gv, 1);
-  END;
-  CodegenHostDeviceIndex := LLVMBuildLoad2(builder, i32ty, gv, MakeCStr(''));
-  last_val_tk := TK_INTEGER32;
-END;
-
-FUNCTION CodegenDeviceIndex(nm: Str255): ADRMEM;
-{ Read one CUDA thread/block special register in a DEVICE compiland. NVPTX
-  targets lower to the NVVM special-register intrinsic (resolved by llc to
-  the PTX special register); any other DEVICE target (the CPU-device
-  stand-in) reads the CPU shim's thread-local index registers instead. }
-VAR
-  intrinsic_name: Str255;
-  fnty, fn: ADRMEM;
-BEGIN
-  IF NOT is_nvptx_device THEN
-  BEGIN
-    IF NOT is_device_compiland THEN
-      AbortWith2('codegen: device index builtin requires DEVICE code: ', nm);
-    CodegenDeviceIndex := CodegenHostDeviceIndex(nm);
-  END
-  ELSE
-  BEGIN
-    IF nm = 'THREADIDX_X' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.tid.x'
-    ELSE IF nm = 'THREADIDX_Y' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.tid.y'
-    ELSE IF nm = 'THREADIDX_Z' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.tid.z'
-    ELSE IF nm = 'BLOCKIDX_X' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ctaid.x'
-    ELSE IF nm = 'BLOCKIDX_Y' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ctaid.y'
-    ELSE IF nm = 'BLOCKIDX_Z' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ctaid.z'
-    ELSE IF nm = 'BLOCKDIM_X' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ntid.x'
-    ELSE IF nm = 'BLOCKDIM_Y' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ntid.y'
-    ELSE IF nm = 'BLOCKDIM_Z' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ntid.z'
-    ELSE IF nm = 'GRIDDIM_X' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.nctaid.x'
-    ELSE IF nm = 'GRIDDIM_Y' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.nctaid.y'
-    ELSE IF nm = 'GRIDDIM_Z' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.nctaid.z'
-    ELSE AbortWith2('codegen: unknown device index builtin: ', nm);
-    fnty := LLVMFunctionType(i32ty, NIL, 0, 0);
-    { LLVMAddFunction renames a second declaration to .1.  That is fatal for
-      LLVM intrinsics, whose spelling encodes their signature.  An interface
-      declaration can make the implementation body encounter the same special
-      register more than once, so reuse the canonical intrinsic declaration. }
-    fn := LLVMGetNamedFunction(modl, MakeCStr(intrinsic_name));
-    IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr(intrinsic_name), fnty);
-    CodegenDeviceIndex := LLVMBuildCall2(builder, fnty, fn, NIL, 0, MakeCStr(''));
-    last_val_tk := TK_INTEGER32;
-  END;
 END;
 
 FUNCTION CodegenDevAlloc(args: ADRMEM): ADRMEM;
@@ -2051,14 +1929,6 @@ BEGIN
     LLVMBuildCall2(builder, decode_fnty, decode_fn, call_args, 7, MakeCStr('')),
     LLVMConstInt(i32ty, 0, 0), MakeCStr(''));
 END;
-
-FUNCTION LaunchI64(v: ADRMEM; tk: INTEGER): ADRMEM;
-BEGIN
-  IF (tk = TK_INTEGER64) OR (tk = TK_WORD64) THEN LaunchI64 := v
-  ELSE IF IsUnsignedWordTk(tk) THEN LaunchI64 := LLVMBuildZExt(builder, v, i64ty, MakeCStr(''))
-  ELSE LaunchI64 := LLVMBuildSExt(builder, v, i64ty, MakeCStr(''));
-END;
-
 
 BEGIN
 END.

@@ -138,13 +138,14 @@
 (*$INCLUDE:'cg_symbols.inc'*)
 (*$INCLUDE:'cg_expr_shape.inc'*)
 (*$INCLUDE:'cg_expr_sets.inc'*)
+(*$INCLUDE:'cg_expr_support.inc'*)
 (*$INCLUDE:'cg_expr.inc'*)
 (*$INCLUDE:'cg_io.inc'*)
 (*$INCLUDE:'cg_stmt.inc'*)
 (*$INCLUDE:'cg_decl.inc'*)
 PROGRAM pascal1981_codegen(input, output);
 
-USES jsonutil, cg_base, cg_util, cg_types, cg_symbols, cg_expr_shape, cg_expr_sets, cg_expr, cg_io, cg_stmt, cg_decl;
+USES jsonutil, cg_base, cg_util, cg_types, cg_symbols, cg_expr_shape, cg_expr_sets, cg_expr_support, cg_expr, cg_io, cg_stmt, cg_decl;
 
 { ============================== driver =================================== }
 
