@@ -33,8 +33,10 @@ CODEGEN_SRCS := $(foreach u,$(CODEGEN_UNITS),src/$(u).pas src/$(u).inc)
 # Its list is also lowest layer first and must match scripts/build-stage.sh.
 TYPECHECKER_UNITS := tc_base tc_types tc_expr tc_stmt tc_decl
 TYPECHECKER_SRCS := $(foreach u,$(TYPECHECKER_UNITS),src/$(u).pas src/$(u).inc)
-# parser will follow the same separately-compiled unit pattern. Its list is
-# lowest layer first and must match scripts/build-stage.sh.
+# parser follows the same separately-compiled unit pattern. Its list is
+# lowest layer first and must match scripts/build-stage.sh. ps_expr also owns
+# type parsing: SIZEOF(type) reaches types from factors while ADS(space) reaches
+# expressions from types, so the 1981 unit DAG cannot split that SCC further.
 PARSER_UNITS := ps_base ps_expr ps_stmt ps_decl
 PARSER_SRCS := $(foreach u,$(PARSER_UNITS),src/$(u).pas src/$(u).inc)
 GEN1_BINS := $(addprefix $(BUILD_DIR)/gen1/,$(STAGES))

@@ -198,6 +198,9 @@ for source in parser typechecker codegen; do
   elif [ "$source" = typechecker ]; then
     source_file=src/tc_base.inc
     diagnostic_file=src/typechecker.pas
+  elif [ "$source" = parser ]; then
+    source_file=src/ps_base.inc
+    diagnostic_file=src/ps_base.pas
   else
     diagnostic_file="$source_file"
   fi
