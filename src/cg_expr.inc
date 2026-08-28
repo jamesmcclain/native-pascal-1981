@@ -15,8 +15,6 @@ FUNCTION CodegenBinOp(op: Str255; left_node, right_node: ADRMEM): ADRMEM;
 FUNCTION CodegenUnaryOp(op: Str255; operand_node: ADRMEM): ADRMEM;
 FUNCTION CodegenCallCommon(name: Str255; args_arr: ADRMEM): ADRMEM;
 FUNCTION ComputeDesignatorAddress(node: ADRMEM): ADRMEM;
-PROCEDURE CodegenLStringLiteralAssign(dest_addr: ADRMEM; dest_tid: INTEGER; s: Str255);
-PROCEDURE CodegenStringLiteralAssign(dest_addr: ADRMEM; dest_tid: INTEGER; s: Str255);
 FUNCTION CodegenSimpleBuiltin(nm: Str255; args: ADRMEM): ADRMEM;
 FUNCTION CodegenDevAlloc(args: ADRMEM): ADRMEM;
 FUNCTION CodegenExpr(node: ADRMEM): ADRMEM;

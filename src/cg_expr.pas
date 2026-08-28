@@ -8,9 +8,10 @@
 (*$INCLUDE:'cg_expr_shape.inc'*)
 (*$INCLUDE:'cg_expr_sets.inc'*)
 (*$INCLUDE:'cg_expr_support.inc'*)
+(*$INCLUDE:'cg_expr_literals.inc'*)
 (*$INCLUDE:'cg_expr.inc'*)
 IMPLEMENTATION OF cg_expr;
-USES cg_expr_shape, cg_expr_sets, cg_expr_support;
+USES cg_expr_shape, cg_expr_sets, cg_expr_support, cg_expr_literals;
 
 FUNCTION CodegenExpr(node: ADRMEM): ADRMEM; FORWARD;
 FUNCTION ComputeDesignatorAddress(node: ADRMEM): ADRMEM; FORWARD;
@@ -19,8 +20,6 @@ FUNCTION CodegenScan(stop_on_equal: INTEGER; args: ADRMEM): ADRMEM; FORWARD;
 FUNCTION CodegenEncode(args: ADRMEM): ADRMEM; FORWARD;
 FUNCTION CodegenDecode(args: ADRMEM): ADRMEM; FORWARD;
 PROCEDURE ResolveStringExprCharsLen(expr: ADRMEM; VAR chars_ptr: ADRMEM; VAR len_val: ADRMEM); FORWARD;
-PROCEDURE CodegenLStringLiteralAssign(dest_addr: ADRMEM; dest_tid: INTEGER; s: Str255); FORWARD;
-PROCEDURE CodegenStringLiteralAssign(dest_addr: ADRMEM; dest_tid: INTEGER; s: Str255); FORWARD;
 
 { ============================== expressions =============================== }
 
@@ -978,58 +977,6 @@ BEGIN
 
   last_val_tk := cur_tid;
   ComputeDesignatorAddress := base_ptr;
-END;
-
-PROCEDURE CodegenLStringLiteralAssign(dest_addr: ADRMEM; dest_tid: INTEGER; s: Str255);
-{ Stores a compile-time-known string literal's characters plus its
-  length-prefix byte (LSTRING layout: byte[0] = length, byte[1..n] = chars)
-  directly into an LSTRING destination -- the counterpart of the Python
-  reference's strings.py literal-store path, but done with a plain unrolled
-  GEP+store per character since the source is always a constant here. }
-VAR
-  i, len, cap: INTEGER;
-  gep_idx, elem_ptr: ADRMEM;
-BEGIN
-  len := ORD(s[0]);
-  cap := types[dest_tid].hi;
-  IF len > cap THEN
-    AbortWith('codegen: string literal too long for LSTRING capacity');
-  FOR i := 1 TO len DO
-  BEGIN
-    gep_idx := AllocPtrArray(2);
-    SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-    SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, i, 0));
-    elem_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(dest_tid), dest_addr, gep_idx, 2, MakeCStr(''));
-    LLVMBuildStore(builder, LLVMConstInt(i8ty, ORD(s[i]), 0), elem_ptr);
-  END;
-  gep_idx := AllocPtrArray(2);
-  SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
-  elem_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(dest_tid), dest_addr, gep_idx, 2, MakeCStr(''));
-  LLVMBuildStore(builder, LLVMConstInt(i8ty, len, 0), elem_ptr);
-END;
-
-PROCEDURE CodegenStringLiteralAssign(dest_addr: ADRMEM; dest_tid: INTEGER; s: Str255);
-{ STRING(n) counterpart of CodegenLStringLiteralAssign: no length-prefix
-  byte -- STRING is just [n x i8], 1-based chars at byte[0..n-1] -- and the
-  typechecker already guarantees an exact-length match (STRING assignment
-  requires from_type.max_len = to_type.max_len, unlike LSTRING's <=), so
-  every byte in the destination gets written here, not just a prefix. }
-VAR
-  i, len: INTEGER;
-  gep_idx, elem_ptr: ADRMEM;
-BEGIN
-  len := ORD(s[0]);
-  IF len <> types[dest_tid].hi THEN
-    AbortWith('codegen: string literal length does not match STRING capacity');
-  FOR i := 1 TO len DO
-  BEGIN
-    gep_idx := AllocPtrArray(2);
-    SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-    SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, i - 1, 0));
-    elem_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(dest_tid), dest_addr, gep_idx, 2, MakeCStr(''));
-    LLVMBuildStore(builder, LLVMConstInt(i8ty, ORD(s[i]), 0), elem_ptr);
-  END;
 END;
 
 FUNCTION CodegenSimpleBuiltin(nm: Str255; args: ADRMEM): ADRMEM;
