@@ -1546,7 +1546,12 @@ VAR
 BEGIN
   name := GetStr(decl, 'name');
   IF LookupNamedType(name) <> 0 THEN
-    AbortWith2('codegen: duplicate type declaration: ', name);
+  BEGIN
+    { An IMPLEMENTATION repeats its own interface TYPE declarations. The
+      interface was lowered first, so its type entry is already canonical. }
+    IF defining_implementation THEN RETURN
+    ELSE AbortWith2('codegen: duplicate type declaration: ', name);
+  END;
   tid := ResolveTypeExpr(GetObj(decl, 'type_expr'));
   IF tid < 5 THEN
     AbortWith2('codegen: TYPE cannot alias a bare scalar name: ', name);
@@ -1565,7 +1570,11 @@ VAR
 BEGIN
   name := GetStr(decl, 'name');
   IF LookupConst(name) <> 0 THEN
-    AbortWith2('codegen: duplicate const declaration: ', name);
+  BEGIN
+    { As with TYPE, the matching INTERFACE declaration was lowered first. }
+    IF defining_implementation THEN RETURN
+    ELSE AbortWith2('codegen: duplicate const declaration: ', name);
+  END;
   val_node := GetObj(decl, 'value');
   nconsts := nconsts + 1;
   const_tbl[nconsts].name := name;
