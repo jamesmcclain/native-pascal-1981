@@ -39,9 +39,9 @@ BEGIN
       BOOLEAN: "the old type is implicitly used by the compiler for things
       like the IF statement"). Matches the reference's resolve_type.
 
-      STRING(n) arrives as a NamedType carrying a param and is the built-in
-      super-array constructor, never the shadowing user type, so it skips this
-      probe. LSTRING(n) is its own LStringType node and never reaches here. }
+      STRING(n) and LSTRING(n) arrive as NamedTypes carrying a param and are
+      built-in string constructors, never the shadowing user type, so they
+      skip this probe. }
     ti := 0;
     IF GetObjOrNil(node, 'param') = NIL THEN ti := LookupType(name);
     IF ti <> 0 THEN
@@ -100,8 +100,6 @@ BEGIN
       END;
     END;
   END
-  ELSE IF nt = 'LStringType' THEN
-    tk := TK_STRING
   ELSE IF nt = 'PointerType' THEN
   BEGIN
     base_node := GetObj(node, 'base');

@@ -1076,12 +1076,6 @@ BEGIN
     struct_ty := LLVMStructTypeInContext(ctx, elem_llvm_types, field_index, 0);
     types[tid].llvm_ty := struct_ty;
   END
-  ELSE IF nt = 'LStringType' THEN
-  BEGIN
-    hi := GetInt(te, 'max_len');
-    arr_ty := LLVMArrayType(i8ty, hi + 1);
-    tid := RegisterType(TK_LSTRING, TK_CHAR, 0, hi, arr_ty);
-  END
   ELSE IF nt = 'PointerType' THEN
   BEGIN
     flavor := GetStr(te, 'flavor');

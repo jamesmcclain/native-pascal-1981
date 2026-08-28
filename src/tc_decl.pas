@@ -803,33 +803,5 @@ BEGIN
   CheckUnit(root);
 END;
 
-(*$IF 0*)
-VAR
-  root: ADRMEM;
-  out_str: ADRMEM;
-  i: INTEGER32;
-  res_c: CINT;
-
-BEGIN
-  TcInit;
-
-  root := ReadAllStdin;
-  CheckLocalInterfaces(root);
-  CheckLocalInterfaceUses(root, GetObj(root, 'local_interfaces'));
-  CheckUnit(root);
-
-  IF nerrors > 0 THEN
-  BEGIN
-    EPrint('Type checking failed:');
-    FOR i := 1 TO nerrors DO
-      EPrint(errors[i]);
-    exit(1);
-  END;
-
-  out_str := cJSON_Print(root);
-  res_c := puts(out_str);
-END.
-(*$END*)
-
 BEGIN
 END.
