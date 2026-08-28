@@ -68,7 +68,7 @@ if [ "$stage_file" = "codegen.pas" ]; then
 elif [ "$stage_file" = "typechecker.pas" ]; then
   component_units=(tc_base.pas tc_types.pas tc_expr.pas tc_stmt.pas tc_decl.pas)
 elif [ "$stage_file" = "parser.pas" ]; then
-  component_units=(ps_base.pas ps_expr.pas ps_type.pas ps_stmt.pas ps_decl.pas)
+  component_units=(ps_base.pas ps_expr.pas ps_stmt.pas ps_decl.pas)
 fi
 
 # The unit objects are compiled inside the ( cd "$src_dir" ... ) subshell below,

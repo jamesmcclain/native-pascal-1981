@@ -35,7 +35,7 @@ TYPECHECKER_UNITS := tc_base tc_types tc_expr tc_stmt tc_decl
 TYPECHECKER_SRCS := $(foreach u,$(TYPECHECKER_UNITS),src/$(u).pas src/$(u).inc)
 # parser will follow the same separately-compiled unit pattern. Its list is
 # lowest layer first and must match scripts/build-stage.sh.
-PARSER_UNITS := ps_base ps_expr ps_type ps_stmt ps_decl
+PARSER_UNITS := ps_base ps_expr ps_stmt ps_decl
 PARSER_SRCS := $(foreach u,$(PARSER_UNITS),src/$(u).pas src/$(u).inc)
 GEN1_BINS := $(addprefix $(BUILD_DIR)/gen1/,$(STAGES))
 GEN2_BINS := $(addprefix $(BUILD_DIR)/gen2/,$(STAGES))
