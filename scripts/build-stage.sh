@@ -66,7 +66,7 @@ component_units=()
 if [ "$stage_file" = "codegen.pas" ]; then
   component_units=(cg_base.pas cg_util.pas cg_types.pas cg_symbols.pas cg_expr_shape.pas cg_expr_sets.pas cg_expr_support.pas cg_expr_literals.pas cg_expr.pas cg_io.pas cg_stmt.pas cg_decl.pas)
 elif [ "$stage_file" = "typechecker.pas" ]; then
-  component_units=(tc_base.pas)
+  component_units=(tc_base.pas tc_types.pas)
 fi
 
 # The unit objects are compiled inside the ( cd "$src_dir" ... ) subshell below,

@@ -31,7 +31,7 @@ CODEGEN_UNITS := cg_base cg_util cg_types cg_symbols cg_expr_shape cg_expr_sets 
 CODEGEN_SRCS := $(foreach u,$(CODEGEN_UNITS),src/$(u).pas src/$(u).inc)
 # typechecker follows the same separately-compiled unit pattern as codegen.
 # Its list is also lowest layer first and must match scripts/build-stage.sh.
-TYPECHECKER_UNITS := tc_base
+TYPECHECKER_UNITS := tc_base tc_types
 TYPECHECKER_SRCS := $(foreach u,$(TYPECHECKER_UNITS),src/$(u).pas src/$(u).inc)
 GEN1_BINS := $(addprefix $(BUILD_DIR)/gen1/,$(STAGES))
 GEN2_BINS := $(addprefix $(BUILD_DIR)/gen2/,$(STAGES))
