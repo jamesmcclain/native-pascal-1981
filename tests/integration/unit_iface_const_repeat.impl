@@ -1,0 +1,18 @@
+(*$INCLUDE:'unit_iface_const_repeat.inc'*)
+{ The IMPLEMENTATION restates the interface's CONST and TYPE verbatim, the
+  normal vintage-unit spelling. Both repeats must be accepted and must keep
+  the interface's canonical entries. }
+IMPLEMENTATION OF repeatunit;
+
+CONST Limit = 10;
+TYPE Buf = ARRAY [1..4] OF INTEGER;
+
+PROCEDURE Show;
+VAR b: Buf;
+BEGIN
+  b[4] := Limit;
+  WRITELN(b[4]);
+END;
+
+BEGIN
+END.

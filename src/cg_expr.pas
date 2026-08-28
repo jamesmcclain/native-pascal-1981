@@ -5,19 +5,21 @@
 (*$INCLUDE:'cg_util.inc'*)
 (*$INCLUDE:'cg_types.inc'*)
 (*$INCLUDE:'cg_symbols.inc'*)
+(*$INCLUDE:'cg_expr_shape.inc'*)
+(*$INCLUDE:'cg_expr_sets.inc'*)
+(*$INCLUDE:'cg_expr_support.inc'*)
+(*$INCLUDE:'cg_expr_literals.inc'*)
 (*$INCLUDE:'cg_expr.inc'*)
 IMPLEMENTATION OF cg_expr;
+USES cg_expr_shape, cg_expr_sets, cg_expr_support, cg_expr_literals;
 
 FUNCTION CodegenExpr(node: ADRMEM): ADRMEM; FORWARD;
-FUNCTION LaunchI64(v: ADRMEM; tk: INTEGER): ADRMEM; FORWARD;
 FUNCTION ComputeDesignatorAddress(node: ADRMEM): ADRMEM; FORWARD;
 FUNCTION CodegenPositn(args: ADRMEM): ADRMEM; FORWARD;
 FUNCTION CodegenScan(stop_on_equal: INTEGER; args: ADRMEM): ADRMEM; FORWARD;
 FUNCTION CodegenEncode(args: ADRMEM): ADRMEM; FORWARD;
 FUNCTION CodegenDecode(args: ADRMEM): ADRMEM; FORWARD;
 PROCEDURE ResolveStringExprCharsLen(expr: ADRMEM; VAR chars_ptr: ADRMEM; VAR len_val: ADRMEM); FORWARD;
-PROCEDURE CodegenLStringLiteralAssign(dest_addr: ADRMEM; dest_tid: INTEGER; s: Str255); FORWARD;
-PROCEDURE CodegenStringLiteralAssign(dest_addr: ADRMEM; dest_tid: INTEGER; s: Str255); FORWARD;
 
 { ============================== expressions =============================== }
 
@@ -33,26 +35,6 @@ PROCEDURE CodegenStringLiteralAssign(dest_addr: ADRMEM; dest_tid: INTEGER; s: St
   accumulator through SetConstructor the way strings.py does, at the cost of
   a few more instructions in the emitted IR -- an acceptable tradeoff given
   this file's methodology is behavioral parity, not IR-shape parity. }
-
-PROCEDURE SetRuntimeBit(slot: ADRMEM; ordinal_val: ADRMEM);
-{ ordinal_val is an already-codegen'd i16 INTEGER SSA value; slot is the
-  address of a setty-typed alloca. ORs ordinal_val's bit into *slot. }
-VAR
-  ord64, word_idx, bit_idx, mask, word_val, new_word: ADRMEM;
-  gep_idx, word_ptr: ADRMEM;
-BEGIN
-  ord64 := LLVMBuildSExt(builder, ordinal_val, i64ty, MakeCStr(''));
-  word_idx := LLVMBuildUDiv(builder, ord64, LLVMConstInt(i64ty, 64, 0), MakeCStr(''));
-  bit_idx := LLVMBuildURem(builder, ord64, LLVMConstInt(i64ty, 64, 0), MakeCStr(''));
-  gep_idx := AllocPtrArray(2);
-  SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-  SetPtrArrayElem(gep_idx, 1, word_idx);
-  word_ptr := LLVMBuildGEP2(builder, setty, slot, gep_idx, 2, MakeCStr(''));
-  mask := LLVMBuildShl(builder, LLVMConstInt(i64ty, 1, 0), bit_idx, MakeCStr(''));
-  word_val := LLVMBuildLoad2(builder, i64ty, word_ptr, MakeCStr(''));
-  new_word := LLVMBuildOr(builder, word_val, mask, MakeCStr(''));
-  LLVMBuildStore(builder, new_word, word_ptr);
-END;
 
 PROCEDURE EmitSetRangeLoop(slot: ADRMEM; low_node, high_node: ADRMEM);
 { FOR i := low TO high DO SetRuntimeBit(slot, i) -- same alloca-counter loop
@@ -127,233 +109,6 @@ BEGIN
   last_val_tk := EnsureGenericSetType;
 END;
 
-FUNCTION CodegenSetMember(ordinal_val, set_val: ADRMEM): ADRMEM;
-{ Lowers ordinal IN set to a bit test, mirroring codegen_set_member. }
-VAR
-  slot: ADRMEM;
-  ord64, word_idx, bit_idx, mask, word_val, anded: ADRMEM;
-  gep_idx, word_ptr: ADRMEM;
-BEGIN
-  slot := EntryAlloca(setty, '');
-  LLVMBuildStore(builder, set_val, slot);
-  ord64 := LLVMBuildSExt(builder, ordinal_val, i64ty, MakeCStr(''));
-  word_idx := LLVMBuildUDiv(builder, ord64, LLVMConstInt(i64ty, 64, 0), MakeCStr(''));
-  bit_idx := LLVMBuildURem(builder, ord64, LLVMConstInt(i64ty, 64, 0), MakeCStr(''));
-  gep_idx := AllocPtrArray(2);
-  SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-  SetPtrArrayElem(gep_idx, 1, word_idx);
-  word_ptr := LLVMBuildGEP2(builder, setty, slot, gep_idx, 2, MakeCStr(''));
-  word_val := LLVMBuildLoad2(builder, i64ty, word_ptr, MakeCStr(''));
-  mask := LLVMBuildShl(builder, LLVMConstInt(i64ty, 1, 0), bit_idx, MakeCStr(''));
-  anded := LLVMBuildAnd(builder, word_val, mask, MakeCStr(''));
-  CodegenSetMember := LLVMBuildICmp(builder, LLVMIntNE, anded, LLVMConstInt(i64ty, 0, 0), MakeCStr(''));
-END;
-
-FUNCTION CodegenSetBinOp(op: Str255; lval, rval: ADRMEM): ADRMEM;
-{ Extracts all 4 words of each operand via compile-time-constant-index
-  ExtractValue (no loop needed, unlike the constructor/membership paths
-  above), combines them per-word, and (for +/-/*) reassembles a result set
-  via InsertValue starting from an all-zero aggregate. Sets last_val_tk
-  itself: TK_BOOLEAN for the comparison operators, EnsureGenericSetType
-  for the set-valued ones. }
-VAR
-  lw, rw, res_words: ARRAY [0..3] OF ADRMEM;
-  i: INTEGER;
-  res: ADRMEM;
-  eq_all, sub_all, wc: ADRMEM;
-  le_ok, ge_ok, eqv: ADRMEM;
-BEGIN
-  FOR i := 0 TO 3 DO
-  BEGIN
-    lw[i] := LLVMBuildExtractValue(builder, lval, i, MakeCStr(''));
-    rw[i] := LLVMBuildExtractValue(builder, rval, i, MakeCStr(''));
-  END;
-
-  IF op = 'PLUS' THEN
-  BEGIN
-    res := LLVMConstNull(setty);
-    FOR i := 0 TO 3 DO
-      res := LLVMBuildInsertValue(builder, res, LLVMBuildOr(builder, lw[i], rw[i], MakeCStr('')), i, MakeCStr(''));
-    CodegenSetBinOp := res;
-    last_val_tk := EnsureGenericSetType;
-  END
-  ELSE IF op = 'MUL' THEN
-  BEGIN
-    res := LLVMConstNull(setty);
-    FOR i := 0 TO 3 DO
-      res := LLVMBuildInsertValue(builder, res, LLVMBuildAnd(builder, lw[i], rw[i], MakeCStr('')), i, MakeCStr(''));
-    CodegenSetBinOp := res;
-    last_val_tk := EnsureGenericSetType;
-  END
-  ELSE IF op = 'MINUS' THEN
-  BEGIN
-    res := LLVMConstNull(setty);
-    FOR i := 0 TO 3 DO
-    BEGIN
-      wc := LLVMBuildNot(builder, rw[i], MakeCStr(''));
-      res := LLVMBuildInsertValue(builder, res, LLVMBuildAnd(builder, lw[i], wc, MakeCStr('')), i, MakeCStr(''));
-    END;
-    CodegenSetBinOp := res;
-    last_val_tk := EnsureGenericSetType;
-  END
-  ELSE IF (op = 'EQ') OR (op = 'NEQ') THEN
-  BEGIN
-    eq_all := LLVMBuildICmp(builder, LLVMIntEQ, lw[0], rw[0], MakeCStr(''));
-    FOR i := 1 TO 3 DO
-      eq_all := LLVMBuildAnd(builder, eq_all, LLVMBuildICmp(builder, LLVMIntEQ, lw[i], rw[i], MakeCStr('')), MakeCStr(''));
-    IF op = 'EQ' THEN CodegenSetBinOp := eq_all
-    ELSE CodegenSetBinOp := LLVMBuildXor(builder, eq_all, LLVMConstInt(i1ty, 1, 0), MakeCStr(''));
-    last_val_tk := TK_BOOLEAN;
-  END
-  ELSE IF (op = 'LE') OR (op = 'LT') OR (op = 'GE') OR (op = 'GT') THEN
-  BEGIN
-    { subset(A, B): every bit in A is also in B, i.e. (A AND NOT B) = 0 for
-      every word. LE/LT test subset(left, right); GE/GT test the reverse. }
-    IF (op = 'LE') OR (op = 'LT') THEN
-    BEGIN
-      sub_all := LLVMBuildICmp(builder, LLVMIntEQ, LLVMBuildAnd(builder, lw[0], LLVMBuildNot(builder, rw[0], MakeCStr('')), MakeCStr('')), LLVMConstInt(i64ty, 0, 0), MakeCStr(''));
-      FOR i := 1 TO 3 DO
-      BEGIN
-        wc := LLVMBuildICmp(builder, LLVMIntEQ, LLVMBuildAnd(builder, lw[i], LLVMBuildNot(builder, rw[i], MakeCStr('')), MakeCStr('')), LLVMConstInt(i64ty, 0, 0), MakeCStr(''));
-        sub_all := LLVMBuildAnd(builder, sub_all, wc, MakeCStr(''));
-      END;
-    END
-    ELSE
-    BEGIN
-      sub_all := LLVMBuildICmp(builder, LLVMIntEQ, LLVMBuildAnd(builder, rw[0], LLVMBuildNot(builder, lw[0], MakeCStr('')), MakeCStr('')), LLVMConstInt(i64ty, 0, 0), MakeCStr(''));
-      FOR i := 1 TO 3 DO
-      BEGIN
-        wc := LLVMBuildICmp(builder, LLVMIntEQ, LLVMBuildAnd(builder, rw[i], LLVMBuildNot(builder, lw[i], MakeCStr('')), MakeCStr('')), LLVMConstInt(i64ty, 0, 0), MakeCStr(''));
-        sub_all := LLVMBuildAnd(builder, sub_all, wc, MakeCStr(''));
-      END;
-    END;
-    IF (op = 'LE') OR (op = 'GE') THEN
-      CodegenSetBinOp := sub_all
-    ELSE
-    BEGIN
-      eqv := LLVMBuildICmp(builder, LLVMIntEQ, lw[0], rw[0], MakeCStr(''));
-      FOR i := 1 TO 3 DO
-        eqv := LLVMBuildAnd(builder, eqv, LLVMBuildICmp(builder, LLVMIntEQ, lw[i], rw[i], MakeCStr('')), MakeCStr(''));
-      CodegenSetBinOp := LLVMBuildAnd(builder, sub_all, LLVMBuildXor(builder, eqv, LLVMConstInt(i1ty, 1, 0), MakeCStr('')), MakeCStr(''));
-    END;
-    last_val_tk := TK_BOOLEAN;
-  END
-  ELSE
-  BEGIN
-    AbortWith2('codegen: unsupported SET operator: ', op);
-    CodegenSetBinOp := NIL;
-  END;
-END;
-
-
-FUNCTION StaticDesignatorType(node: ADRMEM): INTEGER;
-{ Type-only counterpart of ComputeDesignatorAddress: walks the same
-  INDEX/DEREF/FIELD selector chain and mirrors its type transitions
-  exactly (including INDEX-on-LSTRING/STRING correctly yielding CHAR, via
-  the same types[].elem_tid = TK_CHAR those two register with), but emits
-  no IR. Safe to call from a pure predicate like IsStringShapedExpr, which
-  must not have codegen side effects merely from being asked "is this
-  expression string-shaped" -- unlike ComputeDesignatorAddress, which
-  always builds real GEP/load instructions. Returns TK_UNKNOWN for any
-  selector shape it can't resolve (undefined variable/field, a selector
-  applied to the wrong kind of value), matching the AbortWith-worthy cases
-  ComputeDesignatorAddress would reject outright -- callers here only ever
-  ask "is this shaped like X", so returning TK_UNKNOWN and letting the
-  caller answer FALSE is the right response, not an abort. }
-VAR
-  nm, fname: Str255;
-  symi: INTEGER32;
-  cur_tid: INTEGER;
-  selectors, sel: ADRMEM;
-  nsel, si: INTEGER32;
-  kind: Str255;
-  fi: INTEGER;
-  failed: BOOLEAN;
-BEGIN
-  nm := GetStr(node, 'name');
-  symi := LookupSym(nm);
-  IF symi = 0 THEN
-  BEGIN
-    StaticDesignatorType := TK_UNKNOWN;
-    RETURN;
-  END;
-  cur_tid := symbols[symi].tk;
-  selectors := GetObj(node, 'selectors');
-  nsel := ArrSize(selectors);
-  failed := FALSE;
-  si := 0;
-  WHILE (si < nsel) AND (NOT failed) DO
-  BEGIN
-    sel := ArrItem(selectors, si);
-    kind := GetStr(sel, 'kind');
-    IF kind = 'INDEX' THEN
-    BEGIN
-      IF (TypeKind(cur_tid) <> TK_ARRAY) AND (TypeKind(cur_tid) <> TK_LSTRING) AND (TypeKind(cur_tid) <> TK_STRING) THEN
-        failed := TRUE
-      ELSE
-        cur_tid := types[cur_tid].elem_tid;
-    END
-    ELSE IF kind = 'DEREF' THEN
-    BEGIN
-      IF (TypeKind(cur_tid) = TK_FILE) OR (TypeKind(cur_tid) = TK_POINTER) THEN
-        cur_tid := types[cur_tid].elem_tid
-      ELSE
-        failed := TRUE;
-    END
-    ELSE IF kind = 'FIELD' THEN
-    BEGIN
-      IF TypeKind(cur_tid) <> TK_RECORD THEN
-        failed := TRUE
-      ELSE BEGIN
-        fname := GetStr(sel, 'index_or_field');
-        fi := LookupField(cur_tid, fname);
-        IF fi = 0 THEN failed := TRUE
-        ELSE cur_tid := fields[fi].field_tid;
-      END;
-    END
-    ELSE
-      failed := TRUE;
-    si := si + 1;
-  END;
-  IF failed THEN StaticDesignatorType := TK_UNKNOWN
-  ELSE StaticDesignatorType := cur_tid;
-END;
-
-FUNCTION IsStringShapedExpr(node: ADRMEM): BOOLEAN;
-{ Mirrors the reference's codegen_binop._is_str_expr: a StringLiteral is
-  always string-shaped; a bare Identifier naming an LSTRING/STRING variable
-  is too; a Designator (array index / field selector / pointer or file
-  deref chain) is string-shaped exactly when its own resolved type is
-  LSTRING/STRING -- e.g. an ARRAY OF LSTRING element or a RECORD field are,
-  a single-CHAR index into a Str255 (which resolves to CHAR, not LSTRING)
-  is not. }
-VAR
-  symi: INTEGER32;
-  dtid: INTEGER;
-BEGIN
-  IF NodeType(node) = 'StringLiteral' THEN
-    IsStringShapedExpr := TRUE
-  ELSE IF NodeType(node) = 'Identifier' THEN
-  BEGIN
-    symi := LookupSym(GetStr(node, 'name'));
-    { Plain AND is not short-circuit in this dialect (that is exactly what
-      AND_THEN/OR_ELSE exist for) -- a single `(symi <> 0) AND
-      (TypeKind(symbols[symi].tk) = ...)` expression would still evaluate
-      symbols[symi] even when symi = 0, reading out of bounds on this
-      1-based array. Guard with a nested IF instead. }
-    IF symi = 0 THEN
-      IsStringShapedExpr := FALSE
-    ELSE
-      IsStringShapedExpr := (TypeKind(symbols[symi].tk) = TK_LSTRING) OR (TypeKind(symbols[symi].tk) = TK_STRING);
-  END
-  ELSE IF NodeType(node) = 'Designator' THEN
-  BEGIN
-    dtid := StaticDesignatorType(node);
-    IsStringShapedExpr := (TypeKind(dtid) = TK_LSTRING) OR (TypeKind(dtid) = TK_STRING);
-  END
-  ELSE
-    IsStringShapedExpr := FALSE;
-END;
 
 FUNCTION CodegenStringBinOp(op: Str255; left_node, right_node: ADRMEM): ADRMEM;
 { Whole-string EQ/NEQ/LT/LE/GT/GE, matching the reference's
@@ -409,43 +164,6 @@ BEGIN
     res := NIL;
   END;
   CodegenStringBinOp := res;
-END;
-
-FUNCTION VariadicPromote(v: ADRMEM; tk: INTEGER; name: Str255): ADRMEM;
-{ C's default argument promotions (C11 6.5.2.2 p7), applied to one value in
-  a variadic call's tail -- mirrors the Python reference's
-  _c_abi_variadic_promote (c_abi.py):
-    - REAL32 (float) widens to REAL (double) via fpext.
-    - Anything narrower than C's int -- BOOLEAN (i1), CHAR/INTEGER8/WORD8
-      (i8) and this dialect's own 16-bit INTEGER/WORD -- widens to i32. The
-      extension follows the SOURCE Pascal type, not the LLVM width, which
-      cannot tell a WORD from an INTEGER: the WORD family zero-extends (a
-      WORD of 60000 must stay 60000, not become -5536) and everything else
-      sign-extends. BOOLEAN is always zero-extended.
-    - INTEGER32/WORD32, the 64-bit family, REAL, enums and pointers are
-      already at least as wide as the promoted types and pass through.
-  An aggregate has no scalar promotion at all (the reference doesn't handle
-  one either), so it is refused rather than silently mispassed. }
-BEGIN
-  IF IsAggregateTk(tk) THEN
-  BEGIN
-    AbortWith2('codegen: an aggregate cannot be a variadic argument, calling: ', name);
-    VariadicPromote := v;
-  END
-  ELSE IF tk = TK_REAL32 THEN
-    VariadicPromote := LLVMBuildFPExt(builder, v, dblty, MakeCStr(''))
-  ELSE IF tk = TK_BOOLEAN THEN
-    VariadicPromote := LLVMBuildZExt(builder, v, i32ty, MakeCStr(''))
-  ELSE IF (tk = TK_CHAR) OR (tk = TK_INTEGER8) OR (tk = TK_WORD8)
-          OR (tk = TK_INTEGER) OR (tk = TK_WORD) THEN
-  BEGIN
-    IF IsUnsignedWordTk(tk) THEN
-      VariadicPromote := LLVMBuildZExt(builder, v, i32ty, MakeCStr(''))
-    ELSE
-      VariadicPromote := LLVMBuildSExt(builder, v, i32ty, MakeCStr(''));
-  END
-  ELSE
-    VariadicPromote := v;
 END;
 
 FUNCTION CodegenShortCircuitBinOp(op: Str255; left_node, right_node: ADRMEM): ADRMEM;
@@ -1241,67 +959,6 @@ BEGIN
   ComputeDesignatorAddress := base_ptr;
 END;
 
-PROCEDURE CodegenLStringLiteralAssign(dest_addr: ADRMEM; dest_tid: INTEGER; s: Str255);
-{ Stores a compile-time-known string literal's characters plus its
-  length-prefix byte (LSTRING layout: byte[0] = length, byte[1..n] = chars)
-  directly into an LSTRING destination -- the counterpart of the Python
-  reference's strings.py literal-store path, but done with a plain unrolled
-  GEP+store per character since the source is always a constant here. }
-VAR
-  i, len, cap: INTEGER;
-  gep_idx, elem_ptr: ADRMEM;
-BEGIN
-  len := ORD(s[0]);
-  cap := types[dest_tid].hi;
-  IF len > cap THEN
-    AbortWith('codegen: string literal too long for LSTRING capacity');
-  FOR i := 1 TO len DO
-  BEGIN
-    gep_idx := AllocPtrArray(2);
-    SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-    SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, i, 0));
-    elem_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(dest_tid), dest_addr, gep_idx, 2, MakeCStr(''));
-    LLVMBuildStore(builder, LLVMConstInt(i8ty, ORD(s[i]), 0), elem_ptr);
-  END;
-  gep_idx := AllocPtrArray(2);
-  SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
-  elem_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(dest_tid), dest_addr, gep_idx, 2, MakeCStr(''));
-  LLVMBuildStore(builder, LLVMConstInt(i8ty, len, 0), elem_ptr);
-END;
-
-PROCEDURE CodegenStringLiteralAssign(dest_addr: ADRMEM; dest_tid: INTEGER; s: Str255);
-{ STRING(n) counterpart of CodegenLStringLiteralAssign: no length-prefix
-  byte -- STRING is just [n x i8], 1-based chars at byte[0..n-1] -- and the
-  typechecker already guarantees an exact-length match (STRING assignment
-  requires from_type.max_len = to_type.max_len, unlike LSTRING's <=), so
-  every byte in the destination gets written here, not just a prefix. }
-VAR
-  i, len: INTEGER;
-  gep_idx, elem_ptr: ADRMEM;
-BEGIN
-  len := ORD(s[0]);
-  IF len <> types[dest_tid].hi THEN
-    AbortWith('codegen: string literal length does not match STRING capacity');
-  FOR i := 1 TO len DO
-  BEGIN
-    gep_idx := AllocPtrArray(2);
-    SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-    SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, i - 1, 0));
-    elem_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(dest_tid), dest_addr, gep_idx, 2, MakeCStr(''));
-    LLVMBuildStore(builder, LLVMConstInt(i8ty, ORD(s[i]), 0), elem_ptr);
-  END;
-END;
-
-FUNCTION MakeArgs1(v: ADRMEM): ADRMEM;
-VAR
-  a: ADRMEM;
-BEGIN
-  a := AllocPtrArray(1);
-  SetPtrArrayElem(a, 0, v);
-  MakeArgs1 := a;
-END;
-
 FUNCTION CodegenSimpleBuiltin(nm: Str255; args: ADRMEM): ADRMEM;
 { The math/ordinal builtins that need no libpascalrt support: pure inline
   LLVM IR (CHR/ORD/ODD/SUCC/PRED/ABS/SQR), or a single libm call
@@ -1477,82 +1134,6 @@ BEGIN
     res := NIL;
   END;
   CodegenSimpleBuiltin := res;
-END;
-
-FUNCTION CodegenHostDeviceIndex(nm: Str255): ADRMEM;
-{ Read one thread/block index on the CPU-device (host-triple) path: a load
-  from the CPU shim's external thread-local i32 (cpu_device_shim.c), which
-  pas_dev_launch sets per shim-driven call before invoking the kernel
-  thunk. Mirrors the Python reference's exprs.py CPU fallback branch. }
-VAR
-  gv_name: Str255;
-  gv: ADRMEM;
-BEGIN
-  IF nm = 'THREADIDX_X' THEN gv_name := '__pas_tid_x'
-  ELSE IF nm = 'THREADIDX_Y' THEN gv_name := '__pas_tid_y'
-  ELSE IF nm = 'THREADIDX_Z' THEN gv_name := '__pas_tid_z'
-  ELSE IF nm = 'BLOCKIDX_X' THEN gv_name := '__pas_ctaid_x'
-  ELSE IF nm = 'BLOCKIDX_Y' THEN gv_name := '__pas_ctaid_y'
-  ELSE IF nm = 'BLOCKIDX_Z' THEN gv_name := '__pas_ctaid_z'
-  ELSE IF nm = 'BLOCKDIM_X' THEN gv_name := '__pas_ntid_x'
-  ELSE IF nm = 'BLOCKDIM_Y' THEN gv_name := '__pas_ntid_y'
-  ELSE IF nm = 'BLOCKDIM_Z' THEN gv_name := '__pas_ntid_z'
-  ELSE IF nm = 'GRIDDIM_X' THEN gv_name := '__pas_nctaid_x'
-  ELSE IF nm = 'GRIDDIM_Y' THEN gv_name := '__pas_nctaid_y'
-  ELSE IF nm = 'GRIDDIM_Z' THEN gv_name := '__pas_nctaid_z'
-  ELSE AbortWith2('codegen: unknown device index builtin: ', nm);
-  gv := LLVMGetNamedGlobal(modl, MakeCStr(gv_name));
-  IF gv = NIL THEN
-  BEGIN
-    gv := LLVMAddGlobal(modl, i32ty, MakeCStr(gv_name));
-    LLVMSetLinkage(gv, 0); { LLVMExternalLinkage: defined in cpu_device_shim.c,
-                             linked in via libpascalrt.a, not this module. }
-    LLVMSetThreadLocal(gv, 1);
-  END;
-  CodegenHostDeviceIndex := LLVMBuildLoad2(builder, i32ty, gv, MakeCStr(''));
-  last_val_tk := TK_INTEGER32;
-END;
-
-FUNCTION CodegenDeviceIndex(nm: Str255): ADRMEM;
-{ Read one CUDA thread/block special register in a DEVICE compiland. NVPTX
-  targets lower to the NVVM special-register intrinsic (resolved by llc to
-  the PTX special register); any other DEVICE target (the CPU-device
-  stand-in) reads the CPU shim's thread-local index registers instead. }
-VAR
-  intrinsic_name: Str255;
-  fnty, fn: ADRMEM;
-BEGIN
-  IF NOT is_nvptx_device THEN
-  BEGIN
-    IF NOT is_device_compiland THEN
-      AbortWith2('codegen: device index builtin requires DEVICE code: ', nm);
-    CodegenDeviceIndex := CodegenHostDeviceIndex(nm);
-  END
-  ELSE
-  BEGIN
-    IF nm = 'THREADIDX_X' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.tid.x'
-    ELSE IF nm = 'THREADIDX_Y' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.tid.y'
-    ELSE IF nm = 'THREADIDX_Z' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.tid.z'
-    ELSE IF nm = 'BLOCKIDX_X' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ctaid.x'
-    ELSE IF nm = 'BLOCKIDX_Y' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ctaid.y'
-    ELSE IF nm = 'BLOCKIDX_Z' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ctaid.z'
-    ELSE IF nm = 'BLOCKDIM_X' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ntid.x'
-    ELSE IF nm = 'BLOCKDIM_Y' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ntid.y'
-    ELSE IF nm = 'BLOCKDIM_Z' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.ntid.z'
-    ELSE IF nm = 'GRIDDIM_X' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.nctaid.x'
-    ELSE IF nm = 'GRIDDIM_Y' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.nctaid.y'
-    ELSE IF nm = 'GRIDDIM_Z' THEN intrinsic_name := 'llvm.nvvm.read.ptx.sreg.nctaid.z'
-    ELSE AbortWith2('codegen: unknown device index builtin: ', nm);
-    fnty := LLVMFunctionType(i32ty, NIL, 0, 0);
-    { LLVMAddFunction renames a second declaration to .1.  That is fatal for
-      LLVM intrinsics, whose spelling encodes their signature.  An interface
-      declaration can make the implementation body encounter the same special
-      register more than once, so reuse the canonical intrinsic declaration. }
-    fn := LLVMGetNamedFunction(modl, MakeCStr(intrinsic_name));
-    IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr(intrinsic_name), fnty);
-    CodegenDeviceIndex := LLVMBuildCall2(builder, fnty, fn, NIL, 0, MakeCStr(''));
-    last_val_tk := TK_INTEGER32;
-  END;
 END;
 
 FUNCTION CodegenDevAlloc(args: ADRMEM): ADRMEM;
@@ -2275,14 +1856,6 @@ BEGIN
     LLVMBuildCall2(builder, decode_fnty, decode_fn, call_args, 7, MakeCStr('')),
     LLVMConstInt(i32ty, 0, 0), MakeCStr(''));
 END;
-
-FUNCTION LaunchI64(v: ADRMEM; tk: INTEGER): ADRMEM;
-BEGIN
-  IF (tk = TK_INTEGER64) OR (tk = TK_WORD64) THEN LaunchI64 := v
-  ELSE IF IsUnsignedWordTk(tk) THEN LaunchI64 := LLVMBuildZExt(builder, v, i64ty, MakeCStr(''))
-  ELSE LaunchI64 := LLVMBuildSExt(builder, v, i64ty, MakeCStr(''));
-END;
-
 
 BEGIN
 END.

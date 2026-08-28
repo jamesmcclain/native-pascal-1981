@@ -909,9 +909,9 @@ BEGIN
       BOOLEAN: "the old type is implicitly used by the compiler for things
       like the IF statement"). Matches the reference's resolve_type.
 
-      STRING(n) arrives as a NamedType carrying a param and is the built-in
-      super-array constructor, never the shadowing user type, so it skips this
-      probe. LSTRING(n) is its own LStringType node and never reaches here. }
+      STRING(n) and LSTRING(n) arrive as NamedTypes carrying a param and are
+      built-in string constructors, never the shadowing user type, so they
+      skip this probe. }
     named_tid := 0;
     IF GetObjOrNil(te, 'param') = NIL THEN named_tid := LookupNamedType(nm);
     IF named_tid <> 0 THEN tid := named_tid
@@ -939,6 +939,17 @@ BEGIN
     ELSE IF unm = 'CDOUBLE' THEN tid := TK_REAL
     ELSE IF unm = 'TEXT' THEN
       tid := RegisterType(TK_FILE, TK_CHAR, 0, 1, i8ptrty)
+    ELSE IF unm = 'LSTRING' THEN
+    BEGIN
+      { A bare LSTRING is LSTRING(256), the same default STRING takes below --
+        the reference resolves it that way. Reaching here at all means no user
+        TYPE of the name shadowed it: the probe above only skips a NamedType
+        carrying a param. }
+      IF GetObjOrNil(te, 'param') = NIL THEN hi := 256
+      ELSE hi := GetInt(te, 'param');
+      arr_ty := LLVMArrayType(i8ty, hi + 1);
+      tid := RegisterType(TK_LSTRING, TK_CHAR, 0, hi, arr_ty);
+    END
     ELSE IF unm = 'STRING' THEN
     BEGIN
       IF GetObjOrNil(te, 'param') = NIL THEN hi := 256
@@ -1064,12 +1075,6 @@ BEGIN
     END;
     struct_ty := LLVMStructTypeInContext(ctx, elem_llvm_types, field_index, 0);
     types[tid].llvm_ty := struct_ty;
-  END
-  ELSE IF nt = 'LStringType' THEN
-  BEGIN
-    hi := GetInt(te, 'max_len');
-    arr_ty := LLVMArrayType(i8ty, hi + 1);
-    tid := RegisterType(TK_LSTRING, TK_CHAR, 0, hi, arr_ty);
   END
   ELSE IF nt = 'PointerType' THEN
   BEGIN

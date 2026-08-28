@@ -195,13 +195,27 @@ for source in parser typechecker codegen; do
   if [ "$source" = codegen ]; then
     source_file=src/cg_util.inc
     diagnostic_file=src/cg_util.pas
+  elif [ "$source" = typechecker ]; then
+    source_file=src/tc_base.inc
+    diagnostic_file=src/typechecker.pas
+  elif [ "$source" = parser ]; then
+    source_file=src/ps_base.inc
+    diagnostic_file=src/ps_base.pas
   else
     diagnostic_file="$source_file"
   fi
-  if grep -Eq 'MAX_EXPR_DEPTH[[:space:]]*=[[:space:]]*64;' "$source_file" &&
-     grep -qF 'deeper than 64' "$diagnostic_file" &&
-     grep -Eq 'MAX_STMT_DEPTH[[:space:]]*=[[:space:]]*256;' "$source_file" &&
-     grep -qF 'deeper than 256' "$diagnostic_file"; then
+  if [ "$source" = typechecker ]; then
+    depth_ok=$(grep -Eq 'MAX_EXPR_DEPTH[[:space:]]*=[[:space:]]*64;' "$source_file" &&
+      grep -qF 'deeper than 64' src/tc_expr.pas &&
+      grep -Eq 'MAX_STMT_DEPTH[[:space:]]*=[[:space:]]*256;' "$source_file" &&
+      grep -qF 'deeper than 256' src/tc_stmt.pas; echo $?)
+  else
+    depth_ok=$(grep -Eq 'MAX_EXPR_DEPTH[[:space:]]*=[[:space:]]*64;' "$source_file" &&
+      grep -qF 'deeper than 64' "$diagnostic_file" &&
+      grep -Eq 'MAX_STMT_DEPTH[[:space:]]*=[[:space:]]*256;' "$source_file" &&
+      grep -qF 'deeper than 256' "$diagnostic_file"; echo $?)
+  fi
+  if [ "$depth_ok" -eq 0 ]; then
     pass "$source depth constants and diagnostics agree"
   else
     fail "$source depth constants and diagnostics agree"

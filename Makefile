@@ -27,8 +27,18 @@ STAGE_SRCS := src/jsonutil.pas src/jsonutil.inc scripts/build-stage.sh
 # lowest layer first -- the same order scripts/build-stage.sh compiles and
 # links them in. Attached to the codegen targets alone, below, rather than to
 # every stage.
-CODEGEN_UNITS := cg_base cg_util cg_types cg_symbols cg_expr cg_io cg_stmt cg_decl
+CODEGEN_UNITS := cg_base cg_util cg_types cg_symbols cg_expr_shape cg_expr_sets cg_expr_support cg_expr_literals cg_expr cg_io cg_stmt cg_decl
 CODEGEN_SRCS := $(foreach u,$(CODEGEN_UNITS),src/$(u).pas src/$(u).inc)
+# typechecker follows the same separately-compiled unit pattern as codegen.
+# Its list is also lowest layer first and must match scripts/build-stage.sh.
+TYPECHECKER_UNITS := tc_base tc_types tc_expr tc_stmt tc_decl
+TYPECHECKER_SRCS := $(foreach u,$(TYPECHECKER_UNITS),src/$(u).pas src/$(u).inc)
+# parser follows the same separately-compiled unit pattern. Its list is
+# lowest layer first and must match scripts/build-stage.sh. ps_expr also owns
+# type parsing: SIZEOF(type) reaches types from factors while ADS(space) reaches
+# expressions from types, so the 1981 unit DAG cannot split that SCC further.
+PARSER_UNITS := ps_base ps_expr ps_stmt ps_decl
+PARSER_SRCS := $(foreach u,$(PARSER_UNITS),src/$(u).pas src/$(u).inc)
 GEN1_BINS := $(addprefix $(BUILD_DIR)/gen1/,$(STAGES))
 GEN2_BINS := $(addprefix $(BUILD_DIR)/gen2/,$(STAGES))
 GEN3_BINS := $(addprefix $(BUILD_DIR)/gen3/,$(STAGES))
@@ -74,6 +84,8 @@ $(BUILD_DIR)/gen4/%: src/%.pas $(STAGE_SRCS) $(GEN3_BINS) $(RUNTIME_LIB) | $(BUI
 # Extra prerequisites for the codegen stage only. A recipe-less rule augments
 # the pattern rules above rather than overriding them.
 $(BUILD_DIR)/gen1/codegen $(BUILD_DIR)/gen2/codegen $(BUILD_DIR)/gen3/codegen $(BUILD_DIR)/gen4/codegen: $(CODEGEN_SRCS)
+$(BUILD_DIR)/gen1/typechecker $(BUILD_DIR)/gen2/typechecker $(BUILD_DIR)/gen3/typechecker $(BUILD_DIR)/gen4/typechecker: $(TYPECHECKER_SRCS)
+$(BUILD_DIR)/gen1/parser $(BUILD_DIR)/gen2/parser $(BUILD_DIR)/gen3/parser $(BUILD_DIR)/gen4/parser: $(PARSER_SRCS)
 
 $(BUILD_DIR) $(BUILD_DIR)/gen1 $(BUILD_DIR)/gen2 $(BUILD_DIR)/gen3 $(BUILD_DIR)/gen4:
 	mkdir -p $@

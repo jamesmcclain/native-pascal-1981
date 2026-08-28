@@ -64,7 +64,11 @@ native_jsonutil="${NATIVE_JSONUTIL:-$native_codegen}"
 stage_file="$(basename "$stage_src")"
 component_units=()
 if [ "$stage_file" = "codegen.pas" ]; then
-  component_units=(cg_base.pas cg_util.pas cg_types.pas cg_symbols.pas cg_expr.pas cg_io.pas cg_stmt.pas cg_decl.pas)
+  component_units=(cg_base.pas cg_util.pas cg_types.pas cg_symbols.pas cg_expr_shape.pas cg_expr_sets.pas cg_expr_support.pas cg_expr_literals.pas cg_expr.pas cg_io.pas cg_stmt.pas cg_decl.pas)
+elif [ "$stage_file" = "typechecker.pas" ]; then
+  component_units=(tc_base.pas tc_types.pas tc_expr.pas tc_stmt.pas tc_decl.pas)
+elif [ "$stage_file" = "parser.pas" ]; then
+  component_units=(ps_base.pas ps_expr.pas ps_stmt.pas ps_decl.pas)
 fi
 
 # The unit objects are compiled inside the ( cd "$src_dir" ... ) subshell below,
