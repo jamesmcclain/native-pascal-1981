@@ -205,7 +205,7 @@ for source in parser typechecker codegen; do
     depth_ok=$(grep -Eq 'MAX_EXPR_DEPTH[[:space:]]*=[[:space:]]*64;' "$source_file" &&
       grep -qF 'deeper than 64' src/tc_expr.pas &&
       grep -Eq 'MAX_STMT_DEPTH[[:space:]]*=[[:space:]]*256;' "$source_file" &&
-      grep -qF 'deeper than 256' "$diagnostic_file"; echo $?)
+      grep -qF 'deeper than 256' src/tc_stmt.pas; echo $?)
   else
     depth_ok=$(grep -Eq 'MAX_EXPR_DEPTH[[:space:]]*=[[:space:]]*64;' "$source_file" &&
       grep -qF 'deeper than 64' "$diagnostic_file" &&
