@@ -4,6 +4,36 @@
 (*$INCLUDE:'ps_base.inc'*)
 IMPLEMENTATION OF ps_base;
 
+{ C-FFI bindings to libcjson and standard C library routines }
+FUNCTION cJSON_Parse(val: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION cJSON_GetArraySize(arr: ADRMEM): CINT [C]; EXTERN;
+FUNCTION cJSON_GetArrayItem(arr: ADRMEM; index: CINT): ADRMEM [C]; EXTERN;
+FUNCTION cJSON_GetObjectItem(obj: ADRMEM; key: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION cJSON_CreateObject: ADRMEM [C]; EXTERN;
+FUNCTION cJSON_CreateArray: ADRMEM [C]; EXTERN;
+FUNCTION cJSON_CreateString(val: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION cJSON_CreateNumber(num: REAL): ADRMEM [C]; EXTERN;
+FUNCTION cJSON_CreateBool(b: CINT): ADRMEM [C]; EXTERN;
+FUNCTION cJSON_CreateNull: ADRMEM [C]; EXTERN;
+PROCEDURE cJSON_AddItemToObject(obj: ADRMEM; key: ADRMEM; item: ADRMEM) [C]; EXTERN;
+PROCEDURE cJSON_AddItemToArray(arr: ADRMEM; item: ADRMEM) [C]; EXTERN;
+FUNCTION cJSON_Print(item: ADRMEM): ADRMEM [C]; EXTERN;
+PROCEDURE cJSON_Delete(item: ADRMEM) [C]; EXTERN;
+FUNCTION cJSON_Duplicate(item: ADRMEM; recurse: CINT): ADRMEM [C]; EXTERN;
+FUNCTION cJSON_DetachItemFromArray(arr: ADRMEM; which: CINT): ADRMEM [C]; EXTERN;
+FUNCTION cJSON_ReplaceItemInObject(obj: ADRMEM; key: ADRMEM; newitem: ADRMEM): CINT [C]; EXTERN;
+
+FUNCTION cJSON_GetStringValue(item: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION cJSON_GetNumberValue(item: ADRMEM): REAL [C]; EXTERN;
+FUNCTION cJSON_IsNumber(item: ADRMEM): CINT [C]; EXTERN;
+FUNCTION cJSON_IsString(item: ADRMEM): CINT [C]; EXTERN;
+FUNCTION cJSON_IsTrue(item: ADRMEM): CINT [C]; EXTERN;
+FUNCTION puts(str: ADRMEM): CINT [C]; EXTERN;
+FUNCTION getchar: CINT [C]; EXTERN;
+FUNCTION malloc(size: CINT): ADRMEM [C]; EXTERN;
+PROCEDURE free(ptr: ADRMEM) [C]; EXTERN;
+PROCEDURE exit(code: CINT) [C]; EXTERN;
+
 TYPE
   Token = RECORD
     kind: Str255;

@@ -7,6 +7,7 @@ USES jsonutil, ps_base;
 FUNCTION ParseIdentifier: ADRMEM;
 FUNCTION ParseDesignatorRest(name: Str255): ADRMEM;
 FUNCTION ParseDesignator: ADRMEM;
+FUNCTION NextKind: Str255;
 FUNCTION ParseActualParameterList: ADRMEM;
 FUNCTION ParseIdentListArr: ADRMEM;
 FUNCTION ParseConstant: ADRMEM;
