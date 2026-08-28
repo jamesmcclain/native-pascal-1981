@@ -8,6 +8,24 @@
 (*$INCLUDE:'cg_expr_sets.inc'*)
 IMPLEMENTATION OF cg_expr_sets;
 
+PROCEDURE SetRuntimeBit(slot: ADRMEM; ordinal_val: ADRMEM);
+VAR
+  ord64, word_idx, bit_idx, mask, word_val, new_word: ADRMEM;
+  gep_idx, word_ptr: ADRMEM;
+BEGIN
+  ord64 := LLVMBuildSExt(builder, ordinal_val, i64ty, MakeCStr(''));
+  word_idx := LLVMBuildUDiv(builder, ord64, LLVMConstInt(i64ty, 64, 0), MakeCStr(''));
+  bit_idx := LLVMBuildURem(builder, ord64, LLVMConstInt(i64ty, 64, 0), MakeCStr(''));
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+  SetPtrArrayElem(gep_idx, 1, word_idx);
+  word_ptr := LLVMBuildGEP2(builder, setty, slot, gep_idx, 2, MakeCStr(''));
+  mask := LLVMBuildShl(builder, LLVMConstInt(i64ty, 1, 0), bit_idx, MakeCStr(''));
+  word_val := LLVMBuildLoad2(builder, i64ty, word_ptr, MakeCStr(''));
+  new_word := LLVMBuildOr(builder, word_val, mask, MakeCStr(''));
+  LLVMBuildStore(builder, new_word, word_ptr);
+END;
+
 FUNCTION CodegenSetMember(ordinal_val, set_val: ADRMEM): ADRMEM;
 { Lowers ordinal IN set to a bit test, mirroring codegen_set_member. }
 VAR

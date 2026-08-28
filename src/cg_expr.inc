@@ -6,7 +6,6 @@ INTERFACE;
 UNIT cg_expr;
 USES jsonutil, cg_base, cg_util, cg_types, cg_symbols;
 
-PROCEDURE SetRuntimeBit(slot: ADRMEM; ordinal_val: ADRMEM);
 PROCEDURE EmitSetRangeLoop(slot: ADRMEM; low_node, high_node: ADRMEM);
 FUNCTION CodegenSetConstructor(node: ADRMEM): ADRMEM;
 FUNCTION CodegenStringBinOp(op: Str255; left_node, right_node: ADRMEM): ADRMEM;
