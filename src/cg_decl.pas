@@ -1548,8 +1548,16 @@ BEGIN
   IF LookupNamedType(name) <> 0 THEN
   BEGIN
     { An IMPLEMENTATION repeats its own interface TYPE declarations. The
-      interface was lowered first, so its type entry is already canonical. }
-    IF defining_implementation THEN RETURN
+      interface was lowered first, so its type entry is already canonical.
+      Only a unit-level repeat is that case: `types` is one flat global table
+      (LookupNamedType scans 14..ntypes), so a routine-local TYPE cannot
+      shadow an outer name here -- silently keeping the outer entry would
+      compile the local declaration to the wrong layout. Diagnose it instead,
+      exactly as the PROGRAM path already does. The same goes for a repeat
+      seen while the spliced interface header itself is being lowered: that
+      one is a genuine duplicate inside the interface. }
+    IF (NOT in_local_scope) AND defining_implementation AND
+       (NOT lowering_spliced_interface) THEN RETURN
     ELSE AbortWith2('codegen: duplicate type declaration: ', name);
   END;
   tid := ResolveTypeExpr(GetObj(decl, 'type_expr'));
@@ -1567,33 +1575,58 @@ PROCEDURE CodegenConstDecl(decl: ADRMEM);
 VAR
   name: Str255;
   val_node: ADRMEM;
+  existing: INTEGER32;
+  is_real: BOOLEAN;
+  rval: REAL;
+  ival: INTEGER64;
 BEGIN
   name := GetStr(decl, 'name');
-  IF LookupConst(name) <> 0 THEN
-  BEGIN
-    { As with TYPE, the matching INTERFACE declaration was lowered first. }
-    IF defining_implementation THEN RETURN
-    ELSE AbortWith2('codegen: duplicate const declaration: ', name);
-  END;
   val_node := GetObj(decl, 'value');
-  nconsts := nconsts + 1;
-  const_tbl[nconsts].name := name;
+  is_real := FALSE;
+  rval := 0.0;
+  ival := 0;
   IF NodeType(val_node) = 'RealLiteral' THEN
   BEGIN
-    const_tbl[nconsts].is_real := TRUE;
-    const_tbl[nconsts].rval := GetReal(val_node, 'value');
+    is_real := TRUE;
+    rval := GetReal(val_node, 'value');
   END
   ELSE IF (NodeType(val_node) = 'UnaryOp') AND (GetStr(val_node, 'op') = 'MINUS')
       AND (NodeType(GetObj(val_node, 'operand')) = 'RealLiteral') THEN
   BEGIN
-    const_tbl[nconsts].is_real := TRUE;
-    const_tbl[nconsts].rval := 0.0 - GetReal(GetObj(val_node, 'operand'), 'value');
+    is_real := TRUE;
+    rval := 0.0 - GetReal(GetObj(val_node, 'operand'), 'value');
   END
-  ELSE
+  ELSE ival := IntLiteralValue(val_node);
+  existing := LookupConst(name);
+  IF existing <> 0 THEN
   BEGIN
-    const_tbl[nconsts].is_real := FALSE;
-    const_tbl[nconsts].ival := IntLiteralValue(val_node);
+    { As with TYPE, the matching INTERFACE declaration was lowered first --
+      and, as there, only a unit-level repeat can be that one: `const_tbl` is
+      flat and global, so a routine-local CONST cannot shadow an outer name.
+      An accepted repeat must also agree with what the interface said; keeping
+      the interface's value for a differing IMPLEMENTATION spelling would
+      silently compile the two halves against different constants. }
+    IF (NOT in_local_scope) AND defining_implementation AND
+       (NOT lowering_spliced_interface) THEN
+    BEGIN
+      IF const_tbl[existing].is_real <> is_real THEN
+        AbortWith2('codegen: conflicting const declaration: ', name);
+      IF is_real THEN
+      BEGIN
+        IF const_tbl[existing].rval <> rval THEN
+          AbortWith2('codegen: conflicting const declaration: ', name);
+      END
+      ELSE IF const_tbl[existing].ival <> ival THEN
+        AbortWith2('codegen: conflicting const declaration: ', name);
+      RETURN;
+    END
+    ELSE AbortWith2('codegen: duplicate const declaration: ', name);
   END;
+  nconsts := nconsts + 1;
+  const_tbl[nconsts].name := name;
+  const_tbl[nconsts].is_real := is_real;
+  IF is_real THEN const_tbl[nconsts].rval := rval
+  ELSE const_tbl[nconsts].ival := ival;
 END;
 
 PROCEDURE CodegenDecl(decl: ADRMEM);
