@@ -35,8 +35,8 @@ re-recorded now that the oracle is gone: a mismatch means the Pascal changed,
 and a new case has to arrive with an answer worked out by hand.
 
 ```bash
-tests/proxy/corpus_smoke.py               # 64 realistic requests, via the stub
-tests/proxy/corpus_smoke.py --base-url URL  # ... against a real backend
+tests/proxy/corpus_smoke.sh                 # 64 realistic requests, via the stub
+tests/proxy/corpus_smoke.sh --base-url URL  # ... against a real backend
 tests/proxy/corpus_reference_check.sh     # no proxy, no model: compile the corpus
 ```
 
@@ -45,10 +45,11 @@ every item's recorded continuation is a real program, and each of the two
 compiler gaps this mode has turned up so far -- LSTRING's `.LEN` and a
 CHAR-keyed `CASE` -- was a construct nothing else in the tree used.
 
-`corpus_smoke.py` answers the question the conformance suite structurally
-cannot: not "does this behave like the implementation it replaces", but "does
-it work". The conformance backend is a stub that returns one canned reply to
-every request, its buffers are a few lines long and its limit is 1024
+`corpus_smoke.sh` starts the proxy and drives it with the native Pascal
+`corpus_smoke.pas` client. It answers the question the conformance suite
+structurally cannot: not "does this behave like the implementation it replaces",
+but "does it work". The conformance backend is a stub that returns one canned
+reply to every request, its buffers are a few lines long and its limit is 1024
 characters; a proxy can pass all 47 cases and still fall over on a real 4 KB
 buffer or return nothing usable from a real model. Nothing here is asserted
 about completion *quality* -- a live model returns different text every run --
@@ -109,9 +110,10 @@ has no way to start.
   bounds, reconstructs generated sources byte-for-byte when their source tree
   is present, then appends every eligible recorded continuation and compiles
   the reconstructed program with the supplied compiler.
-- `corpus_smoke.py` — replays that corpus against a live backend and appends
-  each completion to its buffer before compiling it with the real compiler,
-  which is an objective quality signal no stub can produce.
+- `corpus_smoke.pas` / `corpus_smoke.build.sh` / `corpus_smoke.sh` — native
+  corpus replay client plus its shell orchestration. Against a live backend it
+  appends each completion to its buffer before compiling it with the real
+  compiler, which is an objective quality signal no stub can produce.
 - `oneshot.pas` / `oneshot.build.sh` / `oneshot.sh` / `oneshot.expected` — one
   upstream call written in the vintage dialect, the step-5 milestone of the
   port. It is not the proxy: no calibration, no echo stripping, no server
