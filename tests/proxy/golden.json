@@ -1,0 +1,518 @@
+{
+  "cases": [
+    {
+      "body": {
+        "completions": [
+          "  i := i + 1;"
+        ],
+        "model": "stub-model",
+        "request_id": "stub-request-id"
+      },
+      "content_type": "application/json",
+      "name": "complete_ok",
+      "note": "The baseline request. Also captures the outgoing upstream payload, which pins the request shape: two messages, top-level reasoning_effort, and no \"stop\" field.",
+      "status": 200,
+      "upstream_request": {
+        "max_tokens": 512,
+        "messages": [
+          {
+            "content": "Continue the Pascal program. Output only the new code.",
+            "role": "system"
+          },
+          {
+            "content": "{ finish the loop }\nPROGRAM Demo;\nVAR i: INTEGER;\nBEGIN\n  FOR i := 1 ",
+            "role": "user"
+          }
+        ],
+        "model": "stub-model",
+        "reasoning_effort": "none",
+        "temperature": 0.0
+      }
+    },
+    {
+      "body": {
+        "completions": [
+          "  i := i + 1;"
+        ],
+        "model": "stub-model",
+        "request_id": "stub-request-id"
+      },
+      "content_type": "application/json",
+      "name": "complete_no_goal",
+      "note": "An empty goal must not emit a \"{  }\" comment line before the prefix.",
+      "status": 200
+    },
+    {
+      "body": {
+        "completions": [
+          "  i := i + 1;"
+        ],
+        "model": "stub-model",
+        "request_id": "stub-request-id"
+      },
+      "content_type": "application/json",
+      "name": "complete_multiline_goal",
+      "note": "A goal is flattened to one line: newlines become spaces so the goal stays a single Pascal comment.",
+      "status": 200
+    },
+    {
+      "body": {
+        "completions": [
+          "i := i + 1;"
+        ],
+        "model": "stub-model",
+        "request_id": "stub-request-id"
+      },
+      "content_type": "application/json",
+      "name": "complete_fenced",
+      "note": "A markdown fence anywhere in the reply is unwrapped, and prose before it is dropped rather than landing in the buffer.",
+      "status": 200
+    },
+    {
+      "body": {
+        "completions": [
+          "  i := i + 1;"
+        ],
+        "model": "stub-model",
+        "request_id": "stub-request-id"
+      },
+      "content_type": "application/json",
+      "name": "complete_parts",
+      "note": "message.content may be a list of {type,text} parts, not just a string.",
+      "status": 200
+    },
+    {
+      "body": {
+        "completions": [],
+        "model": "stub-model",
+        "request_id": "stub-request-id"
+      },
+      "content_type": "application/json",
+      "name": "complete_empty",
+      "note": "A whitespace-only completion yields \"completions\": [], never [\"\"].",
+      "status": 200
+    },
+    {
+      "body": {
+        "completions": [
+          "  i := 1;\n[31m  j := 2;"
+        ],
+        "model": "stub-model",
+        "request_id": "stub-request-id"
+      },
+      "content_type": "application/json",
+      "name": "complete_controls",
+      "note": "C0 controls and DEL are stripped; \\t and \\n survive.",
+      "status": 200
+    },
+    {
+      "body": {
+        "completions": [
+          "  i := 1;\n"
+        ],
+        "model": "stub-model",
+        "request_id": "stub-request-id"
+      },
+      "content_type": "application/json",
+      "name": "complete_special_token",
+      "note": "Everything from the first \"<|\" marker onward is discarded.",
+      "status": 200
+    },
+    {
+      "body": {
+        "completions": [
+          "  WRITELN(0);\n  WRITELN(1);\n  WRITELN(2);\n  WRITELN(3);\n  WRITELN(4);\n  WRITELN(5);\n  WRITELN(6);\n  WRITELN(7);\n  WRITELN(8);\n  WRITELN(9);\n  WRITELN(10);\n  WRITELN(11);\n  WRITELN(12);\n  WRITELN(13);\n  WRITELN(14);\n  WRITELN(15);\n  WRITELN(16);\n  WRITELN(17);\n  WRITELN(18);\n  WRITELN(19);\n  WRITELN(20);\n  WRITELN(21);\n  WRITELN(22);\n  WRITELN(23);\n  WRITELN(24);\n  WRITELN(25);\n  WRITELN(26);\n  WRITELN(27);\n  WRITELN(28);\n  WRITELN(29);"
+        ],
+        "model": "stub-model",
+        "request_id": "stub-request-id"
+      },
+      "content_type": "application/json",
+      "name": "complete_many_lines",
+      "note": "An 80-line completion is truncated to --max-lines (30).",
+      "status": 200
+    },
+    {
+      "body": {
+        "completions": [
+          "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        ],
+        "model": "stub-model",
+        "request_id": "stub-request-id"
+      },
+      "content_type": "application/json",
+      "name": "complete_many_chars",
+      "note": "A 9000-character single line is truncated to 8192 characters.",
+      "status": 200
+    },
+    {
+      "body": {
+        "completions": [
+          "  WRITELN(i);"
+        ],
+        "model": "stub-model",
+        "request_id": "stub-request-id"
+      },
+      "content_type": "application/json",
+      "name": "strip_echo_exact",
+      "note": "strip_echo pass 1: the reply restates the buffer tail verbatim, an overlap well over the 5-character floor, so the overlap is removed.",
+      "status": 200
+    },
+    {
+      "body": {
+        "completions": [
+          "  i := i + 1;"
+        ],
+        "model": "stub-model",
+        "request_id": "stub-request-id"
+      },
+      "content_type": "application/json",
+      "name": "strip_echo_short_overlap_kept",
+      "note": "A short overlap is structurally required repetition, not an echo. Two nested blocks legitimately close back to back; stripping \"END;\" here was a real bug once, so a <= 5 character overlap must be preserved.",
+      "status": 200
+    },
+    {
+      "body": {
+        "completions": [
+          "SE(p2);"
+        ],
+        "model": "stub-model",
+        "request_id": "stub-request-id"
+      },
+      "content_type": "application/json",
+      "name": "strip_echo_partial_identifier",
+      "note": "strip_echo pass 2: the buffer stops mid-identifier (\"DISPO\") and the reply opens with the whole word, so only the typed prefix is removed.",
+      "status": 200
+    },
+    {
+      "body": {
+        "completions": [
+          "  i := i + 1;"
+        ],
+        "model": "stub-model",
+        "request_id": "stub-request-id"
+      },
+      "content_type": "application/json",
+      "name": "cursor_clamped_beyond_end",
+      "note": "A cursor past the end of the buffer is clamped, not rejected: it is a normal race between typing and requesting, not a client error.",
+      "status": 200
+    },
+    {
+      "body": {
+        "completions": [
+          "  i := i + 1;"
+        ],
+        "model": "stub-model",
+        "request_id": "stub-request-id"
+      },
+      "content_type": "application/json",
+      "name": "cursor_first_position",
+      "note": "A cursor at the very start yields an empty prefix.",
+      "status": 200
+    },
+    {
+      "body": {
+        "error": "upstream response had no choices"
+      },
+      "content_type": "application/json",
+      "name": "upstream_no_choices",
+      "note": "Upstream returning an empty choices list must surface as a clean 502, never a stack trace or a 200 with junk in it.",
+      "status": 502
+    },
+    {
+      "body": {
+        "error": "upstream response was not a JSON object"
+      },
+      "content_type": "application/json",
+      "name": "upstream_not_an_object",
+      "note": "Upstream returning a JSON array where an object was expected must surface as a clean 502, never a stack trace or a 200 with junk in it.",
+      "status": 502
+    },
+    {
+      "body": {
+        "error": "upstream choice had no message.content field"
+      },
+      "content_type": "application/json",
+      "name": "upstream_null_content",
+      "note": "Upstream returning a null message.content must surface as a clean 502, never a stack trace or a 200 with junk in it.",
+      "status": 502
+    },
+    {
+      "body": {
+        "error": "upstream returned HTTP 500"
+      },
+      "content_type": "application/json",
+      "name": "upstream_http_500",
+      "note": "Upstream returning a non-200 status from the backend must surface as a clean 502, never a stack trace or a 200 with junk in it.",
+      "status": 502
+    },
+    {
+      "body": {
+        "error": "upstream returned malformed JSON"
+      },
+      "content_type": "application/json",
+      "name": "upstream_malformed",
+      "note": "Upstream returning a body that is not JSON at all must surface as a clean 502, never a stack trace or a 200 with junk in it.",
+      "status": 502
+    },
+    {
+      "body": {
+        "error": "upstream spent its whole token budget on hidden reasoning and never answered; increase max_tokens or check reasoning_effort"
+      },
+      "content_type": "application/json",
+      "name": "upstream_reasoning_exhausted",
+      "note": "finish_reason \"length\" with empty content but non-empty reasoning_content is an error, not an empty completion. This is what makes --reasoning-effort auto calibration able to tell \"this effort value never answers\" from \"the backend is down\".",
+      "status": 502
+    },
+    {
+      "body": {
+        "error": "upstream request timed out"
+      },
+      "content_type": "application/json",
+      "name": "upstream_timeout",
+      "note": "The backend stalls past --upstream-timeout, so the proxy gives up first and reports it, rather than leaving the editor to time out with no explanation.",
+      "status": 502
+    },
+    {
+      "body": {
+        "model": "stub-model",
+        "reasoning_effort": "none",
+        "sample_completion": "  i := i + 1;",
+        "status": "ok",
+        "upstream": "<UPSTREAM>/chat/completions"
+      },
+      "content_type": "application/json",
+      "name": "health_ok",
+      "note": "GET /health performs a live probe and reports the resolved model and reasoning_effort.",
+      "status": 200
+    },
+    {
+      "body": {
+        "error": "not found"
+      },
+      "content_type": "application/json",
+      "name": "unknown_get_path",
+      "note": "Any GET that is not /health is a 404.",
+      "status": 404
+    },
+    {
+      "body": {
+        "error": "not found"
+      },
+      "content_type": "application/json",
+      "name": "unknown_post_path",
+      "note": "Any POST that is not /complete is a 404.",
+      "status": 404
+    },
+    {
+      "body": {
+        "error": "not found"
+      },
+      "content_type": "application/json",
+      "name": "get_on_complete",
+      "note": "GET /complete is a 404, not a 405: the GET handler only knows /health.",
+      "status": 404
+    },
+    {
+      "body": {
+        "error": "request body too large"
+      },
+      "content_type": "application/json",
+      "name": "empty_body",
+      "note": "A zero-length body is a 413, not a 400. Surprising, but the size gate runs before any parsing and rejects \"<= 0\" along with \"too large\".",
+      "status": 413
+    },
+    {
+      "body": {
+        "error": "request body too large"
+      },
+      "content_type": "application/json",
+      "name": "missing_content_length",
+      "note": "A missing Content-Length reads as zero and takes the same 413 path.",
+      "status": 413
+    },
+    {
+      "body": {
+        "error": "invalid Content-Length header"
+      },
+      "content_type": "application/json",
+      "name": "bad_content_length",
+      "note": "A non-numeric Content-Length is a 400.",
+      "status": 400
+    },
+    {
+      "body": {
+        "error": "request body too large"
+      },
+      "content_type": "application/json",
+      "name": "body_too_large",
+      "note": "A body over twice --buffer-limit is refused by size before parsing.",
+      "status": 413
+    },
+    {
+      "body": {
+        "error": "request body was truncated"
+      },
+      "content_type": "application/json",
+      "name": "truncated_body",
+      "note": "Content-Length promises more than the client sends, then the socket closes: the short read is reported rather than hanging.",
+      "status": 400
+    },
+    {
+      "body": {
+        "error": "invalid JSON"
+      },
+      "content_type": "application/json",
+      "name": "invalid_json",
+      "note": "A body that is not JSON is a 400.",
+      "status": 400
+    },
+    {
+      "body": {
+        "error": "invalid JSON"
+      },
+      "content_type": "application/json",
+      "name": "invalid_utf8",
+      "note": "A body that is not valid UTF-8 is a 400, not a 500.",
+      "status": 400
+    },
+    {
+      "body": {
+        "error": "request body must be a JSON object"
+      },
+      "content_type": "application/json",
+      "name": "schema_not_an_object",
+      "note": "Schema validation rejects a JSON array as the whole body with a 400 naming the offending field.",
+      "status": 400
+    },
+    {
+      "body": {
+        "error": "\"buffer\" must be a string"
+      },
+      "content_type": "application/json",
+      "name": "schema_buffer_missing",
+      "note": "Schema validation rejects no \"buffer\" key at all with a 400 naming the offending field.",
+      "status": 400
+    },
+    {
+      "body": {
+        "error": "\"buffer\" must be a string"
+      },
+      "content_type": "application/json",
+      "name": "schema_buffer_not_string",
+      "note": "Schema validation rejects a non-string \"buffer\" with a 400 naming the offending field.",
+      "status": 400
+    },
+    {
+      "body": {
+        "error": "\"goal\" must be a string"
+      },
+      "content_type": "application/json",
+      "name": "schema_goal_not_string",
+      "note": "Schema validation rejects a non-string \"goal\" with a 400 naming the offending field.",
+      "status": 400
+    },
+    {
+      "body": {
+        "error": "\"cursor\" must be an object with line/column"
+      },
+      "content_type": "application/json",
+      "name": "schema_cursor_missing",
+      "note": "Schema validation rejects no \"cursor\" object with a 400 naming the offending field.",
+      "status": 400
+    },
+    {
+      "body": {
+        "error": "\"cursor\" must be an object with line/column"
+      },
+      "content_type": "application/json",
+      "name": "schema_cursor_not_object",
+      "note": "Schema validation rejects a non-object \"cursor\" with a 400 naming the offending field.",
+      "status": 400
+    },
+    {
+      "body": {
+        "error": "\"cursor.line\" must be a positive integer"
+      },
+      "content_type": "application/json",
+      "name": "schema_line_zero",
+      "note": "Schema validation rejects a line number below 1 (the protocol is 1-based) with a 400 naming the offending field.",
+      "status": 400
+    },
+    {
+      "body": {
+        "error": "\"cursor.line\" must be a positive integer"
+      },
+      "content_type": "application/json",
+      "name": "schema_line_bool",
+      "note": "Schema validation rejects a boolean line -- rejected even though bool is an int subtype with a 400 naming the offending field.",
+      "status": 400
+    },
+    {
+      "body": {
+        "error": "\"cursor.column\" must be a positive integer"
+      },
+      "content_type": "application/json",
+      "name": "schema_column_bool",
+      "note": "Schema validation rejects a boolean column, likewise with a 400 naming the offending field.",
+      "status": 400
+    },
+    {
+      "body": {
+        "error": "\"buffer\" exceeds the 1024-character limit"
+      },
+      "content_type": "application/json",
+      "name": "buffer_over_limit",
+      "note": "A buffer over --buffer-limit but under the raw byte gate is rejected by schema validation, with the limit named in the message.",
+      "status": 400
+    },
+    {
+      "body": {
+        "error": "<REFUSED>",
+        "status": "error"
+      },
+      "content_type": "application/json",
+      "name": "health_upstream_unreachable",
+      "note": "A backend that is not listening is reported as 503 with an error message, not a hang or a traceback.",
+      "status": 503
+    },
+    {
+      "body": {
+        "model": "stub-model",
+        "reasoning_effort": "none",
+        "sample_completion": "  i := i + 1;",
+        "status": "ok",
+        "upstream": "<UPSTREAM>/chat/completions"
+      },
+      "content_type": "application/json",
+      "name": "calibrate_settles_on_none",
+      "note": "Only reasoning_effort='none' answers; every other candidate reports budget exhaustion. The proxy must try none, low, medium, high, omitted in that order and settle on the one that works.",
+      "status": 200
+    },
+    {
+      "body": {
+        "model": "stub-model",
+        "reasoning_effort": "medium",
+        "sample_completion": "  i := i + 1;",
+        "status": "ok",
+        "upstream": "<UPSTREAM>/chat/completions"
+      },
+      "content_type": "application/json",
+      "name": "calibrate_settles_on_medium",
+      "note": "Only reasoning_effort='medium' answers; every other candidate reports budget exhaustion. The proxy must try none, low, medium, high, omitted in that order and settle on the one that works.",
+      "status": 200
+    },
+    {
+      "body": {
+        "model": "stub-model",
+        "reasoning_effort": "",
+        "sample_completion": "  i := i + 1;",
+        "status": "ok",
+        "upstream": "<UPSTREAM>/chat/completions"
+      },
+      "content_type": "application/json",
+      "name": "calibrate_settles_on_omitted",
+      "note": "Only reasoning_effort='' answers; every other candidate reports budget exhaustion. The proxy must try none, low, medium, high, omitted in that order and settle on the one that works.",
+      "status": 200
+    }
+  ]
+}
