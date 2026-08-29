@@ -27,9 +27,6 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-
-import cases as corpus  # noqa: E402
 
 # Small on purpose: it keeps the size-limit cases cheap (a 4KB body instead of
 # a 128KB one) without changing any behaviour under test.
@@ -266,20 +263,7 @@ def run_corpus(harness):
             raise RuntimeError('native conformance runner failed: %s' %
                                result.stderr)
         return json.loads(result.stdout)['cases']
-    entries = []
-    for entry in corpus.CASES:
-        raw = send_raw('127.0.0.1', proxy_port, entry['request'])
-        record = parse_response(raw, upstream_url)
-        record['name'] = entry['name']
-        record['note'] = entry['note']
-        if entry.get('capture_upstream'):
-            sent = send_raw(
-                '127.0.0.1', stub_port, b'GET /_last HTTP/1.1\r\nHost: x\r\n'
-                b'Connection: close\r\n\r\n')
-            payload = parse_response(sent, upstream_url).get('body')
-            record['upstream_request'] = normalize(payload, upstream_url)
-        entries.append(record)
-    return entries
+    raise RuntimeError('native conformance runner is required')
 
 
 def run_health_unreachable(harness):
@@ -389,6 +373,8 @@ def main():
         return compare(*args.compare)
     if not args.proxy_bin:
         parser.error('--proxy-bin is required unless --compare is used')
+    if not args.native_runner:
+        parser.error('--native-runner is required when running the corpus')
 
     report = build_report(shlex.split(args.proxy_bin), args.verbose,
                           args.native_runner or '')

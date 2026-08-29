@@ -74,14 +74,15 @@ has no way to start.
   request the stub received, which is how the outgoing payload shape is
   checked. `--calibrate-ok` makes exactly one `reasoning_effort` value answer,
   which is how `--reasoning-effort auto` is pinned down.
-- `cases.py` — 43 cases as raw bytes. Raw bytes rather than a client library
-  because much of the contract lives in malformed requests (a non-numeric
-  `Content-Length`, a truncated body, invalid UTF-8) that a client library
-  would refuse to send. Every case carries a note saying what it pins and why.
-- `run_conformance.py` — starts the stub and the implementation, replays the
-  corpus, and writes a normalized report. It owns the implementation's flags
-  itself, so both implementations are configured identically by construction
-  and a mismatch can never be an artefact of how they were started. Also runs
+- `conformance_cases.json` — 43 cases as raw request bytes encoded as hex.
+  Raw bytes rather than a client library because much of the contract lives in
+  malformed requests (a non-numeric `Content-Length`, a truncated body,
+  invalid UTF-8) that a client library would refuse to send. Every case carries
+  a note saying what it pins and why.
+- `conformance_runner.pas` — replays the raw-byte corpus and writes its
+  normalized response report. `run_conformance.py` starts the stub and the
+  implementation, invokes that native runner, and owns the implementation's
+  flags so every implementation is configured identically. Python also runs
   two phases the corpus cannot express: `/health` against a dead backend, and
   three calibration runs.
 - `golden.json` — the recorded reference behaviour: 47 cases. This is the

@@ -55,7 +55,7 @@ def scenario_response(name, payload):
         return 200, _chat('Here you go:\n```pascal\n  i := i + 1;\n```\n'), 0
     if name == 'echo':
         # Deliberately restates the tail of the probe buffer used by the
-        # echo cases in cases.py, to exercise strip_echo pass 1.
+        # echo fixtures, to exercise strip_echo pass 1.
         return 200, _chat('FOR i := 1 TO 10 DO\n  WRITELN(i);'), 0
     if name == 'partial':
         return 200, _chat('DISPOSE(p2);'), 0
