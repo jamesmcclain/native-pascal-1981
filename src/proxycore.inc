@@ -35,7 +35,10 @@
     not check encoding at all, so a request that would have been a 400
     upstream would otherwise sail through here.
 
-  Requires bytebuf and jsonx. }
+  Requires bytebuf, jsonx, netsock and httpio. The upstream call lives here
+  rather than in the program because calibration needs it too, and because
+  the mapping from an upstream failure to a message the client may see is
+  policy, which is what this unit is for. }
 
 INTERFACE;
 UNIT proxycore (PxRequestInit, PxRequestFree, PxValidateRequest,
@@ -43,11 +46,13 @@ UNIT proxycore (PxRequestInit, PxRequestFree, PxValidateRequest,
                 PxReplyInit, PxReplyFree, PxExtractCompletion,
                 PxStripCodeFence, PxStripEcho, PxSanitizeCompletion,
                 PxUtf8Valid, PxCharLen, PxSystemPrompt,
-                PxRequest, PxReply,
+                PxConfigInit, PxConfigFree, PxUpstreamUrl, PxChatUrlPath,
+                PxCallUpstream, PxProbePrompt, PxPing, PxCalibrate,
+                PxRequest, PxReply, PxConfig,
                 PX_UP_OK, PX_UP_ERROR, PX_UP_EXHAUSTED,
                 PX_MAX_COMPLETION_CHARS, PX_DEFAULT_MAX_LINES);
 
-USES bytebuf, jsonx;
+USES bytebuf, jsonx, netsock, httpio;
 
 CONST
   { PxExtractCompletion outcomes. Exhaustion is a distinct outcome, not just
@@ -68,6 +73,25 @@ CONST
   PX_DEFAULT_MAX_LINES    = 30;
 
 TYPE
+  { Everything the proxy was configured with. The upstream URL arrives as one
+    string and is split once at startup, because every request needs the
+    pieces and nothing needs the URL back except /health, which rebuilds it. }
+  PxConfig = RECORD
+    upstream_host:    ByteStr;
+    upstream_port:    INTEGER32;
+    upstream_path:    ByteStr;   { the API root, no trailing slash }
+    llm_model:        ByteStr;
+    reasoning_effort: ByteStr;   { '' omits the field; 'auto' means calibrate }
+    buffer_limit:     INTEGER32; { in characters, as the client counts them }
+    max_tokens:       INTEGER32;
+    max_lines:        INTEGER32;
+    timeout_ms:       INTEGER32;
+    temperature:      REAL;
+    api_key:          ByteBuf;   { from the environment only, never a flag }
+    grammar:          ByteBuf;   { optional EBNF context, usually empty }
+    system_prompt:    ByteBuf;
+  END;
+
   { A validated /complete request. The buffers are owned by the record: call
     PxRequestInit before use and PxRequestFree after. }
   PxRequest = RECORD
@@ -85,6 +109,52 @@ TYPE
     request_id: ByteBuf;
     error:      ByteStr;   { empty unless the outcome was not PX_UP_OK }
   END;
+
+{ ---- Configuration and the upstream call ---- }
+
+PROCEDURE PxConfigInit(VAR c: PxConfig);
+PROCEDURE PxConfigFree(VAR c: PxConfig);
+
+{ The full chat-completions URL, as /health reports it. }
+PROCEDURE PxUpstreamUrl(VAR c: PxConfig; VAR out: ByteBuf);
+
+{ Just its path component, which is what a request line needs. }
+PROCEDURE PxChatUrlPath(VAR c: PxConfig; VAR out: ByteStr);
+
+{ One /chat/completions call. Returns a PX_UP_ constant; on anything but
+  PX_UP_OK, reply.error carries a message safe to return to the client -- it
+  names the failure without quoting the upstream's body or revealing the API
+  key.
+
+  `effort` and `temperature` are passed rather than taken from the config so
+  that a probe can vary them without disturbing configured behaviour. An
+  empty effort omits the field, and 'auto' is treated the same way: it is a
+  sentinel for "calibrate", never a value to send. }
+FUNCTION PxCallUpstream(VAR c: PxConfig; VAR prompt: ByteBuf;
+                        effort: ByteStr; temperature: REAL;
+                        VAR reply: PxReply): INTEGER32;
+
+{ The prompt both probes use: a real /complete-shaped request, including the
+  configured grammar context, because that materially changes prompt size and
+  therefore reasoning cost. A generic one-line probe gives a false "it works"
+  signal -- a reasoning model can answer a trivial sentence and still exhaust
+  its budget on the Pascal completion a real request sends. }
+PROCEDURE PxProbePrompt(VAR c: PxConfig; VAR out: ByteBuf);
+
+{ One real call with the configured settings, for /health. As expensive as a
+  real request on purpose: a tiny probe budget reports "not responding" on a
+  backend that needs its whole budget just to finish thinking, which is not
+  the question /health is asked. }
+FUNCTION PxPing(VAR c: PxConfig; VAR reply: PxReply): INTEGER32;
+
+{ Resolve reasoning_effort against the live backend. Tries none, low, medium,
+  high and omitted in that order, first success winning, and never fails hard
+  -- calibration not finding an answer is no reason to refuse to start.
+
+  A backend error that is not budget exhaustion stops the search immediately
+  and falls back to 'none': trying four more candidates against a backend
+  that is down only multiplies the timeout wait. }
+PROCEDURE PxCalibrate(VAR c: PxConfig; VAR chosen: ByteStr);
 
 { ---- Encoding helpers ---- }
 

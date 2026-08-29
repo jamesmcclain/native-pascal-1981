@@ -69,6 +69,12 @@ elif [ "$stage_file" = "typechecker.pas" ]; then
   component_units=(tc_base.pas tc_types.pas tc_expr.pas tc_stmt.pas tc_decl.pas)
 elif [ "$stage_file" = "parser.pas" ]; then
   component_units=(ps_base.pas ps_expr.pas ps_stmt.pas ps_decl.pas)
+elif [ "$stage_file" = "proxy.pas" ]; then
+  # Not a compiler stage: the completion proxy, built by the finished
+  # compiler. Same layering rule as the stages above -- lowest first, each
+  # unit only reaching downward -- so bytebuf, which depends on nothing,
+  # leads and proxycore, which depends on the rest, comes last.
+  component_units=(bytebuf.pas argparse.pas jsonx.pas netsock.pas httpio.pas proxycore.pas)
 fi
 
 # The unit objects are compiled inside the ( cd "$src_dir" ... ) subshell below,

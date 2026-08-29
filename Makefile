@@ -16,6 +16,7 @@ BUILD_DIR := build
 DRIVER_BIN := $(BIN_DIR)/pascal1981-native
 DRIVER_ALIAS := $(BIN_DIR)/pascal1981
 ASTCOMPARE_BIN := $(BIN_DIR)/astcompare
+PROXY_BIN := $(BIN_DIR)/pascal1981-proxy
 RUNTIME_LIB := runtime/build/libpascalrt.a
 RUNTIME_SRCS := $(wildcard runtime/*.c runtime/*.h) runtime/Makefile
 STAGES := lexer parser typechecker codegen
@@ -46,9 +47,9 @@ GEN4_BINS := $(addprefix $(BUILD_DIR)/gen4/,$(STAGES))
 BOOTSTRAP_BINS := $(addprefix $(BIN_DIR)/,$(STAGES))
 FIXED_POINT := $(BUILD_DIR)/.fixed-point-verified
 
-.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-driver test-native test-gpu test-reference-parity test-elisp test-bootstrap
+.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-driver test-native test-proxy test-gpu test-reference-parity test-elisp test-bootstrap
 
-all: runtime driver bootstrap
+all: runtime driver bootstrap $(PROXY_BIN)
 
 runtime: $(RUNTIME_LIB)
 
@@ -62,6 +63,12 @@ $(DRIVER_BIN): src/driver.pas $(STAGE_SRCS) $(GEN4_BINS) $(FIXED_POINT) $(RUNTIM
 	ln -sf pascal1981-native $(DRIVER_ALIAS)
 
 $(ASTCOMPARE_BIN): src/astcompare.pas $(STAGE_SRCS) $(GEN4_BINS) $(FIXED_POINT) $(RUNTIME_LIB) | $(BIN_DIR)
+	NATIVE_LEXER="$(abspath $(BUILD_DIR)/gen4/lexer)" NATIVE_PARSER="$(abspath $(BUILD_DIR)/gen4/parser)" NATIVE_TYPECHECKER="$(abspath $(BUILD_DIR)/gen4/typechecker)" NATIVE_CODEGEN="$(abspath $(BUILD_DIR)/gen4/codegen)" ./scripts/build-stage.sh $< $@
+
+# The completion proxy. Like astcompare, a standalone program built by the
+# gen4 fixed point rather than a bootstrap stage, so it is free to use units
+# the reference compiler has never seen.
+$(PROXY_BIN): src/proxy.pas src/bytebuf.pas src/bytebuf.inc src/argparse.pas src/argparse.inc src/jsonx.pas src/jsonx.inc src/netsock.pas src/netsock.inc src/httpio.pas src/httpio.inc src/proxycore.pas src/proxycore.inc $(STAGE_SRCS) $(GEN4_BINS) $(FIXED_POINT) $(RUNTIME_LIB) | $(BIN_DIR)
 	NATIVE_LEXER="$(abspath $(BUILD_DIR)/gen4/lexer)" NATIVE_PARSER="$(abspath $(BUILD_DIR)/gen4/parser)" NATIVE_TYPECHECKER="$(abspath $(BUILD_DIR)/gen4/typechecker)" NATIVE_CODEGEN="$(abspath $(BUILD_DIR)/gen4/codegen)" ./scripts/build-stage.sh $< $@
 
 $(BIN_DIR):
@@ -110,13 +117,13 @@ clean:
 	rm -rf build
 
 cleaner: clean
-	rm -rf bin/lexer bin/parser bin/typechecker bin/codegen bin/astcompare bin/pascal1981-native bin/pascal1981
+	rm -rf bin/lexer bin/parser bin/typechecker bin/codegen bin/astcompare bin/pascal1981-proxy bin/pascal1981-native bin/pascal1981
 	$(MAKE) -C runtime cleaner
 
 cleanest: cleaner
 	rm -rf .pytest_cache
 
-test: test-native
+test: test-native test-proxy
 	./tests/test_precommit_hook.sh
 
 # The zero-Python subset of `test`: driver, golden-file behavioral, and
@@ -124,11 +131,20 @@ test: test-native
 test-driver: $(DRIVER_BIN)
 	./tests/driver.sh
 
-test-native: test-driver $(ASTCOMPARE_BIN)
+test-native: test-driver $(ASTCOMPARE_BIN) $(PROXY_BIN)
 	./tests/run.sh
 	./tests/checklit.sh
 	./tests/depth.sh
 	./tests/astcompare.sh
+
+# Differential conformance for the completion proxy: the same corpus of raw
+# HTTP requests replayed against the Pascal port and against the Python
+# implementation it replaces, compared byte for byte. Needs Python for the
+# stub backend, so it is not part of test-driver's zero-Python subset.
+test-proxy: $(PROXY_BIN)
+	./tests/proxy/run.sh $(PROXY_BIN)
+	./tests/proxy/transforms_check.py
+	./tests/proxy/oneshot.sh
 
 # Run the real-GPU CUDA integration test. The runner exits successfully with a
 # clear skip reason when its hardware or toolchain prerequisites are absent.

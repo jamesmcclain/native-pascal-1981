@@ -8,6 +8,8 @@
 
 (*$INCLUDE:'bytebuf.inc'*)
 (*$INCLUDE:'jsonx.inc'*)
+(*$INCLUDE:'netsock.inc'*)
+(*$INCLUDE:'httpio.inc'*)
 (*$INCLUDE:'proxycore.inc'*)
 
 IMPLEMENTATION OF proxycore;
@@ -976,6 +978,333 @@ BEGIN
       cut := PxApproxEchoCut(buffer, candidate);
   END;
   PxAppendSlice(candidate, cut, BufLen(candidate) - cut, out);
+END;
+
+
+{ ------------------------------------------------------------------ }
+{ Configuration and the upstream call                                 }
+{ ------------------------------------------------------------------ }
+
+PROCEDURE PxConfigInit(VAR c: PxConfig);
+BEGIN
+  c.upstream_host := '127.0.0.1';
+  c.upstream_port := 8080;
+  c.upstream_path := '/v1';
+  c.llm_model := 'default';
+  c.reasoning_effort := 'auto';
+  c.buffer_limit := 65536;
+  c.max_tokens := 512;
+  c.max_lines := PX_DEFAULT_MAX_LINES;
+  c.timeout_ms := 20000;
+  c.temperature := 0.2;
+  BufInit(c.api_key, 0);
+  BufInit(c.grammar, 0);
+  BufInit(c.system_prompt, 0);
+  PxSystemPrompt(c.system_prompt);
+END;
+
+PROCEDURE PxConfigFree(VAR c: PxConfig);
+BEGIN
+  BufFree(c.api_key);
+  BufFree(c.grammar);
+  BufFree(c.system_prompt);
+END;
+
+PROCEDURE PxChatUrlPath(VAR c: PxConfig; VAR out: ByteStr);
+VAR
+  built: ByteStr;
+BEGIN
+  { Assembled in a local: CONCAT writes only to a bare LSTRING variable, and
+    a VAR parameter is not one. }
+  built := c.upstream_path;
+  CONCAT(built, '/chat/completions');
+  out := built;
+END;
+
+PROCEDURE PxUpstreamUrl(VAR c: PxConfig; VAR out: ByteBuf);
+VAR
+  path: ByteStr;
+BEGIN
+  BufAppendStr(out, 'http://');
+  BufAppendStr(out, c.upstream_host);
+  { The port is always shown, matching how the URL was given on the command
+    line -- the client that reads /health compares strings, not URLs. }
+  BufAppendChar(out, ':');
+  BufAppendInt(out, c.upstream_port);
+  PxChatUrlPath(c, path);
+  BufAppendStr(out, path);
+END;
+
+
+{ Copy `src` to `out`, dropping every JSON escape for a NUL character.
+
+  cJSON hands a string back as a NUL-terminated C string, so a JSON value
+  containing a NUL is unreadable past that point -- there is no length to
+  recover it by. A completion with a NUL in it is not hypothetical: a backend
+  emitted one, and the case is pinned in the conformance corpus.
+
+  The Python original strips NUL from the completion anyway, so removing it
+  here changes only when it goes, not what comes out. A six-character escape
+  is the only way JSON can encode a NUL, which is what makes matching it exact
+  rather than approximate. The scan consumes a backslash together with the
+  character it escapes, so a literal backslash followed by the text u0000 is
+  left alone. }
+PROCEDURE PxStripNulEscapes(VAR src: ByteBuf; VAR out: ByteBuf);
+VAR
+  i, n: INTEGER32;
+  is_nul: BOOLEAN;
+BEGIN
+  n := BufLen(src);
+  i := 0;
+  WHILE i < n DO
+  BEGIN
+    IF ORD(BufAt(src, i)) = 92 THEN            { a backslash }
+    BEGIN
+      is_nul := FALSE;
+      IF i + 5 < n THEN
+        IF BufAt(src, i + 1) = 'u' THEN
+          IF (BufAt(src, i + 2) = '0') AND (BufAt(src, i + 3) = '0') AND
+             (BufAt(src, i + 4) = '0') AND (BufAt(src, i + 5) = '0') THEN
+            is_nul := TRUE;
+      IF is_nul THEN
+        i := i + 6
+      ELSE
+      BEGIN
+        { The escaped character travels with its backslash, so a doubled
+          backslash cannot be mistaken for the start of an escape. }
+        BufAppendChar(out, BufAt(src, i));
+        IF i + 1 < n THEN BufAppendChar(out, BufAt(src, i + 1));
+        i := i + 2;
+      END;
+    END
+    ELSE
+    BEGIN
+      BufAppendChar(out, BufAt(src, i));
+      i := i + 1;
+    END;
+  END;
+END;
+
+FUNCTION PxCallUpstream(VAR c: PxConfig; VAR prompt: ByteBuf;
+                        effort: ByteStr; temperature: REAL;
+                        VAR reply: PxReply): INTEGER32;
+VAR
+  payload, msgs, m: ADRMEM;
+  tree: ADRMEM;
+  body, req, raw, text: ByteBuf;
+  resp: HttpResp;
+  path, message_text: ByteStr;
+  fd, rc, outcome, max_head: INTEGER32;
+BEGIN
+  BufClear(reply.text);
+  BufClear(reply.model);
+  BufClear(reply.request_id);
+  reply.error := '';
+
+  payload := JxNewObject;
+  JxAddStr(payload, 'model', c.llm_model);
+  msgs := JxNewArray;
+  m := JxNewObject;
+  JxAddStr(m, 'role', 'system');
+  JxAddStrFromBuf(m, 'content', c.system_prompt);
+  JxArrAppend(msgs, m);
+  m := JxNewObject;
+  JxAddStr(m, 'role', 'user');
+  JxAddStrFromBuf(m, 'content', prompt);
+  JxArrAppend(msgs, m);
+  JxAddItem(payload, 'messages', msgs);
+  JxAddInt(payload, 'max_tokens', c.max_tokens);
+  JxAddNum(payload, 'temperature', temperature);
+  { Deliberately no "stop" field. Observed live, at least one backend applies
+    it to the raw token stream, which includes a reasoning model's hidden
+    reasoning -- and reasoning text is full of newlines, so a "\n" stop kills
+    generation while the model is still thinking and the request succeeds
+    with permanently empty content no matter how large max_tokens is. Line
+    capping is PxSanitizeCompletion's job, on the returned content. }
+  IF (ORD(effort[0]) > 0) AND (effort <> 'auto') THEN
+    JxAddStr(payload, 'reasoning_effort', effort);
+
+  BufInit(body, 0);
+  IF NOT JxPrintToBuf(payload, body) THEN
+  BEGIN
+    reply.error := 'could not build the upstream request';
+    JxDelete(payload);
+    BufFree(body);
+    PxCallUpstream := PX_UP_ERROR;
+    RETURN;
+  END;
+  JxDelete(payload);
+
+  fd := NetConnect(c.upstream_host, c.upstream_port, c.timeout_ms);
+  IF fd < 0 THEN
+  BEGIN
+    reply.error := 'could not reach upstream';
+    BufFree(body);
+    PxCallUpstream := PX_UP_ERROR;
+    RETURN;
+  END;
+
+  PxChatUrlPath(c, path);
+  BufInit(req, 0);
+  HttpAppendRequestLine(req, 'POST', path);
+  HttpAppendHeader(req, 'Host', c.upstream_host);
+  HttpAppendHeader(req, 'Content-Type', 'application/json');
+  IF BufLen(c.api_key) > 0 THEN
+  BEGIN
+    { Built into the buffer directly rather than through an LSTRING: a key
+      can be longer than 255 characters, and truncating one produces an
+      authentication failure that looks like a backend problem. }
+    BufAppendStr(req, 'Authorization: Bearer ');
+    BufAppendBuf(req, c.api_key);
+    HttpAppendCRLF(req);
+  END;
+  HttpAppendHeaderInt(req, 'Content-Length', BufLen(body));
+  HttpEndHeaders(req);
+  BufAppendBuf(req, body);
+
+  max_head := 65000;
+  BufInit(raw, 0);
+  rc := HttpExchange(fd, req, raw, resp, max_head, c.timeout_ms);
+  NetClose(fd);
+  BufFree(req);
+  BufFree(body);
+
+  outcome := PX_UP_OK;
+  IF rc = HTTP_HEAD_TIMEOUT THEN
+  BEGIN
+    reply.error := 'upstream request timed out';
+    outcome := PX_UP_ERROR;
+  END
+  ELSE IF rc <> HTTP_HEAD_OK THEN
+  BEGIN
+    reply.error := 'could not reach upstream';
+    outcome := PX_UP_ERROR;
+  END
+  ELSE IF (resp.status < 200) OR (resp.status > 299) THEN
+  BEGIN
+    { The status, never the body: an upstream error page can carry anything,
+      including the request it was given. }
+    BufInit(text, 0);
+    BufAppendInt(text, resp.status);
+    BufSliceToStr(text, 0, BufLen(text), path);
+    BufFree(text);
+    message_text := 'upstream returned HTTP ';
+    CONCAT(message_text, path);
+    reply.error := message_text;
+    outcome := PX_UP_ERROR;
+  END;
+
+  IF outcome = PX_UP_OK THEN
+  BEGIN
+    BufInit(body, 0);
+    HttpRespBodyToBuf(raw, resp, body);
+    BufInit(text, 0);
+    PxStripNulEscapes(body, text);
+    BufFree(body);
+    tree := JxParseBuf(text);
+    IF tree = NIL THEN
+    BEGIN
+      reply.error := 'upstream returned malformed JSON';
+      outcome := PX_UP_ERROR;
+    END
+    ELSE
+      outcome := PxExtractCompletion(tree, reply);
+    JxDelete(tree);
+    BufFree(text);
+  END;
+
+  BufFree(raw);
+  PxCallUpstream := outcome;
+END;
+
+{ The buffer both probes send: a FOR-loop header needing a multi-token,
+  syntax-aware completion. Empirically the hardest of the three shapes tried
+  during development, not an arbitrary choice. }
+PROCEDURE PxProbePrompt(VAR c: PxConfig; VAR out: ByteBuf);
+VAR
+  buffer, prefix, goal: ByteBuf;
+BEGIN
+  BufInit(buffer, 0);
+  BufAppendStr(buffer, 'PROGRAM Demo;');
+  BufAppendChar(buffer, CHR(PX_LF));
+  BufAppendStr(buffer, 'VAR i: INTEGER;');
+  BufAppendChar(buffer, CHR(PX_LF));
+  BufAppendStr(buffer, 'BEGIN');
+  BufAppendChar(buffer, CHR(PX_LF));
+  BufAppendStr(buffer, '  FOR i := 1 ');
+  BufAppendChar(buffer, CHR(PX_LF));
+  BufAppendStr(buffer, 'END.');
+  BufAppendChar(buffer, CHR(PX_LF));
+
+  BufInit(prefix, 0);
+  PxComputePrefix(buffer, 4, 14, prefix);
+  BufInit(goal, 0);
+  PxBuildPrompt(goal, prefix, c.grammar, out);
+  BufFree(goal);
+  BufFree(prefix);
+  BufFree(buffer);
+END;
+
+FUNCTION PxPing(VAR c: PxConfig; VAR reply: PxReply): INTEGER32;
+VAR
+  prompt: ByteBuf;
+  rc: INTEGER32;
+BEGIN
+  BufInit(prompt, 0);
+  PxProbePrompt(c, prompt);
+  rc := PxCallUpstream(c, prompt, c.reasoning_effort, 0.0, reply);
+  BufFree(prompt);
+  PxPing := rc;
+END;
+
+{ Tried cheapest and most likely to just work first. Omitting the field is
+  last, not first: a backend that ignores unknown fields is common, but a
+  genuine reasoning model with the field omitted reasons at its default --
+  often heavy -- effort and burns the budget. Omitting is the fallback for
+  "none" not existing as a concept for this backend at all. }
+PROCEDURE PxEffortCandidate(i: INTEGER32; VAR out: ByteStr);
+BEGIN
+  IF i = 1 THEN out := 'none'
+  ELSE IF i = 2 THEN out := 'low'
+  ELSE IF i = 3 THEN out := 'medium'
+  ELSE IF i = 4 THEN out := 'high'
+  ELSE out := '';
+END;
+
+PROCEDURE PxCalibrate(VAR c: PxConfig; VAR chosen: ByteStr);
+VAR
+  prompt: ByteBuf;
+  reply: PxReply;
+  candidate: ByteStr;
+  i, rc: INTEGER32;
+  settled: BOOLEAN;
+BEGIN
+  BufInit(prompt, 0);
+  PxProbePrompt(c, prompt);
+  PxReplyInit(reply);
+  chosen := 'none';
+  settled := FALSE;
+  i := 1;
+  WHILE (i <= 5) AND (NOT settled) DO
+  BEGIN
+    PxEffortCandidate(i, candidate);
+    rc := PxCallUpstream(c, prompt, candidate, 0.0, reply);
+    IF rc = PX_UP_OK THEN
+    BEGIN
+      chosen := candidate;
+      settled := TRUE;
+    END
+    ELSE IF rc <> PX_UP_EXHAUSTED THEN
+    BEGIN
+      { Not exhaustion: the backend is unreachable or broken. Four more
+        attempts against it only multiply the timeout wait. }
+      chosen := 'none';
+      settled := TRUE;
+    END;
+    i := i + 1;
+  END;
+  PxReplyFree(reply);
+  BufFree(prompt);
 END;
 
 BEGIN

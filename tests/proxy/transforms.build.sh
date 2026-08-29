@@ -5,5 +5,6 @@ set -euo pipefail
 
 fixture_dir="$(pwd)"
 cd ../../src
-"$1" "$fixture_dir/transforms.pas" bytebuf.pas jsonx.pas proxycore.pas \
+"$1" "$fixture_dir/transforms.pas" bytebuf.pas jsonx.pas netsock.pas \
+     httpio.pas proxycore.pas \
      -o "$2"
