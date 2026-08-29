@@ -43,6 +43,12 @@ PROCEDURE LLVMSetMetadata(v: ADRMEM; kind: CINT; md: ADRMEM) [C];
 PROCEDURE LLVMReplaceMDNodeOperandWith(v: ADRMEM; idx: CINT; replacement: ADRMEM) [C];
 FUNCTION LLVMBuildGlobalStringPtr(b: ADRMEM; str: ADRMEM; name: ADRMEM): ADRMEM [C];
 FUNCTION LLVMConstInt(ty: ADRMEM; n: CLONG; signext: CINT): ADRMEM [C];
+
+{ Truncation toward zero into 64 bits, in the runtime because Pascal's TRUNC
+  cannot do it: TRUNC lowers to a float-to-int conversion at this dialect's
+  16-bit INTEGER width, so it destroys any value outside -32767..32767. This
+  is how an integer literal's value is read out of the AST. }
+FUNCTION pas_double_to_int64(val: REAL): CLONG [C];
 FUNCTION LLVMConstReal(ty: ADRMEM; n: REAL): ADRMEM [C];
 FUNCTION LLVMAddGlobal(m: ADRMEM; ty: ADRMEM; name: ADRMEM): ADRMEM [C];
 PROCEDURE LLVMSetInitializer(gvar: ADRMEM; val: ADRMEM) [C];

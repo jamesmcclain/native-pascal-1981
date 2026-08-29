@@ -50,6 +50,24 @@ int pas_cjson_int32(const cJSON *item)
     return (int) value;
 }
 
+/* The same, in 64 bits, for a value a 32-bit field cannot hold -- an
+ * INTEGER64 literal, say. A JSON number is a double, so this is exact up to
+ * 2^53, which is far past any literal a program writes by hand.
+ */
+long long pas_cjson_int64(const cJSON *item)
+{
+    double value;
+
+    if (item == NULL || !cJSON_IsNumber(item))
+        return 0;
+    value = item->valuedouble;
+    if (value >= 9223372036854775808.0)
+        return 9223372036854775807LL;
+    if (value <= -9223372036854775809.0)
+        return -9223372036854775807LL - 1;
+    return (long long) value;
+}
+
 char *pas_read_text_file(const char *path)
 {
     FILE *stream;

@@ -119,6 +119,9 @@ void  pas_fread_filename(struct pas_file_fcb *src,
 #define PAS_SOCK_ERROR   (-1L)
 #define PAS_SOCK_TIMEOUT (-2L)
 
+long long pas_double_to_int64(double value);
+double pas_int64_to_double(long long value);
+
 void  pas_net_init(void);
 void  pas_net_autoreap(void);
 int   pas_tcp_listen(const char *host, int port, int backlog);

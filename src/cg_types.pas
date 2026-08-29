@@ -152,55 +152,24 @@ BEGIN
   LookupConst := found;
 END;
 
-FUNCTION MakeRadix64: INTEGER64;
-{ Builds the INTEGER64 value 1000000000 via small in-range INTEGER64
-  arithmetic -- the literal 1000000000 itself is out of range for this
-  compiler's default INTEGER (16-bit) and this file has no typed CONST
-  syntax to declare it directly as INTEGER64. }
-VAR
-  r: INTEGER64;
+FUNCTION Real64ToInt64(val: REAL): INTEGER64;
+{ Truncation toward zero, done in the runtime rather than with TRUNC.
+
+  TRUNC cannot do this job. It lowers to a float-to-int conversion at this
+  dialect's INTEGER width, which is 16 bits, so TRUNC(40000.0) is -25536 and
+  TRUNC(100000.0) is not even a wrapped value -- an out-of-range float-to-int
+  conversion is poison in LLVM, so the result is arbitrary.
+
+  That is not a footnote. This function is how an integer literal's value is
+  read out of the AST, so every literal above 32767 was destroyed here, inside
+  the compiler, and the dialect was blamed for it. The previous version split
+  the value into a base-1e9 high/low pair to keep each TRUNC in range, on the
+  belief that TRUNC was a 32-bit conversion. It is 16-bit, so the low half
+  still had to survive a TRUNC of a value up to 1e9, and did not. }
 BEGIN
-  r := 1000;
-  r := r * r;
-  r := r * 1000;
-  MakeRadix64 := r;
+  Real64ToInt64 := RETYPE(INTEGER64, pas_double_to_int64(val));
 END;
 
-FUNCTION Real64ToInt64(val: REAL): INTEGER64;
-{ TRUNC(x) for a REAL x outside INTEGER32's range is not usable directly
-  here: this host Pascal compiler's TRUNC always lowers to a 32-bit
-  float-to-int conversion regardless of the surrounding INTEGER64 context,
-  so a magnitude like 5000000000.0 overflows it (fptosi poison, observed
-  in practice as INTEGER32's MIN value) well before the result ever
-  reaches a 64-bit variable. Split into a base-1e9 high/low pair instead --
-  each TRUNC call only ever sees a magnitude comfortably inside INTEGER32's
-  range this way -- and recombine via INTEGER64 multiply/add, neither of
-  which goes through TRUNC. Sufficient for every literal this AST's JSON
-  encoding can represent exactly as a double in the first place (up to
-  2^53), which covers every wide-integer literal this file can compile. }
-CONST
-  RADIX = 1000000000.0;
-VAR
-  neg: BOOLEAN;
-  hi: INTEGER; { Only plain INTEGER (and INTEGER8) mix implicitly with REAL
-                  arithmetic in this dialect (type_system.py's "INTEGER op
-                  REAL" rule) -- INTEGER32/64 do not, and FLOAT() only
-                  accepts plain INTEGER too -- so hi*RADIX below needs hi
-                  kept at this native 16-bit width, even though it is then
-                  widened to INTEGER64 for the final recombination. Safe
-                  for any literal whose magnitude is less than roughly
-                  32767 * 1e9, comfortably covering every practical
-                  INTEGER64/WORD64 literal. }
-  lo: INTEGER64;
-  mag: REAL;
-BEGIN
-  neg := val < 0.0;
-  IF neg THEN mag := 0.0 - val ELSE mag := val;
-  hi := TRUNC(mag / RADIX);
-  lo := TRUNC(mag - hi * RADIX);
-  IF neg THEN Real64ToInt64 := 0 - (hi * MakeRadix64 + lo)
-  ELSE Real64ToInt64 := hi * MakeRadix64 + lo;
-END;
 FUNCTION FoldConstInt(expr_node: ADRMEM; VAR folded: INTEGER64): BOOLEAN;
 { Fold the integer-only constant-expression subset used by the reference
   typechecker's _fold_const_int: literals, unary +/-, arithmetic, earlier
@@ -815,6 +784,26 @@ BEGIN
   SysVCoercedPiecePtr := LLVMBuildGEP2(builder, cstruct_ty, base, gep_idx, 2, MakeCStr(''));
 END;
 
+{ An array index bound is an INTEGER in this dialect, so a bound outside
+  INTEGER's range is not a wider array -- it is not a legal bound at all, and
+  the reference compiler rejects the literal outright. Saying so is the point
+  of this function: narrowing it silently produced a wrapped, negative upper
+  bound, and ARRAY [0..40000] OF CHAR then emitted `[4294941761 x i8]` -- a
+  4 GB array that fails much later, at link time, with a relocation overflow
+  no one could trace back to here. }
+FUNCTION CheckedIndexBound(wide: INTEGER64): INTEGER;
+BEGIN
+  { -32767, not -32768: this dialect's INTEGER range is symmetric, and the
+    reference compiler rejects the literal -32768 itself. }
+  IF (wide > 32767) OR (wide < -32767) THEN
+  BEGIN
+    AbortWith('codegen: array index bound is out of range for INTEGER (-32767..32767)');
+    CheckedIndexBound := 0;
+  END
+  ELSE
+    CheckedIndexBound := RETYPE(INTEGER, wide);
+END;
+
 FUNCTION ResolveIntLiteral(node: ADRMEM): INTEGER;
 { An array index bound is a full constant-expression AST node (the parser
   never unwraps it the way it does e.g. NamedType.param) -- so reading it
@@ -826,9 +815,10 @@ FUNCTION ResolveIntLiteral(node: ADRMEM): INTEGER;
 VAR
   nm: Str255;
   ci: INTEGER32;
+  wide: INTEGER64;
 BEGIN
   IF NodeType(node) = 'IntLiteral' THEN
-    ResolveIntLiteral := GetInt(node, 'value')
+    ResolveIntLiteral := CheckedIndexBound(RETYPE(INTEGER64, GetInt(node, 'value')))
   ELSE IF NodeType(node) = 'Identifier' THEN
   BEGIN
     nm := GetStr(node, 'name');
@@ -839,13 +829,10 @@ BEGIN
       ResolveIntLiteral := 0;
     END
     ELSE
-      { const_tbl[].ival is INTEGER64 (it stores any integer literal's full
-        folded value); an array index bound is always a small value that
-        fits in INTEGER, but the language has no implicit INTEGER64 ->
-        INTEGER narrowing (matching its no-implicit-narrowing rule for
-        INTEGER32 -> INTEGER) -- RETYPE makes the deliberate truncation
-        explicit. }
-      ResolveIntLiteral := RETYPE(INTEGER, const_tbl[ci].ival);
+    BEGIN
+      wide := const_tbl[ci].ival;
+      ResolveIntLiteral := CheckedIndexBound(wide);
+    END;
   END
   ELSE
   BEGIN

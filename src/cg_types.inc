@@ -27,7 +27,6 @@ FUNCTION TypesCompatibleForAssign(from_tid, to_tid: INTEGER): BOOLEAN;
 FUNCTION LookupConst(name: Str255): INTEGER32;
 FUNCTION FoldConstInt(expr_node: ADRMEM; VAR folded: INTEGER64): BOOLEAN;
 FUNCTION IsIntLiteralLike(expr_node: ADRMEM): BOOLEAN;
-FUNCTION MakeRadix64: INTEGER64;
 FUNCTION Real64ToInt64(val: REAL): INTEGER64;
 FUNCTION IntLiteralValue(expr_node: ADRMEM): INTEGER64;
 FUNCTION IsWideIntTk(tk: INTEGER): BOOLEAN;

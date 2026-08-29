@@ -45,7 +45,7 @@ TYPE
     code: INTEGER32;
     lexeme: Str255;
     value_str: Str255;
-    value_int: INTEGER32;
+    value_int: INTEGER64;
     value_real: REAL;
     value_type: INTEGER32;
     line: INTEGER32;
@@ -70,7 +70,7 @@ PROCEDURE ReadInputAndParseTokens;
 FUNCTION GetTok(off: INTEGER32): PToken;
 FUNCTION CurKind: Str255;
 FUNCTION CurLex: Str255;
-FUNCTION CurValueInt: INTEGER32;
+FUNCTION CurValueInt: INTEGER64;
 FUNCTION CurValueReal: REAL;
 FUNCTION CurValueStr: Str255;
 FUNCTION CurRangeCk: BOOLEAN;

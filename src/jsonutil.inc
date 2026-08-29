@@ -19,7 +19,7 @@ FUNCTION CStrToStr255(ptr: ADRMEM): Str255;
 FUNCTION CreateNode(type_name: Str255): ADRMEM;
 PROCEDURE AddField(obj: ADRMEM; key_str: Str255; val_node: ADRMEM);
 PROCEDURE AddStringField(obj: ADRMEM; key_str: Str255; val_str: Str255);
-PROCEDURE AddIntField(obj: ADRMEM; key_str: Str255; val_int: INTEGER);
+PROCEDURE AddIntField(obj: ADRMEM; key_str: Str255; val_int: INTEGER64);
 PROCEDURE AddRealField(obj: ADRMEM; key_str: Str255; val_real: REAL);
 PROCEDURE AddBoolField(obj: ADRMEM; key_str: Str255; val_bool: BOOLEAN);
 PROCEDURE AddNullField(obj: ADRMEM; key_str: Str255);

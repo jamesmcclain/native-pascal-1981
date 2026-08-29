@@ -25,6 +25,8 @@ FUNCTION cJSON_ReplaceItemInObject(obj: ADRMEM; key: ADRMEM; newitem: ADRMEM): C
 
 FUNCTION cJSON_GetStringValue(item: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_GetNumberValue(item: ADRMEM): REAL [C]; EXTERN;
+FUNCTION pas_cjson_int32(item: ADRMEM): CINT [C]; EXTERN;
+FUNCTION pas_cjson_int64(item: ADRMEM): CLONG [C]; EXTERN;
 FUNCTION cJSON_IsNumber(item: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_IsString(item: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_IsTrue(item: ADRMEM): CINT [C]; EXTERN;
@@ -40,7 +42,7 @@ TYPE
     code: INTEGER32;
     lexeme: Str255;
     value_str: Str255;
-    value_int: INTEGER32;
+    value_int: INTEGER64;
     value_real: REAL;
     value_type: INTEGER32; { 0=null, 1=int, 2=real, 3=str, 4=bool }
     line: INTEGER32;
@@ -227,7 +229,7 @@ BEGIN
 
     field := cJSON_GetObjectItem(item, k_code);
     IF field <> NIL THEN
-      p_tok^.code := TRUNC(cJSON_GetNumberValue(field))
+      p_tok^.code := RETYPE(INTEGER32, pas_cjson_int32(field))
     ELSE
       p_tok^.code := 0;
 
@@ -241,7 +243,12 @@ BEGIN
     IF (field <> NIL) AND (cJSON_IsNumber(field) <> 0) THEN
     BEGIN
       p_tok^.value_real := cJSON_GetNumberValue(field);
-      p_tok^.value_int := TRUNC(p_tok^.value_real);
+      { Not TRUNC. TRUNC narrows to this dialect's 16-bit INTEGER, so an
+        integer literal above 32767 was lost here -- the lexer read 40000
+        and the parser stored -25536, and every later stage saw only the
+        wrapped value. That, not any property of the dialect, is why large
+        literals did not work. }
+      p_tok^.value_int := RETYPE(INTEGER64, pas_cjson_int64(field));
       p_tok^.value_str := empty_s;
       p_tok^.value_type := 1;
     END
@@ -262,7 +269,7 @@ BEGIN
 
     field := cJSON_GetObjectItem(item, k_line);
     IF field <> NIL THEN
-      p_tok^.line := TRUNC(cJSON_GetNumberValue(field))
+      p_tok^.line := RETYPE(INTEGER32, pas_cjson_int32(field))
     ELSE
       p_tok^.line := 1;
 
@@ -344,7 +351,7 @@ BEGIN
   CurLex := res;
 END;
 
-FUNCTION CurValueInt: INTEGER32;
+FUNCTION CurValueInt: INTEGER64;
 VAR
   pt: PToken;
 BEGIN

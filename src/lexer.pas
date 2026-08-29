@@ -11,6 +11,7 @@ FUNCTION cJSON_CreateArray: ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateObject: ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateString(val: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateNumber(num: REAL): ADRMEM [C]; EXTERN;
+FUNCTION pas_int64_to_double(v: INTEGER64): REAL [C]; EXTERN;
 FUNCTION cJSON_CreateBool(b: CINT): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateNull: ADRMEM [C]; EXTERN;
 PROCEDURE cJSON_AddItemToArray(arr: ADRMEM; item: ADRMEM) [C]; EXTERN;
@@ -145,7 +146,7 @@ BEGIN
   CreateFlagsObj := f_obj;
 END;
 
-PROCEDURE AddToken(kind: Str255; code: INTEGER; lexeme: Str255; val_type: INTEGER; int_val: INTEGER32; real_val: REAL; str_val: Str255; line, col: INTEGER);
+PROCEDURE AddToken(kind: Str255; code: INTEGER; lexeme: Str255; val_type: INTEGER; int_val: INTEGER64; real_val: REAL; str_val: Str255; line, col: INTEGER);
 VAR
   tok_obj, val_item, flags_obj: ADRMEM;
   kind_ptr, lex_ptr, str_ptr, key_ptr: ADRMEM;
@@ -167,7 +168,7 @@ BEGIN
 
   { Value field handling: 0=null, 1=int, 2=real, 3=str, 4=bool }
   IF val_type = 1 THEN
-    val_item := cJSON_CreateNumber(int_val)
+    val_item := cJSON_CreateNumber(pas_int64_to_double(int_val))
   ELSE IF val_type = 2 THEN
     val_item := cJSON_CreateNumber(real_val)
   ELSE IF val_type = 3 THEN
@@ -176,7 +177,7 @@ BEGIN
     val_item := cJSON_CreateString(str_ptr);
   END
   ELSE IF val_type = 4 THEN
-    val_item := cJSON_CreateBool(int_val)
+    val_item := cJSON_CreateBool(RETYPE(CINT, int_val))
   ELSE
     val_item := cJSON_CreateNull;
 
@@ -1257,12 +1258,13 @@ PROCEDURE ScanNumber;
 VAR
   start_pos: INTEGER32;
   start_line, start_col, len, exp_val, i: INTEGER;
-  int_val: INTEGER32; { the accumulated literal value can exceed 16-bit
-    INTEGER's range (e.g. any decimal literal above 32767, or a radix
-    literal like 16#FFFF) well before it is ever assigned into a
-    target-language variable -- this is purely the lexer's own scan
-    accumulator, so it needs the wider host-side width regardless of what
-    the dialect's own native INTEGER width is. exp_val stays plain
+  int_val: INTEGER64; { the accumulated literal value can exceed 16-bit
+    INTEGER's range (any decimal literal above 32767, or a radix literal
+    like 16#FFFF) and can exceed 32 bits too, since INTEGER64 is a type a
+    program may write a literal for -- this is purely the lexer's own scan
+    accumulator, so it needs the widest host-side width regardless of the
+    dialect's own native INTEGER width. It was INTEGER32, which silently
+    wrapped a literal like 5000000000 to 705032704. exp_val stays plain
     INTEGER: it only ever counts a REAL literal's decimal exponent digits
     (used as a FOR loop bound below, which must match i's own INTEGER
     type), never the literal's own value. }
@@ -1288,10 +1290,10 @@ BEGIN
   IF (src_pos < src_len) AND (ReadBufChar(src_pos) = '#') THEN
   BEGIN
     { Radix literal, e.g. 16#FF -- the digit run just scanned is the base.
-      int_val is INTEGER32 (it accumulates any digit run's full value), but a
-      radix base is always small and the language has no implicit INTEGER32
-      -> INTEGER narrowing; RETYPE makes the deliberate truncation explicit. }
-    radix := RETYPE(INTEGER, int_val);
+      int_val is INTEGER64 (it accumulates any digit run's full value), but a
+      radix base is always small and the language has no implicit narrowing;
+      RETYPE makes the deliberate truncation explicit. }
+    radix := RETYPE(INTEGER, int_val);   { a base is always small }
     AdvancePos(1); { consume '#' }
     int_val := 0;
     WHILE (src_pos < src_len) AND (RadixDigitValue(ReadBufChar(src_pos), radix) >= 0) DO
@@ -1316,7 +1318,7 @@ BEGIN
       The leading '..' range operator is excluded above by requiring a
       digit right after the dot. }
     AdvancePos(1); { consume '.' }
-    real_val := int_val;
+    real_val := pas_int64_to_double(int_val);
     frac_part := 0.0;
     frac_scale := 1.0;
     WHILE (src_pos < src_len) AND IsDigit(ReadBufChar(src_pos)) DO

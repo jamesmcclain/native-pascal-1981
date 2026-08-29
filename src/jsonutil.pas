@@ -11,6 +11,7 @@ FUNCTION malloc(size: CINT): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateObject: ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateString(val: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateNumber(num: REAL): ADRMEM [C]; EXTERN;
+FUNCTION pas_int64_to_double(v: INTEGER64): REAL [C]; EXTERN;
 FUNCTION cJSON_CreateBool(b: CINT): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateNull: ADRMEM [C]; EXTERN;
 PROCEDURE cJSON_AddItemToObject(obj: ADRMEM; key: ADRMEM; item: ADRMEM) [C]; EXTERN;
@@ -78,9 +79,16 @@ BEGIN
   AddField(obj, key_str, cJSON_CreateString(v_ptr));
 END;
 
-PROCEDURE AddIntField(obj: ADRMEM; key_str: Str255; val_int: INTEGER);
+PROCEDURE AddIntField(obj: ADRMEM; key_str: Str255; val_int: INTEGER64);
 BEGIN
-  AddField(obj, key_str, cJSON_CreateNumber(val_int));
+  { INTEGER64, not INTEGER. This took the dialect's 16-bit INTEGER, and
+    quietly truncated every value written through it -- which is where an
+    integer literal above 32767 was lost on its way into the AST: the lexer
+    read 40000 correctly and the parser stored -25536, so codegen never saw
+    anything else. A narrower parameter here would have to be RETYPEd at
+    every call site, which is exactly what the parser used to do. The JSON
+    number it becomes is a double, so values are exact up to 2^53. }
+  AddField(obj, key_str, cJSON_CreateNumber(pas_int64_to_double(val_int)));
 END;
 
 PROCEDURE AddRealField(obj: ADRMEM; key_str: Str255; val_real: REAL);
