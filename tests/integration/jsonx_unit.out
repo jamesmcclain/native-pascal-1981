@@ -1,0 +1,20 @@
+printed=TRUE
+len=143
+head={"model":"test-model","max_tokens":256,"temper
+parsed_obj=TRUE
+model=test-model
+max_tokens=256
+nmsgs=2
+role1=user
+is_array=TRUE is_string=TRUE is_number=TRUE
+absent=FALSE absent_is_string=FALSE
+big_printed=TRUE
+big_read=TRUE
+big_len=300
+big_strlen=300
+big_mismatches=0
+str255_len=255
+parts_is_array=TRUE nparts=2
+parts=alphabeta
+malformed_nil=TRUE
+nil_obj=FALSE nil_get=TRUE
