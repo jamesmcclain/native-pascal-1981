@@ -1,0 +1,16 @@
+rc=0 status=200 reason=OK
+version=HTTP/1.0 clen=195
+body_len=195
+seen_model=stub-model
+seen_user=PROGRAM p(output);
+seen_bytes=146
+content=WRITELN(1); END.
+finish=stop
+ctype=application/json
+long_rc=0 long_read=TRUE
+long_len=300 first=a last=n
+noclen_rc=0 clen=-1 body_len=48
+noclen_content=unframed
+err_rc=0 status=502 reason=Bad Gateway
+err_message=no model loaded
+child=0

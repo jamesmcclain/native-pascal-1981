@@ -24,7 +24,12 @@ INTERFACE;
 UNIT httpio (HttpReqInit, HttpParseHead, HttpHeaderValue, HttpContentLength,
              HttpReadHead, HttpReadBody, HttpBodyLen,
              HttpWriteResponse, HttpReason,
-             HttpAppendCRLF, HttpAppendStatusLine);
+             HttpAppendCRLF, HttpAppendStatusLine,
+             HttpRespInit, HttpParseRespHead, HttpRespHeaderValue,
+             HttpRespContentLength, HttpReadRespHead, HttpRespBodyLen,
+             HttpReadRespBody, HttpRespBodyToBuf,
+             HttpAppendRequestLine, HttpAppendHeader, HttpAppendHeaderInt,
+             HttpEndHeaders, HttpExchange);
 
 USES bytebuf, netsock;
 
@@ -42,6 +47,9 @@ CONST
   HTTP_HEAD_TIMEOUT   = -2;
   HTTP_HEAD_ERROR     = -3;
   HTTP_HEAD_TOO_LARGE = -4;   { header block exceeded the caller's ceiling }
+  HTTP_HEAD_BAD       = -5;   { the message itself did not parse: an
+                                unreadable status line, or a Content-Length
+                                that is not a number }
 
 TYPE
   HttpReq = RECORD
@@ -52,6 +60,19 @@ TYPE
     head_len:       INTEGER32;  { bytes of header block, terminator included;
                                   the body begins here in the raw buffer }
     malformed:      BOOLEAN;    { the request line itself did not parse }
+  END;
+
+  { A response. Deliberately a separate record from HttpReq rather than one
+    union of both: the first line means different things in each direction,
+    and a single record would leave half its fields meaningless at every use
+    and invite reading the wrong half. }
+  HttpResp = RECORD
+    version:        ByteStr;
+    status:         INTEGER32;   { 0 when the status line did not parse }
+    reason:         ByteStr;     { may be empty; servers may omit it }
+    content_length: INTEGER32;   { or HTTP_CL_ABSENT / HTTP_CL_MALFORMED }
+    head_len:       INTEGER32;
+    malformed:      BOOLEAN;
   END;
 
 PROCEDURE HttpReqInit(VAR r: HttpReq);
@@ -107,5 +128,58 @@ PROCEDURE HttpReason(status: INTEGER32; VAR out: ByteStr);
   dialect. }
 PROCEDURE HttpAppendCRLF(VAR b: ByteBuf);
 PROCEDURE HttpAppendStatusLine(VAR b: ByteBuf; status: INTEGER32);
+
+{ ------------------------------------------------------------------ }
+{ Client side                                                         }
+{ ------------------------------------------------------------------ }
+
+{ Building a request. These are separate calls rather than one BuildRequest
+  with a dozen parameters because which headers a request needs is the
+  caller's business -- an Authorization header can be longer than an LSTRING
+  holds, and a unit that fixed the header set could never carry it. The order
+  is: request line, then any headers, then HttpEndHeaders, then the body
+  appended to the same buffer. }
+PROCEDURE HttpAppendRequestLine(VAR b: ByteBuf; method: ByteStr;
+                                path: ByteStr);
+PROCEDURE HttpAppendHeader(VAR b: ByteBuf; name: ByteStr; text: ByteStr);
+PROCEDURE HttpAppendHeaderInt(VAR b: ByteBuf; name: ByteStr;
+                              num: INTEGER32);
+PROCEDURE HttpEndHeaders(VAR b: ByteBuf);
+
+PROCEDURE HttpRespInit(VAR r: HttpResp);
+
+{ The response counterparts of the request-side parsers. Same contract in
+  each case: FALSE from HttpParseRespHead means "not yet", not "broken". }
+FUNCTION HttpParseRespHead(VAR raw: ByteBuf; VAR r: HttpResp): BOOLEAN;
+FUNCTION HttpRespHeaderValue(VAR raw: ByteBuf; VAR r: HttpResp;
+                             name: ByteStr; VAR out: ByteStr): BOOLEAN;
+FUNCTION HttpRespContentLength(VAR raw: ByteBuf; VAR r: HttpResp): INTEGER32;
+FUNCTION HttpReadRespHead(fd: INTEGER32; VAR raw: ByteBuf; VAR r: HttpResp;
+                          max_head: INTEGER32;
+                          timeout_ms: INTEGER32): INTEGER32;
+FUNCTION HttpRespBodyLen(VAR raw: ByteBuf; VAR r: HttpResp): INTEGER32;
+FUNCTION HttpReadRespBody(fd: INTEGER32; VAR raw: ByteBuf; VAR r: HttpResp;
+                          want: INTEGER32; timeout_ms: INTEGER32): BOOLEAN;
+
+{ Copy the body out of the raw buffer into one of its own, which is what a
+  caller wants before handing it to a JSON parser that will NUL-terminate it
+  in place. }
+PROCEDURE HttpRespBodyToBuf(VAR raw: ByteBuf; VAR r: HttpResp;
+                            VAR out: ByteBuf);
+
+{ Send a complete request and read the whole response. Returns one of the
+  HTTP_HEAD_ constants; on HTTP_HEAD_OK the body is complete in `raw` from
+  r.head_len onward.
+
+  A response with no Content-Length is read to end of stream, which is what
+  HTTP/1.0 means by an unframed body. Transfer-Encoding: chunked is not
+  handled and never arises here -- the requests this sends set no `stream`
+  field, so the upstream always answers with a counted body. A chunked reply
+  would arrive with its chunk framing still in it rather than being silently
+  mangled, which at least fails visibly. }
+FUNCTION HttpExchange(fd: INTEGER32; VAR request: ByteBuf;
+                      VAR raw: ByteBuf; VAR r: HttpResp;
+                      max_head: INTEGER32;
+                      timeout_ms: INTEGER32): INTEGER32;
 
 END;

@@ -1,0 +1,43 @@
+== ok
+model: stub-model
+completion:
+  i := i + 1;
+bytes: 13
+exit=0
+== fenced
+model: stub-model
+completion:
+Here you go:
+```pascal
+  i := i + 1;
+```
+
+bytes: 41
+exit=0
+== parts
+model: stub-model
+completion:
+  i := i + 1;
+bytes: 13
+exit=0
+== reasoning_exhausted
+model: stub-model
+oneshot: no completion (budget exhausted before any content)
+exit=1
+== no_choices
+model: m
+oneshot: no completion (choices array is empty)
+exit=1
+== null_content
+model: stub-model
+oneshot: no completion (empty content)
+exit=1
+== http_500
+oneshot: upstream returned 500 Internal Server Error
+{"error": "stub upstream failure"}
+exit=1
+== malformed
+oneshot: upstream reply was not JSON
+exit=1
+== payload
+{"max_tokens": 256, "messages": [{"content": "You are a code completion engine.", "role": "system"}, {"content": "@@SCENARIO:malformed@@ complete this", "role": "user"}], "model": "stub-model", "temperature": 0.2}

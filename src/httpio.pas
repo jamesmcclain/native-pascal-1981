@@ -87,6 +87,116 @@ BEGIN
 END;
 
 { ------------------------------------------------------------------ }
+{ Headers                                                             }
+{ ------------------------------------------------------------------ }
+
+{ Header lookup takes a head_len rather than a record, so that one
+  implementation serves requests and responses alike: the two differ only in
+  what their first line means, and this skips that line either way. }
+FUNCTION HttpFindHeader(VAR raw: ByteBuf; head_len: INTEGER32; name: ByteStr;
+                        VAR out: ByteStr): BOOLEAN;
+VAR
+  pos, line_end, colon, value_start, value_end, name_len: INTEGER32;
+  found: BOOLEAN;
+BEGIN
+  found := FALSE;
+  name_len := ORD(name[0]);
+  { Start after the request or status line. }
+  line_end := HttpLineEnd(raw, 0, head_len);
+  pos := HttpNextLine(raw, line_end, head_len);
+  WHILE (pos < head_len) AND (NOT found) DO
+  BEGIN
+    line_end := HttpLineEnd(raw, pos, head_len);
+    IF line_end > pos THEN
+    BEGIN
+      IF BufMatchesStrAtCI(raw, pos, name) THEN
+      BEGIN
+        colon := pos + name_len;
+        IF (colon < line_end) AND (BufAt(raw, colon) = ':') THEN
+        BEGIN
+          value_start := colon + 1;
+          WHILE (value_start < line_end) AND
+                ((ORD(BufAt(raw, value_start)) = HTTP_SPACE) OR
+                 (ORD(BufAt(raw, value_start)) = HTTP_TAB)) DO
+            value_start := value_start + 1;
+          value_end := line_end;
+          WHILE (value_end > value_start) AND
+                ((ORD(BufAt(raw, value_end - 1)) = HTTP_SPACE) OR
+                 (ORD(BufAt(raw, value_end - 1)) = HTTP_TAB)) DO
+            value_end := value_end - 1;
+          BufSliceToStr(raw, value_start, value_end - value_start, out);
+          found := TRUE;
+        END;
+      END;
+    END;
+    pos := HttpNextLine(raw, line_end, head_len);
+  END;
+  IF NOT found THEN out := '';
+  HttpFindHeader := found;
+END;
+
+FUNCTION HttpHeaderValue(VAR raw: ByteBuf; VAR r: HttpReq; name: ByteStr;
+                         VAR out: ByteStr): BOOLEAN;
+BEGIN
+  HttpHeaderValue := HttpFindHeader(raw, r.head_len, name, out);
+END;
+
+FUNCTION HttpParseCL(VAR raw: ByteBuf; head_len: INTEGER32): INTEGER32;
+VAR
+  header_value: ByteStr;
+  i, n, digit, total, ceiling: INTEGER32;
+  bad: BOOLEAN;
+BEGIN
+  IF NOT HttpFindHeader(raw, head_len, 'content-length', header_value) THEN
+    HttpParseCL := HTTP_CL_ABSENT
+  ELSE
+  BEGIN
+    n := ORD(header_value[0]);
+    IF n = 0 THEN
+      HttpParseCL := HTTP_CL_MALFORMED
+    ELSE
+    BEGIN
+      bad := FALSE;
+      total := 0;
+      ceiling := 20000;
+      ceiling := ceiling * 10000;      { 200000000 }
+      i := 1;
+      WHILE (i <= n) AND (NOT bad) DO
+      BEGIN
+        digit := ORD(header_value[i]) - 48;
+        IF (digit < 0) OR (digit > 9) THEN
+          bad := TRUE
+        ELSE
+        BEGIN
+          { Refuse anything that would overflow INTEGER32 rather than
+            wrapping into a negative length, which would then read as a
+            perfectly ordinary "too small" value further up.
+
+            The ceiling is built by arithmetic because an integer literal
+            above 32767 wraps where it is written -- spelling 200000000 here
+            silently produced a small number, so the guard fired on every
+            valid length and every request looked malformed. }
+          IF total > ceiling THEN
+            bad := TRUE
+          ELSE
+            total := total * 10 + digit;
+        END;
+        i := i + 1;
+      END;
+      IF bad THEN
+        HttpParseCL := HTTP_CL_MALFORMED
+      ELSE
+        HttpParseCL := total;
+    END;
+  END;
+END;
+
+FUNCTION HttpContentLength(VAR raw: ByteBuf; VAR r: HttpReq): INTEGER32;
+BEGIN
+  HttpContentLength := HttpParseCL(raw, r.head_len);
+END;
+
+{ ------------------------------------------------------------------ }
 { Request line                                                        }
 { ------------------------------------------------------------------ }
 
@@ -133,104 +243,8 @@ BEGIN
     r.head_len := head_end;
     line_end := HttpLineEnd(raw, 0, head_end);
     HttpParseRequestLine(raw, r, line_end);
-    r.content_length := HttpContentLength(raw, r);
+    r.content_length := HttpParseCL(raw, head_end);
     HttpParseHead := TRUE;
-  END;
-END;
-
-{ ------------------------------------------------------------------ }
-{ Headers                                                             }
-{ ------------------------------------------------------------------ }
-
-FUNCTION HttpHeaderValue(VAR raw: ByteBuf; VAR r: HttpReq; name: ByteStr;
-                         VAR out: ByteStr): BOOLEAN;
-VAR
-  pos, line_end, colon, value_start, value_end, name_len: INTEGER32;
-  found: BOOLEAN;
-BEGIN
-  found := FALSE;
-  name_len := ORD(name[0]);
-  { Start after the request line. }
-  line_end := HttpLineEnd(raw, 0, r.head_len);
-  pos := HttpNextLine(raw, line_end, r.head_len);
-  WHILE (pos < r.head_len) AND (NOT found) DO
-  BEGIN
-    line_end := HttpLineEnd(raw, pos, r.head_len);
-    IF line_end > pos THEN
-    BEGIN
-      IF BufMatchesStrAtCI(raw, pos, name) THEN
-      BEGIN
-        colon := pos + name_len;
-        IF (colon < line_end) AND (BufAt(raw, colon) = ':') THEN
-        BEGIN
-          value_start := colon + 1;
-          WHILE (value_start < line_end) AND
-                ((ORD(BufAt(raw, value_start)) = HTTP_SPACE) OR
-                 (ORD(BufAt(raw, value_start)) = HTTP_TAB)) DO
-            value_start := value_start + 1;
-          value_end := line_end;
-          WHILE (value_end > value_start) AND
-                ((ORD(BufAt(raw, value_end - 1)) = HTTP_SPACE) OR
-                 (ORD(BufAt(raw, value_end - 1)) = HTTP_TAB)) DO
-            value_end := value_end - 1;
-          BufSliceToStr(raw, value_start, value_end - value_start, out);
-          found := TRUE;
-        END;
-      END;
-    END;
-    pos := HttpNextLine(raw, line_end, r.head_len);
-  END;
-  IF NOT found THEN out := '';
-  HttpHeaderValue := found;
-END;
-
-FUNCTION HttpContentLength(VAR raw: ByteBuf; VAR r: HttpReq): INTEGER32;
-VAR
-  header_value: ByteStr;
-  i, n, digit, total, ceiling: INTEGER32;
-  bad: BOOLEAN;
-BEGIN
-  IF NOT HttpHeaderValue(raw, r, 'content-length', header_value) THEN
-    HttpContentLength := HTTP_CL_ABSENT
-  ELSE
-  BEGIN
-    n := ORD(header_value[0]);
-    IF n = 0 THEN
-      HttpContentLength := HTTP_CL_MALFORMED
-    ELSE
-    BEGIN
-      bad := FALSE;
-      total := 0;
-      ceiling := 20000;
-      ceiling := ceiling * 10000;      { 200000000 }
-      i := 1;
-      WHILE (i <= n) AND (NOT bad) DO
-      BEGIN
-        digit := ORD(header_value[i]) - 48;
-        IF (digit < 0) OR (digit > 9) THEN
-          bad := TRUE
-        ELSE
-        BEGIN
-          { Refuse anything that would overflow INTEGER32 rather than
-            wrapping into a negative length, which would then read as a
-            perfectly ordinary "too small" value further up.
-
-            The ceiling is built by arithmetic because an integer literal
-            above 32767 wraps where it is written -- spelling 200000000 here
-            silently produced a small number, so the guard fired on every
-            valid length and every request looked malformed. }
-          IF total > ceiling THEN
-            bad := TRUE
-          ELSE
-            total := total * 10 + digit;
-        END;
-        i := i + 1;
-      END;
-      IF bad THEN
-        HttpContentLength := HTTP_CL_MALFORMED
-      ELSE
-        HttpContentLength := total;
-    END;
   END;
 END;
 
@@ -362,6 +376,263 @@ BEGIN
   sent := NetWrite(fd, out);
   BufFree(out);
   HttpWriteResponse := sent = total;
+END;
+
+
+{ ------------------------------------------------------------------ }
+{ Client side: building requests                                      }
+{ ------------------------------------------------------------------ }
+
+PROCEDURE HttpAppendRequestLine(VAR b: ByteBuf; method: ByteStr;
+                                path: ByteStr);
+BEGIN
+  BufAppendStr(b, method);
+  BufAppendChar(b, ' ');
+  BufAppendStr(b, path);
+  BufAppendStr(b, ' HTTP/1.0');
+  HttpAppendCRLF(b);
+END;
+
+PROCEDURE HttpAppendHeader(VAR b: ByteBuf; name: ByteStr; text: ByteStr);
+BEGIN
+  BufAppendStr(b, name);
+  BufAppendStr(b, ': ');
+  BufAppendStr(b, text);
+  HttpAppendCRLF(b);
+END;
+
+PROCEDURE HttpAppendHeaderInt(VAR b: ByteBuf; name: ByteStr;
+                              num: INTEGER32);
+BEGIN
+  BufAppendStr(b, name);
+  BufAppendStr(b, ': ');
+  BufAppendInt(b, num);
+  HttpAppendCRLF(b);
+END;
+
+PROCEDURE HttpEndHeaders(VAR b: ByteBuf);
+BEGIN
+  HttpAppendCRLF(b);
+END;
+
+{ ------------------------------------------------------------------ }
+{ Client side: reading responses                                      }
+{ ------------------------------------------------------------------ }
+
+PROCEDURE HttpRespInit(VAR r: HttpResp);
+BEGIN
+  r.version := '';
+  r.status := 0;
+  r.reason := '';
+  r.content_length := HTTP_CL_ABSENT;
+  r.head_len := 0;
+  r.malformed := FALSE;
+END;
+
+PROCEDURE HttpParseStatusLine(VAR raw: ByteBuf; VAR r: HttpResp;
+                              line_end: INTEGER32);
+VAR
+  i, j, start, n, digit, code: INTEGER32;
+  tok: ByteStr;
+  ok: BOOLEAN;
+BEGIN
+  i := 0;
+  WHILE (i < line_end) AND (ORD(BufAt(raw, i)) = HTTP_SPACE) DO
+    i := i + 1;
+  start := i;
+  WHILE (i < line_end) AND (ORD(BufAt(raw, i)) <> HTTP_SPACE) DO
+    i := i + 1;
+  IF i > start THEN
+    BufSliceToStr(raw, start, i - start, r.version)
+  ELSE
+    r.malformed := TRUE;
+
+  WHILE (i < line_end) AND (ORD(BufAt(raw, i)) = HTTP_SPACE) DO
+    i := i + 1;
+  start := i;
+  WHILE (i < line_end) AND (ORD(BufAt(raw, i)) <> HTTP_SPACE) DO
+    i := i + 1;
+  IF i > start THEN
+  BEGIN
+    BufSliceToStr(raw, start, i - start, tok);
+    n := ORD(tok[0]);
+    { A status code is exactly three digits. Insisting on that is not
+      pedantry: it is also what keeps the accumulation below from
+      overflowing on a status line full of digits. }
+    ok := n = 3;
+    code := 0;
+    j := 1;
+    WHILE (j <= n) AND ok DO
+    BEGIN
+      digit := ORD(tok[j]) - 48;
+      IF (digit < 0) OR (digit > 9) THEN
+        ok := FALSE
+      ELSE
+        code := code * 10 + digit;
+      j := j + 1;
+    END;
+    IF ok THEN r.status := code ELSE r.malformed := TRUE;
+  END
+  ELSE
+    r.malformed := TRUE;
+
+  { Whatever is left is the reason phrase, spaces and all. It may be absent
+    entirely, which is legal and means nothing is wrong. }
+  WHILE (i < line_end) AND (ORD(BufAt(raw, i)) = HTTP_SPACE) DO
+    i := i + 1;
+  IF i < line_end THEN
+    BufSliceToStr(raw, i, line_end - i, r.reason)
+  ELSE
+    r.reason := '';
+END;
+
+FUNCTION HttpParseRespHead(VAR raw: ByteBuf; VAR r: HttpResp): BOOLEAN;
+VAR
+  head_end, line_end: INTEGER32;
+BEGIN
+  head_end := HttpHeadEnd(raw);
+  IF head_end < 0 THEN
+    HttpParseRespHead := FALSE
+  ELSE
+  BEGIN
+    r.head_len := head_end;
+    line_end := HttpLineEnd(raw, 0, head_end);
+    HttpParseStatusLine(raw, r, line_end);
+    r.content_length := HttpParseCL(raw, head_end);
+    HttpParseRespHead := TRUE;
+  END;
+END;
+
+FUNCTION HttpRespHeaderValue(VAR raw: ByteBuf; VAR r: HttpResp;
+                             name: ByteStr; VAR out: ByteStr): BOOLEAN;
+BEGIN
+  HttpRespHeaderValue := HttpFindHeader(raw, r.head_len, name, out);
+END;
+
+FUNCTION HttpRespContentLength(VAR raw: ByteBuf; VAR r: HttpResp): INTEGER32;
+BEGIN
+  HttpRespContentLength := HttpParseCL(raw, r.head_len);
+END;
+
+{ The same read loop as HttpReadHead, written out again rather than shared.
+  The only difference is which parse routine decides the headers are
+  complete, and with no procedural types in this dialect there is no way to
+  pass that in -- a shared version would have to take a flag and switch on it
+  inside the loop, which is longer than the duplication it saves. }
+FUNCTION HttpReadRespHead(fd: INTEGER32; VAR raw: ByteBuf; VAR r: HttpResp;
+                          max_head: INTEGER32;
+                          timeout_ms: INTEGER32): INTEGER32;
+VAR
+  got, outcome: INTEGER32;
+  complete, stop: BOOLEAN;
+BEGIN
+  outcome := HTTP_HEAD_OK;
+  stop := FALSE;
+  complete := HttpParseRespHead(raw, r);
+  WHILE (NOT complete) AND (NOT stop) DO
+  BEGIN
+    got := NetRead(fd, raw, timeout_ms);
+    IF got = 0 THEN
+    BEGIN
+      outcome := HTTP_HEAD_EOF;
+      stop := TRUE;
+    END
+    ELSE IF got = NET_TIMEOUT THEN
+    BEGIN
+      outcome := HTTP_HEAD_TIMEOUT;
+      stop := TRUE;
+    END
+    ELSE IF got < 0 THEN
+    BEGIN
+      outcome := HTTP_HEAD_ERROR;
+      stop := TRUE;
+    END
+    ELSE IF (max_head > 0) AND (BufLen(raw) > max_head) AND
+            (HttpHeadEnd(raw) < 0) THEN
+    BEGIN
+      outcome := HTTP_HEAD_TOO_LARGE;
+      stop := TRUE;
+    END
+    ELSE
+      complete := HttpParseRespHead(raw, r);
+  END;
+  HttpReadRespHead := outcome;
+END;
+
+FUNCTION HttpRespBodyLen(VAR raw: ByteBuf; VAR r: HttpResp): INTEGER32;
+BEGIN
+  HttpRespBodyLen := BufLen(raw) - r.head_len;
+END;
+
+FUNCTION HttpReadRespBody(fd: INTEGER32; VAR raw: ByteBuf; VAR r: HttpResp;
+                          want: INTEGER32; timeout_ms: INTEGER32): BOOLEAN;
+VAR
+  got: INTEGER32;
+  ok, stop: BOOLEAN;
+BEGIN
+  ok := TRUE;
+  stop := FALSE;
+  WHILE (HttpRespBodyLen(raw, r) < want) AND (NOT stop) DO
+  BEGIN
+    got := NetRead(fd, raw, timeout_ms);
+    IF got <= 0 THEN
+    BEGIN
+      ok := FALSE;
+      stop := TRUE;
+    END;
+  END;
+  HttpReadRespBody := ok;
+END;
+
+PROCEDURE HttpRespBodyToBuf(VAR raw: ByteBuf; VAR r: HttpResp;
+                            VAR out: ByteBuf);
+VAR
+  base: ADRMEM;
+  n: INTEGER32;
+BEGIN
+  n := HttpRespBodyLen(raw, r);
+  IF n > 0 THEN
+  BEGIN
+    base := BufPtr(raw);
+    BufAppendBytes(out, base + r.head_len, n);
+  END;
+END;
+
+FUNCTION HttpExchange(fd: INTEGER32; VAR request: ByteBuf;
+                      VAR raw: ByteBuf; VAR r: HttpResp;
+                      max_head: INTEGER32;
+                      timeout_ms: INTEGER32): INTEGER32;
+VAR
+  sent, total, got, outcome: INTEGER32;
+BEGIN
+  HttpRespInit(r);
+  total := BufLen(request);
+  sent := NetWrite(fd, request);
+  IF sent <> total THEN
+    outcome := HTTP_HEAD_ERROR
+  ELSE
+  BEGIN
+    outcome := HttpReadRespHead(fd, raw, r, max_head, timeout_ms);
+    IF outcome = HTTP_HEAD_OK THEN
+    BEGIN
+      IF r.malformed OR (r.content_length = HTTP_CL_MALFORMED) THEN
+        outcome := HTTP_HEAD_BAD
+      ELSE IF r.content_length = HTTP_CL_ABSENT THEN
+      BEGIN
+        { No Content-Length: in HTTP/1.0 the body runs to end of stream, so
+          read until the peer closes. A timeout or error also ends the loop,
+          and is not reported -- whatever arrived before it is the body, and
+          there is no length to check it against. }
+        got := 1;
+        WHILE got > 0 DO
+          got := NetRead(fd, raw, timeout_ms);
+      END
+      ELSE IF NOT HttpReadRespBody(fd, raw, r, r.content_length,
+                                   timeout_ms) THEN
+        outcome := HTTP_HEAD_EOF;
+    END;
+  END;
+  HttpExchange := outcome;
 END;
 
 BEGIN

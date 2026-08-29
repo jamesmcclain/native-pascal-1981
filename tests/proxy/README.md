@@ -15,6 +15,18 @@ tests/proxy/run.sh --record               # re-record the golden
 
 `run.sh` exits nonzero and prints a per-case diff on any mismatch.
 
+```bash
+tests/proxy/oneshot.sh                    # the Pascal client stack, one call
+tests/proxy/oneshot.sh --record           # re-record its expected output
+```
+
+`oneshot.sh` is narrower and answers a different question: not "does the proxy
+behave", but "can Pascal talk to an OpenAI-compatible backend at all". It
+builds `oneshot.pas` and makes one `/chat/completions` call per reply shape
+against the same stub. It lives here rather than in `tests/integration/`
+because it needs the Python stub running alongside it, which `tests/run.sh`
+has no way to start.
+
 ## Layout
 
 - `stub_upstream.py` — a fake OpenAI-compatible backend. Deterministic by
@@ -39,6 +51,15 @@ tests/proxy/run.sh --record               # re-record the golden
   three calibration runs.
 - `golden.json` — the recorded reference behaviour: 47 cases. This is the
   contract the Pascal port has to meet.
+- `oneshot.pas` / `oneshot.build.sh` / `oneshot.sh` / `oneshot.expected` — one
+  upstream call written in the vintage dialect, the step-5 milestone of the
+  port. It is not the proxy: no calibration, no echo stripping, no server
+  side. What it pins is that a payload built with `jsonx`, sent over `netsock`
+  through `httpio`, is one a real backend accepts, and that every reply shape
+  — string content, content as parts, an exhausted reasoning budget, an empty
+  `choices`, a 500, unparseable JSON — is told apart rather than collapsing
+  into one unhelpful failure. Point `--base-url` at a live backend to run the
+  same thing against a real model.
 
 ## What is deliberately not compared
 
