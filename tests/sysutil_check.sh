@@ -13,8 +13,10 @@ cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
 
 mkdir "$work/fixture"
-touch "$work/fixture/alpha"
+touch "$work/fixture/alpha" "$work/fixture/.hidden"
 mkdir "$work/fixture/nested"
+touch "$work/fixture/nested/child"
+ln -s alpha "$work/fixture/alpha-link"
 
 cd "$repo/src"
 "$compiler" "$here/sysutil_check.pas" bytebuf.pas sysutil.pas -o "$work/sysutil_check"

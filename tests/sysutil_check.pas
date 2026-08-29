@@ -22,22 +22,50 @@ VAR
   path, name: ByteBuf;
   dir: SysDir;
   kind, result, count: INTEGER32;
+  alpha_seen, hidden_seen, nested_seen, link_seen, child_seen: BOOLEAN;
 BEGIN
   BufInit(path, 0);
   BufInit(name, 0);
   BufAppendCStr(path, pas_arg_value(1));
   Check(SysDirOpen(path, dir), 'open fixture');
   count := 0;
+  alpha_seen := FALSE;
+  hidden_seen := FALSE;
+  nested_seen := FALSE;
+  link_seen := FALSE;
+  child_seen := FALSE;
   result := SysDirNext(dir, name, kind);
   WHILE result = SYS_DIR_ENTRY DO
   BEGIN
-    IF BufEqualsStr(name, 'alpha') THEN Check(kind = SYS_ENTRY_FILE, 'alpha kind');
-    IF BufEqualsStr(name, 'nested') THEN Check(kind = SYS_ENTRY_DIR, 'nested kind');
+    IF BufEqualsStr(name, 'alpha') THEN
+    BEGIN
+      Check(kind = SYS_ENTRY_FILE, 'alpha kind');
+      alpha_seen := TRUE;
+    END;
+    IF BufEqualsStr(name, '.hidden') THEN
+    BEGIN
+      Check(kind = SYS_ENTRY_FILE, 'hidden kind');
+      hidden_seen := TRUE;
+    END;
+    IF BufEqualsStr(name, 'nested') THEN
+    BEGIN
+      Check(kind = SYS_ENTRY_DIR, 'nested kind');
+      nested_seen := TRUE;
+    END;
+    IF BufEqualsStr(name, 'alpha-link') THEN
+    BEGIN
+      Check(kind = SYS_ENTRY_OTHER, 'symlink kind');
+      link_seen := TRUE;
+    END;
+    IF BufEqualsStr(name, 'child') THEN child_seen := TRUE;
     count := count + 1;
     result := SysDirNext(dir, name, kind);
   END;
   Check(result = SYS_DIR_END, 'directory end');
-  Check(count = 2, 'directory count');
+  Check(count = 4, 'directory count');
+  Check(alpha_seen AND hidden_seen AND nested_seen AND link_seen,
+        'directory entries');
+  Check(NOT child_seen, 'directory is shallow');
   Check(SysDirClose(dir), 'directory close');
   BufFree(name);
   BufFree(path);
