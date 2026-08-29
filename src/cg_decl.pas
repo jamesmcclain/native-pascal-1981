@@ -423,6 +423,31 @@ BEGIN
   END;
 END;
 
+FUNCTION TuningIntLiteralValue(node: ADRMEM): INTEGER32;
+VAR
+  nt, op: Str255;
+  literal_value: INTEGER32;
+BEGIN
+  nt := NodeType(node);
+  IF nt = 'IntLiteral' THEN
+    TuningIntLiteralValue := GetInt(node, 'value')
+  ELSE IF nt = 'UnaryOp' THEN
+  BEGIN
+    op := GetStr(node, 'op');
+    literal_value := TuningIntLiteralValue(GetObj(node, 'operand'));
+    IF op = 'MINUS' THEN TuningIntLiteralValue := -literal_value
+    ELSE IF op = 'PLUS' THEN TuningIntLiteralValue := literal_value
+    ELSE BEGIN
+      AbortWith('codegen: launch-bound dimension must be an integer literal');
+      TuningIntLiteralValue := 0;
+    END;
+  END
+  ELSE BEGIN
+    AbortWith('codegen: launch-bound dimension must be an integer literal');
+    TuningIntLiteralValue := 0;
+  END;
+END;
+
 PROCEDURE ApplyLaunchBoundAttrs(decl, fn: ADRMEM);
 { NVPTX consumes launch bounds through legacy !nvvm.annotations metadata.
   They are ptxas facts, so no host-target approximation is emitted. }
@@ -431,6 +456,10 @@ VAR
   i, j, n, nargs: INTEGER32;
   nm, key: Str255;
 BEGIN
+  IF NOT (active_features.tuning_hints OR is_device_compiland) THEN
+    AbortWith('codegen: launch-bound attributes require the extended dialect');
+  IF NOT is_device_compiland THEN
+    AbortWith('codegen: launch-bound attributes require DEVICE code');
   IF NOT is_nvptx_device THEN
     AbortWith('codegen: launch-bound attributes require an NVPTX DEVICE target');
   attrs := GetObj(decl, 'attributes');
@@ -461,7 +490,7 @@ BEGIN
         mds := AllocPtrArray(3);
         SetPtrArrayElem(mds, 0, LLVMValueAsMetadata(fn));
         SetPtrArrayElem(mds, 1, LLVMMDStringInContext2(ctx, MakeCStr(key), ORD(key[0])));
-        SetPtrArrayElem(mds, 2, LLVMValueAsMetadata(LLVMConstInt(i32ty, ResolveIntLiteral(ArrItem(args, j)), 0)));
+        SetPtrArrayElem(mds, 2, LLVMValueAsMetadata(LLVMConstInt(i32ty, TuningIntLiteralValue(ArrItem(args, j)), 0)));
         mdnode := LLVMMDNodeInContext2(ctx, mds, 3);
         LLVMAddNamedMetadataOperand(modl, MakeCStr('nvvm.annotations'), LLVMMetadataAsValue(ctx, mdnode));
       END;

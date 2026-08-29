@@ -1,0 +1,3 @@
+Type checking failed:
+Character Set Expected: READSET set argument must be a declared SET OF CHAR value
+Error: Failed to parse input AST JSON

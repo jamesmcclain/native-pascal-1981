@@ -850,6 +850,10 @@ BEGIN
   cap := LLVMConstInt(i32ty, types[tid].hi, 0);
 
   set_node := ArrItem(args, start_idx + 1);
+  IF (NodeType(set_node) = 'SetConstructor') AND
+     (GetObjOrNil(set_node, 'type_name') = NIL) AND
+     (NOT active_features.readset_set_literal) THEN
+    AbortWith('codegen: anonymous READSET set literals require the extended dialect');
   set_val := CodegenExpr(set_node);
   IF TypeKind(last_val_tk) <> TK_SET THEN
     AbortWith('codegen: READSET set argument must be SET OF CHAR');

@@ -1,0 +1,14 @@
+{ DIALECT: extended }
+{ CHECK-ENV: PASCAL_DEVICE_TRIPLE=nvptx64-nvidia-cuda }
+{ CHECK: maxntidx }
+{ CHECK: maxntidy }
+{ CHECK: minctasm }
+DEVICE INTERFACE;
+UNIT DBOUNDS (run);
+PROCEDURE run;
+END;
+DEVICE IMPLEMENTATION OF DBOUNDS;
+PROCEDURE run [MAXNTID(16, 16), MINCTASM(2)];
+BEGIN
+END;
+.

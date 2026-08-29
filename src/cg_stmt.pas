@@ -420,6 +420,10 @@ VAR
   option_mds, loop_mds, option_md, loop_md, loop_val: ADRMEM;
   kind: CINT;
 BEGIN
+  IF NOT (active_features.tuning_hints OR is_device_compiland) THEN
+    AbortWith('codegen: {$UNROLL} requires the extended dialect');
+  IF count < 1 THEN
+    AbortWith('codegen: {$UNROLL} count must be a positive integer');
   option_mds := AllocPtrArray(2);
   SetPtrArrayElem(option_mds, 0, LLVMMDStringInContext2(ctx, MakeCStr('llvm.loop.unroll.count'), 22));
   SetPtrArrayElem(option_mds, 1, LLVMValueAsMetadata(LLVMConstInt(i32ty, count, 0)));

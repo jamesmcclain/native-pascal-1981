@@ -13,6 +13,20 @@ FUNCTION cJSON_GetArrayItem(arr: ADRMEM; index: CINT): ADRMEM [C]; EXTERN;
 
 PROCEDURE CheckStmt(node: ADRMEM); FORWARD;
 
+PROCEDURE CheckUnrollHint(node: ADRMEM; loop_name: Str255);
+VAR
+  unroll_node: ADRMEM;
+BEGIN
+  unroll_node := GetObjOrNil(node, 'unroll');
+  IF unroll_node <> NIL THEN
+  BEGIN
+    IF NOT (active_features.tuning_hints OR is_device_compiland) THEN
+      AddError2('{$UNROLL} requires the extended dialect on ', loop_name)
+    ELSE IF GetInt(node, 'unroll') < 1 THEN
+      AddError('{$UNROLL} count must be a positive integer');
+  END;
+END;
+
 { =============================== statements ============================= }
 
 PROCEDURE CheckCompoundOrStmt(node: ADRMEM);
@@ -96,6 +110,7 @@ BEGIN
   END
   ELSE IF nt = 'WhileStmt' THEN
   BEGIN
+    CheckUnrollHint(node, 'WHILE');
     cond_tk := CheckExpr(GetObj(node, 'cond'));
     IF (cond_tk <> TK_BOOLEAN) AND (cond_tk <> TK_UNKNOWN) THEN
       AddError('WHILE condition must be BOOLEAN');
@@ -103,6 +118,7 @@ BEGIN
   END
   ELSE IF nt = 'RepeatStmt' THEN
   BEGIN
+    CheckUnrollHint(node, 'REPEAT');
     cond_tk := CheckExpr(GetObj(node, 'cond'));
     IF (cond_tk <> TK_BOOLEAN) AND (cond_tk <> TK_UNKNOWN) THEN
       AddError('REPEAT UNTIL condition must be BOOLEAN');
@@ -110,6 +126,7 @@ BEGIN
   END
   ELSE IF nt = 'ForStmt' THEN
   BEGIN
+    CheckUnrollHint(node, 'FOR');
     varname := GetStr(node, 'var');
     si := LookupSymbol(varname);
     IF si = 0 THEN
@@ -241,7 +258,12 @@ BEGIN
           ELSE IF symbols[si].tk <> TK_STRING THEN
             AddError('READSET destination must be STRING or LSTRING');
         END;
-        cond_tk := CheckExpr(cJSON_GetArrayItem(args_arr, start_arg + 1));
+        warg := cJSON_GetArrayItem(args_arr, start_arg + 1);
+        IF (NodeType(warg) = 'SetConstructor') AND
+           (GetObjOrNil(warg, 'type_name') = NIL) AND
+           (NOT active_features.readset_set_literal) THEN
+          AddError('Character Set Expected: READSET set argument must be a declared SET OF CHAR value');
+        cond_tk := CheckExpr(warg);
         IF cond_tk <> TK_SET THEN
           AddError('READSET set argument must be a SET OF CHAR value');
       END;

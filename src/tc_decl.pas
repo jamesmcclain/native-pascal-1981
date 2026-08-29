@@ -88,9 +88,181 @@ IMPLEMENTATION OF tc_decl;
 FUNCTION cJSON_GetArraySize(arr: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_GetArrayItem(arr: ADRMEM; index: CINT): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_GetStringValue(item: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION cJSON_CreateBool(b: CINT): ADRMEM [C]; EXTERN;
+FUNCTION cJSON_ReplaceItemInObject(obj: ADRMEM; key: ADRMEM; newitem: ADRMEM): CINT [C]; EXTERN;
 
 FUNCTION HasExternMarkerDecl(decl: ADRMEM): BOOLEAN; FORWARD;
 FUNCTION IsForeignRoutineDecl(decl: ADRMEM): BOOLEAN; FORWARD;
+
+VAR
+  device_export_names: ARRAY [1..MAX_SYMBOLS] OF Str255;
+  ndevice_exports: INTEGER32;
+
+FUNCTION IsDeviceExport(name: Str255): BOOLEAN;
+VAR
+  i: INTEGER32;
+  found: BOOLEAN;
+  target, candidate: Str255;
+BEGIN
+  found := FALSE;
+  target := UpperStr(name);
+  FOR i := 1 TO ndevice_exports DO
+  BEGIN
+    candidate := UpperStr(device_export_names[i]);
+    IF candidate = target THEN found := TRUE;
+  END;
+  IsDeviceExport := found;
+END;
+
+PROCEDURE LoadDeviceExports(root: ADRMEM);
+VAR
+  iface, params: ADRMEM;
+  i, n: INTEGER32;
+BEGIN
+  ndevice_exports := 0;
+  iface := GetObjOrNil(root, 'interface');
+  IF GetBool(root, 'is_device') AND (iface <> NIL) THEN
+  BEGIN
+    params := GetObjOrNil(iface, 'params');
+    IF params <> NIL THEN
+    BEGIN
+      n := cJSON_GetArraySize(params);
+      FOR i := 0 TO n - 1 DO
+        IF ndevice_exports < MAX_SYMBOLS THEN
+        BEGIN
+          ndevice_exports := ndevice_exports + 1;
+          device_export_names[ndevice_exports] :=
+            CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(params, i)));
+        END;
+    END;
+  END;
+END;
+
+PROCEDURE MarkDeviceExports(root: ADRMEM);
+VAR
+  decls, decl: ADRMEM;
+  i, n: INTEGER32;
+  nt: Str255;
+  rc: CINT;
+BEGIN
+  decls := GetObjOrNil(root, 'decls');
+  IF decls <> NIL THEN
+  BEGIN
+    n := cJSON_GetArraySize(decls);
+    FOR i := 0 TO n - 1 DO
+    BEGIN
+      decl := cJSON_GetArrayItem(decls, i);
+      nt := NodeType(decl);
+      IF ((nt = 'ProcDecl') OR (nt = 'FuncDecl')) AND
+         IsDeviceExport(GetStr(decl, 'name')) THEN
+        rc := cJSON_ReplaceItemInObject(decl, MakeCStr('is_exported_entry'),
+                                        cJSON_CreateBool(1));
+    END;
+  END;
+END;
+
+FUNCTION FoldTuningIntLiteral(node: ADRMEM; VAR literal_value: INTEGER32): BOOLEAN;
+VAR
+  nt, op: Str255;
+  inner: INTEGER32;
+BEGIN
+  nt := NodeType(node);
+  IF nt = 'IntLiteral' THEN
+  BEGIN
+    literal_value := GetInt(node, 'value');
+    FoldTuningIntLiteral := TRUE;
+  END
+  ELSE IF nt = 'UnaryOp' THEN
+  BEGIN
+    op := GetStr(node, 'op');
+    IF ((op = 'PLUS') OR (op = 'MINUS')) AND
+       FoldTuningIntLiteral(GetObj(node, 'operand'), inner) THEN
+    BEGIN
+      IF op = 'MINUS' THEN literal_value := -inner ELSE literal_value := inner;
+      FoldTuningIntLiteral := TRUE;
+    END
+    ELSE
+      FoldTuningIntLiteral := FALSE;
+  END
+  ELSE
+    FoldTuningIntLiteral := FALSE;
+END;
+
+PROCEDURE CheckLaunchBoundAttrs(decl: ADRMEM; is_function: BOOLEAN);
+VAR
+  attrs, attr, args: ADRMEM;
+  i, j, nattrs, nargs: INTEGER32;
+  nm: Str255;
+  has_maxntid, has_reqntid, valid, folded: BOOLEAN;
+  literal_value, axis_max, total: INTEGER32;
+BEGIN
+  attrs := GetObj(decl, 'attributes');
+  nattrs := cJSON_GetArraySize(attrs);
+  has_maxntid := FALSE;
+  has_reqntid := FALSE;
+  FOR i := 0 TO nattrs - 1 DO
+  BEGIN
+    nm := GetStr(cJSON_GetArrayItem(attrs, i), 'name');
+    IF nm = 'MAXNTID' THEN has_maxntid := TRUE;
+    IF nm = 'REQNTID' THEN has_reqntid := TRUE;
+  END;
+  IF has_maxntid AND has_reqntid AND
+     (active_features.tuning_hints OR is_device_compiland) AND
+     is_device_compiland THEN
+    AddError('[MAXNTID] and [REQNTID] cannot be used together on the same kernel');
+
+  FOR i := 0 TO nattrs - 1 DO
+  BEGIN
+    attr := cJSON_GetArrayItem(attrs, i);
+    nm := GetStr(attr, 'name');
+    IF (nm = 'MAXNTID') OR (nm = 'REQNTID') OR (nm = 'MINCTASM') THEN
+    BEGIN
+      IF NOT (active_features.tuning_hints OR is_device_compiland) THEN
+        AddError2('Launch-bound attribute requires the extended dialect: ', nm)
+      ELSE IF NOT is_device_compiland THEN
+        AddError2('Launch-bound attribute is only valid in DEVICE code: ', nm)
+      ELSE IF is_function THEN
+        AddError2('Launch-bound attribute is only valid on PROCEDUREs: ', nm)
+      ELSE IF NOT (GetBool(decl, 'is_exported_entry') OR
+                   IsDeviceExport(GetStr(decl, 'name'))) THEN
+        AddError2('Launch-bound attribute requires an exported kernel procedure: ', nm)
+      ELSE BEGIN
+        args := GetObj(attr, 'arg');
+        nargs := cJSON_GetArraySize(args);
+        IF ((nm = 'MINCTASM') AND (nargs <> 1)) OR
+           ((nm <> 'MINCTASM') AND ((nargs < 1) OR (nargs > 3))) THEN
+          AddError2('Invalid launch-bound dimension argument count: ', nm)
+        ELSE BEGIN
+          valid := TRUE;
+          total := 1;
+          FOR j := 0 TO nargs - 1 DO
+          BEGIN
+            literal_value := 0;
+            folded := FoldTuningIntLiteral(cJSON_GetArrayItem(args, j), literal_value);
+            IF (NOT folded) OR (literal_value < 1) THEN
+            BEGIN
+              AddError2('Launch-bound dimensions must be positive integer literals: ', nm);
+              valid := FALSE;
+            END
+            ELSE IF nm <> 'MINCTASM' THEN
+            BEGIN
+              IF j < 2 THEN axis_max := 1024 ELSE axis_max := 64;
+              IF literal_value > axis_max THEN
+              BEGIN
+                AddError2('Launch-bound dimension exceeds the CUDA architectural maximum: ', nm);
+                valid := FALSE;
+              END
+              ELSE
+                total := total * literal_value;
+            END;
+          END;
+          IF valid AND (nm <> 'MINCTASM') AND (total > 1024) THEN
+            AddError2('Launch-bound total threads exceed the CUDA architectural maximum: ', nm);
+        END;
+      END;
+    END;
+  END;
+END;
 
 { ============================== declarations ============================ }
 
@@ -257,6 +429,7 @@ BEGIN
       AddError2('[VARARGS] requires the [C] attribute: ', dname);
     IF is_vararg AND is_device_compiland THEN
       AddError2('[VARARGS] is not permitted in DEVICE code: ', dname);
+    CheckLaunchBoundAttrs(decl, nt = 'FuncDecl');
     symbols[si].is_vararg := is_vararg;
 
     { Check the routine body (if any) in its own scope, with parameters
@@ -818,8 +991,10 @@ END;
 
 PROCEDURE CheckRoot(root: ADRMEM);
 BEGIN
+  LoadDeviceExports(root);
   CheckLocalInterfaces(root);
   CheckLocalInterfaceUses(root, GetObj(root, 'local_interfaces'));
+  MarkDeviceExports(root);
   CheckUnit(root);
 END;
 

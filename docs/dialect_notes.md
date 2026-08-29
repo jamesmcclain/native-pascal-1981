@@ -27,12 +27,13 @@ precision is ignored on strings, and there are no wide types.
 The native driver validates `--dialect <value>` and passes it to the parser,
 typechecker, and code generator. The typechecker and code generator use a
 shared feature set. Vintage mode rejects wide scalar type names, `WRD8`, C-ABI
-type aliases, `[C]`, `[CDECL]`, and `[VARARGS]`. DEVICE units can use wide
-scalar types independently of the command-line dialect.
+type aliases, `[C]`, `[CDECL]`, `[VARARGS]`, anonymous `READSET` set
+literals, `{$UNROLL}`, and launch-bound attributes. DEVICE units can use wide
+scalar types and tuning hints independently of the command-line dialect.
 
 Other gates are not implemented yet. For example, vintage mode still accepts
-wide integer constants and the remaining extended I/O and tuning features.
-Thus, `--dialect vintage` is not yet a complete conformance check.
+wide integer constants, symbolic enum I/O, and string precision. Thus,
+`--dialect vintage` is not yet a complete conformance check.
 
 ### Command-line contract
 
@@ -56,8 +57,9 @@ codegen --dialect <value>
 
 These command lines are the implemented transport contract. The typechecker
 and code generator resolve the selected dialect to shared feature state. They
-use that state for scalar types and C interoperability. Later work will apply
-it to the remaining language constructs.
+use that state for scalar types, C interoperability, anonymous `READSET` set
+literals, and tuning hints. Later work will apply it to the remaining language
+constructs.
 
 Feature overrides such as repeated `-f wide-integers` options are not part of
 the native command-line contract yet. `argparse` stores one value for each
@@ -70,6 +72,23 @@ vintage-core rule that remains true in the native extended surface;
 limitation of this repository's implementation. A native limitation applies
 to every program compiled by the native pipeline unless the text says
 otherwise.
+
+## READSET and tuning hints
+
+In vintage mode, the final `READSET` argument must be a declared `SET OF CHAR`
+value. Extended mode also accepts an anonymous set constructor, such as
+`['a'..'z']`. This rule does not remove vintage support for declared sets.
+
+The `{$UNROLL n}` directive requires extended mode or DEVICE code. The count
+must be a positive integer. The lexer always records the directive. The
+typechecker decides whether the selected dialect permits it.
+
+`[MAXNTID]`, `[REQNTID]`, and `[MINCTASM]` require extended DEVICE code. DEVICE
+context also enables them when the command-line dialect is vintage. These
+attributes are valid only on exported kernel procedures. Dimensions must be
+positive integer literals. CUDA axis and total-thread limits apply to
+`MAXNTID` and `REQNTID`, and those two attributes cannot occur on the same
+kernel.
 
 ## Integer widths
 
