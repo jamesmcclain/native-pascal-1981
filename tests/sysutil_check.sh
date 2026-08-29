@@ -12,7 +12,7 @@ work="$(mktemp -d -t sysutil-check-XXXXXX)"
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
 
-mkdir "$work/fixture"
+mkdir "$work/fixture" "$work/custom-tmp"
 touch "$work/fixture/alpha" "$work/fixture/.hidden"
 mkdir "$work/fixture/nested"
 touch "$work/fixture/nested/child"
@@ -20,4 +20,5 @@ ln -s alpha "$work/fixture/alpha-link"
 
 cd "$repo/src"
 "$compiler" "$here/sysutil_check.pas" bytebuf.pas sysutil.pas -o "$work/sysutil_check"
-"$work/sysutil_check" "$work/fixture"
+TMPDIR="$work/custom-tmp" "$work/sysutil_check" "$work/fixture" \
+    "$work/custom-tmp" "$work/no-such-parent"

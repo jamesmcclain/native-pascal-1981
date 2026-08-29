@@ -9,6 +9,7 @@ PROCEDURE exit(status: CINT) [C]; EXTERN;
 
 PROCEDURE Fail(msg: ByteStr);
 BEGIN
+  WRITELN('FAIL ', msg);
   exit(1);
 END;
 
@@ -73,13 +74,25 @@ END;
 
 PROCEDURE CheckTemp;
 VAR
-  prefix, path, file_path, data, got: ByteBuf;
+  prefix, path, file_path, data, got, temp_root, nested_path, bad_prefix,
+  executable, diagnostics: ByteBuf;
+  root_text: ByteStr;
   dir: SysDir;
+  args: SysArgs;
+  exit_code, signal, result: INTEGER32;
 BEGIN
   BufInit(prefix, 0);
   BufInit(path, 0);
+  BufInit(temp_root, 0);
+  BufInit(nested_path, 0);
+  BufInit(bad_prefix, 0);
+  BufInit(executable, 0);
+  BufInit(diagnostics, 0);
+  BufAppendCStr(temp_root, pas_arg_value(2));
   BufAppendStr(prefix, 'pascal-sysutil-');
   Check(SysTempDirCreate(prefix, path), 'create temp dir');
+  BufSliceToStr(temp_root, 0, BufLen(temp_root), root_text);
+  Check(BufMatchesStrAt(path, 0, root_text), 'custom temp root');
   Check(SysDirOpen(path, dir), 'open temp dir');
   Check(SysDirClose(dir), 'close temp dir');
   BufInit(file_path, 0);
@@ -91,11 +104,32 @@ BEGIN
   Check(SysWriteFile(file_path, data), 'write temp file');
   Check(SysReadFile(file_path, got), 'read temp file');
   Check(BufEqualsStr(got, 'contents'), 'read temp contents');
+  BufAppendBuf(nested_path, path);
+  BufAppendStr(nested_path, '/nested');
+  BufAppendStr(executable, '/bin/mkdir');
+  SysArgsInit(args);
+  Check(SysArgsAdd(args, nested_path), 'nested directory argument');
+  result := SysExec(executable, args, 1000, exit_code, signal, diagnostics);
+  Check((result = SYS_OK) AND (exit_code = 0), 'create nested directory');
+  SysArgsFree(args);
+  BufClear(file_path);
+  BufAppendBuf(file_path, nested_path);
+  BufAppendStr(file_path, '/child');
+  Check(SysWriteFile(file_path, data), 'write nested temp file');
   Check(SysRemoveTree(path), 'remove temp dir');
   Check(NOT SysDirOpen(path, dir), 'removed temp dir');
+  Check(NOT SysDirOpen(nested_path, dir), 'removed nested temp dir');
+  BufAppendCStr(bad_prefix, pas_arg_value(3));
+  BufAppendStr(bad_prefix, '/missing-');
+  Check(NOT SysTempDirCreate(bad_prefix, nested_path), 'bad temp parent');
   BufFree(got);
   BufFree(data);
   BufFree(file_path);
+  BufFree(diagnostics);
+  BufFree(executable);
+  BufFree(bad_prefix);
+  BufFree(nested_path);
+  BufFree(temp_root);
   BufFree(path);
   BufFree(prefix);
 END;
