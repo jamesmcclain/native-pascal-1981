@@ -78,6 +78,7 @@
 
 { Declaration and unit checking implementation. }
 
+(*$INCLUDE:'features.inc'*)
 (*$INCLUDE:'jsonutil.inc'*)
 (*$INCLUDE:'tc_base.inc'*)
 (*$INCLUDE:'tc_types.inc'*)

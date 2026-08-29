@@ -2,7 +2,7 @@
 
 INTERFACE;
 UNIT cg_types;
-USES jsonutil, cg_base, cg_util;
+USES jsonutil, features, cg_base, cg_util;
 
 CONST
   SYSV_CLASS_MEMORY = 1;

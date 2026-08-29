@@ -3,7 +3,7 @@
 
 INTERFACE;
 UNIT cg_io;
-USES jsonutil, cg_base, cg_util, cg_types, cg_symbols, cg_expr;
+USES jsonutil, features, cg_base, cg_util, cg_types, cg_symbols, cg_expr;
 
 FUNCTION EvalPrintfIntArg(node: ADRMEM): ADRMEM;
 PROCEDURE EmitStringWriteArg(addr: ADRMEM; tid: INTEGER; have_width: BOOLEAN; width_val: ADRMEM;

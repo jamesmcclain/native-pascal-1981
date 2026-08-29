@@ -26,8 +26,9 @@ precision is ignored on strings, and there are no wide types.
 
 The native stages still implement the extended surface unconditionally. The
 native driver validates `--dialect <value>` and passes it to the parser,
-typechecker, and code generator, but those stages do not yet use it to select
-features. There is therefore no selectable native vintage mode today.
+typechecker, and code generator. The latter two resolve that value to a shared
+feature set, but do not yet apply its semantic and code-generation gates.
+There is therefore no selectable native vintage mode today.
 “Vintage” in this file means the vintage-core subset of the native language;
 do not use the driver's `--dialect vintage` as a conformance check. `INTEGER32`
 and wide literals remain extended-only language features, despite being
@@ -53,8 +54,14 @@ typechecker --dialect <value>
 codegen --dialect <value>
 ```
 
-These command lines are the implemented transport contract. Later feature
-resolution work will make the receiving stages apply the selected dialect.
+These command lines are the implemented transport contract. The typechecker
+and code generator resolve the selected dialect to shared feature state.
+Later work will apply that state to individual language constructs.
+
+Feature overrides such as repeated `-f wide-integers` options are not part of
+the native command-line contract yet. `argparse` stores one value for each
+registered option and cannot accumulate repeated values. Its API and storage
+must be extended before native stages can implement repeatable `-f` options.
 
 The scope tags below state where a rule applies: **[both]** means a
 vintage-core rule that remains true in the native extended surface;

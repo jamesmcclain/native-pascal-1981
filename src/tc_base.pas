@@ -1,5 +1,6 @@
 { Shared-state implementation for the native type checker. }
 
+(*$INCLUDE:'features.inc'*)
 (*$INCLUDE:'jsonutil.inc'*)
 (*$INCLUDE:'tc_base.inc'*)
 IMPLEMENTATION OF tc_base;
@@ -114,6 +115,8 @@ VAR
 
   cur_func_ret_tk: INTEGER; { TK_VOID when not inside a function }
   cur_func_aux, cur_func_aux2: INTEGER;
+  active_features: FeatureSet;
+
   cur_func_name: Str255;   { '' when not inside a function. `F := expr`
                              inside F's own body assigns through the
                              return-value slot (RETURN's target) rather than
@@ -303,8 +306,9 @@ BEGIN
   IsNumeric := (tk = TK_INTEGER) OR (tk = TK_REAL) OR (tk = TK_WORD);
 END;
 
-PROCEDURE TcInit;
+PROCEDURE TcInit(VAR requested_features: FeatureSet);
 BEGIN
+  active_features := requested_features;
   nsymbols := 0;
   scope_top := 0;
   ntypes := 0;

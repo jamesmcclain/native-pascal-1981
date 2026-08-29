@@ -2,7 +2,7 @@
 
 INTERFACE;
 UNIT tc_base;
-USES jsonutil;
+USES jsonutil, features;
 
 CONST
   TK_UNKNOWN = 0;
@@ -76,8 +76,9 @@ VAR
   cur_func_ret_tk: INTEGER;
   cur_func_aux, cur_func_aux2: INTEGER;
   cur_func_name: Str255;
+  active_features: FeatureSet;
 
-PROCEDURE TcInit;
+PROCEDURE TcInit(VAR requested_features: FeatureSet);
 PROCEDURE AddError(msg: Str255);
 PROCEDURE AddError2(msg: Str255; name: Str255);
 FUNCTION UpperStr(s: Str255): Str255;

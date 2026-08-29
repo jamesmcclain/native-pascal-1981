@@ -2,7 +2,7 @@
 
 INTERFACE;
 UNIT tc_decl;
-USES jsonutil, tc_base, tc_types, tc_expr, tc_stmt;
+USES jsonutil, features, tc_base, tc_types, tc_expr, tc_stmt;
 
 PROCEDURE CheckRoot(root: ADRMEM);
 

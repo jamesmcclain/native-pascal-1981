@@ -2,7 +2,7 @@
 
 INTERFACE;
 UNIT cg_base;
-USES jsonutil;
+USES jsonutil, features;
 
 FUNCTION LLVMContextCreate: ADRMEM [C];
 FUNCTION LLVMModuleCreateWithNameInContext(id: ADRMEM; ctx: ADRMEM): ADRMEM [C];
@@ -637,5 +637,8 @@ VAR
   n_unit_order: INTEGER32;
   unit_visit_state: ARRAY [1..MAX_UNITS] OF INTEGER32; { 0=unvisited, 1=in-progress (on DFS stack), 2=done }
 
+  active_features: FeatureSet;
+
+PROCEDURE CgInitFeatures(VAR requested_features: FeatureSet);
 
 END;

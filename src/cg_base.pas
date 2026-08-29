@@ -1,5 +1,6 @@
 { Storage definitions for cg_base's exported compiler state. }
 
+(*$INCLUDE:'features.inc'*)
 (*$INCLUDE:'jsonutil.inc'*)
 (*$INCLUDE:'cg_base.inc'*)
 IMPLEMENTATION OF cg_base;
@@ -250,6 +251,12 @@ VAR
   n_unit_order: INTEGER32;
   unit_visit_state: ARRAY [1..MAX_UNITS] OF INTEGER32; { 0=unvisited, 1=in-progress (on DFS stack), 2=done }
 
+  active_features: FeatureSet;
+
+PROCEDURE CgInitFeatures(VAR requested_features: FeatureSet);
+BEGIN
+  active_features := requested_features;
+END;
 
 BEGIN
 END.

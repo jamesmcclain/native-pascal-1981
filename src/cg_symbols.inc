@@ -2,7 +2,7 @@
 
 INTERFACE;
 UNIT cg_symbols;
-USES jsonutil, cg_base, cg_util, cg_types;
+USES jsonutil, features, cg_base, cg_util, cg_types;
 
 FUNCTION LookupSym(name: Str255): INTEGER32;
 FUNCTION LoadFileFcbPtr(name: Str255): ADRMEM;
