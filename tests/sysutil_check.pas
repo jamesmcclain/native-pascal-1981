@@ -45,7 +45,7 @@ END;
 
 PROCEDURE CheckTemp;
 VAR
-  prefix, path: ByteBuf;
+  prefix, path, file_path, data, got: ByteBuf;
   dir: SysDir;
 BEGIN
   BufInit(prefix, 0);
@@ -54,8 +54,20 @@ BEGIN
   Check(SysTempDirCreate(prefix, path), 'create temp dir');
   Check(SysDirOpen(path, dir), 'open temp dir');
   Check(SysDirClose(dir), 'close temp dir');
+  BufInit(file_path, 0);
+  BufInit(data, 0);
+  BufInit(got, 0);
+  BufAppendBuf(file_path, path);
+  BufAppendStr(file_path, '/sample');
+  BufAppendStr(data, 'contents');
+  Check(SysWriteFile(file_path, data), 'write temp file');
+  Check(SysReadFile(file_path, got), 'read temp file');
+  Check(BufEqualsStr(got, 'contents'), 'read temp contents');
   Check(SysRemoveTree(path), 'remove temp dir');
   Check(NOT SysDirOpen(path, dir), 'removed temp dir');
+  BufFree(got);
+  BufFree(data);
+  BufFree(file_path);
   BufFree(path);
   BufFree(prefix);
 END;

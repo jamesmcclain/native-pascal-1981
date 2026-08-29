@@ -13,7 +13,7 @@
 
 INTERFACE;
 UNIT sysutil (SysDirOpen, SysDirNext, SysDirClose,
-              SysTempDirCreate, SysRemoveTree,
+              SysTempDirCreate, SysRemoveTree, SysReadFile, SysWriteFile,
               SysArgsInit, SysArgsFree, SysArgsAdd, SysExec);
 
 USES bytebuf;
@@ -53,6 +53,11 @@ FUNCTION SysDirClose(VAR dir: SysDir): BOOLEAN;
   SysRemoveTree after use.  Cleanup does not follow symlinks. }
 FUNCTION SysTempDirCreate(VAR prefix: ByteBuf; VAR path: ByteBuf): BOOLEAN;
 FUNCTION SysRemoveTree(VAR path: ByteBuf): BOOLEAN;
+
+{ File contents are binary-safe and may contain NUL bytes.  SysWriteFile
+  creates files with mode 0600; callers choose any test-specific names. }
+FUNCTION SysReadFile(VAR path: ByteBuf; VAR contents: ByteBuf): BOOLEAN;
+FUNCTION SysWriteFile(VAR path: ByteBuf; VAR contents: ByteBuf): BOOLEAN;
 
 { SysArgs serializes arguments after argv[0] as NUL-terminated byte strings;
   SysExec supplies executable as argv[0].  A nonzero compiler exit is SYS_OK

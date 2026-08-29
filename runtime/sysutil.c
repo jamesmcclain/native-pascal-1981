@@ -147,6 +147,78 @@ int pas_sys_remove_tree(const char *path)
     return rmdir(path);
 }
 
+char *pas_sys_read_file(const char *path, int *out_len)
+{
+    struct stat st;
+    char *data;
+    ssize_t got;
+    int fd;
+    int used = 0;
+
+    if (!path || !out_len) {
+        errno = EINVAL;
+        return NULL;
+    }
+    fd = open(path, O_RDONLY);
+    if (fd < 0 || fstat(fd, &st) != 0 || st.st_size < 0 || st.st_size > INT32_MAX) {
+        if (fd >= 0)
+            close(fd);
+        return NULL;
+    }
+    data = malloc((size_t) st.st_size + 1);
+    if (!data) {
+        close(fd);
+        return NULL;
+    }
+    while (used < st.st_size) {
+        got = read(fd, data + used, (size_t) (st.st_size - used));
+        if (got < 0 && errno == EINTR)
+            continue;
+        if (got <= 0) {
+            free(data);
+            close(fd);
+            errno = EIO;
+            return NULL;
+        }
+        used += (int) got;
+    }
+    close(fd);
+    data[used] = '\0';
+    *out_len = used;
+    return data;
+}
+
+int pas_sys_write_file(const char *path, const char *data, int len)
+{
+    int fd;
+    int used = 0;
+    ssize_t wrote;
+
+    if (!path || !data || len < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0)
+        return -1;
+    while (used < len) {
+        wrote = write(fd, data + used, (size_t) (len - used));
+        if (wrote < 0 && errno == EINTR)
+            continue;
+        if (wrote <= 0) {
+            close(fd);
+            return -1;
+        }
+        used += (int) wrote;
+    }
+    return close(fd);
+}
+
+void pas_sys_free(void *ptr)
+{
+    free(ptr);
+}
+
 static void append_diagnostics(int fd, char *out, int outcap, int *used)
 {
     char chunk[1024];

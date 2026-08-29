@@ -156,6 +156,10 @@ int   pas_sys_dir_next(void *handle, char *name, int namecap);
 int   pas_sys_dir_close(void *handle);
 int   pas_sys_temp_dir(const char *prefix, char *out, int outcap);
 int   pas_sys_remove_tree(const char *path);
+/* The caller releases a successful read result with pas_sys_free. */
+char *pas_sys_read_file(const char *path, int *out_len);
+int   pas_sys_write_file(const char *path, const char *data, int len);
+void  pas_sys_free(void *ptr);
 /* packed_args is a sequence of NUL-terminated argv entries, excluding argv[0]. */
 int   pas_sys_exec(const char *executable, const char *packed_args,
                    int packed_args_len, int timeout_ms, int *exit_code,

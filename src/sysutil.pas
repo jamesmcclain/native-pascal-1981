@@ -11,6 +11,9 @@ FUNCTION pas_sys_dir_next(handle: ADRMEM; name: ADRMEM; namecap: CINT): CINT [C]
 FUNCTION pas_sys_dir_close(handle: ADRMEM): CINT [C]; EXTERN;
 FUNCTION pas_sys_temp_dir(prefix: ADRMEM; out: ADRMEM; outcap: CINT): CINT [C]; EXTERN;
 FUNCTION pas_sys_remove_tree(path: ADRMEM): CINT [C]; EXTERN;
+FUNCTION pas_sys_read_file(path: ADRMEM; out_len: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION pas_sys_write_file(path: ADRMEM; data: ADRMEM; len: CINT): CINT [C]; EXTERN;
+PROCEDURE pas_sys_free(ptr: ADRMEM) [C]; EXTERN;
 FUNCTION pas_sys_exec(executable: ADRMEM; packed_args: ADRMEM;
                       packed_args_len: CINT; timeout_ms: CINT;
                       exit_code: ADRMEM; term_signal: ADRMEM;
@@ -76,6 +79,29 @@ END;
 FUNCTION SysRemoveTree(VAR path: ByteBuf): BOOLEAN;
 BEGIN
   SysRemoveTree := pas_sys_remove_tree(BufCStr(path)) = SYS_OK;
+END;
+
+FUNCTION SysReadFile(VAR path: ByteBuf; VAR contents: ByteBuf): BOOLEAN;
+VAR
+  raw: ADRMEM;
+  size: INTEGER32;
+BEGIN
+  BufClear(contents);
+  raw := pas_sys_read_file(BufCStr(path), ADR size);
+  IF raw = NIL THEN
+    SysReadFile := FALSE
+  ELSE
+  BEGIN
+    IF size > 0 THEN BufAppendBytes(contents, raw, size);
+    pas_sys_free(raw);
+    SysReadFile := TRUE;
+  END;
+END;
+
+FUNCTION SysWriteFile(VAR path: ByteBuf; VAR contents: ByteBuf): BOOLEAN;
+BEGIN
+  SysWriteFile := pas_sys_write_file(BufCStr(path), BufPtr(contents),
+                                     BufLen(contents)) = SYS_OK;
 END;
 
 PROCEDURE SysArgsInit(VAR args: SysArgs);
