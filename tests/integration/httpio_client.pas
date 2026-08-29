@@ -25,7 +25,7 @@ VAR
   resp: HttpResp;
   sreq: HttpReq;
   payload, msgs, msg, tree, reply, choice, content: ADRMEM;
-  rc, i, want, served: INTEGER32;
+  rc, i, want, served, max_head: INTEGER32;
   s: ByteStr;
 
 { ---- Client ---- }
@@ -36,9 +36,13 @@ VAR
 FUNCTION PostJson(port: INTEGER32; path: ByteStr; payload: ADRMEM;
                   VAR raw: ByteBuf; VAR resp: HttpResp): INTEGER32;
 VAR
-  fd, rc: INTEGER32;
+  fd, rc, max_head: INTEGER32;
   req, text: ByteBuf;
 BEGIN
+  { Not written as 65000: an integer literal is 16 bits here, so that value
+    arrives as -536 and switches the ceiling off instead of setting it. }
+  max_head := 65;
+  max_head := max_head * 1000;
   fd := NetConnect('127.0.0.1', port, 5000);
   IF fd < 0 THEN
     PostJson := HTTP_HEAD_ERROR
@@ -53,7 +57,7 @@ BEGIN
     HttpAppendHeaderInt(req, 'Content-Length', BufLen(text));
     HttpEndHeaders(req);
     BufAppendBuf(req, text);
-    rc := HttpExchange(fd, req, raw, resp, 65000, 5000);
+    rc := HttpExchange(fd, req, raw, resp, max_head, 5000);
     NetClose(fd);
     BufFree(req);
     BufFree(text);
@@ -85,6 +89,8 @@ END;
 
 BEGIN
   NetInit;
+  max_head := 65;
+  max_head := max_head * 1000;
   listen_fd := NetListen('127.0.0.1', 0, 16);
   IF listen_fd < 0 THEN
   BEGIN
@@ -104,7 +110,7 @@ BEGIN
       IF conn_fd < 0 THEN NetExit(2);
       BufInit(raw, 0);
       HttpReqInit(sreq);
-      IF HttpReadHead(conn_fd, raw, sreq, 65000, 5000) <> HTTP_HEAD_OK THEN
+      IF HttpReadHead(conn_fd, raw, sreq, max_head, 5000) <> HTTP_HEAD_OK THEN
         NetExit(3);
       want := sreq.content_length;
       IF want > 0 THEN

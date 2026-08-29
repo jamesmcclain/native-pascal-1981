@@ -36,7 +36,7 @@ VAR
     cost of keeping them independent, and a shared string type in the runtime
     library would remove it. }
   astr: ArgStr;
-  port, timeout_ms, max_tokens, rc, i, fd: INTEGER32;
+  port, timeout_ms, max_tokens, rc, i, fd, max_head: INTEGER32;
   payload, msgs, m, tree: ADRMEM;
   req, raw, body, text: ByteBuf;
   resp: HttpResp;
@@ -212,7 +212,11 @@ BEGIN
   BufAppendBuf(req, text);
 
   BufInit(raw, 0);
-  rc := HttpExchange(fd, req, raw, resp, 65000, timeout_ms);
+  { Built by arithmetic: an integer literal is 16 bits in this dialect, so
+    writing 65000 here would pass -536 and disable the header ceiling. }
+  max_head := 65;
+  max_head := max_head * 1000;
+  rc := HttpExchange(fd, req, raw, resp, max_head, timeout_ms);
   NetClose(fd);
   BufFree(req);
   BufFree(text);
