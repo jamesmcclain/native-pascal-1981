@@ -4,6 +4,13 @@ This repository contains a native compiler for the 1981 IBM Pascal dialect. It t
 
 <img width="1536" height="864" alt="image" src="https://github.com/user-attachments/assets/f59a2d0f-468b-41b2-838c-b76729f15975" />
 
+> **Writing Pascal in this repository?** Read
+> [`docs/dialect_notes.md`](docs/dialect_notes.md) first. `INTEGER` is 16 bits
+> and *so is every integer literal*, so `n := 65000` silently stores `-536`;
+> that document collects this and the rest of the dialect's silent failures,
+> along with the places where the native compiler and the reference compiler
+> disagree.
+
 ## System Prerequisites
 
 Install these packages before you build the toolchain (for example, on Debian or Ubuntu Linux x86_64):
@@ -30,6 +37,7 @@ Install these packages before you build the toolchain (for example, on Debian or
 - `bin/`: Compiler driver (`pascal1981-native`, alias `pascal1981`) and stage binaries (`lexer`, `parser`, `typechecker`, `codegen`).
 - `scripts/`: Build scripts (`build-stage.sh`), formatting scripts (`beautify.sh`), and git hooks (run `git config core.hooksPath scripts/hooks` once per clone to enable the pre-commit formatting hook — it's local config, so a fresh checkout won't run it until you do). The multi-generation bootstrap itself is driven by the root `Makefile`'s `bootstrap` target, not a standalone script.
 - `tests/`: Test suites (golden files, unit tests, integration tests, dialect fixtures).
+- `docs/`: The dialect's EBNF grammar (`ebnf_grammar.md`) and the notes on its widths, literals and silent failure modes (`dialect_notes.md`).
 
 ## Building
 
