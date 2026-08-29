@@ -29,6 +29,21 @@ than of the server: it feeds one corpus to both implementations and compares
 the answers directly, so the expected values come from the code being
 replaced rather than from a recorded file somebody has to keep honest.
 
+```bash
+tests/proxy/corpus_smoke.py               # 64 realistic requests, via the stub
+tests/proxy/corpus_smoke.py --base-url URL  # ... against a real backend
+tests/proxy/corpus_smoke.py --reference   # no proxy, no model: compile the corpus
+```
+
+`corpus_smoke.py` answers the question the conformance suite structurally
+cannot: not "does this behave like the implementation it replaces", but "does
+it work". The conformance backend is a stub that returns one canned reply to
+every request, its buffers are a few lines long and its limit is 1024
+characters; a proxy can pass all 47 cases and still fall over on a real 4 KB
+buffer or return nothing usable from a real model. Nothing here is asserted
+about completion *quality* -- a live model returns different text every run --
+so it exits nonzero only on a protocol failure.
+
 `oneshot.sh` is narrower and answers a different question: not "does the proxy
 behave", but "can Pascal talk to an OpenAI-compatible backend at all". It
 builds `oneshot.pas` and makes one `/chat/completions` call per reply shape
@@ -71,6 +86,20 @@ has no way to start.
   are checked by `tests/integration/proxycore_unit.pas` instead, since a
   corpus that travels as JSON can only carry text that is already valid
   UTF-8.
+- `corpus/` — 64 realistic `/complete` payloads. 56 were cut from real,
+  known-compiling programs under `tests/golden`, `tests/integration` and a
+  sibling project-euler checkout at a clean line boundary, so each one's
+  `buffer` plus its `reference_continuation` is that program again; the other
+  8 are hand-written micro-cases and whole-task prompts. Buffers run from
+  empty to 3875 characters. `build_corpus.py` regenerates the derived items;
+  the hand-written ones have no source to derive from and are committed as
+  they are.
+- `corpus_smoke.py` — replays that corpus. Against a live backend it also
+  appends each completion to its buffer and compiles the result with the real
+  compiler, which is an objective quality signal no stub can produce.
+  `--reference` skips the proxy and the model entirely and compiles each
+  item's own recorded continuation, which checks the corpus against the
+  compiler and the compile check against itself.
 - `oneshot.pas` / `oneshot.build.sh` / `oneshot.sh` / `oneshot.expected` — one
   upstream call written in the vintage dialect, the step-5 milestone of the
   port. It is not the proxy: no calibration, no echo stripping, no server
