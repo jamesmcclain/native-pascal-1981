@@ -136,12 +136,13 @@ END;
 
 PROCEDURE CheckExec;
 VAR
-  executable, argument, diagnostics: ByteBuf;
+  executable, argument, script, diagnostics: ByteBuf;
   args: SysArgs;
   exit_code, signal, result: INTEGER32;
 BEGIN
   BufInit(executable, 0);
   BufInit(argument, 0);
+  BufInit(script, 0);
   BufInit(diagnostics, 0);
   SysArgsInit(args);
 
@@ -162,7 +163,33 @@ BEGIN
   Check(result = SYS_TIMEOUT, 'sleep timeout');
 
   SysArgsFree(args);
+  SysArgsInit(args);
+  BufClear(executable);
+  BufAppendStr(executable, '/no/such/executable');
+  result := SysExec(executable, args, 1000, exit_code, signal, diagnostics);
+  Check(result = SYS_ERROR, 'missing executable');
+
+  BufClear(executable);
+  BufClear(argument);
+  BufAppendStr(executable, '/bin/sh');
+  BufAppendStr(argument, '-c');
+  BufAppendStr(script, 'printf stdout; printf stderr >&2; exit 7');
+  Check(SysArgsAdd(args, argument), 'shell option');
+  Check(SysArgsAdd(args, script), 'shell command');
+  result := SysExec(executable, args, 1000, exit_code, signal, diagnostics);
+  Check((result = SYS_OK) AND (exit_code = 7), 'diagnostic exit');
+  Check(BufIndexOfStr(diagnostics, 'stdout', 0) >= 0, 'stdout capture');
+  Check(BufIndexOfStr(diagnostics, 'stderr', 0) >= 0, 'stderr capture');
+
+  SysArgsFree(args);
+  SysArgsInit(args);
+  BufClear(executable);
+  BufAppendStr(executable, '/bin/true');
+  result := SysExec(executable, args, 1000, exit_code, signal, diagnostics);
+  Check((result = SYS_OK) AND (exit_code = 0), 'timeout child reaped');
+  SysArgsFree(args);
   BufFree(diagnostics);
+  BufFree(script);
   BufFree(argument);
   BufFree(executable);
 END;
