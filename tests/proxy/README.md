@@ -103,15 +103,12 @@ has no way to start.
   empty to 3875 characters. `build_corpus.py` regenerates the derived items;
   the hand-written ones have no source to derive from and are committed as
   they are.
-- `test_corpus.py` — unit tests for `build_corpus.py`'s split-point logic and
-  a shape check over every committed item. The reconstruction test is the one
-  that matters: it is what keeps `corpus_reference_check.sh` meaningful,
-  since that mode relies on buffer + recorded continuation being the original
-  program byte for byte.
 - `corpus_reference.pas` / `corpus_reference.build.sh` /
-  `corpus_reference_check.sh` — native reference-continuation check. It
-  enumerates the corpus, appends every eligible recorded continuation, and
-  compiles the reconstructed program with the supplied compiler.
+  `corpus_reference_check.sh` — native corpus validation and
+  reference-continuation check. It verifies the corpus shape and split-point
+  bounds, reconstructs generated sources byte-for-byte when their source tree
+  is present, then appends every eligible recorded continuation and compiles
+  the reconstructed program with the supplied compiler.
 - `corpus_smoke.py` — replays that corpus against a live backend and appends
   each completion to its buffer before compiling it with the real compiler,
   which is an objective quality signal no stub can produce.

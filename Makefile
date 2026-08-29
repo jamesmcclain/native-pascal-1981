@@ -150,7 +150,6 @@ test-proxy: $(PROXY_BIN)
 	./tests/proxy/transforms_check.sh $(DRIVER_ALIAS)
 	./tests/proxy/oneshot.sh
 	./tests/proxy/corpus_reference_check.sh $(DRIVER_ALIAS)
-	$(PYTHON) -m pytest tests/proxy/test_corpus.py -q
 	./tests/proxy/corpus_smoke.py
 
 # Run the real-GPU CUDA integration test. The runner exits successfully with a
