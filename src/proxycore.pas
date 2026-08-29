@@ -395,6 +395,14 @@ BEGIN
 END;
 
 PROCEDURE PxSystemPrompt(VAR out: ByteBuf);
+{ Deliberately almost nothing, and measured rather than guessed. A
+  full-corpus experiment found that an elaborate, heavily instructed prompt
+  was itself the dominant cause of the failure mode where the model echoes
+  text already before the cursor instead of continuing past it; stripping the
+  prompt to this one line eliminated it entirely -- 0 of 64 occurrences across
+  two different backends, against 22-30 percent under the old wording. Resist
+  adding guardrail language back without re-measuring its effect. A caller
+  that wants to try can pass --system-prompt-file rather than editing this. }
 BEGIN
   BufAppendStr(out, 'Continue the Pascal program. Output only the new code.');
 END;

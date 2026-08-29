@@ -2,15 +2,14 @@
 """Drive one proxy implementation through the conformance corpus.
 
 Usage:
-    run_conformance.py --proxy-bin 'python3 tools/pascal1981_completion_proxy.py' \
-                       --out reports/python.json
     run_conformance.py --proxy-bin bin/pascal1981-proxy --out reports/pascal.json
-    run_conformance.py --compare reports/python.json reports/pascal.json
+    run_conformance.py --compare golden.json reports/pascal.json
 
-The point is differential testing: the reference implementation and the Pascal
-port are pointed at the same deterministic stub backend, driven with the same
-raw bytes, and their reports are compared. Any difference is a difference in
-the proxy, because nothing else in the loop varies.
+The point is differential testing: any implementation is pointed at the same
+deterministic stub backend, driven with the same raw bytes, and its report
+compared against the recorded one. Any difference is a difference in the
+proxy, because nothing else in the loop varies. golden.json was recorded from
+the Python implementation this port replaced.
 
 The runner -- not the caller -- owns the flags the implementation is started
 with, so both implementations are configured identically by construction and

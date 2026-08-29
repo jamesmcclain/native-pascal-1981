@@ -1,15 +1,17 @@
 # Completion-proxy conformance suite
 
-Differential tests for `tools/pascal1981_completion_proxy.py` and its native
-Pascal replacement. Both implementations are driven through the same corpus of
-raw HTTP requests against the same deterministic stub backend, so any
-difference between their reports is a difference in the proxy.
+Conformance tests for `bin/pascal1981-proxy`. It is driven through a fixed
+corpus of raw HTTP requests against a deterministic stub backend and its report
+compared against a recorded golden, so any difference is a difference in the
+proxy. The golden was recorded from the Python implementation the Pascal one
+replaced, while that implementation was still in the tree; it is now the
+contract rather than an oracle that can be re-consulted.
 
 ## Running
 
 ```bash
-tests/proxy/run.sh                        # the Python reference
-tests/proxy/run.sh bin/pascal1981-proxy   # the native port
+tests/proxy/run.sh                        # bin/pascal1981-proxy
+tests/proxy/run.sh path/to/other-proxy    # any other implementation
 tests/proxy/run.sh --record               # re-record the golden
 ```
 
@@ -21,13 +23,16 @@ tests/proxy/oneshot.sh --record           # re-record its expected output
 ```
 
 ```bash
-tests/proxy/transforms_check.py           # proxycore against the Python it replaces
+tests/proxy/transforms_check.py           # proxycore against 776 recorded answers
 ```
 
-`transforms_check.py` is a differential test of the pure transforms rather
-than of the server: it feeds one corpus to both implementations and compares
-the answers directly, so the expected values come from the code being
-replaced rather than from a recorded file somebody has to keep honest.
+`transforms_check.py` tests the pure transforms rather than the server. Its
+expected values were computed by calling the Python functions directly, not
+written by hand, so the corpus covers cases nobody thought to predict -- every
+buffer crossed with every cursor, every echo snippet crossed with six ways of
+retyping it. They are frozen in `transforms_golden.json` and cannot be
+re-recorded now that the oracle is gone: a mismatch means the Pascal changed,
+and a new case has to arrive with an answer worked out by hand.
 
 ```bash
 tests/proxy/corpus_smoke.py               # 64 realistic requests, via the stub
@@ -80,12 +85,11 @@ has no way to start.
   three calibration runs.
 - `golden.json` — the recorded reference behaviour: 47 cases. This is the
   contract the Pascal port has to meet.
-- `transforms.pas` / `transforms.build.sh` / `transforms_check.py` — the
-  differential harness for `src/proxycore.pas`. `transforms.pas` reads a JSON
-  array of jobs on stdin and writes one result per job; `transforms_check.py`
-  builds the corpus, computes the expected answers by calling the Python
-  functions directly, and compares. Extending it costs one entry in a list --
-  nobody has to work out by hand what the answer should be. The corpus
+- `transforms.pas` / `transforms.build.sh` / `transforms_check.py` /
+  `transforms_golden.json` — the harness for `src/proxycore.pas`.
+  `transforms.pas` reads a JSON array of jobs on stdin and writes one result
+  per job; `transforms_check.py` replays the 776 recorded job/answer pairs
+  through it. The corpus
   carries no NUL bytes: cJSON returns strings as NUL-terminated C strings, so
   a JSON value containing one truncates there. `PxUtf8Valid` and `PxCharLen`
   are checked by `tests/integration/proxycore_unit.pas` instead, since a

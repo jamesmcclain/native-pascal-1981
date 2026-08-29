@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Check a proxy implementation against the recorded conformance golden.
 #
-#   tests/proxy/run.sh                        # the Python reference
-#   tests/proxy/run.sh bin/pascal1981-proxy   # the native port
+#   tests/proxy/run.sh                        # bin/pascal1981-proxy
+#   tests/proxy/run.sh path/to/other-proxy    # any other implementation
 #
-# Both are driven through the same corpus against the same deterministic stub
-# backend, so a difference in the report is a difference in the proxy. The
-# golden was recorded from the Python reference and is the contract the port
-# has to meet; regenerate it with --record only when the contract itself is
-# meant to change.
+# The implementation is driven through a fixed corpus against a deterministic
+# stub backend, so a difference in the report is a difference in the proxy.
+# The golden was recorded from the Python implementation this port replaced,
+# and is the contract the port has to meet; regenerate it with --record only
+# when the contract itself is meant to change.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,7 +21,7 @@ if [ "${1:-}" = "--record" ]; then
     shift
 fi
 
-proxy="${1:-python3 $repo/tools/pascal1981_completion_proxy.py}"
+proxy="${1:-$repo/bin/pascal1981-proxy}"
 out="$(mktemp -t proxy-conformance-XXXXXX.json)"
 trap 'rm -f "$out"' EXIT
 
