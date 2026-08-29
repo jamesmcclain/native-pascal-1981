@@ -101,9 +101,7 @@ has no way to start.
   sibling project-euler checkout at a clean line boundary, so each one's
   `buffer` plus its `reference_continuation` is that program again; the other
   8 are hand-written micro-cases and whole-task prompts. Buffers run from
-  empty to 3875 characters. `build_corpus.py` regenerates the derived items;
-  the hand-written ones have no source to derive from and are committed as
-  they are.
+  empty to 3875 characters. All corpus items are committed fixtures.
 - `corpus_reference.pas` / `corpus_reference.build.sh` /
   `corpus_reference_check.sh` — native corpus validation and
   reference-continuation check. It verifies the corpus shape and split-point
