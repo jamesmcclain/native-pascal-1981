@@ -250,6 +250,7 @@ BEGIN
             BEGIN
               eligible := eligible + 1;
               BufClear(source);
+              BufClear(diagnostics);
               JxGetStrToBuf(item, 'buffer', source);
               JxGetStrToBuf(item, 'reference_continuation', diagnostics);
               BufAppendBuf(source, diagnostics);
