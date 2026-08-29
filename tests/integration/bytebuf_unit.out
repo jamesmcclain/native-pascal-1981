@@ -1,0 +1,18 @@
+len=15
+slice=HTTP/1.0
+at0=H at8= 
+oob=0
+idx_space=8
+idx_200=9
+idx_missing=-1
+match=TRUE
+ci=TRUE
+ci_neg=FALSE
+ints=0 8790 -1234 100000
+eq=TRUE neq=FALSE
+joined=abcdef
+roundtrip=TRUE
+biglen=100000
+mismatches=0
+trunc=10
+done
