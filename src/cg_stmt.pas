@@ -317,8 +317,10 @@ PROCEDURE CodegenCaseStmt(stmt: ADRMEM);
   IFs), not a jump table -- simplicity over the optimization the Python
   reference doesn't attempt either at this level (llvmlite's own -O passes
   are what would turn either shape into a real jump table). Scoped to an
-  INTEGER selector: a CHAR-keyed CASE is not yet supported, consistent with
-  CodegenBinOp's relational operators also only covering INTEGER/REAL. }
+  INTEGER or CHAR selector, with every constant of the selector's own kind:
+  the chain compares the two with a single ICmp, so they must share an LLVM
+  width, and mixing the kinds is a program error rather than something to
+  coerce silently. }
 VAR
   case_val: ADRMEM;
   case_tk: INTEGER;
@@ -330,8 +332,8 @@ VAR
 BEGIN
   case_val := CodegenExpr(GetObj(stmt, 'expr'));
   case_tk := last_val_tk;
-  IF case_tk <> TK_INTEGER THEN
-    AbortWith('codegen: CASE selector must be INTEGER (CHAR-keyed CASE is not yet supported)');
+  IF (case_tk <> TK_INTEGER) AND (case_tk <> TK_CHAR) THEN
+    AbortWith('codegen: a CASE selector must be INTEGER or CHAR');
 
   elements := GetObj(stmt, 'elements');
   n := ArrSize(elements);
@@ -364,8 +366,8 @@ BEGIN
       ELSE
       BEGIN
         cval := CodegenExpr(c);
-        IF last_val_tk <> TK_INTEGER THEN
-          AbortWith('codegen: a CASE constant must be INTEGER');
+        IF last_val_tk <> case_tk THEN
+          AbortWith('codegen: a CASE constant must have the selector''s type');
         one_cond := LLVMBuildICmp(builder, LLVMIntEQ, case_val, cval, MakeCStr(''));
       END;
       IF cond_val = NIL THEN cond_val := one_cond

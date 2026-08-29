@@ -35,6 +35,11 @@ tests/proxy/corpus_smoke.py --base-url URL  # ... against a real backend
 tests/proxy/corpus_smoke.py --reference   # no proxy, no model: compile the corpus
 ```
 
+`--reference` is the compiler's own regression test as much as the corpus's:
+every item's recorded continuation is a real program, and each of the two
+compiler gaps this mode has turned up so far -- LSTRING's `.LEN` and a
+CHAR-keyed `CASE` -- was a construct nothing else in the tree used.
+
 `corpus_smoke.py` answers the question the conformance suite structurally
 cannot: not "does this behave like the implementation it replaces", but "does
 it work". The conformance backend is a stub that returns one canned reply to

@@ -147,6 +147,7 @@ test-proxy: $(PROXY_BIN)
 	./tests/proxy/oneshot.sh
 	$(PYTHON) -m pytest tests/proxy/test_corpus.py -q
 	./tests/proxy/corpus_smoke.py
+	./tests/proxy/corpus_smoke.py --reference
 
 # Run the real-GPU CUDA integration test. The runner exits successfully with a
 # clear skip reason when its hardware or toolchain prerequisites are absent.
