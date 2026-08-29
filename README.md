@@ -112,3 +112,9 @@ The `test-gpu` target skips the test if a CUDA prerequisite is not available.
 The `test-reference-parity` target requires Python and pytest. The `test-elisp` target requires Emacs and builds the compiler stages first.
 
 See [tests/README.md](tests/README.md) for more information about the compiler test suites.
+
+To run all available test groups, type:
+
+```bash
+make test test-gpu test-reference-parity test-elisp test-bootstrap
+```
