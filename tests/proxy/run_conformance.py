@@ -139,9 +139,10 @@ def normalize(value, upstream_url):
 
 class Harness:
 
-    def __init__(self, proxy_argv, verbose=False):
+    def __init__(self, proxy_argv, verbose=False, native_runner=''):
         self.proxy_argv = proxy_argv
         self.verbose = verbose
+        self.native_runner = native_runner
         self.procs = []
         # Child stderr goes to a file, never to a PIPE. A PIPE has to be
         # actively drained or the child blocks once the ~64KB buffer fills,
@@ -251,6 +252,20 @@ def run_corpus(harness):
     stub_port = harness.start_stub()
     upstream_url = 'http://127.0.0.1:%d/v1' % stub_port
     proxy_port = harness.start_proxy(upstream_url)
+    if harness.native_runner:
+        result = subprocess.run([
+            harness.native_runner, '--host', '127.0.0.1', '--port',
+            str(proxy_port), '--stub-port',
+            str(stub_port), '--upstream-url', upstream_url, '--fixtures',
+            os.path.join(HERE, 'conformance_cases.json')
+        ],
+                                capture_output=True,
+                                text=True,
+                                check=False)
+        if result.returncode:
+            raise RuntimeError('native conformance runner failed: %s' %
+                               result.stderr)
+        return json.loads(result.stdout)['cases']
     entries = []
     for entry in corpus.CASES:
         raw = send_raw('127.0.0.1', proxy_port, entry['request'])
@@ -308,8 +323,8 @@ def run_calibration(harness):
     return entries
 
 
-def build_report(proxy_argv, verbose):
-    harness = Harness(proxy_argv, verbose)
+def build_report(proxy_argv, verbose, native_runner=''):
+    harness = Harness(proxy_argv, verbose, native_runner)
     entries = []
     try:
         entries += run_corpus(harness)
@@ -365,6 +380,8 @@ def main():
                         metavar=('EXPECTED', 'ACTUAL'),
                         help='Compare two existing reports and exit nonzero '
                         'on any difference.')
+    parser.add_argument('--native-runner',
+                        help='Pascal fixture replay executable')
     parser.add_argument('-v', '--verbose', action='store_true')
     args = parser.parse_args()
 
@@ -373,7 +390,8 @@ def main():
     if not args.proxy_bin:
         parser.error('--proxy-bin is required unless --compare is used')
 
-    report = build_report(shlex.split(args.proxy_bin), args.verbose)
+    report = build_report(shlex.split(args.proxy_bin), args.verbose,
+                          args.native_runner or '')
     text = json.dumps(report, indent=2, sort_keys=True) + '\n'
     if args.out:
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)

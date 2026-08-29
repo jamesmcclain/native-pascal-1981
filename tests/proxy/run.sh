@@ -23,9 +23,11 @@ fi
 
 proxy="${1:-$repo/bin/pascal1981-proxy}"
 out="$(mktemp -t proxy-conformance-XXXXXX.json)"
-trap 'rm -f "$out"' EXIT
+runner="$(mktemp -t proxy-conformance-runner-XXXXXX)"
+trap 'rm -f "$out" "$runner"' EXIT
 
-python3 "$here/run_conformance.py" --proxy-bin "$proxy" --out "$out" >/dev/null
+"$repo/tests/proxy/conformance_runner.build.sh" "$repo/bin/pascal1981" "$runner"
+python3 "$here/run_conformance.py" --proxy-bin "$proxy" --native-runner "$runner" --out "$out" >/dev/null
 
 if [ "$record" = 1 ]; then
     cp "$out" "$golden"
