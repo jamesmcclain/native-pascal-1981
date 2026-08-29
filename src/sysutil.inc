@@ -54,14 +54,15 @@ FUNCTION SysDirClose(VAR dir: SysDir): BOOLEAN;
 FUNCTION SysTempDirCreate(VAR prefix: ByteBuf; VAR path: ByteBuf): BOOLEAN;
 FUNCTION SysRemoveTree(VAR path: ByteBuf): BOOLEAN;
 
-{ File contents are binary-safe and may contain NUL bytes.  SysWriteFile
-  creates files with mode 0600; callers choose any test-specific names. }
+{ File contents are binary-safe and may contain NUL bytes.  SysReadFile clears
+  contents before reading.  SysWriteFile truncates or creates a file with mode
+  0600. }
 FUNCTION SysReadFile(VAR path: ByteBuf; VAR contents: ByteBuf): BOOLEAN;
 FUNCTION SysWriteFile(VAR path: ByteBuf; VAR contents: ByteBuf): BOOLEAN;
 
 { SysArgs serializes arguments after argv[0] as NUL-terminated byte strings;
-  SysExec supplies executable as argv[0].  A nonzero compiler exit is SYS_OK
-  with exit_code set. }
+  SysExec supplies executable as argv[0].  A normally-exited program, including
+  one with a nonzero exit code, returns SYS_OK with exit_code set. }
 PROCEDURE SysArgsInit(VAR args: SysArgs);
 PROCEDURE SysArgsFree(VAR args: SysArgs);
 FUNCTION SysArgsAdd(VAR args: SysArgs; VAR arg: ByteBuf): BOOLEAN;
