@@ -169,15 +169,22 @@ BEGIN
   arg_count := arg_count + 1;
   IF NOT compile_only THEN
   BEGIN
-    args[arg_count] := runtime_lib;
-    arg_count := arg_count + 1;
-    args[arg_count] := MakeCStr('-lcjson');
-    arg_count := arg_count + 1;
+    { Objects first, archives after. A static archive contributes only those
+      members that satisfy symbols already undefined when the linker reaches
+      it, so a runtime member referenced *only* from a secondary compiland is
+      never pulled in if the archive is listed first -- the reference does not
+      exist yet at that point, and by the time it does the archive is behind
+      us. That produces "undefined reference to pas_..." for a symbol plainly
+      present in libpascalrt.a. }
     FOR i := 0 TO extra_object_count - 1 DO
     BEGIN
       args[arg_count] := extra_objects[i];
       arg_count := arg_count + 1;
     END;
+    args[arg_count] := runtime_lib;
+    arg_count := arg_count + 1;
+    args[arg_count] := MakeCStr('-lcjson');
+    arg_count := arg_count + 1;
   END;
   FOR i := 0 TO extra_clang_argc - 1 DO
   BEGIN

@@ -112,6 +112,26 @@ void  pas_fread_filename(struct pas_file_fcb *src,
 
 /* ---- Process command-line arguments (cmdline.c) ---- */
 
+/* --- TCP sockets (netsock.c) ------------------------------------------- */
+/* Read outcomes that are not byte counts. Distinct values because a caller
+ * implementing a request timeout has to tell "deadline passed" from "peer
+ * closed the connection". */
+#define PAS_SOCK_ERROR   (-1L)
+#define PAS_SOCK_TIMEOUT (-2L)
+
+void  pas_net_init(void);
+void  pas_net_autoreap(void);
+int   pas_tcp_listen(const char *host, int port, int backlog);
+int   pas_tcp_port(int fd);
+int   pas_tcp_accept(int listen_fd);
+int   pas_tcp_connect(const char *host, int port, int timeout_ms);
+long  pas_sock_read(int fd, char *buf, long cap, int timeout_ms);
+long  pas_sock_write(int fd, const char *buf, long len);
+void  pas_sock_shutdown_write(int fd);
+void  pas_sock_close(int fd);
+int   pas_url_split(const char *url, char *host, int hostcap,
+                    int *port, char *path, int pathcap);
+
 int         pas_arg_count(void);
 const char *pas_arg_value(int index);
 char       *pas_toolchain_root(void);
