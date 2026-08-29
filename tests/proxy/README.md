@@ -23,10 +23,10 @@ tests/proxy/oneshot.sh --record           # re-record its expected output
 ```
 
 ```bash
-tests/proxy/transforms_check.py           # proxycore against 776 recorded answers
+tests/proxy/transforms_check.sh           # proxycore against 776 recorded answers
 ```
 
-`transforms_check.py` tests the pure transforms rather than the server. Its
+`transforms_check.sh` tests the pure transforms rather than the server. Its
 expected values were computed by calling the Python functions directly, not
 written by hand, so the corpus covers cases nobody thought to predict -- every
 buffer crossed with every cursor, every echo snippet crossed with six ways of
@@ -85,11 +85,11 @@ has no way to start.
   three calibration runs.
 - `golden.json` — the recorded reference behaviour: 47 cases. This is the
   contract the Pascal port has to meet.
-- `transforms.pas` / `transforms.build.sh` / `transforms_check.py` /
+- `transforms.pas` / `transforms.build.sh` / `transforms_check.sh` /
   `transforms_golden.json` — the harness for `src/proxycore.pas`.
   `transforms.pas` reads a JSON array of jobs on stdin and writes one result
-  per job; `transforms_check.py` replays the 776 recorded job/answer pairs
-  through it. The corpus
+  per job; when given the golden corpus, it replays the 776 recorded
+  job/answer pairs and compares them natively. The corpus
   carries no NUL bytes: cJSON returns strings as NUL-terminated C strings, so
   a JSON value containing one truncates there. `PxUtf8Valid` and `PxCharLen`
   are checked by `tests/integration/proxycore_unit.pas` instead, since a

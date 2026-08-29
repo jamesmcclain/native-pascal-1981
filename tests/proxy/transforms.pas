@@ -20,8 +20,9 @@ USES bytebuf, jsonx, proxycore;
 VAR
   input_buf: ByteBuf;
   out_buf: ByteBuf;
-  jobs, results, job, result_obj: ADRMEM;
-  i, n: INTEGER32;
+  root, jobs, results, job, result_obj, cases, expected: ADRMEM;
+  i, n, failures: INTEGER32;
+  op: ByteStr;
 
 FUNCTION getchar: CINT [C]; EXTERN;
 PROCEDURE exit(code: CINT) [C]; EXTERN;
@@ -148,29 +149,58 @@ END;
 BEGIN
   BufInit(input_buf, 0);
   ReadAll(input_buf);
-  jobs := JxParseBuf(input_buf);
-  IF NOT JxIsArray(jobs) THEN
+  root := JxParseBuf(input_buf);
+  IF JxIsArray(root) THEN
   BEGIN
-    WRITELN('transforms: stdin was not a JSON array of jobs');
-    exit(1);
-  END;
+    { Driver mode: preserve the JSON-array protocol used by external callers. }
+    jobs := root;
+    results := JxNewArray;
+    n := JxArrSize(jobs);
+    FOR i := 0 TO n - 1 DO
+    BEGIN
+      job := JxArrItem(jobs, i);
+      result_obj := RunJob(job);
+      JxArrAppend(results, result_obj);
+    END;
 
-  results := JxNewArray;
-  n := JxArrSize(jobs);
-  FOR i := 0 TO n - 1 DO
-  BEGIN
-    job := JxArrItem(jobs, i);
-    result_obj := RunJob(job);
-    JxArrAppend(results, result_obj);
-  END;
-
-  BufInit(out_buf, 0);
-  IF NOT JxPrintToBuf(results, out_buf) THEN
-    WRITELN('transforms: could not serialize the results')
+    BufInit(out_buf, 0);
+    IF NOT JxPrintToBuf(results, out_buf) THEN
+      WRITELN('transforms: could not serialize the results')
+    ELSE
+    BEGIN
+      FOR i := 0 TO BufLen(out_buf) - 1 DO
+        WRITE(BufAt(out_buf, i));
+      WRITELN;
+    END;
+  END
   ELSE
   BEGIN
-    FOR i := 0 TO BufLen(out_buf) - 1 DO
-      WRITE(BufAt(out_buf, i));
-    WRITELN;
+    { Checker mode: stdin is transforms_golden.json, not merely its jobs. }
+    cases := JxGet(root, 'cases');
+    IF NOT JxIsArray(cases) THEN
+    BEGIN
+      WRITELN('transforms: stdin was not a JSON array or golden corpus');
+      exit(1);
+    END;
+    n := JxArrSize(cases);
+    failures := 0;
+    FOR i := 0 TO n - 1 DO
+    BEGIN
+      job := JxGet(JxArrItem(cases, i), 'job');
+      expected := JxGet(JxArrItem(cases, i), 'expected');
+      result_obj := RunJob(job);
+      IF NOT JxEqual(result_obj, expected) THEN
+      BEGIN
+        failures := failures + 1;
+        IF failures <= 20 THEN
+        BEGIN
+          JxGetStr(job, 'op', op);
+          WRITELN('MISMATCH ', op);
+        END;
+      END;
+      JxDelete(result_obj);
+    END;
+    WRITELN('transforms: ', n, ' cases, ', failures, ' mismatches');
+    IF failures <> 0 THEN exit(1);
   END;
 END.

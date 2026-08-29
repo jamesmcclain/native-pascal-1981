@@ -147,7 +147,7 @@ test-sysutil: $(DRIVER_BIN) runtime
 # stub backend, so it is not part of test-driver's zero-Python subset.
 test-proxy: $(PROXY_BIN)
 	./tests/proxy/run.sh $(PROXY_BIN)
-	./tests/proxy/transforms_check.py
+	./tests/proxy/transforms_check.sh $(DRIVER_ALIAS)
 	./tests/proxy/oneshot.sh
 	$(PYTHON) -m pytest tests/proxy/test_corpus.py -q
 	./tests/proxy/corpus_smoke.py

@@ -29,7 +29,7 @@ INTERFACE;
 UNIT jsonx (JxParse, JxParseBuf, JxDelete, JxPrintToBuf,
             JxIsObject, JxIsArray, JxIsString, JxIsNumber, JxIsBool,
             JxIsNull, JxIsTrue,
-            JxGet, JxHas, JxArrSize, JxArrItem,
+            JxGet, JxHas, JxEqual, JxArrSize, JxArrItem,
             JxStrRaw, JxStrLen, JxStrToBuf, JxGetStrToBuf,
             JxGetNum, JxGetInt, JxGetStr, JxNumValue, JxIntValue,
             JxNewObject, JxNewArray, JxNewStr, JxNewStrFromBuf, JxNewNum,
@@ -72,6 +72,11 @@ FUNCTION JxIsTrue(node: ADRMEM): BOOLEAN;
 { Borrowed child by key, or NIL. }
 FUNCTION JxGet(obj: ADRMEM; key: ByteStr): ADRMEM;
 FUNCTION JxHas(obj: ADRMEM; key: ByteStr): BOOLEAN;
+
+{ Structural JSON comparison. Object member order does not matter; string
+  comparison is case-sensitive. }
+FUNCTION JxEqual(left: ADRMEM; right: ADRMEM): BOOLEAN;
+
 FUNCTION JxArrSize(arr: ADRMEM): INTEGER32;
 FUNCTION JxArrItem(arr: ADRMEM; i: INTEGER32): ADRMEM;
 
