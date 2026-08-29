@@ -1288,6 +1288,11 @@ BEGIN
           res := LLVMConstReal(dblty, const_tbl[consti].rval);
           last_val_tk := TK_REAL;
         END
+        ELSE IF const_tbl[consti].enum_tid <> 0 THEN
+        BEGIN
+          res := LLVMConstInt(i32ty, const_tbl[consti].ival, 0);
+          last_val_tk := const_tbl[consti].enum_tid;
+        END
         ELSE IF const_tbl[consti].is_char THEN
         BEGIN
           { Same shape a bare CharLiteral gets above: an unsigned i8 typed

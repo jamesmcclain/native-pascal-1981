@@ -412,6 +412,13 @@ BEGIN
   write_fmt_fnty := LLVMFunctionType(i32ty, param_arr, 2, 1);
   write_fmt_fn := LLVMAddFunction(modl, MakeCStr('pas_write_fmt'), write_fmt_fnty);
 
+  param_arr := AllocPtrArray(3);
+  SetPtrArrayElem(param_arr, 0, i32ty);
+  SetPtrArrayElem(param_arr, 1, LLVMPointerType(i8ptrty, 0));
+  SetPtrArrayElem(param_arr, 2, i32ty);
+  enum_write_token_fnty := LLVMFunctionType(i8ptrty, param_arr, 3, 0);
+  enum_write_token_fn := LLVMAddFunction(modl, MakeCStr('pas_enum_write_token'), enum_write_token_fnty);
+
   param_arr := AllocPtrArray(2);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
   SetPtrArrayElem(param_arr, 1, LLVMPointerType(i32ty, 0));

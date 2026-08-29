@@ -32,8 +32,8 @@ literals, `{$UNROLL}`, and launch-bound attributes. DEVICE units can use wide
 scalar types and tuning hints independently of the command-line dialect.
 
 Other gates are not implemented yet. For example, vintage mode still accepts
-wide integer constants, symbolic enum I/O, and string precision. Thus,
-`--dialect vintage` is not yet a complete conformance check.
+wide integer constants and string precision. Thus, `--dialect vintage` is not
+yet a complete conformance check.
 
 ### Command-line contract
 
@@ -58,8 +58,8 @@ codegen --dialect <value>
 These command lines are the implemented transport contract. The typechecker
 and code generator resolve the selected dialect to shared feature state. They
 use that state for scalar types, C interoperability, anonymous `READSET` set
-literals, and tuning hints. Later work will apply it to the remaining language
-constructs.
+literals, tuning hints, and enumerated I/O. Later work will apply it to the
+remaining language constructs.
 
 Feature overrides such as repeated `-f wide-integers` options are not part of
 the native command-line contract yet. `argparse` stores one value for each
@@ -72,6 +72,18 @@ vintage-core rule that remains true in the native extended surface;
 limitation of this repository's implementation. A native limitation applies
 to every program compiled by the native pipeline unless the text says
 otherwise.
+
+## Enumerated and BOOLEAN I/O
+
+Vintage `WRITE` and `WRITELN` print a user-defined enumerated value as its
+numeric ordinal. Vintage `READ` and `READLN` accept a numeric ordinal for that
+value. Extended mode writes the member identifier and reads member identifiers
+without regard to letter case. These rules apply to standard input and output
+and to explicit text files.
+
+`BOOLEAN` keeps its documented vintage behavior in both dialects. Output is
+`TRUE` or `FALSE`. Input accepts those names without regard to letter case and
+also accepts the numeric ordinals `1` and `0`.
 
 ## READSET and tuning hints
 

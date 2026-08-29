@@ -78,6 +78,7 @@ BEGIN
   types[ntypes].hi := hi;
   types[ntypes].is_super := FALSE;
   types[ntypes].ptr_space := PTR_SPACE_PLAIN;
+  types[ntypes].enum_values := NIL;
   types[ntypes].llvm_ty := llvm_ty;
   RegisterType := ntypes;
 END;
@@ -1197,13 +1198,13 @@ BEGIN
       the reference's own constants-table registration (codegen/decls.py's
       self.constants) -- which is what lets a member stand anywhere a
       compile-time integer constant is legal (array bounds, FOR bounds,
-      CASE arms). The bounds recorded on the type are the ordinal range,
-      and I/O treats the value as a plain INTEGER32: the manual reads
-      enumerated values as numbers, not names (djvu.txt:13610-13618), and
-      writes them that way under the vintage defaults too. }
+      CASE arms). The bounds recorded on the type are the ordinal range.
+      Vintage I/O uses that ordinal, while extended I/O uses the retained
+      member names. }
     values_arr := GetObj(te, 'values');
     count := ArrSize(values_arr);
     tid := RegisterType(TK_ENUM, 0, 0, RETYPE(INTEGER, count - 1), i32ty);
+    types[tid].enum_values := values_arr;
     FOR mi := 0 TO count - 1 DO
     BEGIN
       fname := CStrToStr255(cJSON_GetStringValue(ArrItem(values_arr, mi)));
@@ -1214,6 +1215,7 @@ BEGIN
       const_tbl[nconsts].name := fname;
       const_tbl[nconsts].is_real := FALSE;
       const_tbl[nconsts].is_char := FALSE;
+      const_tbl[nconsts].enum_tid := tid;
       const_tbl[nconsts].ival := mi;
     END;
   END

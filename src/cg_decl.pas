@@ -1637,11 +1637,13 @@ VAR
   rval: REAL;
   ival: INTEGER64;
   ci: INTEGER32;
+  enum_tid: INTEGER;
 BEGIN
   name := GetStr(decl, 'name');
   val_node := GetObj(decl, 'value');
   is_real := FALSE;
   is_char := FALSE;
+  enum_tid := 0;
   rval := 0.0;
   ival := 0;
   IF NodeType(val_node) = 'RealLiteral' THEN
@@ -1667,7 +1669,11 @@ BEGIN
     ELSE IF NodeType(val_node) = 'Identifier' THEN
     BEGIN
       ci := LookupConst(GetStr(val_node, 'name'));
-      IF ci <> 0 THEN is_char := const_tbl[ci].is_char;
+      IF ci <> 0 THEN
+      BEGIN
+        is_char := const_tbl[ci].is_char;
+        enum_tid := const_tbl[ci].enum_tid;
+      END;
     END;
     ival := IntLiteralValue(val_node);
   END;
@@ -1684,7 +1690,8 @@ BEGIN
        (NOT lowering_spliced_interface) THEN
     BEGIN
       IF (const_tbl[existing].is_real <> is_real) OR
-         (const_tbl[existing].is_char <> is_char) THEN
+         (const_tbl[existing].is_char <> is_char) OR
+         (const_tbl[existing].enum_tid <> enum_tid) THEN
         AbortWith2('codegen: conflicting const declaration: ', name);
       IF is_real THEN
       BEGIN
@@ -1701,6 +1708,7 @@ BEGIN
   const_tbl[nconsts].name := name;
   const_tbl[nconsts].is_real := is_real;
   const_tbl[nconsts].is_char := is_char;
+  const_tbl[nconsts].enum_tid := enum_tid;
   IF is_real THEN const_tbl[nconsts].rval := rval
   ELSE const_tbl[nconsts].ival := ival;
 END;
