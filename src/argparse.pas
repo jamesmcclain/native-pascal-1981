@@ -146,17 +146,18 @@ END;
   registered long name, which is stored without dashes. }
 PROCEDURE ArgDropPrefix(VAR s: ArgStr; count: INTEGER32);
 VAR
-  i, n: INTEGER32;
+  i, n, drop_count: INTEGER32;
 BEGIN
   n := ORD(s[0]);
-  IF count > n THEN count := n;
+  IF count > n THEN drop_count := n
+  ELSE drop_count := count;
   i := 1;
-  WHILE i <= n - count DO
+  WHILE i <= n - drop_count DO
   BEGIN
-    s[i] := s[i + count];
+    s[i] := s[i + drop_count];
     i := i + 1;
   END;
-  s[0] := CHR(RETYPE(INTEGER, n - count));
+  s[0] := CHR(RETYPE(INTEGER, n - drop_count));
 END;
 
 FUNCTION ArgStrEq(a: ArgStr; b: ArgStr): BOOLEAN;

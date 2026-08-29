@@ -131,6 +131,7 @@
   unsupported construct, prints a diagnostic and exits 1 without emitting
   IR, matching the other native stages' error convention. }
 
+(*$INCLUDE:'argparse.inc'*)
 (*$INCLUDE:'jsonutil.inc'*)
 (*$INCLUDE:'cg_base.inc'*)
 (*$INCLUDE:'cg_util.inc'*)
@@ -146,7 +147,7 @@
 (*$INCLUDE:'cg_decl.inc'*)
 PROGRAM pascal1981_codegen(input, output);
 
-USES jsonutil, cg_base, cg_util, cg_types, cg_symbols, cg_expr_shape, cg_expr_sets, cg_expr_support, cg_expr_literals, cg_expr, cg_io, cg_stmt, cg_decl;
+USES argparse, jsonutil, cg_base, cg_util, cg_types, cg_symbols, cg_expr_shape, cg_expr_sets, cg_expr_support, cg_expr_literals, cg_expr, cg_io, cg_stmt, cg_decl;
 
 { ============================== driver =================================== }
 
@@ -172,8 +173,51 @@ VAR
   target_ref, target_machine, target_layout, ptx_buffer, ptx_cpu: ADRMEM;
   emit_ptx: BOOLEAN;
   unit_name_len, unit_name_i: INTEGER;
+  dialect_arg, arg_error: ArgStr;
+
+PROCEDURE PrintArgError;
+VAR
+  msg: Str255;
+  i, n: INTEGER32;
+BEGIN
+  ArgError(arg_error);
+  n := ORD(arg_error[0]);
+  msg[0] := CHR(RETYPE(INTEGER, n));
+  i := 1;
+  WHILE i <= n DO
+  BEGIN
+    msg[i] := arg_error[i];
+    i := i + 1;
+  END;
+  EPrint(msg);
+END;
+
+PROCEDURE ParseArgs;
+BEGIN
+  ArgBegin('codegen', 'Pascal-1981 code generator stage.');
+  ArgString('dialect', ARG_NO_SHORT, 'vintage',
+            'Language dialect: vintage or extended.');
+  IF NOT ArgParse THEN
+  BEGIN
+    IF ArgHelpWanted THEN exit(0);
+    PrintArgError;
+    exit(1);
+  END;
+  IF ArgPosCount <> 0 THEN
+  BEGIN
+    EPrint('error: codegen accepts input only on standard input');
+    exit(1);
+  END;
+  ArgGetStr('dialect', dialect_arg);
+  IF (dialect_arg <> 'vintage') AND (dialect_arg <> 'extended') THEN
+  BEGIN
+    EPrint('error: invalid dialect; expected ''vintage'' or ''extended''');
+    exit(1);
+  END;
+END;
 
 BEGIN
+  ParseArgs;
   expr_depth := 0;
   stmt_depth := 0;
   root := ReadAllStdin;
