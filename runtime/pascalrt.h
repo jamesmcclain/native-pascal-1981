@@ -139,6 +139,29 @@ int         pas_arg_count(void);
 const char *pas_arg_value(int index);
 char       *pas_toolchain_root(void);
 
+/* ---- POSIX system utilities (sysutil.c) -------------------------- */
+
+#define PAS_SYS_OK       0
+#define PAS_SYS_ERROR   (-1)
+#define PAS_SYS_TIMEOUT (-2)
+#define PAS_SYS_SIGNAL  (-3)
+
+#define PAS_SYS_ENTRY_OTHER 0
+#define PAS_SYS_ENTRY_DIR   1
+#define PAS_SYS_ENTRY_FILE  2
+
+void *pas_sys_dir_open(const char *path);
+/* Returns 0 at end, -1 on error, or entry kind + 1. */
+int   pas_sys_dir_next(void *handle, char *name, int namecap);
+int   pas_sys_dir_close(void *handle);
+int   pas_sys_temp_dir(const char *prefix, char *out, int outcap);
+int   pas_sys_remove_tree(const char *path);
+/* packed_args is a sequence of NUL-terminated argv entries, excluding argv[0]. */
+int   pas_sys_exec(const char *executable, const char *packed_args,
+                   int packed_args_len, int timeout_ms, int *exit_code,
+                   int *term_signal, char *diagnostics, int diagnostics_cap,
+                   int *diagnostics_len);
+
 /* ---- stdin READ / READLN (readq.c) ---- */
 
 int   pas_read_int(int32_t *out);

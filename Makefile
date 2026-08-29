@@ -47,7 +47,7 @@ GEN4_BINS := $(addprefix $(BUILD_DIR)/gen4/,$(STAGES))
 BOOTSTRAP_BINS := $(addprefix $(BIN_DIR)/,$(STAGES))
 FIXED_POINT := $(BUILD_DIR)/.fixed-point-verified
 
-.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-driver test-native test-proxy test-gpu test-reference-parity test-elisp test-bootstrap
+.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-driver test-native test-sysutil test-proxy test-gpu test-reference-parity test-elisp test-bootstrap
 
 all: runtime driver bootstrap $(PROXY_BIN)
 
@@ -131,11 +131,15 @@ test: test-native test-proxy
 test-driver: $(DRIVER_BIN)
 	./tests/driver.sh
 
-test-native: test-driver $(ASTCOMPARE_BIN) $(PROXY_BIN)
+test-native: test-driver test-sysutil $(ASTCOMPARE_BIN) $(PROXY_BIN)
 	./tests/run.sh
 	./tests/checklit.sh
 	./tests/depth.sh
 	./tests/astcompare.sh
+
+# Reusable POSIX filesystem and process primitives, exercised from Pascal.
+test-sysutil: $(DRIVER_BIN) runtime
+	./tests/sysutil_check.sh $(DRIVER_ALIAS)
 
 # Differential conformance for the completion proxy: the same corpus of raw
 # HTTP requests replayed against the Pascal port and against the Python

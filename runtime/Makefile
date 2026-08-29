@@ -13,7 +13,11 @@
 # archive per shim. Consumers pick the archive at link time. A consumer linking
 # libpascalrt_cuda.a must add -lcuda on its final link line.
 
-CC      ?= clang
+# GNU make supplies CC=cc by default; do not silently inherit it.  A caller
+# may still override CC explicitly (for example, CC=gcc).
+ifeq ($(origin CC),default)
+CC := $(shell command -v clang 2>/dev/null || command -v gcc 2>/dev/null || echo clang)
+endif
 CFLAGS  := -c -O2 -Wall -Wextra
 AR      := ar
 ARFLAGS := rcs
