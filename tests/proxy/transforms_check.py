@@ -350,6 +350,91 @@ _RESPONSES = [
     },
 ]
 
+_ECHO_BUFFER_DISPO = ('PROGRAM D;\n'
+                      'VAR p1, p2: ^INTEGER;\n'
+                      'BEGIN\n'
+                      '  NEW(p1); NEW(p2);\n'
+                      '  DISPOSE(p1);\n'
+                      '  DISPO')
+
+# Pairs taken straight from the Python suite's own echo tests, which encode
+# the false positives that shaped the floors.
+_ECHO_PAIRS = [
+    ('VAR x: INTEGER;\nBEGIN\n', '  x := 1;'),
+    ('BEGIN\n  BEGIN\n    x := 1\n  END;\n', 'END;\nEND.'),
+    ('PROGRAM Demo;\nBEGIN\n  x := ', 'BEGIN\n  x := 1;\nEND.'),
+    (';;;;;', ';;;;;y'),
+    ('xxxxxx', 'xxxxxxy'),
+    ('...\nBEGIN OF SOMETHING\n', 'begin of something\n  x := 1;'),
+    ('PROGRAM Demo;\nBEGIN\n  x := 1;\n', '  x := 1;\n'),
+    ('', 'x := 1;'),
+    ('BEGIN\n', ''),
+    ('', ''),
+    ('PROGRAM Demo;\nBEGIN\n  x := 1;\n', '  x := 1;\n  y := 2;'),
+    (_ECHO_BUFFER_DISPO, 'DISPOSE(p2);\nEND.'),
+    (_ECHO_BUFFER_DISPO, 'SE(p2);\nEND.'),
+    (_ECHO_BUFFER_DISPO, 'dispose(p2);'),
+    (_ECHO_BUFFER_DISPO[:-5] + 'dispo', 'DISPOSE(p2);'),
+    ('BEGIN\n  x', 'x := 1;'),
+    ('FOR i := 1 TO 1', '10 DO'),
+    (_ECHO_BUFFER_DISPO, 'WRITELN(x);'),
+    (_ECHO_BUFFER_DISPO + 'SE', 'DISP'),
+    ('  DISPOSE(', 'p2);'),
+    ('FOR i := 1 ', 'TO 10 DO'),
+    ('BEGIN\n  x := 1;\n', 'END;'),
+]
+
+# The approximate pass has no coverage at all in the Python suite, so it gets
+# the most here. Each snippet's tail is retyped the way a small model
+# actually does it -- reindented, re-cased, with a renamed variable or a
+# dropped token -- and then continued, which is exactly the shape an exact
+# match cannot see.
+_ECHO_TAILS = [
+    'PROGRAM Demo;\nVAR i, total: INTEGER;\nBEGIN\n  total := 0;\n'
+    '  FOR i := 1 TO 10 DO\n    total := total + i;\n',
+    'PROCEDURE Walk(p: Node);\nBEGIN\n  WHILE p <> NIL DO\n'
+    '  BEGIN\n    WRITELN(p^.value);\n    p := p^.next;\n  END;\n',
+    'BEGIN\n  READLN(n);\n  IF n > 0 THEN\n    WRITELN(n)\n  ELSE\n',
+    'CONST LIMIT = 100;\nVAR count: INTEGER;\nBEGIN\n  count := 0;\n',
+]
+
+_ECHO_CONTINUATIONS = ['\n  WRITELN(total);\nEND.', '', '\nEND.']
+
+
+def _retype(text, mode):
+    """Retype TEXT the way a small model does when it echoes."""
+    if mode == 'exact':
+        return text
+    if mode == 'reindent':
+        return '\n'.join(line.strip() for line in text.split('\n'))
+    if mode == 'recase':
+        return text.swapcase()
+    if mode == 'rename':
+        return text.replace('total', 'sum').replace('count', 'n')
+    if mode == 'drop':
+        parts = text.split(' ')
+        return ' '.join(parts[:3] + parts[4:]) if len(parts) > 4 else text
+    if mode == 'reindent_recase':
+        return '\n'.join(line.strip().swapcase() for line in text.split('\n'))
+    raise AssertionError(mode)
+
+
+_ECHO_MODES = [
+    'exact', 'reindent', 'recase', 'rename', 'drop', 'reindent_recase'
+]
+
+
+def _echo_pairs():
+    pairs = list(_ECHO_PAIRS)
+    for snippet in _ECHO_TAILS:
+        for tail_lines in (1, 2, 3):
+            lines = snippet.rstrip('\n').split('\n')
+            tail = '\n'.join(lines[-tail_lines:])
+            for mode in _ECHO_MODES:
+                for continuation in _ECHO_CONTINUATIONS:
+                    pairs.append((snippet, _retype(tail, mode) + continuation))
+    return pairs
+
 
 def build_corpus():
     """Return (jobs, expectations) as parallel lists."""
@@ -418,6 +503,13 @@ def build_corpus():
                         'line': line,
                         'column': column
                     })
+
+    for buffer, candidate in _echo_pairs():
+        add({
+            'op': 'strip_echo',
+            'buffer': buffer,
+            'candidate': candidate
+        }, {'text': proxy.strip_echo(buffer, candidate)})
 
     for response in _RESPONSES:
         job = {'op': 'extract_completion', 'response': response}

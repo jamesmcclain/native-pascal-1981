@@ -41,7 +41,7 @@ INTERFACE;
 UNIT proxycore (PxRequestInit, PxRequestFree, PxValidateRequest,
                 PxComputePrefix, PxBuildPrompt,
                 PxReplyInit, PxReplyFree, PxExtractCompletion,
-                PxStripCodeFence, PxSanitizeCompletion,
+                PxStripCodeFence, PxStripEcho, PxSanitizeCompletion,
                 PxUtf8Valid, PxCharLen, PxSystemPrompt,
                 PxRequest, PxReply,
                 PX_UP_OK, PX_UP_ERROR, PX_UP_EXHAUSTED,
@@ -141,6 +141,17 @@ FUNCTION PxExtractCompletion(tree: ADRMEM; VAR r: PxReply): INTEGER32;
   a small model very often answers with a prose preamble ahead of it, and
   keeping the preamble puts an English sentence in the user's source file. }
 PROCEDURE PxStripCodeFence(VAR text: ByteBuf; VAR out: ByteBuf);
+
+{ Strip an echoed prefix of the buffer's tail from the front of the
+  candidate, returning the residue.
+
+  Three passes, cheapest and strictest first, first hit winning: an exact
+  character-level overlap, then a restated partial identifier, then an
+  approximate token-level alignment. Each catches something the others
+  structurally cannot; see the implementation for what, and for why the
+  approximate pass carries much stricter floors than the exact one. }
+PROCEDURE PxStripEcho(VAR buffer: ByteBuf; VAR candidate: ByteBuf;
+                      VAR out: ByteBuf);
 
 { Enforce the output policy: no control characters other than newline and
   tab, nothing from a special-token marker onward, no leading blank lines, at

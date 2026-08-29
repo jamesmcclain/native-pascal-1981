@@ -107,6 +107,13 @@ BEGIN
     PxStripCodeFence(a, out);
     JxAddStrFromBuf(res, 'text', out);
   END
+  ELSE IF op = 'strip_echo' THEN
+  BEGIN
+    ArgBuf(job, 'buffer', a);
+    ArgBuf(job, 'candidate', b);
+    PxStripEcho(a, b, out);
+    JxAddStrFromBuf(res, 'text', out);
+  END
   ELSE IF op = 'sanitize' THEN
   BEGIN
     ArgBuf(job, 'text', a);

@@ -690,5 +690,293 @@ BEGIN
   BufFree(tmp);
 END;
 
+
+{ ------------------------------------------------------------------ }
+{ Echo stripping                                                      }
+{ ------------------------------------------------------------------ }
+
+{ Pass 1. The longest exact overlap between a suffix of the buffer and a
+  prefix of the candidate. }
+FUNCTION PxExactOverlap(VAR buffer: ByteBuf;
+                        VAR candidate: ByteBuf): INTEGER32;
+VAR
+  nb, nc, k, best: INTEGER32;
+  bbase, cbase: ADRMEM;
+BEGIN
+  nb := BufLen(buffer);
+  nc := BufLen(candidate);
+  k := nb;
+  IF nc < k THEN k := nc;
+  best := 0;
+  IF k > 0 THEN
+  BEGIN
+    bbase := BufPtr(buffer);
+    cbase := BufPtr(candidate);
+    WHILE (k > 0) AND (best = 0) DO
+    BEGIN
+      { memcmp, not a Pascal loop. The search is quadratic in the worst case
+        -- a buffer and a candidate that are long runs of the same character
+        -- and doing the innermost comparison one byte at a time through a
+        function call turns milliseconds into seconds. The C library does
+        the same work word at a time. }
+      IF memcmp(bbase + (nb - k), cbase, RETYPE(CSIZE_T, k)) = 0 THEN
+        best := k;
+      k := k - 1;
+    END;
+  END;
+  PxExactOverlap := best;
+END;
+
+{ Pass 2. The cursor sits part-way through a word and the model answers by
+  retyping the whole word rather than continuing it: typing DISPO and asking
+  for a completion gets back DISPOSE(p2); instead of SE(p2);, and accepting
+  that puts DISPODISPOSE(p2); in the buffer.
+
+  Neither other pass can see it. The exact pass finds the overlap -- DISPO is
+  five characters -- but its floor requires more than that, and a partial
+  identifier is routinely shorter; lowering the floor is not an option, since
+  four characters is END; and that floor is the only thing keeping
+  legitimate structural repetition out. The token pass cannot see it either:
+  DISPO and DISPOSE are simply different tokens to it.
+
+  Being anchored to a word boundary on both sides is what makes a low
+  threshold safe here where it would not be elsewhere. A candidate that
+  correctly continues the partial word does not begin with it, and is left
+  alone. }
+FUNCTION PxPartialTokenCut(VAR buffer: ByteBuf;
+                           VAR candidate: ByteBuf): INTEGER32;
+VAR
+  nb, nc, start, plen, head_end, i, cut: INTEGER32;
+  match: BOOLEAN;
+BEGIN
+  nb := BufLen(buffer);
+  start := nb;
+  WHILE (start > 0) AND PxIsIdentOrd(PxByte(buffer, start - 1)) DO
+    start := start - 1;
+  plen := nb - start;
+  cut := 0;
+  IF plen > 0 THEN
+  BEGIN
+    nc := BufLen(candidate);
+    head_end := 0;
+    WHILE (head_end < nc) AND PxIsIdentOrd(PxByte(candidate, head_end)) DO
+      head_end := head_end + 1;
+    IF head_end >= plen THEN
+    BEGIN
+      { Case-insensitively, since the dialect is: dispose continues DISPO. }
+      match := TRUE;
+      FOR i := 0 TO plen - 1 DO
+        IF PxLowerOrd(PxByte(buffer, start + i)) <>
+           PxLowerOrd(PxByte(candidate, i)) THEN
+          match := FALSE;
+      IF match THEN cut := plen;
+    END;
+  END;
+  PxPartialTokenCut := cut;
+END;
+
+{ Split into tokens for comparison: a case-folded run of identifier
+  characters, or a single punctuation character, with whitespace dropped
+  entirely. Each token is recorded as its half-open range in the raw text, so
+  it is its own lowercase form for comparison purposes and a match measured
+  in tokens maps straight back to a cut point in the raw text.
+
+  Tokenizing rather than comparing characters is what makes indentation and
+  keyword casing structurally invisible instead of something the comparison
+  has to tolerate: this dialect is case-insensitive, so begin and BEGIN are
+  the same token, and a model that reindents what it retypes has still
+  echoed.
+
+  keep_tail chooses which end to keep when there are more tokens than the
+  budget: the buffer's last ones, since the echo is of what precedes the
+  cursor, and the candidate's first ones, since an echo is a prefix of it. }
+PROCEDURE PxTokenize(VAR b: ByteBuf; keep_tail: BOOLEAN;
+                     VAR starts: PxTokenArr; VAR ends: PxTokenArr;
+                     VAR count: INTEGER32);
+VAR
+  ring_s, ring_e: PxTokenArr;
+  i, j, n, run, v, total, slot, offset: INTEGER32;
+  stop: BOOLEAN;
+BEGIN
+  n := BufLen(b);
+  total := 0;
+  i := 0;
+  stop := FALSE;
+  WHILE (i < n) AND (NOT stop) DO
+  BEGIN
+    v := PxByte(b, i);
+    IF PxIsSpaceOrd(v) THEN
+      i := i + 1
+    ELSE
+    BEGIN
+      IF PxIsIdentOrd(v) THEN
+      BEGIN
+        run := i;
+        WHILE (run < n) AND PxIsIdentOrd(PxByte(b, run)) DO
+          run := run + 1;
+      END
+      ELSE
+        run := i + 1;
+      { A ring, so keeping the last N costs no more than keeping the first. }
+      slot := (total MOD PX_ECHO_MAX_TOKENS) + 1;
+      ring_s[slot] := i;
+      ring_e[slot] := run;
+      total := total + 1;
+      i := run;
+      IF (NOT keep_tail) AND (total = PX_ECHO_MAX_TOKENS) THEN stop := TRUE;
+    END;
+  END;
+
+  IF total <= PX_ECHO_MAX_TOKENS THEN
+  BEGIN
+    count := total;
+    FOR j := 1 TO count DO
+    BEGIN
+      starts[j] := ring_s[j];
+      ends[j] := ring_e[j];
+    END;
+  END
+  ELSE
+  BEGIN
+    count := PX_ECHO_MAX_TOKENS;
+    offset := total MOD PX_ECHO_MAX_TOKENS;
+    FOR j := 1 TO count DO
+    BEGIN
+      slot := ((offset + j - 1) MOD PX_ECHO_MAX_TOKENS) + 1;
+      starts[j] := ring_s[slot];
+      ends[j] := ring_e[slot];
+    END;
+  END;
+END;
+
+FUNCTION PxTokEq(VAR a: ByteBuf; astart: INTEGER32; aend: INTEGER32;
+                 VAR b: ByteBuf; bstart: INTEGER32;
+                 bend: INTEGER32): BOOLEAN;
+VAR
+  i, n: INTEGER32;
+  eq: BOOLEAN;
+BEGIN
+  n := aend - astart;
+  IF n <> bend - bstart THEN
+    eq := FALSE
+  ELSE
+  BEGIN
+    eq := TRUE;
+    i := 0;
+    WHILE (i < n) AND eq DO
+    BEGIN
+      IF PxLowerOrd(PxByte(a, astart + i)) <>
+         PxLowerOrd(PxByte(b, bstart + i)) THEN
+        eq := FALSE;
+      i := i + 1;
+    END;
+  END;
+  PxTokEq := eq;
+END;
+
+{ Pass 3. An index into the candidate just past an approximate echo of the
+  buffer's tail, or 0.
+
+  The exact pass only catches an echo reproduced byte for byte, and a small
+  model routinely does not: it retypes the last statement with its own
+  indentation, re-cases keywords, renames a loop variable, drops a modifier.
+  Any one of those collapses an exact match to nothing, and matching on
+  normalized text is no better -- it still fails on the first substituted or
+  missing token.
+
+  So this is an overlap alignment: the minimum edit distance between some
+  suffix of the buffer's token stream and each prefix of the candidate's.
+  Zeroing the first column makes starting the buffer-side alignment at any
+  token free, which is the "some suffix" part, and only the final row is
+  meaningful -- the buffer ends at the cursor, which is exactly where the
+  model resumed writing, so the echo must run to the buffer's end. }
+FUNCTION PxApproxEchoCut(VAR buffer: ByteBuf;
+                         VAR candidate: ByteBuf): INTEGER32;
+VAR
+  bs, be, cs, ce: PxTokenArr;
+  prev, cur: PxDistArr;
+  bcount, ccount, i, j, cost, best, chars: INTEGER32;
+  cut, best_d, best_j: INTEGER32;
+  have: BOOLEAN;
+BEGIN
+  PxTokenize(buffer, TRUE, bs, be, bcount);
+  PxTokenize(candidate, FALSE, cs, ce, ccount);
+  IF (bcount = 0) OR (ccount = 0) THEN
+  BEGIN
+    PxApproxEchoCut := 0;
+    RETURN;
+  END;
+
+  { prev[j] starts as the cost of aligning an empty buffer suffix against
+    the candidate's first j tokens: j insertions. }
+  FOR j := 0 TO ccount DO
+    prev[j] := j;
+  FOR i := 1 TO bcount DO
+  BEGIN
+    cur[0] := 0;
+    FOR j := 1 TO ccount DO
+    BEGIN
+      IF PxTokEq(buffer, bs[i], be[i], candidate, cs[j], ce[j]) THEN
+        cost := 0
+      ELSE
+        cost := 1;
+      best := prev[j] + 1;
+      IF cur[j - 1] + 1 < best THEN best := cur[j - 1] + 1;
+      IF prev[j - 1] + cost < best THEN best := prev[j - 1] + cost;
+      cur[j] := best;
+    END;
+    FOR j := 0 TO ccount DO
+      prev[j] := cur[j];
+  END;
+
+  { Take the cheapest qualifying alignment, breaking ties toward the longest
+    -- not simply the longest that clears the threshold. Those are different
+    choices and the difference is a real over-strip: where the candidate
+    echoes seven tokens and then begins its own contribution, extending the
+    match to eight costs one insertion but still scores 1 - 1/8, comfortably
+    over the bar, and longest-wins would take it and eat the first token of
+    the real completion. Ranking by distance first refuses that, because
+    extending into new material always costs. }
+  cut := 0;
+  have := FALSE;
+  best_d := 0;
+  best_j := 0;
+  chars := 0;
+  FOR j := 1 TO ccount DO
+  BEGIN
+    chars := chars + (ce[j] - cs[j]);
+    IF (j >= PX_ECHO_MIN_APPROX_TOKENS) AND
+       (chars >= PX_ECHO_MIN_APPROX_CHARS) THEN
+      { Similarity as integers: 1 - d/j >= 0.8 is exactly j >= 5*d, which
+        avoids asking whether a float comparison lands on the right side of
+        the threshold at the boundary. }
+      IF j >= 5 * prev[j] THEN
+        IF (NOT have) OR (prev[j] < best_d) OR
+           ((prev[j] = best_d) AND (j > best_j)) THEN
+        BEGIN
+          have := TRUE;
+          best_d := prev[j];
+          best_j := j;
+          cut := ce[j];
+        END;
+  END;
+  PxApproxEchoCut := cut;
+END;
+
+PROCEDURE PxStripEcho(VAR buffer: ByteBuf; VAR candidate: ByteBuf;
+                      VAR out: ByteBuf);
+VAR
+  cut: INTEGER32;
+BEGIN
+  cut := PxExactOverlap(buffer, candidate);
+  IF cut <= PX_ECHO_MIN_OVERLAP THEN
+  BEGIN
+    cut := PxPartialTokenCut(buffer, candidate);
+    IF cut = 0 THEN
+      cut := PxApproxEchoCut(buffer, candidate);
+  END;
+  PxAppendSlice(candidate, cut, BufLen(candidate) - cut, out);
+END;
+
 BEGIN
 END.
