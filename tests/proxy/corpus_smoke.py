@@ -21,13 +21,6 @@ signal, not a protocol check, and no stub can produce it.
     tests/proxy/corpus_smoke.py                      # against the stub
     tests/proxy/corpus_smoke.py --base-url URL       # against a real backend
     tests/proxy/corpus_smoke.py --limit 10           # a quick pass
-    tests/proxy/corpus_smoke.py --reference          # no proxy, no model
-
---reference skips the proxy entirely and compiles each item's own recorded
-continuation instead of a model's. Every derived item was cut from a program
-that compiled, so all of them must still compile when put back together: it
-checks the corpus against the compiler, and the compile check against itself.
-It is deterministic and needs no backend.
 
 Exit status is 0 unless a request failed at the protocol level -- a wrong
 status, a malformed body, a connection that died. Completion *quality* is
@@ -121,36 +114,6 @@ def compiles(compiler, buffer_text, completion):
         return False, (proc.stderr or proc.stdout or '').strip()[-200:]
 
 
-def run_reference(items):
-    """Compile each item's own recorded continuation.
-
-    A derived item was made by cutting a compiling program at a line boundary,
-    so buffer + reference_continuation is that program again and must build.
-    Anything that does not means either the corpus has drifted from the
-    sources it was cut from, or the compiler has regressed on code it used to
-    accept. Both are worth knowing, and neither needs a model.
-    """
-    compiler = REPO / 'bin' / 'pascal1981'
-    if not compiler.exists():
-        print('bin/pascal1981 is not built; nothing to check against',
-              file=sys.stderr)
-        return 1
-    eligible = 0
-    built = 0
-    for item in items:
-        if not item.get('compiles_when_appended'):
-            continue
-        eligible += 1
-        ok, diagnostic = compiles(compiler, item['buffer'],
-                                  item['reference_continuation'])
-        if ok:
-            built += 1
-        else:
-            print('FAIL %-32s %s' % (item['id'], diagnostic[:160]))
-    print('%d of %d recorded continuations compiled' % (built, eligible))
-    return 0 if built == eligible else 1
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('--proxy-bin',
@@ -164,17 +127,10 @@ def main():
     parser.add_argument('--max-tokens', default='512')
     parser.add_argument('--llm-model', default='stub-model')
     parser.add_argument('--no-compile-check', action='store_true')
-    parser.add_argument('--reference',
-                        action='store_true',
-                        help='compile each item\'s recorded continuation '
-                        'instead of calling a model')
     parser.add_argument('-v', '--verbose', action='store_true')
     args = parser.parse_args()
 
     items = load_corpus(args.limit)
-
-    if args.reference:
-        return run_reference(items)
 
     procs = []
     try:

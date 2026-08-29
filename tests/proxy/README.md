@@ -37,10 +37,10 @@ and a new case has to arrive with an answer worked out by hand.
 ```bash
 tests/proxy/corpus_smoke.py               # 64 realistic requests, via the stub
 tests/proxy/corpus_smoke.py --base-url URL  # ... against a real backend
-tests/proxy/corpus_smoke.py --reference   # no proxy, no model: compile the corpus
+tests/proxy/corpus_reference_check.sh     # no proxy, no model: compile the corpus
 ```
 
-`--reference` is the compiler's own regression test as much as the corpus's:
+`corpus_reference_check.sh` is the compiler's own regression test as much as the corpus's:
 every item's recorded continuation is a real program, and each of the two
 compiler gaps this mode has turned up so far -- LSTRING's `.LEN` and a
 CHAR-keyed `CASE` -- was a construct nothing else in the tree used.
@@ -105,15 +105,16 @@ has no way to start.
   they are.
 - `test_corpus.py` — unit tests for `build_corpus.py`'s split-point logic and
   a shape check over every committed item. The reconstruction test is the one
-  that matters: it is what keeps `corpus_smoke.py --reference` meaningful,
+  that matters: it is what keeps `corpus_reference_check.sh` meaningful,
   since that mode relies on buffer + recorded continuation being the original
   program byte for byte.
-- `corpus_smoke.py` — replays that corpus. Against a live backend it also
-  appends each completion to its buffer and compiles the result with the real
-  compiler, which is an objective quality signal no stub can produce.
-  `--reference` skips the proxy and the model entirely and compiles each
-  item's own recorded continuation, which checks the corpus against the
-  compiler and the compile check against itself.
+- `corpus_reference.pas` / `corpus_reference.build.sh` /
+  `corpus_reference_check.sh` — native reference-continuation check. It
+  enumerates the corpus, appends every eligible recorded continuation, and
+  compiles the reconstructed program with the supplied compiler.
+- `corpus_smoke.py` — replays that corpus against a live backend and appends
+  each completion to its buffer before compiling it with the real compiler,
+  which is an objective quality signal no stub can produce.
 - `oneshot.pas` / `oneshot.build.sh` / `oneshot.sh` / `oneshot.expected` — one
   upstream call written in the vintage dialect, the step-5 milestone of the
   port. It is not the proxy: no calibration, no echo stripping, no server
