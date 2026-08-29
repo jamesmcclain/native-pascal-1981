@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 PROGRAM wide_int_literals(input, output);
 { An integer literal wider than this dialect's 16-bit INTEGER, in every form
   the language offers, resolved against the target's width.

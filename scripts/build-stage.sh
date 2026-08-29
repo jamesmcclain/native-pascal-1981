@@ -91,7 +91,9 @@ PYTHON="${PYTHON:-python3}"
 run_frontend() {
   local src_file="$1"
   if [ -n "${NATIVE_LEXER:-}" ] && [ -n "${NATIVE_PARSER:-}" ] && [ -n "${NATIVE_TYPECHECKER:-}" ]; then
-    "$NATIVE_LEXER" < "$src_file" | "$NATIVE_PARSER" | "$NATIVE_TYPECHECKER"
+    "$NATIVE_LEXER" < "$src_file" | \
+      "$NATIVE_PARSER" --dialect extended | \
+      "$NATIVE_TYPECHECKER" --dialect extended
   else
     "$PYTHON" -m pascal1981.cli_lex "$src_file" | \
       "$PYTHON" -m pascal1981.cli_parse --source-file "$src_file" --dialect extended | \
@@ -105,7 +107,7 @@ CLANG="${CLANG:-${CC:-clang}}"
   cd "$src_dir"
   if [ -n "$native_jsonutil" ]; then
     jsonutil_ll="$work_dir/jsonutil.ll"
-    run_frontend jsonutil.pas | "$native_jsonutil" > "$jsonutil_ll"
+    run_frontend jsonutil.pas | "$native_jsonutil" --dialect extended > "$jsonutil_ll"
     "$CLANG" $STAGE_OPT -c "$jsonutil_ll" -o "$jsonutil_obj"
   else
     pascal1981 --dialect extended -c jsonutil.pas -o "$jsonutil_obj"
@@ -115,14 +117,14 @@ CLANG="${CLANG:-${CC:-clang}}"
     unit_ll="$work_dir/$unit_name.ll"
     unit_obj="$work_dir/$unit_name.o"
     if [ -n "$native_codegen" ]; then
-      run_frontend "$unit_src" | "$native_codegen" > "$unit_ll"
+      run_frontend "$unit_src" | "$native_codegen" --dialect extended > "$unit_ll"
     else
       pascal1981 --dialect extended -S "$unit_src" -o "$unit_ll"
     fi
     "$CLANG" $STAGE_OPT -c "$unit_ll" -o "$unit_obj"
   done
   if [ -n "$native_codegen" ]; then
-    run_frontend "$stage_file" | "$native_codegen" > "$stage_ll"
+    run_frontend "$stage_file" | "$native_codegen" --dialect extended > "$stage_ll"
   else
     pascal1981 --dialect extended -S "$stage_file" -o "$stage_ll"
   fi

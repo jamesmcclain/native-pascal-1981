@@ -19,6 +19,6 @@ touch "$work/fixture/nested/child"
 ln -s alpha "$work/fixture/alpha-link"
 
 cd "$repo/src"
-"$compiler" "$here/sysutil_check.pas" bytebuf.pas sysutil.pas -o "$work/sysutil_check"
+"$compiler" --dialect extended "$here/sysutil_check.pas" bytebuf.pas sysutil.pas -o "$work/sysutil_check"
 TMPDIR="$work/custom-tmp" "$work/sysutil_check" "$work/fixture" \
     "$work/custom-tmp" "$work/no-such-parent"

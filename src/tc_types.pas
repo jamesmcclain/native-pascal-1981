@@ -72,23 +72,58 @@ BEGIN
       dialect): this v1 type-kind model doesn't track width, so each just
       aliases to its base kind -- matching how INTEGER32/WORD32/etc. behave
       identically to INTEGER/WORD for every check this stage performs. }
-    ELSE IF (uname = 'INTEGER8') OR (uname = 'INTEGER16') OR (uname = 'INTEGER32') OR (uname = 'INTEGER64') THEN tk := TK_INTEGER
-    ELSE IF (uname = 'WORD8') OR (uname = 'WORD16') OR (uname = 'WORD32') OR (uname = 'WORD64') THEN tk := TK_WORD
-    ELSE IF (uname = 'REAL32') OR (uname = 'REAL64') THEN tk := TK_REAL
-    { ADRMEM/ADSMEM (and the CPTR C-ABI alias) are address types -- codegen's
-      opaque-pointer model treats them as "pointer to CHAR" (see
-      types_resolve.py's resolve_type: ADRMEM -> PointerType(CHAR_TYPE)). }
-    ELSE IF (uname = 'ADRMEM') OR (uname = 'ADSMEM') OR (uname = 'CPTR') THEN
+    ELSE IF (uname = 'INTEGER8') OR (uname = 'INTEGER16') OR (uname = 'INTEGER32') OR (uname = 'INTEGER64') THEN
+    BEGIN
+      IF active_features.wide_integers OR is_device_compiland THEN
+        tk := TK_INTEGER
+      ELSE BEGIN
+        AddError2('Type requires the extended dialect: ', name);
+        tk := TK_UNKNOWN;
+      END;
+    END
+    ELSE IF (uname = 'WORD8') OR (uname = 'WORD16') OR (uname = 'WORD32') OR (uname = 'WORD64') THEN
+    BEGIN
+      IF active_features.wide_integers OR is_device_compiland THEN
+        tk := TK_WORD
+      ELSE BEGIN
+        AddError2('Type requires the extended dialect: ', name);
+        tk := TK_UNKNOWN;
+      END;
+    END
+    ELSE IF (uname = 'REAL32') OR (uname = 'REAL64') THEN
+    BEGIN
+      IF active_features.wide_reals OR is_device_compiland THEN
+        tk := TK_REAL
+      ELSE BEGIN
+        AddError2('Type requires the extended dialect: ', name);
+        tk := TK_UNKNOWN;
+      END;
+    END
+    { ADRMEM/ADSMEM are vintage address types. The CPTR spelling is part of
+      the extended C-ABI aliases. All three use the same coarse pointer tag. }
+    ELSE IF (uname = 'ADRMEM') OR (uname = 'ADSMEM') THEN
     BEGIN
       tk := TK_POINTER;
       aux := TK_CHAR;
     END
-    { C-ABI fixed-width scalar aliases (builtins_registry.py's
-      C_ABI_TYPE_ALIASES): each resolves to the vintage type of matching
-      flavor, since this stage doesn't distinguish integer/real width. }
-    ELSE IF uname = 'CCHAR' THEN tk := TK_CHAR
-    ELSE IF (uname = 'CSHORT') OR (uname = 'CINT') OR (uname = 'CLONG') OR (uname = 'CSIZE_T') THEN tk := TK_INTEGER
-    ELSE IF uname = 'CDOUBLE' THEN tk := TK_REAL
+    ELSE IF (uname = 'CPTR') OR (uname = 'CCHAR') OR (uname = 'CSHORT') OR
+            (uname = 'CINT') OR (uname = 'CLONG') OR (uname = 'CSIZE_T') OR
+            (uname = 'CDOUBLE') THEN
+    BEGIN
+      IF NOT FeaturesAreExtended(active_features) THEN
+      BEGIN
+        AddError2('Type requires the extended dialect: ', name);
+        tk := TK_UNKNOWN;
+      END
+      ELSE IF uname = 'CPTR' THEN
+      BEGIN
+        tk := TK_POINTER;
+        aux := TK_CHAR;
+      END
+      ELSE IF uname = 'CCHAR' THEN tk := TK_CHAR
+      ELSE IF (uname = 'CSHORT') OR (uname = 'CINT') OR (uname = 'CLONG') OR (uname = 'CSIZE_T') THEN tk := TK_INTEGER
+      ELSE tk := TK_REAL;
+    END
     ELSE IF uname = 'TEXT' THEN
     BEGIN
       tk := TK_FILE;

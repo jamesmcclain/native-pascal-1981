@@ -82,10 +82,9 @@
   looseness relative to the Python reference's constant-only version) --
   same-width arithmetic/comparisons still use signed instructions,
   matching the reference's own hardcoded sdiv/srem/icmp-signed even for
-  WORD) and INTEGER8 (8-bit signed, tid TK_INTEGER8, LLVM i8 -- feature state
-  is now resolved but its gates are not applied until the next work unit, so
-  INTEGER8 remains temporarily available in both dialects; only a compile-time
-  INTEGER *literal* -- bare or unary-MINUS-wrapped -- may assign into an
+  WORD) and INTEGER8 (8-bit signed, tid TK_INTEGER8, LLVM i8 -- available
+  only with `wide-integers` or in DEVICE code; only a compile-time INTEGER
+  *literal* -- bare or unary-MINUS-wrapped -- may assign into an
   INTEGER8 target, truncated to i8, matching the reference's constant-only
   exemption more closely since narrowing isn't something this file wants
   to allow silently for a non-constant value); plus HIBYTE/LOBYTE

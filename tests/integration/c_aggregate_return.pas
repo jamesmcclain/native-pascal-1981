@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 { A [C] FOREIGN FUNCTION returning a RECORD by value. Both SysV return
   classes are exercised: MEMORY class (>16 bytes -- the result is written
   through a hidden sret pointer the caller passes as LLVM argument 0, and

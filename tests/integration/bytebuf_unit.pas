@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 (*$INCLUDE:'bytebuf.inc'*)
 PROGRAM bytebuf_unit(input, output);
 { Exercises the bytebuf unit, including the case the dialect makes easy to get

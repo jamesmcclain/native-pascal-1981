@@ -214,7 +214,7 @@ def _native_compile_and_run(src_text, exe_name):
         if result.returncode:
             return None, result.returncode, "", result.stderr
         for stage in ("parser", "typechecker", "codegen"):
-            result = subprocess.run([NATIVE[stage]],
+            result = subprocess.run([NATIVE[stage], "--dialect", "extended"],
                                     input=result.stdout,
                                     capture_output=True,
                                     text=True,

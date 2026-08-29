@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 (*$INCLUDE:'bytebuf.inc'*)
 (*$INCLUDE:'argparse.inc'*)
 PROGRAM argparse_unit(input, output);

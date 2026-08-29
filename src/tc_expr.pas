@@ -326,6 +326,8 @@ BEGIN
   END;
   IF name = 'WRD8' THEN
   BEGIN
+    IF NOT (active_features.wide_integers OR is_device_compiland) THEN
+      AddError('WRD8 requires the extended dialect');
     IF nargs <> 1 THEN
       AddError('WRD8 requires exactly one argument')
     ELSE BEGIN

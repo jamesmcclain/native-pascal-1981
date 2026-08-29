@@ -29,11 +29,9 @@
   downstream error-checking precision, not the IR codegen.pas ultimately
   emits), and non-PROGRAM compilation units (MODULE/INTERFACE/
   IMPLEMENTATION, which put `decls` directly on the root instead of nesting
-  under a `block` the way a PROGRAM does -- see CheckUnit). DEVICE MODULE
-  checks, VARARGS attribute checks, and UNIT interface/implementation
-  signature *matching* (validating IMPLEMENTATION bodies against their
-  INTERFACE signatures) are still deferred; those aren't exercised by this
-  repository's own native sources, which is what self-hosting requires.
+  under a `block` the way a PROGRAM does -- see CheckUnit). This stage also
+  checks DEVICE context, VARARGS attributes, UNIT interface/implementation
+  signatures, and the extended type/C-ABI gates.
 
   Self-hosting note: as of the pointer/aux2-chaining and ImplementationUnit
   fixes, lexer.pas, parser.pas, jsonutil.pas, and typechecker.pas itself
@@ -114,7 +112,7 @@ VAR
   saved_func_ret_tk, saved_func_aux, saved_func_aux2: INTEGER;
   attrs_arr, attr_item: ADRMEM;
   nattrs, ai: INTEGER32;
-  is_vararg: BOOLEAN;
+  is_vararg, has_c: BOOLEAN;
   has_block_body: BOOLEAN;
   prior: INTEGER32;
 BEGIN
@@ -239,13 +237,26 @@ BEGIN
       Attribute names are already canonical uppercase in the AST (see
       parser.pas ParseAttributeItem), so no case-folding is needed. }
     is_vararg := FALSE;
+    has_c := FALSE;
     attrs_arr := GetObj(decl, 'attributes');
     nattrs := cJSON_GetArraySize(attrs_arr);
     FOR ai := 0 TO nattrs - 1 DO
     BEGIN
       attr_item := cJSON_GetArrayItem(attrs_arr, ai);
-      IF GetStr(attr_item, 'name') = 'VARARGS' THEN is_vararg := TRUE;
+      nm := GetStr(attr_item, 'name');
+      IF nm = 'VARARGS' THEN is_vararg := TRUE;
+      { The parser canonicalizes both [C] and [CDECL] to a one-character
+        LSTRING. A CHAR literal cannot compare directly with that aggregate. }
+      IF (ORD(nm[0]) = 1) AND (nm[1] = 'C') THEN has_c := TRUE;
     END;
+    IF has_c AND (NOT FeaturesAreExtended(active_features)) THEN
+      AddError2('The [C] attribute requires the extended dialect: ', dname);
+    IF is_vararg AND (NOT FeaturesAreExtended(active_features)) THEN
+      AddError2('The [VARARGS] attribute requires the extended dialect: ', dname);
+    IF is_vararg AND (NOT has_c) THEN
+      AddError2('[VARARGS] requires the [C] attribute: ', dname);
+    IF is_vararg AND is_device_compiland THEN
+      AddError2('[VARARGS] is not permitted in DEVICE code: ', dname);
     symbols[si].is_vararg := is_vararg;
 
     { Check the routine body (if any) in its own scope, with parameters
@@ -682,7 +693,10 @@ VAR
   nt: Str255;
   decls_arr, init_body: ADRMEM;
   n, i: INTEGER32;
+  saved_device: BOOLEAN;
 BEGIN
+  saved_device := is_device_compiland;
+  is_device_compiland := GetBool(root, 'is_device');
   nt := NodeType(root);
   IF nt = 'ProgramUnit' THEN
     CheckBlock(GetObj(root, 'block'))
@@ -699,6 +713,7 @@ BEGIN
       IF init_body <> NIL THEN CheckStmtList(init_body);
     END;
   END;
+  is_device_compiland := saved_device;
 END;
 
 { ========================= local-interface support ======================== }
@@ -781,6 +796,7 @@ VAR
   ifaces, decls_arr: ADRMEM;
   n, ni, m, di: INTEGER32;
   iface: ADRMEM;
+  saved_device: BOOLEAN;
 BEGIN
   ifaces := GetObj(root, 'local_interfaces');
   IF ifaces <> NIL THEN
@@ -789,10 +805,13 @@ BEGIN
     FOR ni := 0 TO n - 1 DO
     BEGIN
       iface := cJSON_GetArrayItem(ifaces, ni);
+      saved_device := is_device_compiland;
+      is_device_compiland := GetBool(iface, 'is_device');
       decls_arr := GetObj(iface, 'decls');
       m := cJSON_GetArraySize(decls_arr);
       FOR di := 0 TO m - 1 DO
         CheckDecl(cJSON_GetArrayItem(decls_arr, di));
+      is_device_compiland := saved_device;
     END;
   END;
 END;

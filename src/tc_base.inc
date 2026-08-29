@@ -77,6 +77,7 @@ VAR
   cur_func_aux, cur_func_aux2: INTEGER;
   cur_func_name: Str255;
   active_features: FeatureSet;
+  is_device_compiland: BOOLEAN;
 
 PROCEDURE TcInit(VAR requested_features: FeatureSet);
 PROCEDURE AddError(msg: Str255);

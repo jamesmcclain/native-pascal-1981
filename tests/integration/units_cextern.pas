@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 (*$INCLUDE:'units_cextern.cwrap.inc'*)
 PROGRAM UnitsCExtern(output);
 USES cwrap;

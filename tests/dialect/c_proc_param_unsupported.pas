@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 { A [C] FOREIGN routine's parameter list cannot include a callback/function-
   pointer parameter (the qsort-style pattern), because the 1981 dialect (in
   both compilers) has no procedural type at all -- PROCEDURE/FUNCTION never

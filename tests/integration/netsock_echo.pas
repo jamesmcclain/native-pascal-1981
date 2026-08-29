@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 (*$INCLUDE:'bytebuf.inc'*)
 (*$INCLUDE:'netsock.inc'*)
 PROGRAM netsock_echo(input, output);

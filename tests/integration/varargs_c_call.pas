@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 { Variadic [C] call against real libc snprintf: the arguments past the
   declared (fixed) parameters get C's default argument promotions, so a
   narrow signed INTEGER8 sign-extends to int, a narrow unsigned WORD

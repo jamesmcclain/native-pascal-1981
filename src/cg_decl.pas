@@ -469,6 +469,25 @@ BEGIN
   END;
 END;
 
+FUNCTION HasCAttribute(decl: ADRMEM): BOOLEAN;
+VAR
+  attrs_arr, item: ADRMEM;
+  i, nattrs: INTEGER32;
+  attr_nm: Str255;
+  found: BOOLEAN;
+BEGIN
+  attrs_arr := GetObj(decl, 'attributes');
+  nattrs := ArrSize(attrs_arr);
+  found := FALSE;
+  FOR i := 0 TO nattrs - 1 DO
+  BEGIN
+    item := ArrItem(attrs_arr, i);
+    attr_nm := GetStr(item, 'name');
+    IF (ORD(attr_nm[0]) = 1) AND (attr_nm[1] = 'C') THEN found := TRUE;
+  END;
+  HasCAttribute := found;
+END;
+
 FUNCTION IsCForeignDecl(decl: ADRMEM): BOOLEAN;
 { True for an EXTERN/EXTERNAL routine carrying the [C] attribute -- mirrors
   the Python reference's CAbiMixin.is_c_abi_foreign (c_abi.py). Only routines
@@ -998,6 +1017,14 @@ VAR
   sig_ok: BOOLEAN;
 BEGIN
   name := GetStr(decl, 'name');
+  IF HasCAttribute(decl) AND (NOT FeaturesAreExtended(active_features)) THEN
+    AbortWith2('codegen: [C] requires the extended dialect: ', name);
+  IF IsVarargsDecl(decl) AND (NOT FeaturesAreExtended(active_features)) THEN
+    AbortWith2('codegen: [VARARGS] requires the extended dialect: ', name);
+  IF IsVarargsDecl(decl) AND (NOT HasCAttribute(decl)) THEN
+    AbortWith2('codegen: [VARARGS] requires [C]: ', name);
+  IF IsVarargsDecl(decl) AND is_device_compiland THEN
+    AbortWith2('codegen: [VARARGS] is not permitted in DEVICE code: ', name);
   body_blk := GetObj(decl, 'body');
   has_block_body := NodeType(body_blk) = 'Block';
   { IsCForeignDecl(decl) reflects only THIS decl node's own attributes/

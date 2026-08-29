@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 { COERCED-class aggregates alongside a MEMORY-class one and plain scalars
   in a single [C] call: a COERCED aggregate expands into one LLVM argument
   per eightbyte, so every parameter after it sits at a shifted LLVM index --

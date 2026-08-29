@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 { A [VARARGS] [C] routine gets a genuinely variadic LLVM function type, and
   each tail argument carries C's default argument promotions: a narrow
   signed integer sign-extends, a WORD zero-extends, a REAL32 widens to

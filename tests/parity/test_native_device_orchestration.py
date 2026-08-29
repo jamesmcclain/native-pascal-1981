@@ -128,7 +128,7 @@ class DeviceOrchestrationTests(unittest.TestCase):
 
     def _codegen(self, source: Path, expect_success: bool = True):
         result = subprocess.run(
-            [NATIVE_CODEGEN],
+            [NATIVE_CODEGEN, "--dialect", "extended"],
             cwd=ROOT,
             input=_typed_ast(source),
             text=True,
@@ -201,7 +201,7 @@ class DeviceOrchestrationTests(unittest.TestCase):
             })
 
         ast = self._edited_ast("vadd.pas", splice_call)
-        result = subprocess.run([NATIVE_CODEGEN],
+        result = subprocess.run([NATIVE_CODEGEN, "--dialect", "extended"],
                                 cwd=ROOT,
                                 input=ast,
                                 text=True,

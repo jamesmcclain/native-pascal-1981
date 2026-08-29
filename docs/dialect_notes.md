@@ -24,15 +24,15 @@ precision is ignored on strings, and there are no wide types.
 - `symbolic-enum-io`, `string-precision`, `readset-set-literal`,
   `tuning-hints` (launch-bound attributes and `{$UNROLL n}`).
 
-The native stages still implement the extended surface unconditionally. The
-native driver validates `--dialect <value>` and passes it to the parser,
-typechecker, and code generator. The latter two resolve that value to a shared
-feature set, but do not yet apply its semantic and code-generation gates.
-There is therefore no selectable native vintage mode today.
-“Vintage” in this file means the vintage-core subset of the native language;
-do not use the driver's `--dialect vintage` as a conformance check. `INTEGER32`
-and wide literals remain extended-only language features, despite being
-accepted by the native pipeline for both values of that option.
+The native driver validates `--dialect <value>` and passes it to the parser,
+typechecker, and code generator. The typechecker and code generator use a
+shared feature set. Vintage mode rejects wide scalar type names, `WRD8`, C-ABI
+type aliases, `[C]`, `[CDECL]`, and `[VARARGS]`. DEVICE units can use wide
+scalar types independently of the command-line dialect.
+
+Other gates are not implemented yet. For example, vintage mode still accepts
+wide integer constants and the remaining extended I/O and tuning features.
+Thus, `--dialect vintage` is not yet a complete conformance check.
 
 ### Command-line contract
 
@@ -55,8 +55,9 @@ codegen --dialect <value>
 ```
 
 These command lines are the implemented transport contract. The typechecker
-and code generator resolve the selected dialect to shared feature state.
-Later work will apply that state to individual language constructs.
+and code generator resolve the selected dialect to shared feature state. They
+use that state for scalar types and C interoperability. Later work will apply
+it to the remaining language constructs.
 
 Feature overrides such as repeated `-f wide-integers` options are not part of
 the native command-line contract yet. `argparse` stores one value for each

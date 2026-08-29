@@ -1116,6 +1116,8 @@ BEGIN
   END
   ELSE IF nm = 'WRD8' THEN
   BEGIN
+    IF NOT (active_features.wide_integers OR is_device_compiland) THEN
+      AbortWith('codegen: WRD8 requires the extended dialect');
     { WRD8(x): truncate/retype to the 8-bit unsigned WORD8 -- the 8-bit
       sibling of WRD. Wider integers truncate to the low byte; i8-width
       values (CHAR/INTEGER8/WORD8) pass through unchanged; BOOLEAN (i1

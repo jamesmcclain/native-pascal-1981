@@ -853,8 +853,18 @@ VAR
   unm: Str255;
 BEGIN
   unm := UpperStr(nm);
-  IF (unm = 'INTEGER') OR (unm = 'INTEGER16') THEN tid := TK_INTEGER
-  ELSE IF (unm = 'WORD') OR (unm = 'WORD16') THEN tid := TK_WORD
+  IF ((unm = 'INTEGER8') OR (unm = 'INTEGER16') OR (unm = 'INTEGER32') OR
+      (unm = 'INTEGER64') OR (unm = 'WORD8') OR (unm = 'WORD16') OR
+      (unm = 'WORD32') OR (unm = 'WORD64')) AND
+     (NOT (active_features.wide_integers OR is_device_compiland)) THEN
+    AbortWith2('codegen: type requires the extended dialect: ', nm);
+  IF ((unm = 'CSHORT') OR (unm = 'CINT') OR (unm = 'CLONG') OR
+      (unm = 'CSIZE_T')) AND (NOT FeaturesAreExtended(active_features)) THEN
+    AbortWith2('codegen: type requires the extended dialect: ', nm);
+  IF unm = 'INTEGER' THEN tid := TK_INTEGER
+  ELSE IF unm = 'INTEGER16' THEN tid := TK_INTEGER
+  ELSE IF unm = 'WORD' THEN tid := TK_WORD
+  ELSE IF unm = 'WORD16' THEN tid := TK_WORD
   ELSE IF unm = 'INTEGER8' THEN tid := TK_INTEGER8
   ELSE IF unm = 'WORD8' THEN tid := TK_WORD8
   ELSE IF unm = 'INTEGER32' THEN tid := TK_INTEGER32
@@ -913,28 +923,48 @@ BEGIN
     named_tid := 0;
     IF GetObjOrNil(te, 'param') = NIL THEN named_tid := LookupNamedType(nm);
     IF named_tid <> 0 THEN tid := named_tid
-    ELSE IF (unm = 'INTEGER') OR (unm = 'INTEGER16') THEN tid := TK_INTEGER
+    ELSE IF unm = 'INTEGER' THEN tid := TK_INTEGER
     ELSE IF unm = 'REAL' THEN tid := TK_REAL
     ELSE IF unm = 'BOOLEAN' THEN tid := TK_BOOLEAN
     ELSE IF unm = 'CHAR' THEN tid := TK_CHAR
-    ELSE IF (unm = 'WORD') OR (unm = 'WORD16') THEN tid := TK_WORD
-    ELSE IF unm = 'INTEGER8' THEN tid := TK_INTEGER8
-    ELSE IF unm = 'WORD8' THEN tid := TK_WORD8
-    ELSE IF unm = 'INTEGER32' THEN tid := TK_INTEGER32
-    ELSE IF unm = 'WORD32' THEN tid := TK_WORD32
-    ELSE IF unm = 'INTEGER64' THEN tid := TK_INTEGER64
-    ELSE IF unm = 'WORD64' THEN tid := TK_WORD64
-    ELSE IF (unm = 'REAL32') THEN tid := TK_REAL32
-    ELSE IF unm = 'REAL64' THEN tid := TK_REAL
-    ELSE IF unm = 'ADRMEM' THEN tid := TK_ADRMEM
-    { C-ABI fixed-width aliases for [C]; EXTERN declarations, mapped the
-      same way the Python reference's BUILTIN_TYPE_ALIASES does: CCHAR->i8,
-      CSHORT->i16, CINT->i32, CLONG/CSIZE_T->i64 (LP64), CDOUBLE->f64. }
-    ELSE IF unm = 'CCHAR' THEN tid := TK_CHAR
-    ELSE IF unm = 'CSHORT' THEN tid := TK_INTEGER
-    ELSE IF unm = 'CINT' THEN tid := TK_INTEGER32
-    ELSE IF (unm = 'CLONG') OR (unm = 'CSIZE_T') THEN tid := TK_INTEGER64
-    ELSE IF unm = 'CDOUBLE' THEN tid := TK_REAL
+    ELSE IF unm = 'WORD' THEN tid := TK_WORD
+    ELSE IF (unm = 'INTEGER8') OR (unm = 'INTEGER16') OR (unm = 'INTEGER32') OR
+            (unm = 'INTEGER64') OR (unm = 'WORD8') OR (unm = 'WORD16') OR
+            (unm = 'WORD32') OR (unm = 'WORD64') THEN
+    BEGIN
+      IF NOT (active_features.wide_integers OR is_device_compiland) THEN
+        AbortWith2('codegen: type requires the extended dialect: ', nm);
+      IF unm = 'INTEGER8' THEN tid := TK_INTEGER8
+      ELSE IF unm = 'INTEGER16' THEN tid := TK_INTEGER
+      ELSE IF unm = 'INTEGER32' THEN tid := TK_INTEGER32
+      ELSE IF unm = 'INTEGER64' THEN tid := TK_INTEGER64
+      ELSE IF unm = 'WORD8' THEN tid := TK_WORD8
+      ELSE IF unm = 'WORD16' THEN tid := TK_WORD
+      ELSE IF unm = 'WORD32' THEN tid := TK_WORD32
+      ELSE tid := TK_WORD64;
+    END
+    ELSE IF (unm = 'REAL32') OR (unm = 'REAL64') THEN
+    BEGIN
+      IF NOT (active_features.wide_reals OR is_device_compiland) THEN
+        AbortWith2('codegen: type requires the extended dialect: ', nm);
+      IF unm = 'REAL32' THEN tid := TK_REAL32
+      ELSE tid := TK_REAL;
+    END
+    ELSE IF (unm = 'ADRMEM') OR (unm = 'ADSMEM') THEN tid := TK_ADRMEM
+    { C-ABI fixed-width aliases for [C]; EXTERN declarations. }
+    ELSE IF (unm = 'CPTR') OR (unm = 'CCHAR') OR (unm = 'CSHORT') OR
+            (unm = 'CINT') OR (unm = 'CLONG') OR (unm = 'CSIZE_T') OR
+            (unm = 'CDOUBLE') THEN
+    BEGIN
+      IF NOT FeaturesAreExtended(active_features) THEN
+        AbortWith2('codegen: type requires the extended dialect: ', nm);
+      IF unm = 'CPTR' THEN tid := TK_ADRMEM
+      ELSE IF unm = 'CCHAR' THEN tid := TK_CHAR
+      ELSE IF unm = 'CSHORT' THEN tid := TK_INTEGER
+      ELSE IF unm = 'CINT' THEN tid := TK_INTEGER32
+      ELSE IF (unm = 'CLONG') OR (unm = 'CSIZE_T') THEN tid := TK_INTEGER64
+      ELSE tid := TK_REAL;
+    END
     ELSE IF unm = 'TEXT' THEN
       tid := RegisterType(TK_FILE, TK_CHAR, 0, 1, i8ptrty)
     ELSE IF unm = 'LSTRING' THEN

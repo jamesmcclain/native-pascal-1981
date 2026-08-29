@@ -116,6 +116,7 @@ VAR
   cur_func_ret_tk: INTEGER; { TK_VOID when not inside a function }
   cur_func_aux, cur_func_aux2: INTEGER;
   active_features: FeatureSet;
+  is_device_compiland: BOOLEAN;
 
   cur_func_name: Str255;   { '' when not inside a function. `F := expr`
                              inside F's own body assigns through the
@@ -309,6 +310,7 @@ END;
 PROCEDURE TcInit(VAR requested_features: FeatureSet);
 BEGIN
   active_features := requested_features;
+  is_device_compiland := FALSE;
   nsymbols := 0;
   scope_top := 0;
   ntypes := 0;
