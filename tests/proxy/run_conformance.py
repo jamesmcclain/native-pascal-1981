@@ -24,6 +24,7 @@ import shlex
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -40,6 +41,16 @@ READ_TIMEOUT = 30
 
 
 def wait_for_port(host, port, timeout=30.0, proc=None):
+    """Wait for a TCP listener, deliberately not for GET /health.
+
+    /health is a live probe: it calls the real backend on every request. A
+    poll loop against it was observed to generate genuine backend load --
+    each attempt's short timeout abandoned the connection, but a backend
+    serving one connection at a time kept working the abandoned request
+    anyway, piling up ahead of the harness's real requests. Opening a socket
+    answers the only question being asked here, which is whether the process
+    is up, and costs the backend nothing.
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
         if proc is not None and proc.poll() is not None:
@@ -133,6 +144,28 @@ class Harness:
         self.proxy_argv = proxy_argv
         self.verbose = verbose
         self.procs = []
+        # Child stderr goes to a file, never to a PIPE. A PIPE has to be
+        # actively drained or the child blocks once the ~64KB buffer fills,
+        # and nothing here drains one -- the read below happens only after
+        # the child is already dead. It is a latent hang rather than a live
+        # one today, because neither implementation logs per request, but
+        # the Pascal proxy forks per connection and every child inherits
+        # this same descriptor, so it is one WRITELN away from mattering.
+        # A file gets the diagnostics without anything to drain.
+        self._log_dir = tempfile.mkdtemp(prefix='proxy-conformance-')
+        self._logs = {}
+
+    def _log_for(self, name):
+        path = os.path.join(self._log_dir,
+                            '%s-%d.log' % (name, len(self._logs)))
+        handle = open(path, 'w+b')
+        self._logs[handle] = path
+        return handle
+
+    def _read_log(self, handle):
+        handle.flush()
+        with open(self._logs[handle], 'rb') as saved:
+            return saved.read()
 
     def start_stub(self, calibrate_ok=None):
         port_file = os.path.join(HERE, '.stub-port-%d' % os.getpid())
@@ -145,9 +178,8 @@ class Harness:
         ]
         if calibrate_ok is not None:
             argv += ['--calibrate-ok', calibrate_ok]
-        proc = subprocess.Popen(argv,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.PIPE)
+        log = self._log_for('stub')
+        proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=log)
         self.procs.append(proc)
         deadline = time.time() + 20
         while time.time() < deadline:
@@ -191,15 +223,12 @@ class Harness:
         if self.verbose:
             print('+ %s' % ' '.join(shlex.quote(a) for a in argv),
                   file=sys.stderr)
-        proc = subprocess.Popen(argv,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.PIPE)
+        log = self._log_for('proxy')
+        proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=log)
         self.procs.append(proc)
         # Calibration makes several upstream calls before the socket opens.
         if not wait_for_port('127.0.0.1', port, 60, proc):
-            err = b''
-            if proc.poll() is not None:
-                err = proc.stderr.read() or b''
+            err = self._read_log(log)
             raise RuntimeError(
                 'proxy failed to start on port %d%s' %
                 (port, (': ' + err.decode('utf-8', 'replace')) if err else ''))
@@ -214,6 +243,9 @@ class Harness:
                 except subprocess.TimeoutExpired:
                     proc.kill()
         self.procs = []
+        for handle in self._logs:
+            handle.close()
+        self._logs = {}
 
 
 def run_corpus(harness):

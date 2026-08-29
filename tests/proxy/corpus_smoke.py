@@ -59,6 +59,9 @@ def free_port():
 
 
 def wait_for_port(port, timeout, proc):
+    """Wait for a TCP listener, not for GET /health -- that endpoint calls
+    the real backend on every request, so polling it generates real load and
+    can queue up ahead of the requests this is about to make."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         if proc.poll() is not None:
