@@ -30,7 +30,7 @@ TYPE
 VAR
   inputs, extra_clang_args, extra_objects: RawArgArray;
   input_count, extra_clang_argc, extra_object_count, i: CINT;
-  current, output_file: ADRMEM;
+  current, output_file, dialect: ADRMEM;
   root_dir, lexer_bin, parser_bin, typechecker_bin, codegen_bin: ADRMEM;
   runtime_lib, cc_bin, opt_level, temp_ll, extra_ll, primary_ll, primary_output: ADRMEM;
   primary_compile_only: BOOLEAN;
@@ -49,6 +49,7 @@ BEGIN
   WRITELN('  -c                      Compile to object file only (.o)');
   WRITELN('  -S                      Compile to LLVM IR (.ll) only');
   WRITELN('  -O0, -O1, -O2, -O3      Optimization level (default: -O1)');
+  WRITELN('  --dialect <name>        Language dialect: vintage or extended');
   WRITELN('  -I <dir>                Add directory to include search path');
   WRITELN('  -L <dir>                Add directory to library search path');
   WRITELN('  -l <lib>                Link with library');
@@ -103,16 +104,24 @@ BEGIN
   close(p3[0]); close(p3[1]);
 END;
 
-PROCEDURE ExecStage(stage, stage_name: ADRMEM; source_fd, destination_fd: CINT);
+PROCEDURE ExecStage(stage, stage_name, stage_dialect: ADRMEM;
+                    source_fd, destination_fd: CINT);
 VAR
-  args: ARRAY[0..1] OF ADRMEM;
+  args: ARRAY[0..3] OF ADRMEM;
 BEGIN
   dup2(source_fd, 0);
   dup2(destination_fd, 1);
   close(in_fd); close(out_fd);
   ClosePipes;
   args[0] := stage_name;
-  args[1] := NIL;
+  IF stage_dialect = NIL THEN
+    args[1] := NIL
+  ELSE
+  BEGIN
+    args[1] := MakeCStr('--dialect');
+    args[2] := stage_dialect;
+    args[3] := NIL;
+  END;
   execvp(stage, ADR args);
   exit(127);
 END;
@@ -132,13 +141,17 @@ BEGIN
       ELSE
       BEGIN
         pid1 := fork;
-        IF pid1 = 0 THEN ExecStage(lexer_bin, MakeCStr('lexer'), in_fd, p1[1]);
+        IF pid1 = 0 THEN ExecStage(lexer_bin, MakeCStr('lexer'), NIL,
+                                   in_fd, p1[1]);
         pid2 := fork;
-        IF pid2 = 0 THEN ExecStage(parser_bin, MakeCStr('parser'), p1[0], p2[1]);
+        IF pid2 = 0 THEN ExecStage(parser_bin, MakeCStr('parser'), dialect,
+                                   p1[0], p2[1]);
         pid3 := fork;
-        IF pid3 = 0 THEN ExecStage(typechecker_bin, MakeCStr('typechecker'), p2[0], p3[1]);
+        IF pid3 = 0 THEN ExecStage(typechecker_bin, MakeCStr('typechecker'), dialect,
+                                   p2[0], p3[1]);
         pid4 := fork;
-        IF pid4 = 0 THEN ExecStage(codegen_bin, MakeCStr('codegen'), p3[0], out_fd);
+        IF pid4 = 0 THEN ExecStage(codegen_bin, MakeCStr('codegen'), dialect,
+                                   p3[0], out_fd);
         close(in_fd); close(out_fd); ClosePipes;
         waitpid(pid1, ADR status1, 0); waitpid(pid2, ADR status2, 0);
         waitpid(pid3, ADR status3, 0); waitpid(pid4, ADR status4, 0);
@@ -209,6 +222,7 @@ BEGIN
   compile_only := FALSE;
   ir_only := FALSE;
   verbose := FALSE;
+  dialect := MakeCStr('vintage');
   opt_level := MakeCStr('-O1');
   i := 1;
   WHILE i < pas_arg_count DO
@@ -241,6 +255,11 @@ BEGIN
     BEGIN
       i := i + 1;
       IF i >= pas_arg_count THEN Fail('error: --dialect requires an argument');
+      dialect := pas_arg_value(i);
+      option := CStrToStr255(dialect);
+      IF (option <> 'vintage') AND (option <> 'extended') THEN
+        Fail(Join(Join('error: invalid dialect ''', option),
+                  '''; expected ''vintage'' or ''extended'''));
     END
     ELSE IF option = '--device-triple' THEN
     BEGIN

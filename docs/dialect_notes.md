@@ -24,14 +24,14 @@ precision is ignored on strings, and there are no wide types.
 - `symbolic-enum-io`, `string-precision`, `readset-set-literal`,
   `tuning-hints` (launch-bound attributes and `{$UNROLL n}`).
 
-The native stages implement the extended surface unconditionally. The native
-driver accepts `--dialect <value>`, but merely consumes it; it neither validates
-it nor passes it to the lexer, parser, typechecker, or code generator. There
-is therefore no selectable native vintage mode today. “Vintage” in this file
-means the vintage-core subset of the native language; do not use the driver's
-`--dialect vintage` as a conformance check. `INTEGER32` and wide literals
-remain extended-only language features, despite being accepted by the native
-pipeline for every value of that option.
+The native stages still implement the extended surface unconditionally. The
+native driver validates `--dialect <value>` and passes it to the parser,
+typechecker, and code generator, but those stages do not yet use it to select
+features. There is therefore no selectable native vintage mode today.
+“Vintage” in this file means the vintage-core subset of the native language;
+do not use the driver's `--dialect vintage` as a conformance check. `INTEGER32`
+and wide literals remain extended-only language features, despite being
+accepted by the native pipeline for both values of that option.
 
 ### Command-line contract
 
@@ -53,8 +53,8 @@ typechecker --dialect <value>
 codegen --dialect <value>
 ```
 
-These command lines define the target contract. The implementation work will
-replace the disconnected behavior described above.
+These command lines are the implemented transport contract. Later feature
+resolution work will make the receiving stages apply the selected dialect.
 
 The scope tags below state where a rule applies: **[both]** means a
 vintage-core rule that remains true in the native extended surface;
