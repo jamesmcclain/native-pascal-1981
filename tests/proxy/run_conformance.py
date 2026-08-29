@@ -136,10 +136,11 @@ def normalize(value, upstream_url):
 
 class Harness:
 
-    def __init__(self, proxy_argv, verbose=False, native_runner=''):
+    def __init__(self, proxy_argv, verbose=False, native_runner='', golden=''):
         self.proxy_argv = proxy_argv
         self.verbose = verbose
         self.native_runner = native_runner
+        self.golden = golden
         self.procs = []
         # Child stderr goes to a file, never to a PIPE. A PIPE has to be
         # actively drained or the child blocks once the ~64KB buffer fills,
@@ -250,12 +251,15 @@ def run_corpus(harness):
     upstream_url = 'http://127.0.0.1:%d/v1' % stub_port
     proxy_port = harness.start_proxy(upstream_url)
     if harness.native_runner:
-        result = subprocess.run([
+        argv = [
             harness.native_runner, '--host', '127.0.0.1', '--port',
             str(proxy_port), '--stub-port',
             str(stub_port), '--upstream-url', upstream_url, '--fixtures',
             os.path.join(HERE, 'conformance_cases.json')
-        ],
+        ]
+        if harness.golden:
+            argv += ['--golden', harness.golden]
+        result = subprocess.run(argv,
                                 capture_output=True,
                                 text=True,
                                 check=False)
@@ -307,8 +311,8 @@ def run_calibration(harness):
     return entries
 
 
-def build_report(proxy_argv, verbose, native_runner=''):
-    harness = Harness(proxy_argv, verbose, native_runner)
+def build_report(proxy_argv, verbose, native_runner='', golden=''):
+    harness = Harness(proxy_argv, verbose, native_runner, golden)
     entries = []
     try:
         entries += run_corpus(harness)
@@ -366,6 +370,8 @@ def main():
                         'on any difference.')
     parser.add_argument('--native-runner',
                         help='Pascal fixture replay executable')
+    parser.add_argument('--golden',
+                        help='Golden report for native case checks')
     parser.add_argument('-v', '--verbose', action='store_true')
     args = parser.parse_args()
 
@@ -377,7 +383,7 @@ def main():
         parser.error('--native-runner is required when running the corpus')
 
     report = build_report(shlex.split(args.proxy_bin), args.verbose,
-                          args.native_runner or '')
+                          args.native_runner or '', args.golden or '')
     text = json.dumps(report, indent=2, sort_keys=True) + '\n'
     if args.out:
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)

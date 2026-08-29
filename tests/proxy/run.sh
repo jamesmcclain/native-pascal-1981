@@ -27,7 +27,9 @@ runner="$(mktemp -t proxy-conformance-runner-XXXXXX)"
 trap 'rm -f "$out" "$runner"' EXIT
 
 "$repo/tests/proxy/conformance_runner.build.sh" "$repo/bin/pascal1981" "$runner"
-python3 "$here/run_conformance.py" --proxy-bin "$proxy" --native-runner "$runner" --out "$out" >/dev/null
+runner_args=(--proxy-bin "$proxy" --native-runner "$runner" --out "$out")
+if [ "$record" = 0 ] && [ -f "$golden" ]; then runner_args+=(--golden "$golden"); fi
+python3 "$here/run_conformance.py" "${runner_args[@]}" >/dev/null
 
 if [ "$record" = 1 ]; then
     cp "$out" "$golden"
