@@ -94,6 +94,11 @@ has no way to start.
   empty to 3875 characters. `build_corpus.py` regenerates the derived items;
   the hand-written ones have no source to derive from and are committed as
   they are.
+- `test_corpus.py` — unit tests for `build_corpus.py`'s split-point logic and
+  a shape check over every committed item. The reconstruction test is the one
+  that matters: it is what keeps `corpus_smoke.py --reference` meaningful,
+  since that mode relies on buffer + recorded continuation being the original
+  program byte for byte.
 - `corpus_smoke.py` — replays that corpus. Against a live backend it also
   appends each completion to its buffer and compiles the result with the real
   compiler, which is an objective quality signal no stub can produce.

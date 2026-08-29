@@ -75,8 +75,8 @@ least one realistic buffer -- retyping the entire program from its
 `PROGRAM' header instead of continuing from the cursor, or exhausting
 its reasoning budget outright, in 5 of 6 trials on that buffer. Neither
 omitting the goal field entirely nor this replacement wording (the
-autoresearch corpus's own goal-comment style, validated at full-corpus
-scale) reproduced that failure in the same isolated A/B test. The
+completion corpus's own goal-comment style, now at
+tests/proxy/corpus/, validated at full-corpus scale) reproduced that failure in the same isolated A/B test. The
 proxy's own full-corpus validation of its system prompt never covered
 elisp's old default wording at all -- only the corpus's own per-item
 goal text -- so that specific combination was shipped unvalidated.

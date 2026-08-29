@@ -1,5 +1,11 @@
-"""Tests for tools/autoresearch/build_corpus.py's split-point/reconstruction
-logic, and a shape check over the committed corpus (generated + hand-written)."""
+"""Tests for build_corpus.py's split-point/reconstruction logic, and a shape
+check over the committed corpus (generated + hand-written).
+
+The reconstruction test is the one that matters: a generated item was made by
+cutting a compiling program at a line boundary, so its buffer plus its recorded
+continuation must be that program again, byte for byte. corpus_smoke.py
+--reference relies on exactly that property to compile the corpus without a
+model, and this is what keeps it true."""
 import importlib.util
 import json
 import pathlib
@@ -7,11 +13,11 @@ import sys
 import unittest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
-AUTORESEARCH_DIR = REPO_ROOT / 'tools' / 'autoresearch'
-CORPUS_DIR = AUTORESEARCH_DIR / 'corpus'
+HERE = pathlib.Path(__file__).resolve().parent
+CORPUS_DIR = HERE / 'corpus'
 
-spec = importlib.util.spec_from_file_location(
-    'build_corpus', AUTORESEARCH_DIR / 'build_corpus.py')
+spec = importlib.util.spec_from_file_location('build_corpus',
+                                              HERE / 'build_corpus.py')
 build_corpus = importlib.util.module_from_spec(spec)
 sys.modules['build_corpus'] = build_corpus
 spec.loader.exec_module(build_corpus)
