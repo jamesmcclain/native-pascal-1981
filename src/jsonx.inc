@@ -31,7 +31,7 @@ UNIT jsonx (JxParse, JxParseBuf, JxDelete, JxPrintToBuf,
             JxIsNull, JxIsTrue,
             JxGet, JxHas, JxArrSize, JxArrItem,
             JxStrRaw, JxStrLen, JxStrToBuf, JxGetStrToBuf,
-            JxGetNum, JxGetInt, JxGetStr,
+            JxGetNum, JxGetInt, JxGetStr, JxNumValue, JxIntValue,
             JxNewObject, JxNewArray, JxNewStr, JxNewStrFromBuf, JxNewNum,
             JxArrAppend, JxAddItem, JxAddStr, JxAddStrFromBuf,
             JxAddNum, JxAddInt);
@@ -80,6 +80,18 @@ FUNCTION JxArrItem(arr: ADRMEM; i: INTEGER32): ADRMEM;
   the length, nothing is copied and nothing is lost. }
 FUNCTION JxStrRaw(node: ADRMEM): ADRMEM;
 FUNCTION JxStrLen(node: ADRMEM): INTEGER32;
+
+{ A number node's value, 0.0 for anything else. The node-level counterpart of
+  JxGetNum, for a value already fetched -- checking a node's type and then
+  reading it should not require going back to the parent by key. }
+FUNCTION JxNumValue(node: ADRMEM): REAL;
+
+{ A number node as a 32-bit integer, truncated toward zero, 0 for anything
+  else. Not TRUNC: TRUNC produces this dialect's 16-bit INTEGER, so a value of
+  65536 comes back through it as 0 -- silently, and far from where it was
+  read. Out-of-range values clamp, so a caller testing whether a value is
+  integral sees the clamp and rejects it. }
+FUNCTION JxIntValue(node: ADRMEM): INTEGER32;
 
 { Append a string node's value to `out`. Returns FALSE when the node is not a
   string, leaving `out` untouched. }

@@ -20,6 +20,15 @@ tests/proxy/oneshot.sh                    # the Pascal client stack, one call
 tests/proxy/oneshot.sh --record           # re-record its expected output
 ```
 
+```bash
+tests/proxy/transforms_check.py           # proxycore against the Python it replaces
+```
+
+`transforms_check.py` is a differential test of the pure transforms rather
+than of the server: it feeds one corpus to both implementations and compares
+the answers directly, so the expected values come from the code being
+replaced rather than from a recorded file somebody has to keep honest.
+
 `oneshot.sh` is narrower and answers a different question: not "does the proxy
 behave", but "can Pascal talk to an OpenAI-compatible backend at all". It
 builds `oneshot.pas` and makes one `/chat/completions` call per reply shape
@@ -51,6 +60,17 @@ has no way to start.
   three calibration runs.
 - `golden.json` — the recorded reference behaviour: 47 cases. This is the
   contract the Pascal port has to meet.
+- `transforms.pas` / `transforms.build.sh` / `transforms_check.py` — the
+  differential harness for `src/proxycore.pas`. `transforms.pas` reads a JSON
+  array of jobs on stdin and writes one result per job; `transforms_check.py`
+  builds the corpus, computes the expected answers by calling the Python
+  functions directly, and compares. Extending it costs one entry in a list --
+  nobody has to work out by hand what the answer should be. The corpus
+  carries no NUL bytes: cJSON returns strings as NUL-terminated C strings, so
+  a JSON value containing one truncates there. `PxUtf8Valid` and `PxCharLen`
+  are checked by `tests/integration/proxycore_unit.pas` instead, since a
+  corpus that travels as JSON can only carry text that is already valid
+  UTF-8.
 - `oneshot.pas` / `oneshot.build.sh` / `oneshot.sh` / `oneshot.expected` — one
   upstream call written in the vintage dialect, the step-5 milestone of the
   port. It is not the proxy: no calibration, no echo stripping, no server

@@ -1,0 +1,151 @@
+{ INTERFACE header for proxycore, the completion proxy's transforms.
+
+  Everything here is a pure function of its inputs: a request goes in, a
+  prompt or a completion comes out, and nothing touches a socket. That is
+  deliberate, and it is what makes the port testable -- each of these can be
+  checked against the Python implementation it replaces, one input at a time,
+  without a server running at either end. The HTTP plumbing lives in httpio
+  and the policy that maps these outcomes onto status codes lives in the
+  program itself.
+
+  Everything is a ByteBuf rather than an LSTRING. A completion, a source
+  buffer and a prompt are all routinely tens of kilobytes, and every one of
+  them would be silently cut to 255 characters otherwise.
+
+  BYTES VERSUS CHARACTERS. The Python original is a Unicode program: its
+  buffer limit, its cursor column and its completion ceiling are all counted
+  in characters, while the HTTP body gate that precedes them counts bytes.
+  This port works in bytes throughout, and closes that gap where it is
+  visible rather than pretending it is not:
+
+  * Anything counted in characters upstream is counted here by counting UTF-8
+    lead bytes (PxCharLen), so the numbers agree for any valid UTF-8 input,
+    and a cut made on a character count never lands inside a character.
+  * The echo-stripping floors are the exception, and are counted in bytes. In
+    ASCII -- which is all Pascal 1981 source can be -- the two are the same
+    thing. On text with multi-byte characters a floor is reached slightly
+    sooner here. The floors exist to exclude short runs of structural
+    punctuation, all of it ASCII, so the difference does not touch what they
+    are for.
+  * Identifier characters are ASCII letters, digits and underscore. Python's
+    isalnum() would also accept a letter from any other script; no Pascal
+    1981 identifier can contain one.
+  * PxUtf8Valid exists because the boundary moved. Python decodes the body
+    before parsing it, so undecodable bytes are rejected there; cJSON does
+    not check encoding at all, so a request that would have been a 400
+    upstream would otherwise sail through here.
+
+  Requires bytebuf and jsonx. }
+
+INTERFACE;
+UNIT proxycore (PxRequestInit, PxRequestFree, PxValidateRequest,
+                PxComputePrefix, PxBuildPrompt,
+                PxReplyInit, PxReplyFree, PxExtractCompletion,
+                PxStripCodeFence, PxSanitizeCompletion,
+                PxUtf8Valid, PxCharLen, PxSystemPrompt,
+                PxRequest, PxReply,
+                PX_UP_OK, PX_UP_ERROR, PX_UP_EXHAUSTED,
+                PX_MAX_COMPLETION_CHARS, PX_DEFAULT_MAX_LINES);
+
+USES bytebuf, jsonx;
+
+CONST
+  { PxExtractCompletion outcomes. Exhaustion is a distinct outcome, not just
+    another error, because calibration needs to tell "this reasoning_effort
+    value is wrong for this model, try the next one" from "the backend is
+    broken, stop trying" -- four more attempts against a dead backend only
+    multiply the wait. }
+  PX_UP_OK        = 0;
+  PX_UP_ERROR     = 1;
+  PX_UP_EXHAUSTED = 2;
+
+  { Hard ceiling on a completion, in characters. max_lines bounds how many
+    lines there are and says nothing about how long they are, so it does not
+    bound this at all: one unterminated string literal of 200,000 characters
+    is a single line, and it stalls redisplay in the editor that receives it.
+    Far above any real completion; a safety valve, not a quality lever. }
+  PX_MAX_COMPLETION_CHARS = 8192;
+  PX_DEFAULT_MAX_LINES    = 30;
+
+TYPE
+  { A validated /complete request. The buffers are owned by the record: call
+    PxRequestInit before use and PxRequestFree after. }
+  PxRequest = RECORD
+    goal:   ByteBuf;
+    buffer: ByteBuf;
+    line:   INTEGER32;    { 1-based, as the client sends it }
+    column: INTEGER32;
+    error:  ByteStr;      { empty unless validation failed; safe to return }
+  END;
+
+  { What an upstream /chat/completions reply yielded. Same ownership rule. }
+  PxReply = RECORD
+    text:       ByteBuf;   { the completion, code fence already stripped }
+    model:      ByteBuf;
+    request_id: ByteBuf;
+    error:      ByteStr;   { empty unless the outcome was not PX_UP_OK }
+  END;
+
+{ ---- Encoding helpers ---- }
+
+{ TRUE when the whole buffer is well-formed UTF-8. Overlong encodings,
+  surrogates and values above U+10FFFF are rejected, matching what Python's
+  decoder refuses rather than only what a naive length check would catch. }
+FUNCTION PxUtf8Valid(VAR b: ByteBuf): BOOLEAN;
+
+{ Characters, not bytes: the count of UTF-8 lead bytes. On invalid input this
+  is still well defined and simply counts non-continuation bytes. }
+FUNCTION PxCharLen(VAR b: ByteBuf): INTEGER32;
+
+{ ---- Request side ---- }
+
+PROCEDURE PxRequestInit(VAR r: PxRequest);
+PROCEDURE PxRequestFree(VAR r: PxRequest);
+
+{ Validate a parsed /complete body. On FALSE, r.error carries a message that
+  is safe to hand back to the client verbatim -- it says only what was wrong
+  with the request, never anything about the upstream or the environment. }
+FUNCTION PxValidateRequest(tree: ADRMEM; buffer_limit: INTEGER32;
+                           VAR r: PxRequest): BOOLEAN;
+
+{ The text from the start of `buffer` through the 1-based line/column point.
+
+  Both coordinates are clamped to the buffer rather than rejected: a cursor
+  past the end is a race between typing and requesting, not a client error. }
+PROCEDURE PxComputePrefix(VAR buffer: ByteBuf; line: INTEGER32;
+                          column: INTEGER32; VAR out: ByteBuf);
+
+{ The user message sent upstream: mostly the prefix verbatim, so the model
+  sees "the code so far" to continue. A non-empty goal precedes it as a
+  one-line Pascal comment. A non-empty grammar precedes everything, fenced
+  with plain '#' lines rather than a Pascal comment because the grammar text
+  contains both comment delimiter pairs itself and would close either one
+  early. }
+PROCEDURE PxBuildPrompt(VAR goal: ByteBuf; VAR prefix: ByteBuf;
+                        VAR grammar: ByteBuf; VAR out: ByteBuf);
+
+{ The system message that accompanies it. }
+PROCEDURE PxSystemPrompt(VAR out: ByteBuf);
+
+{ ---- Reply side ---- }
+
+PROCEDURE PxReplyInit(VAR r: PxReply);
+PROCEDURE PxReplyFree(VAR r: PxReply);
+
+{ Pull the completion, model and request id out of a /chat/completions body.
+  Returns one of the PX_UP_ constants. }
+FUNCTION PxExtractCompletion(tree: ADRMEM; VAR r: PxReply): INTEGER32;
+
+{ The contents of the first markdown-fenced block, or the text unchanged when
+  there is no fence. The fence is looked for anywhere, not only at the start:
+  a small model very often answers with a prose preamble ahead of it, and
+  keeping the preamble puts an English sentence in the user's source file. }
+PROCEDURE PxStripCodeFence(VAR text: ByteBuf; VAR out: ByteBuf);
+
+{ Enforce the output policy: no control characters other than newline and
+  tab, nothing from a special-token marker onward, no leading blank lines, at
+  most max_lines lines, at most PX_MAX_COMPLETION_CHARS characters. }
+PROCEDURE PxSanitizeCompletion(VAR text: ByteBuf; max_lines: INTEGER32;
+                               VAR out: ByteBuf);
+
+END;

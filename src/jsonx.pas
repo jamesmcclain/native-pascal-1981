@@ -39,6 +39,7 @@ FUNCTION cJSON_IsBool(item: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_IsNull(item: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_IsTrue(item: ADRMEM): CINT [C]; EXTERN;
 FUNCTION strlen(s: ADRMEM): CSIZE_T [C]; EXTERN;
+FUNCTION pas_cjson_long(item: ADRMEM): CLONG [C]; EXTERN;
 
 { Stage an LSTRING as a NUL-terminated C string in caller-owned storage.
   Anything past 255 characters cannot be in an LSTRING to begin with, so no
@@ -190,6 +191,19 @@ BEGIN
     JxStrLen := RETYPE(INTEGER32, strlen(p));
 END;
 
+FUNCTION JxNumValue(node: ADRMEM): REAL;
+BEGIN
+  IF NOT JxIsNumber(node) THEN
+    JxNumValue := 0.0
+  ELSE
+    JxNumValue := cJSON_GetNumberValue(node);
+END;
+
+FUNCTION JxIntValue(node: ADRMEM): INTEGER32;
+BEGIN
+  JxIntValue := RETYPE(INTEGER32, pas_cjson_long(node));
+END;
+
 FUNCTION JxStrToBuf(node: ADRMEM; VAR out: ByteBuf): BOOLEAN;
 VAR
   p: ADRMEM;
@@ -222,7 +236,7 @@ END;
 
 FUNCTION JxGetInt(obj: ADRMEM; key: ByteStr): INTEGER32;
 BEGIN
-  JxGetInt := TRUNC(JxGetNum(obj, key));
+  JxGetInt := JxIntValue(JxGet(obj, key));
 END;
 
 PROCEDURE JxGetStr(obj: ADRMEM; key: ByteStr; VAR out: ByteStr);
