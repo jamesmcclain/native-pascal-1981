@@ -20,6 +20,7 @@ FUNCTION cJSON_GetArraySize(arr: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_GetArrayItem(arr: ADRMEM; index: CINT): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_GetStringValue(item: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_GetNumberValue(item: ADRMEM): REAL [C]; EXTERN;
+FUNCTION pas_cjson_int32(item: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_IsTrue(item: ADRMEM): CINT [C]; EXTERN;
 FUNCTION getchar: CINT [C]; EXTERN;
 PROCEDURE free(ptr: ADRMEM) [C]; EXTERN;
@@ -155,11 +156,21 @@ FUNCTION GetInt(obj: ADRMEM; key: Str255): INTEGER32;
 VAR
   item: ADRMEM;
 BEGIN
+  { Not TRUNC. TRUNC produces this dialect's INTEGER, which is 16 bits, so
+    every value from 32768 up wrapped on the way out of a function whose
+    declared result is INTEGER32 -- silently, and far from the call site.
+    pas_cjson_int32 does the conversion in the runtime, in 32 bits.
+
+    No stage reads a value that large today, so this fixes no live bug in the
+    compiler; it makes the declared result type true, which is what the next
+    caller will assume. Note that array bounds do NOT come through here
+    intact: ResolveIntLiteral in cg_types.pas returns INTEGER, and that is
+    where a bound above 32767 is lost. See docs/dialect_notes.md. }
   item := GetObj(obj, key);
   IF item = NIL THEN
     GetInt := 0
   ELSE
-    GetInt := TRUNC(cJSON_GetNumberValue(item));
+    GetInt := RETYPE(INTEGER32, pas_cjson_int32(item));
 END;
 
 FUNCTION GetReal(obj: ADRMEM; key: Str255): REAL;

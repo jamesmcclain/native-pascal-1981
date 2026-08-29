@@ -39,7 +39,7 @@ FUNCTION cJSON_IsBool(item: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_IsNull(item: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_IsTrue(item: ADRMEM): CINT [C]; EXTERN;
 FUNCTION strlen(s: ADRMEM): CSIZE_T [C]; EXTERN;
-FUNCTION pas_cjson_long(item: ADRMEM): CLONG [C]; EXTERN;
+FUNCTION pas_cjson_int32(item: ADRMEM): CINT [C]; EXTERN;
 
 { Stage an LSTRING as a NUL-terminated C string in caller-owned storage.
   Anything past 255 characters cannot be in an LSTRING to begin with, so no
@@ -201,7 +201,7 @@ END;
 
 FUNCTION JxIntValue(node: ADRMEM): INTEGER32;
 BEGIN
-  JxIntValue := RETYPE(INTEGER32, pas_cjson_long(node));
+  JxIntValue := RETYPE(INTEGER32, pas_cjson_int32(node));
 END;
 
 FUNCTION JxStrToBuf(node: ADRMEM; VAR out: ByteBuf): BOOLEAN;
