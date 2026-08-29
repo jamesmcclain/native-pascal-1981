@@ -151,13 +151,6 @@ Recorded rather than fixed. None currently affects the bootstrap.
   collapses every integer width into one kind (see the comment at the top of
   `src/tc_decl.pas`), so it has no context width to check against.
 - **Implicit narrowing**, described above.
-- **`.LEN` on an LSTRING.** `ORD(s.LEN)` reads the leading length byte and
-  works in the reference compiler in both dialects, so it is period-correct
-  vintage Pascal. The native compiler rejects it with "Field selector on
-  non-record value". Found by `tests/proxy/corpus_smoke.py --reference`, which
-  is why that check is not yet part of `make test-proxy`: two of its 56 items
-  reconstruct a real program that uses it. Written up in
-  `~/pascal1981-lstring-len-gap.md`.
 - **Array index bounds** are `INTEGER`-ranged in this dialect. A bound outside
   that range is rejected by both compilers now, but with different wording;
   the native message comes from `CheckedIndexBound` in `src/cg_types.pas`.
@@ -188,7 +181,6 @@ error at least once:
   compile. Carry an `INTEGER32` index against a base pointer instead.
 - **Two `LSTRING(255)` types from different units are not interchangeable**,
   neither as a `VAR` parameter nor by assignment. Copy character by character.
-  See `~/pascal1981-runtime-linking-notes.md` for the plan to remove this.
 - **`CONST` accepts foldable integers, reals and `CHAR`s only.** String
   constants are not supported, and a `CONST` value cannot be a function call.
 - **There is no implicit `INTEGER64` to `REAL` conversion**, and `FLOAT()`

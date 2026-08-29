@@ -939,17 +939,43 @@ BEGIN
     END
     ELSE IF kind = 'FIELD' THEN
     BEGIN
-      IF TypeKind(cur_tid) <> TK_RECORD THEN
-        AbortWith('codegen: a FIELD selector was applied to a non-record');
-      fname := GetStr(sel, 'index_or_field');
-      fi := LookupField(cur_tid, fname);
-      IF fi = 0 THEN
-        AbortWith2('codegen: unknown record field: ', fname);
-      gep_idx := AllocPtrArray(1);
-      SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, fields[fi].byte_offset, 0));
-      base_ptr := LLVMBuildGEP2(builder, i8ty, base_ptr, gep_idx, 1, MakeCStr(''));
-      cur_tid := fields[fi].field_tid;
-      base_ptr := LLVMBuildBitCast(builder, base_ptr, LLVMPointerType(LLVMTypeForTk(cur_tid), 0), MakeCStr(''));
+      IF TypeKind(cur_tid) = TK_LSTRING THEN
+      BEGIN
+        { LSTRING.LEN: the leading length byte, which is simply element 0 of
+          the same storage (cg_decl.pas's index-0-is-length convention), so
+          this is the INDEX path above with a constant zero. The result is a
+          CHAR, and it is an address like any other -- assigning to it is how
+          a program truncates the string in place. }
+        IF UpperStr(GetStr(sel, 'index_or_field')) <> 'LEN' THEN
+          AbortWith2('codegen: an LSTRING has no field: ', GetStr(sel, 'index_or_field'));
+        IF types[cur_tid].is_super THEN
+        BEGIN
+          gep_idx := AllocPtrArray(1);
+          SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+          base_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(cur_tid), base_ptr, gep_idx, 1, MakeCStr(''));
+        END
+        ELSE
+        BEGIN
+          gep_idx := AllocPtrArray(2);
+          SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+          SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
+          base_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(cur_tid), base_ptr, gep_idx, 2, MakeCStr(''));
+        END;
+        cur_tid := types[cur_tid].elem_tid;
+      END
+      ELSE BEGIN
+        IF TypeKind(cur_tid) <> TK_RECORD THEN
+          AbortWith('codegen: a FIELD selector was applied to a non-record');
+        fname := GetStr(sel, 'index_or_field');
+        fi := LookupField(cur_tid, fname);
+        IF fi = 0 THEN
+          AbortWith2('codegen: unknown record field: ', fname);
+        gep_idx := AllocPtrArray(1);
+        SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, fields[fi].byte_offset, 0));
+        base_ptr := LLVMBuildGEP2(builder, i8ty, base_ptr, gep_idx, 1, MakeCStr(''));
+        cur_tid := fields[fi].field_tid;
+        base_ptr := LLVMBuildBitCast(builder, base_ptr, LLVMPointerType(LLVMTypeForTk(cur_tid), 0), MakeCStr(''));
+      END;
     END
     ELSE
       AbortWith2('codegen: unhandled selector kind: ', kind);

@@ -64,7 +64,17 @@ BEGIN
     END
     ELSE IF kind = 'FIELD' THEN
     BEGIN
-      IF TypeKind(cur_tid) <> TK_RECORD THEN
+      IF TypeKind(cur_tid) = TK_LSTRING THEN
+      BEGIN
+        { .LEN, the length byte: a CHAR, so the designator is not
+          string-shaped. Any other field name is an error the real
+          designator path reports. }
+        IF UpperStr(GetStr(sel, 'index_or_field')) = 'LEN' THEN
+          cur_tid := types[cur_tid].elem_tid
+        ELSE
+          failed := TRUE;
+      END
+      ELSE IF TypeKind(cur_tid) <> TK_RECORD THEN
         failed := TRUE
       ELSE BEGIN
         fname := GetStr(sel, 'index_or_field');
