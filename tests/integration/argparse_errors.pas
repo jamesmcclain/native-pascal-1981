@@ -15,8 +15,8 @@ BEGIN
   { A duplicate registration is a programming error, surfaced at parse time
     rather than silently dropping the second spelling. }
   ArgBegin('argparse_errors', 'Diagnostics.');
-  ArgString('host', ' ', '127.0.0.1', 'Host.');
-  ArgString('host', ' ', 'other', 'Host again.');
+  ArgString('host', ARG_NO_SHORT, '127.0.0.1', 'Host.');
+  ArgString('host', ARG_NO_SHORT, 'other', 'Host again.');
   IF ArgParse THEN
     WRITELN('1: unexpectedly succeeded')
   ELSE
@@ -27,7 +27,7 @@ BEGIN
 
   { An option the program never registered. }
   ArgBegin('argparse_errors', 'Diagnostics.');
-  ArgString('host', ' ', '127.0.0.1', 'Host.');
+  ArgString('host', ARG_NO_SHORT, '127.0.0.1', 'Host.');
   IF ArgParse THEN
     WRITELN('2: unexpectedly succeeded')
   ELSE
@@ -38,7 +38,7 @@ BEGIN
 
   { A value-taking option given as the final token, with nothing after it. }
   ArgBegin('argparse_errors', 'Diagnostics.');
-  ArgString('not-registered', ' ', 'fallback', 'Takes a value.');
+  ArgString('not-registered', ARG_NO_SHORT, 'fallback', 'Takes a value.');
   IF ArgParse THEN
     WRITELN('3: unexpectedly succeeded')
   ELSE

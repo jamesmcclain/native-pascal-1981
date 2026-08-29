@@ -37,11 +37,7 @@
   the dialect has no procedural type, so a callback-style API is impossible
   here regardless.
 
-  An option with no short form registers a space as its short_name. That is a
-  plain literal rather than a named constant because this dialect's CONST
-  section accepts only foldable integer and real values -- a CHAR or string
-  CONST aborts codegen with "IntLiteralValue: not a foldable integer
-  constant".
+  An option with no short form registers ARG_NO_SHORT as its short_name.
 
   Values are not copied. A parsed value is a pointer straight into the argv
   the C runtime holds, which lives for the life of the process, so a value of
@@ -61,6 +57,7 @@ UNIT argparse (ArgBegin, ArgFlag, ArgString, ArgInt, ArgReal,
 CONST
   ARG_MAX_OPTIONS    = 32;
   ARG_MAX_POSITIONAL = 32;
+  ARG_NO_SHORT       = ' ';   { pass as short_name when an option has none }
 
 TYPE
   ArgStr = LSTRING(255);

@@ -208,7 +208,7 @@ FUNCTION FoldConstInt(expr_node: ADRMEM; VAR folded: INTEGER64): BOOLEAN;
   callers need the untruncated value before rebuilding it at a wider target
   type for the vintage INTEGER-constant adaptation rule. }
 VAR
-  nt, op, nm: Str255;
+  nt, op, nm, ch: Str255;
   left, right, q, r: INTEGER64;
   ci: INTEGER32;
   args: ADRMEM;
@@ -218,6 +218,16 @@ BEGIN
   IF nt = 'IntLiteral' THEN
   BEGIN
     folded := Real64ToInt64(GetReal(expr_node, 'value'));
+    FoldConstInt := TRUE;
+  END
+  ELSE IF nt = 'CharLiteral' THEN
+  BEGIN
+    { A character folds to its ordinal, which is what every constant context
+      that can accept one actually wants: an array bound, a set range, or an
+      ORD(...) around it. The CHAR-ness is carried separately in
+      const_tbl[].is_char and recovered when the value is materialized. }
+    ch := GetStr(expr_node, 'value');
+    folded := ORD(ch[1]);
     FoldConstInt := TRUE;
   END
   ELSE IF nt = 'UnaryOp' THEN
@@ -1185,6 +1195,7 @@ BEGIN
       nconsts := nconsts + 1;
       const_tbl[nconsts].name := fname;
       const_tbl[nconsts].is_real := FALSE;
+      const_tbl[nconsts].is_char := FALSE;
       const_tbl[nconsts].ival := mi;
     END;
   END

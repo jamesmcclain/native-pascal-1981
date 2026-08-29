@@ -1259,6 +1259,14 @@ BEGIN
           res := LLVMConstReal(dblty, const_tbl[consti].rval);
           last_val_tk := TK_REAL;
         END
+        ELSE IF const_tbl[consti].is_char THEN
+        BEGIN
+          { Same shape a bare CharLiteral gets above: an unsigned i8 typed
+            TK_CHAR, so WRITELN prints the character rather than its
+            ordinal and CHAR assignment/comparison typechecks. }
+          res := LLVMConstInt(i8ty, const_tbl[consti].ival, 0);
+          last_val_tk := TK_CHAR;
+        END
         ELSE
         BEGIN
           res := LLVMConstInt(i16ty, const_tbl[consti].ival, 1);

@@ -19,10 +19,10 @@ VAR
 
 BEGIN
   ArgBegin('argparse_unit', 'Fixture for the argparse unit.');
-  ArgString('host', ' ', '127.0.0.1', 'Host to listen on.');
+  ArgString('host', ARG_NO_SHORT, '127.0.0.1', 'Host to listen on.');
   ArgInt('port', 'p', 8790, 'Port to listen on.');
-  ArgString('llm-base-url', ' ', 'http://127.0.0.1:8080/v1', 'Backend URL.');
-  ArgInt('max-tokens', ' ', 512, 'Token budget.');
+  ArgString('llm-base-url', ARG_NO_SHORT, 'http://127.0.0.1:8080/v1', 'Backend URL.');
+  ArgInt('max-tokens', ARG_NO_SHORT, 512, 'Token budget.');
   ArgReal('temperature', 't', 0.2, 'Sampling temperature.');
   ArgFlag('verbose', 'v', 'Print more.');
   ArgFlag('quiet', 'q', 'Print less.');

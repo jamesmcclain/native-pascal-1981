@@ -299,6 +299,15 @@ TYPE
     is_real: BOOLEAN; { TRUE if this CONST was instead a (optionally
                          negated) REAL literal, e.g. `CONST RADIX = 1.0e9;`
                          -- rval holds its value in that case, ival unused. }
+    is_char: BOOLEAN; { TRUE if this CONST was a CHAR literal, e.g.
+                         `CONST TAB = CHR(9)`'s literal cousin `CONST
+                         SPACE = ' '`. ival holds the ordinal, exactly as
+                         for an integer CONST, so every numeric use (array
+                         bounds, set ranges, ORD) keeps working unchanged;
+                         this flag only tells the materializing site in
+                         cg_expr to rebuild the value as an i8 CHAR rather
+                         than an i16 INTEGER, so that WRITELN prints a
+                         character instead of its ordinal. }
     rval: REAL;
   END;
 

@@ -308,7 +308,7 @@ BEGIN
   WHILE i < arg_nspecs DO
   BEGIN
     WRITE('  ');
-    IF arg_specs[i].short_name <> ' ' THEN
+    IF arg_specs[i].short_name <> ARG_NO_SHORT THEN
       WRITE('-', arg_specs[i].short_name, ', ')
     ELSE
       WRITE('    ');
@@ -379,7 +379,7 @@ VAR
   i, found: INTEGER32;
 BEGIN
   found := -1;
-  IF c <> ' ' THEN
+  IF c <> ARG_NO_SHORT THEN
   BEGIN
     i := 0;
     WHILE (i < arg_nspecs) AND (found < 0) DO
