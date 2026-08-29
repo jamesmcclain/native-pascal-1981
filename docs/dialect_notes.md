@@ -33,6 +33,29 @@ means the vintage-core subset of the native language; do not use the driver's
 remain extended-only language features, despite being accepted by the native
 pipeline for every value of that option.
 
+### Command-line contract
+
+The driver and each standalone stage default to the `vintage` dialect. The
+`--dialect` option accepts only the case-sensitive values `vintage` and
+`extended`. DEVICE is a compiland kind, not a command-line dialect.
+
+The driver reports `error: --dialect requires an argument` when the value is
+missing. It reports `error: invalid dialect '<value>'; expected 'vintage' or
+'extended'` when the value is invalid. Standalone stages report equivalent
+errors for the same conditions.
+
+The driver does not pass a dialect option to the lexer. It invokes the other
+stages as follows:
+
+```text
+parser --dialect <value>
+typechecker --dialect <value>
+codegen --dialect <value>
+```
+
+These command lines define the target contract. The implementation work will
+replace the disconnected behavior described above.
+
 The scope tags below state where a rule applies: **[both]** means a
 vintage-core rule that remains true in the native extended surface;
 **[extended]** means the rule concerns an extension; and **[native]** means a
