@@ -96,19 +96,32 @@ BEGIN
   BufFree(body); BufFree(raw); BufFree(request);
 END;
 
+FUNCTION FindGolden(cases: ADRMEM; name: ByteStr): ADRMEM;
+VAR i, n: INTEGER32; item: ADRMEM; found: ByteStr;
+BEGIN
+  FindGolden := NIL; n := JxArrSize(cases); i := 0;
+  WHILE i < n DO BEGIN
+    item := JxArrItem(cases, i); JxGetStr(item, 'name', found);
+    IF found = name THEN BEGIN FindGolden := item; RETURN; END;
+    i := i + 1;
+  END;
+END;
+
 PROCEDURE WriteBuf(VAR b: ByteBuf);
 VAR i: INTEGER32;
 BEGIN FOR i := 0 TO BufLen(b) - 1 DO WRITE(BufAt(b, i)); END;
 
-VAR host, fixture_short, upstream_url: ByteStr; arg: ArgStr; fixture, text, request, rendered: ByteBuf;
-    root, cases, item, report, output, entry: ADRMEM;
+VAR host, fixture_short, upstream_url: ByteStr; arg: ArgStr; fixture, golden_file, text, request, rendered: ByteBuf;
+    root, cases, golden_root, golden_cases, item, expected, report, output, entry: ADRMEM;
     port, stub_port, timeout_ms, i, n: INTEGER32;
+    all_match: BOOLEAN;
 BEGIN
   ArgBegin('conformance_runner', 'Replay proxy conformance fixture requests.');
   ArgString('host', ARG_NO_SHORT, '127.0.0.1', 'proxy host');
   ArgInt('port', ARG_NO_SHORT, 8790, 'proxy port');
   ArgInt('stub-port', ARG_NO_SHORT, 0, 'stub upstream port for /_last checks');
   ArgString('upstream-url', ARG_NO_SHORT, '', 'URL to mask in response JSON');
+  ArgString('golden', ARG_NO_SHORT, '', 'golden report to compare fixture cases against');
   ArgString('fixtures', ARG_NO_SHORT, 'tests/proxy/conformance_cases.json', 'fixture JSON file');
   ArgInt('timeout', 't', 30, 'request timeout in seconds');
   IF NOT ArgParse THEN BEGIN ArgUsage; NetExit(2); END;
@@ -116,23 +129,38 @@ BEGIN
   ArgGetStr('host', arg); ToByteStr(arg, host);
   ArgGetStr('fixtures', arg); ToByteStr(arg, fixture_short);
   ArgGetStr('upstream-url', arg); ToByteStr(arg, upstream_url);
-  BufInit(fixture, 0); BufAppendStr(fixture, fixture_short); BufInit(text, 0); BufInit(request, 0);
+  BufInit(fixture, 0); BufAppendStr(fixture, fixture_short); BufInit(golden_file, 0); BufInit(text, 0); BufInit(request, 0);
+  ArgGetStr('golden', arg); ToByteStr(arg, fixture_short); BufAppendStr(golden_file, fixture_short);
+  golden_root := NIL; golden_cases := NIL;
+  IF BufLen(golden_file) > 0 THEN BEGIN
+    BufInit(rendered, 0);
+    IF NOT SysReadFile(golden_file, rendered) THEN BEGIN WRITELN('conformance_runner: cannot read golden'); NetExit(1); END;
+    golden_root := JxParseBuf(rendered); golden_cases := JxGet(golden_root, 'cases'); BufFree(rendered);
+    IF NOT JxIsArray(golden_cases) THEN BEGIN WRITELN('conformance_runner: invalid golden'); NetExit(1); END;
+  END;
   IF NOT SysReadFile(fixture, text) THEN BEGIN WRITELN('conformance_runner: cannot read fixtures'); NetExit(1); END;
   root := JxParseBuf(text); cases := JxGet(root, 'cases');
   IF NOT JxIsArray(cases) THEN BEGIN WRITELN('conformance_runner: invalid fixtures'); NetExit(1); END;
   port := ArgGetInt('port'); stub_port := ArgGetInt('stub-port'); timeout_ms := ArgGetInt('timeout') * 1000; NetInit;
   report := JxNewObject; output := JxNewArray; JxAddItem(report, 'cases', output);
-  n := JxArrSize(cases);
+  all_match := TRUE; n := JxArrSize(cases);
   FOR i := 0 TO n - 1 DO BEGIN
     item := JxArrItem(cases, i); BufClear(text); JxGetStrToBuf(item, 'request_hex', text);
     entry := JxNewObject; JxGetStr(item, 'name', fixture_short); JxAddStr(entry, 'name', fixture_short);
+    JxGetStr(item, 'note', fixture_short); JxAddStr(entry, 'note', fixture_short);
     IF HexToBuf(text, request) THEN BEGIN
       AddResponse(entry, host, upstream_url, port, timeout_ms, request);
       IF JxIsTrue(JxGet(item, 'capture_upstream')) AND (stub_port > 0) THEN
         AddUpstreamRequest(entry, host, stub_port, timeout_ms);
     END ELSE JxAddStr(entry, 'error', 'invalid request hex');
+    IF golden_cases <> NIL THEN BEGIN
+      JxGetStr(entry, 'name', fixture_short); expected := FindGolden(golden_cases, fixture_short);
+      IF (expected = NIL) OR NOT JxEqual(entry, expected) THEN all_match := FALSE;
+    END;
     JxArrAppend(output, entry);
   END;
   BufInit(rendered, 0); JxPrintToBuf(report, rendered); WriteBuf(rendered); WRITELN;
-  BufFree(rendered); JxDelete(report); JxDelete(root); BufFree(request); BufFree(text); BufFree(fixture);
+  BufFree(rendered); JxDelete(report); JxDelete(root); IF golden_root <> NIL THEN JxDelete(golden_root);
+  BufFree(request); BufFree(text); BufFree(golden_file); BufFree(fixture);
+  IF NOT all_match THEN NetExit(1);
 END.
