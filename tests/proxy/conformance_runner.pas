@@ -63,17 +63,39 @@ BEGIN
   BufFree(body); BufFree(raw);
 END;
 
+PROCEDURE AddUpstreamRequest(VAR entry: ADRMEM; host: ByteStr; port, timeout_ms: INTEGER32);
+VAR request, raw, body: ByteBuf; fd, rc: INTEGER32; resp: HttpResp; parsed: ADRMEM;
+BEGIN
+  BufInit(request, 0); BufInit(raw, 0); BufInit(body, 0);
+  HttpAppendRequestLine(request, 'GET', '/_last'); HttpAppendHeader(request, 'Host', 'xx');
+  HttpAppendHeader(request, 'Connection', 'close'); HttpEndHeaders(request);
+  fd := NetConnect(host, port, timeout_ms);
+  IF fd >= 0 THEN BEGIN
+    rc := NetWrite(fd, request); IF rc = BufLen(request) THEN NetShutdownWrite(fd);
+    IF rc = BufLen(request) THEN rc := HttpReadRespHead(fd, raw, resp, 65000, timeout_ms);
+    IF (rc = HTTP_HEAD_OK) AND (resp.content_length >= 0) THEN
+      IF NOT HttpReadRespBody(fd, raw, resp, resp.content_length, timeout_ms) THEN rc := HTTP_HEAD_EOF;
+    NetClose(fd);
+    IF rc = HTTP_HEAD_OK THEN BEGIN
+      HttpRespBodyToBuf(raw, resp, body); parsed := JxParseBuf(body);
+      IF parsed <> NIL THEN JxAddItem(entry, 'upstream_request', parsed);
+    END;
+  END;
+  BufFree(body); BufFree(raw); BufFree(request);
+END;
+
 PROCEDURE WriteBuf(VAR b: ByteBuf);
 VAR i: INTEGER32;
 BEGIN FOR i := 0 TO BufLen(b) - 1 DO WRITE(BufAt(b, i)); END;
 
 VAR host, fixture_short: ByteStr; arg: ArgStr; fixture, text, request, rendered: ByteBuf;
     root, cases, item, report, output, entry: ADRMEM;
-    port, timeout_ms, i, n: INTEGER32;
+    port, stub_port, timeout_ms, i, n: INTEGER32;
 BEGIN
   ArgBegin('conformance_runner', 'Replay proxy conformance fixture requests.');
   ArgString('host', ARG_NO_SHORT, '127.0.0.1', 'proxy host');
   ArgInt('port', ARG_NO_SHORT, 8790, 'proxy port');
+  ArgInt('stub-port', ARG_NO_SHORT, 0, 'stub upstream port for /_last checks');
   ArgString('fixtures', ARG_NO_SHORT, 'tests/proxy/conformance_cases.json', 'fixture JSON file');
   ArgInt('timeout', 't', 30, 'request timeout in seconds');
   IF NOT ArgParse THEN BEGIN ArgUsage; NetExit(2); END;
@@ -84,14 +106,17 @@ BEGIN
   IF NOT SysReadFile(fixture, text) THEN BEGIN WRITELN('conformance_runner: cannot read fixtures'); NetExit(1); END;
   root := JxParseBuf(text); cases := JxGet(root, 'cases');
   IF NOT JxIsArray(cases) THEN BEGIN WRITELN('conformance_runner: invalid fixtures'); NetExit(1); END;
-  port := ArgGetInt('port'); timeout_ms := ArgGetInt('timeout') * 1000; NetInit;
+  port := ArgGetInt('port'); stub_port := ArgGetInt('stub-port'); timeout_ms := ArgGetInt('timeout') * 1000; NetInit;
   report := JxNewObject; output := JxNewArray; JxAddItem(report, 'cases', output);
   n := JxArrSize(cases);
   FOR i := 0 TO n - 1 DO BEGIN
     item := JxArrItem(cases, i); BufClear(text); JxGetStrToBuf(item, 'request_hex', text);
     entry := JxNewObject; JxGetStr(item, 'name', fixture_short); JxAddStr(entry, 'name', fixture_short);
-    IF HexToBuf(text, request) THEN AddResponse(entry, host, port, timeout_ms, request)
-    ELSE JxAddStr(entry, 'error', 'invalid request hex');
+    IF HexToBuf(text, request) THEN BEGIN
+      AddResponse(entry, host, port, timeout_ms, request);
+      IF JxIsTrue(JxGet(item, 'capture_upstream')) AND (stub_port > 0) THEN
+        AddUpstreamRequest(entry, host, stub_port, timeout_ms);
+    END ELSE JxAddStr(entry, 'error', 'invalid request hex');
     JxArrAppend(output, entry);
   END;
   BufInit(rendered, 0); JxPrintToBuf(report, rendered); WriteBuf(rendered); WRITELN;
