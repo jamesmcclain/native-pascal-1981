@@ -1,0 +1,4 @@
+1: duplicate option registered: host
+2: unrecognized option: --not-registered
+3: option requires a value: --not-registered
+help-wanted=FALSE

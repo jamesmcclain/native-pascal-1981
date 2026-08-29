@@ -1,0 +1,12 @@
+Usage: argparse_help [options]
+
+Fixture for generated help output.
+
+Options:
+      --host <value>              Host to listen on.
+  -p, --port <value>              Port to listen on.
+  -t, --temperature <value>       Sampling temperature.
+  -v, --verbose                   Print more.
+  -h, --help                      Show this help and exit.
+help-wanted=TRUE
+error-empty=TRUE
