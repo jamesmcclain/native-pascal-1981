@@ -79,12 +79,12 @@ has no way to start.
   malformed requests (a non-numeric `Content-Length`, a truncated body,
   invalid UTF-8) that a client library would refuse to send. Every case carries
   a note saying what it pins and why.
-- `conformance_runner.pas` — replays the raw-byte corpus and writes its
-  normalized response report. `run_conformance.py` starts the stub and the
-  implementation, invokes that native runner, and owns the implementation's
-  flags so every implementation is configured identically. Python also runs
-  two phases the corpus cannot express: `/health` against a dead backend, and
-  three calibration runs.
+- `conformance_runner.pas` — replays the raw-byte corpus, runs `/health`
+  against a dead backend, and writes its normalized response report.
+  `run_conformance.py` starts the stub and implementation, invokes that native
+  runner, and owns the implementation flags so every implementation is
+  configured identically. Python runs the three calibration phases, which
+  require restarting both daemons with different configurations.
 - `golden.json` — the recorded reference behaviour: 47 cases. This is the
   contract the Pascal port has to meet.
 - `transforms.pas` / `transforms.build.sh` / `transforms_check.sh` /

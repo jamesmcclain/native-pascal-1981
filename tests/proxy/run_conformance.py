@@ -271,23 +271,20 @@ def run_corpus(harness):
 
 
 def run_health_unreachable(harness):
-    """/health must report a dead backend as 503, not crash or hang."""
+    """Run the native dead-upstream /health assertion."""
     dead_port = free_port()
     upstream_url = 'http://127.0.0.1:%d/v1' % dead_port
     proxy_port = harness.start_proxy(upstream_url)
-    raw = send_raw(
-        '127.0.0.1', proxy_port, b'GET /health HTTP/1.1\r\nHost: x\r\n'
-        b'Connection: close\r\n\r\n')
-    record = parse_response(raw, upstream_url)
-    record['name'] = 'health_upstream_unreachable'
-    record['note'] = ('A backend that is not listening is reported as 503 '
-                      'with an error message, not a hang or a traceback.')
-    # The OS error text for a refused connection is not worth pinning across
-    # implementations; that it is a 503 naming the failure is.
-    body = record.get('body')
-    if isinstance(body, dict) and 'error' in body:
-        body['error'] = '<REFUSED>'
-    return [record]
+    result = subprocess.run([
+        harness.native_runner, '--host', '127.0.0.1', '--port',
+        str(proxy_port), '--upstream-url', upstream_url, '--health-unreachable'
+    ],
+                            capture_output=True,
+                            text=True,
+                            check=False)
+    if result.returncode:
+        raise RuntimeError('native health runner failed: %s' % result.stderr)
+    return json.loads(result.stdout)['cases']
 
 
 def run_calibration(harness):
