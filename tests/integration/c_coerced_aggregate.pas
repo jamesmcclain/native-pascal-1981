@@ -55,12 +55,10 @@ BEGIN
   dp.v := 24.0;
   WRITELN(dpair_sum(dp));
 
-  { Two integer eightbytes, the second only half used. The first is built
-    up by arithmetic rather than written as a literal: an integer literal
-    is INTEGER (16-bit) in this dialect, so a wide constant cannot be
-    spelled directly. }
-  w.lo := 30000;
-  w.lo := w.lo * 1000;
+  { Two integer eightbytes, the second only half used. The low half is a
+    value no 16-bit INTEGER could hold, which is the point: it has to survive
+    the call in its declared width. }
+  w.lo := 30000000;
   w.hi := 5;
   WRITELN(wide_sum(w));
 

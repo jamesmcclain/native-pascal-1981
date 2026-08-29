@@ -13,13 +13,13 @@
   the layering: it defines its own ByteStr rather than borrowing jsonutil's
   Str255, which would drag a JSON library in behind it.
 
-  Two rules the dialect imposes on everything here, both silent when broken:
+  Two rules shape everything here, both silent when broken:
 
-  1. An integer literal is 16 bits, so any literal above 32767 wraps. Writing
-     `n := 100000` actually stores -31072, and a capacity computed that way
-     turns into a malloc of a negative size and a segfault far from the cause.
-     Every large constant in the implementation is therefore built by
-     arithmetic, never written down.
+  1. Bare INTEGER is 16 bits, so every length, capacity and offset is
+     INTEGER32. A capacity that wrapped would turn into a malloc of a
+     negative size and a segfault far from the cause. (Integer *literals*
+     take their width from context and are fine at any size -- see
+     docs/dialect_notes.md; the compiler bug that truncated them is fixed.)
   2. Pointers compare only with = and <>. There is no pointer subtraction and
      no relational comparison, so positions are carried as INTEGER32 indices
      against a base pointer, never as a wandering cursor compared against an

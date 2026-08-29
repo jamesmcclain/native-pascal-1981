@@ -39,10 +39,7 @@ VAR
   fd, rc, max_head: INTEGER32;
   req, text: ByteBuf;
 BEGIN
-  { Not written as 65000: an integer literal is 16 bits here, so that value
-    arrives as -536 and switches the ceiling off instead of setting it. }
-  max_head := 65;
-  max_head := max_head * 1000;
+  max_head := 65000;
   fd := NetConnect('127.0.0.1', port, 5000);
   IF fd < 0 THEN
     PostJson := HTTP_HEAD_ERROR
@@ -89,8 +86,7 @@ END;
 
 BEGIN
   NetInit;
-  max_head := 65;
-  max_head := max_head * 1000;
+  max_head := 65000;
   listen_fd := NetListen('127.0.0.1', 0, 16);
   IF listen_fd < 0 THEN
   BEGIN

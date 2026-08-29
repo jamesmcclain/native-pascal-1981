@@ -158,8 +158,7 @@ BEGIN
     BEGIN
       bad := FALSE;
       total := 0;
-      ceiling := 20000;
-      ceiling := ceiling * 10000;      { 200000000 }
+      ceiling := 200000000;
       i := 1;
       WHILE (i <= n) AND (NOT bad) DO
       BEGIN
@@ -170,12 +169,7 @@ BEGIN
         BEGIN
           { Refuse anything that would overflow INTEGER32 rather than
             wrapping into a negative length, which would then read as a
-            perfectly ordinary "too small" value further up.
-
-            The ceiling is built by arithmetic because an integer literal
-            above 32767 wraps where it is written -- spelling 200000000 here
-            silently produced a small number, so the guard fired on every
-            valid length and every request looked malformed. }
+            perfectly ordinary "too small" value further up. }
           IF total > ceiling THEN
             bad := TRUE
           ELSE

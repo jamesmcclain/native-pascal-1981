@@ -105,12 +105,7 @@ BEGIN
 
   BufInit(raw, 0);
   HttpReqInit(req);
-  { Built by arithmetic, not written as 65000. An integer literal is 16 bits
-    in this dialect, so 65000 lands as -536 -- which sails past the
-    `max_head > 0` guard inside HttpReadHead and turns the ceiling off
-    entirely. That is exactly what this fixture used to do. }
-  max_head := 65;
-  max_head := max_head * 1000;
+  max_head := 65000;
   head_rc := HttpReadHead(conn_fd, raw, req, max_head, 5000);
   WRITELN('head-rc=', head_rc);
   WRITELN('method=', req.method, ' path=', req.path, ' version=', req.version);

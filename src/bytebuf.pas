@@ -1,5 +1,5 @@
 { IMPLEMENTATION of bytebuf. See bytebuf.inc for the contract and for the two
-  dialect rules (16-bit integer literals, pointers compare only with =/<>)
+  dialect rules (16-bit bare INTEGER, pointers compare only with =/<>)
   that shape everything below. }
 
 (*$INCLUDE:'bytebuf.inc'*)

@@ -212,10 +212,7 @@ BEGIN
   BufAppendBuf(req, text);
 
   BufInit(raw, 0);
-  { Built by arithmetic: an integer literal is 16 bits in this dialect, so
-    writing 65000 here would pass -536 and disable the header ceiling. }
-  max_head := 65;
-  max_head := max_head * 1000;
+  max_head := 65000;
   rc := HttpExchange(fd, req, raw, resp, max_head, timeout_ms);
   NetClose(fd);
   BufFree(req);

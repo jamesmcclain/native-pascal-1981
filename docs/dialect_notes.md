@@ -1,4 +1,4 @@
-# Dialect notes: widths, literals, and the things that fail silently
+# Dialect notes: dialects, widths, and the things that fail silently
 
 This is the document to read before writing Pascal in this repository. It
 records the parts of the 1981 IBM Pascal dialect that do not behave the way a
@@ -9,6 +9,33 @@ Everything here has been verified against the compilers in this tree rather
 than inferred from the sources. Where the native compiler and the reference
 disagree, both behaviours are given.
 
+## There are two dialects
+
+The compiler takes `--dialect vintage` or `--dialect extended`.
+
+**Vintage** is the faithful 1981 language: `INTEGER`, `WORD`, `REAL`, `CHAR`,
+`BOOLEAN`, `STRING`, `LSTRING`, and nothing else. Enum I/O is ordinal, `::N`
+precision is ignored on strings, and there are no wide types at all.
+
+**Extended** turns on an umbrella of extensions, the ones that matter here
+being:
+
+- `wide-integers` — `INTEGER8`/`INTEGER32`/`INTEGER64` and
+  `WORD8`/`WORD32`/`WORD64`, the `INTEGER16`/`WORD16` synonyms, **and wide
+  integer constants**.
+- `wide-reals` — `REAL32`, and `REAL64` as a synonym for `REAL`.
+- `symbolic-enum-io`, `string-precision`, `readset-set-literal`,
+  `tuning-hints` (launch-bound attributes and `{$UNROLL n}`).
+
+Everything in this repository is compiled `--dialect extended`, including the
+compiler's own sources, so that is the dialect these notes describe unless a
+section says otherwise. If you are writing vintage-dialect code, `INTEGER32`
+does not exist and neither does any literal that does not fit `INTEGER`.
+
+Two orthogonal policy flags exist that `--dialect` does not touch:
+`strict-word-int` and `noalias-kernel-params`. Both are off by default and
+must be asked for by name.
+
 ## There are two compilers, and they are not equally strict
 
 - **The reference compiler** is the out-of-repo Python `pascal1981` package
@@ -16,12 +43,12 @@ disagree, both behaviours are given.
 - **The native compiler** is `bin/pascal1981`, built from this tree.
 
 Anything in the bootstrap set — `src/lexer.pas`, `src/parser.pas`,
-`src/typechecker.pas`, `src/codegen.pas`, `src/driver.pas`, `src/jsonutil.pas`
-and the `cg_*` units — must be accepted by **both**, because `gen1` is built by
-the reference. Everything else (`src/bytebuf.pas`, `src/argparse.pas`,
+`src/typechecker.pas`, `src/codegen.pas`, `src/jsonutil.pas` and the `ps_*`,
+`tc_*` and `cg_*` units — must be accepted by **both**, because `gen1` is built
+by the reference. Everything else (`src/bytebuf.pas`, `src/argparse.pas`,
 `src/netsock.pas`, `src/jsonx.pas`, `src/httpio.pas`, `src/proxycore.pas`,
-`src/astcompare.pas`, and every fixture under `tests/`) is built by the
-finished native compiler and only has to satisfy that one.
+`src/driver.pas`, `src/astcompare.pas`, and every fixture under `tests/`) is
+built by the finished native compiler and only has to satisfy that one.
 
 This matters because the reference is stricter in places. It rejects an
 implicit narrowing that the native compiler accepts:
@@ -40,64 +67,66 @@ the truncation is real either way and `RETYPE` says so.
 
 | Type | Width | Notes |
 |---|---|---|
-| `INTEGER` | **16-bit signed** | the default, and the source of most surprises |
+| `INTEGER` | **16-bit signed** | the default; range is `-32767..32767` |
 | `WORD` | 16-bit unsigned | `0..65535` |
-| `INTEGER32` | 32-bit signed | what you almost always want for a length or an offset |
-| `INTEGER64` | 64-bit signed | |
+| `INTEGER32` | 32-bit signed | extended only; what you want for a length or an offset |
+| `INTEGER64` | 64-bit signed | extended only |
+| `WORD8`/`WORD32`/`WORD64` | unsigned | extended only |
 | `CINT` | 32-bit signed | C `int`, for `[C]; EXTERN;` declarations |
 | `CLONG` | 64-bit signed | C `long` |
 | `CSIZE_T` | 64-bit unsigned | C `size_t` |
-| `REAL` | 64-bit float | `REAL32` is the 32-bit one |
+| `REAL` | 64-bit float | `REAL32` is the 32-bit one, extended only |
 
-Arithmetic on `INTEGER32` variables is genuinely 32-bit:
+Note that `INTEGER`'s range is symmetric: `-32768` is not a writable literal,
+and the reference rejects it.
 
-```pascal
-n := 30000; n := n + 30000;    { 60000, correct }
-```
+## Integer literals take their width from context
 
-## Integer literals are 16 bits, wherever they appear
-
-This is the single most expensive thing in this document. **An integer literal
-is a 16-bit value**, regardless of what it is assigned to:
+A literal is *not* limited to 16 bits. It is typed by the context it appears
+in, so all of these are correct in the extended dialect:
 
 ```pascal
-VAR n: INTEGER32;
+VAR n: INTEGER32; w: INTEGER64;
+CONST BIG = 100000;
 BEGIN
-  n := 65000;      { n is -536 }
-  n := 40000;      { n is -25536 }
-  n := 100000;     { n is -31072 }
+  n := 40000;          { 40000 }
+  n := 16#9C40;        { 40000, radix notation }
+  n := -70000;         { -70000 }
+  n := BIG;            { 100000 }
+  w := 5000000000;     { 5000000000 }
 ```
 
-No error, no warning. `CONST BIG = 40000;` wraps the same way. A `WORD` target
-is the exception, because the same 16-bit pattern read as unsigned is the
-value you wrote: `wv := 60000` really is 60000.
+`tests/golden/19_wide_int_literals.pas` pins this, and its output matches the
+reference compiler exactly.
 
-Write large constants by arithmetic instead, and say why in a comment so the
-next reader does not "simplify" it back:
+What *is* an error is a literal too large for the type it lands in:
 
 ```pascal
-max_head := 65;
-max_head := max_head * 1000;      { 65000 -- written as a literal it wraps }
+VAR s: INTEGER;
+BEGIN
+  s := 40000;   { reference: "Integer literal 40000 out of range for INTEGER" }
 ```
 
-Real bugs this has caused in this tree, all of them silent:
+The native compiler does not yet produce that diagnostic — it wraps silently,
+storing `-25536`. That is the one live divergence on literals, and it is
+listed below.
 
-- A `Content-Length` overflow guard written `IF total > 200000000` wrapped to a
-  small number, so it fired on *every* valid length and every request parsed as
-  malformed (`src/httpio.pas`).
-- `malloc(100000)` became `malloc(-31072)`, returned `NIL`, and segfaulted far
-  from the cause (`tests/integration/bytebuf_unit.pas`).
-- `HttpReadHead(fd, raw, req, 65000, 5000)` passed `-536` as the maximum header
-  size, which failed the `max_head > 0` guard inside and switched the ceiling
-  off entirely. Three call sites had it, and nothing noticed because no test
-  reached the too-large path at all.
+**Historical note, because the wrong version of this was believed for a
+while:** until recently the native compiler *did* truncate every literal to 16
+bits, and it looked exactly like a property of the dialect. It was not. Three
+separate places inside the compiler read a literal's value through `TRUNC` or
+stored it in a 16-bit field — the parser's token record, `jsonutil`'s
+`AddIntField`, and `Real64ToInt64` in the constant folder — so `40000` became
+`-25536` on its way into the AST and nothing downstream could recover it. If
+you find yourself writing `n := 65; n := n * 1000;` to avoid a wrap, you are
+working around a bug that no longer exists.
 
 ## `TRUNC` and `ROUND` return `INTEGER`, so they narrow to 16 bits
 
-Both produce a 16-bit result even when assigned to an `INTEGER32`, and for a
-value outside 16-bit range the result is not merely wrapped — LLVM's
-float-to-int conversion is poison when it does not fit, so it is genuine
-garbage:
+This one is real, and it is what caused the bug above. Both produce a 16-bit
+result even when assigned to an `INTEGER32`, and for a value outside 16-bit
+range the result is not merely wrapped — LLVM's float-to-int conversion is
+poison when it does not fit, so it is genuine garbage:
 
 ```pascal
 r := 100000.0;
@@ -106,25 +135,28 @@ n := ROUND(r);     { observed: -31072 }
 ```
 
 Do not use `TRUNC` to read a number out of JSON, a file, or anything else that
-can exceed 32767. `jsonx`'s `JxIntValue` and `jsonutil`'s `GetInt` go through
-`pas_cjson_int32` in the runtime instead, which converts in 32 bits and clamps
-out-of-range values.
+can exceed 32767. The runtime provides `pas_cjson_int32`, `pas_cjson_int64`
+and `pas_double_to_int64` for exactly this, and `jsonx`'s `JxIntValue`,
+`jsonutil`'s `GetInt` and the compiler's own constant folder all go through
+them now.
 
 `ORD` does not have this problem: `ORD` of an `INTEGER32` keeps its width.
 
 ## Known divergences from the reference
 
-These are recorded rather than fixed. Each is a real difference in behaviour
-between the two compilers, and none currently affects the bootstrap.
+Recorded rather than fixed. None currently affects the bootstrap.
 
-- **Out-of-range literals.** The reference rejects any integer literal outside
-  `-32767..32767` outright ("Integer literal 40000 out of range for INTEGER").
-  The native compiler accepts it and wraps, as above.
-- **Array bounds above 32767.** `ResolveIntLiteral` in `src/cg_types.pas`
-  returns `INTEGER`, so `ARRAY [0..40000] OF CHAR` wraps its upper bound to
-  `-25536` and emits `[4294941761 x i8]` — a 4 GB array that fails at link time
-  with a relocation overflow. The reference rejects the literal instead.
+- **A literal out of range for its context type.** The reference rejects it;
+  the native compiler wraps silently. The native typechecker's type model
+  collapses every integer width into one kind (see the comment at the top of
+  `src/tc_decl.pas`), so it has no context width to check against.
 - **Implicit narrowing**, described above.
+- **Array index bounds** are `INTEGER`-ranged in this dialect. A bound outside
+  that range is rejected by both compilers now, but with different wording;
+  the native message comes from `CheckedIndexBound` in `src/cg_types.pas`.
+  Before that check existed, `ARRAY [0..40000] OF CHAR` silently emitted
+  `[4294941761 x i8]` — a 4 GB array that failed much later, at link time,
+  with a relocation overflow nothing could trace back to the bound.
 
 ## Other things that cost time
 
@@ -135,14 +167,14 @@ error at least once:
   'x')` fails to typecheck with "Argument type mismatch" against an `LSTRING`
   parameter while `JxGet(node, 'xy')` is fine. The error says nothing about the
   literal.
-- **Comments do not nest.** A `{ }` comment containing `{` or `}` — including
-  in prose, or in an example — ends early, and the failure is reported as
-  "Lexer Error: unrecognized character" somewhere further down.
+- **Comments do not nest.** A `{ }` comment containing a brace — including in
+  prose, or in an example — ends early, and the failure is reported as "Lexer
+  Error: unrecognized character" somewhere further down.
 - **Reserved words with no visible role.** `VALUE`, `LABEL`, `ORIGIN`,
   `OVERLAY` and `FORTRAN` are reserved; using one as a parameter or variable
   name gives a parser error naming the token.
-- **`CONCAT`'s destination must be a bare variable**, never a record field.
-  Build the string in a local and assign it afterwards.
+- **`CONCAT`'s destination must be a bare variable**, never a record field and
+  never a `VAR` parameter. Build the string in a local and assign it after.
 - **`ADR` takes a bare identifier only** — never `ADR rec.field`.
 - **Pointers compare only with `=` and `<>`.** There is no pointer subtraction
   and no relational comparison, so a C-style `while (p < end)` walk does not
@@ -152,12 +184,16 @@ error at least once:
   See `~/pascal1981-runtime-linking-notes.md` for the plan to remove this.
 - **`CONST` accepts foldable integers, reals and `CHAR`s only.** String
   constants are not supported, and a `CONST` value cannot be a function call.
+- **There is no implicit `INTEGER64` to `REAL` conversion**, and `FLOAT()`
+  accepts only a plain `INTEGER`. The runtime's `pas_int64_to_double` exists
+  because there is no way to write that conversion in Pascal.
 
 ## Checklist before committing Pascal in this tree
 
 1. Every length, offset, capacity, byte count and file size is `INTEGER32`.
-2. No integer literal above 32767 anywhere — search for one and check each hit.
-3. No `TRUNC` or `ROUND` on a value that can exceed 32767.
+2. No `TRUNC` or `ROUND` on a value that can exceed 32767.
+3. A literal assigned to a plain `INTEGER` is inside `-32767..32767`; the
+   native compiler will not tell you if it is not.
 4. If the file is in the bootstrap set, it compiles under the reference too:
    `pascal1981 --dialect extended -c src/thefile.pas -o /tmp/x.o`.
 5. `make test-bootstrap` still reaches a byte-identical `gen3`/`gen4`.

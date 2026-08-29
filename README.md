@@ -5,11 +5,10 @@ This repository contains a native compiler for the 1981 IBM Pascal dialect. It t
 <img width="1536" height="864" alt="image" src="https://github.com/user-attachments/assets/f59a2d0f-468b-41b2-838c-b76729f15975" />
 
 > **Writing Pascal in this repository?** Read
-> [`docs/dialect_notes.md`](docs/dialect_notes.md) first. `INTEGER` is 16 bits
-> and *so is every integer literal*, so `n := 65000` silently stores `-536`;
-> that document collects this and the rest of the dialect's silent failures,
-> along with the places where the native compiler and the reference compiler
-> disagree.
+> [`docs/dialect_notes.md`](docs/dialect_notes.md) first. It covers what the
+> vintage and extended dialects each provide, how wide each integer type is,
+> and the handful of constructs that fail silently rather than with an error —
+> `TRUNC` narrowing to 16 bits being the one that has cost the most time.
 
 ## System Prerequisites
 

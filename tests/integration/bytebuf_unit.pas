@@ -36,8 +36,7 @@ BEGIN
   BufAppendChar(b, ' ');
   BufAppendInt(b, -1234);
   BufAppendChar(b, ' ');
-  n := 1000;
-  n := n * 100;
+  n := 100000;
   BufAppendInt(b, n);
   BufSliceToStr(b, 0, BufLen(b), s);
   WRITELN('ints=', s);
@@ -61,8 +60,7 @@ BEGIN
 
   { --- growth past the 16-bit boundary --- }
   BufClear(b);
-  n := 1000;
-  n := n * 100;            { 100000: never written as a literal }
+  n := 100000;
   i := 0;
   WHILE i < n DO
   BEGIN

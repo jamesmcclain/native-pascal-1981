@@ -43,9 +43,9 @@ BEGIN
     NetExit(1);
   END;
 
-  { A payload of 100000 bytes, built by arithmetic: the literal would wrap. }
-  payload_len := 1000;
-  payload_len := payload_len * 100;
+  { A payload of 100000 bytes: past both the 16-bit range and the socket's
+    own 4096-byte chunk, so it takes several reads to arrive. }
+  payload_len := 100000;
   BufInit(payload, 0);
   i := 0;
   WHILE i < payload_len DO
