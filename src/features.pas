@@ -15,6 +15,7 @@ BEGIN
   resolved.string_precision := enable_extended;
   resolved.readset_set_literal := enable_extended;
   resolved.tuning_hints := enable_extended;
+  resolved.extended_const_intrinsics := enable_extended;
 
   { Policy flags do not participate in the extended umbrella. }
   resolved.strict_word_int := FALSE;
@@ -28,7 +29,8 @@ BEGIN
                          resolved.symbolic_enum_io AND
                          resolved.string_precision AND
                          resolved.readset_set_literal AND
-                         resolved.tuning_hints;
+                         resolved.tuning_hints AND
+                         resolved.extended_const_intrinsics;
 END;
 
 BEGIN
