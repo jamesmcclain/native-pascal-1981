@@ -475,10 +475,16 @@ BEGIN
   ELSE IF TypeKind(tid) = TK_VECTOR THEN
   BEGIN
     { LLVM's natural vector ABI alignment: the total size rounded up to a
-      power of two. Verified against clang 20 x86-64 emitted global/alloca
-      alignments for the legal totals (2,4,8,16,32,64,128 bytes: <4 x i8>=4,
-      <2 x i8>=2, <8 x i32>=32, <32 x float>=128, ...). The total is rebuilt
-      from the ELEMENT's alignment rather than a TypeSizeBytes call: every
+      power of two, with no upper cap. The x86-64 datalayout carries no `v`
+      spec, so LLVM falls back to PowerOf2Ceil(size) for every vector width;
+      confirmed against clang x86-64 _Alignof for the whole legal range --
+      the small totals (<2 x i8>=2, <4 x i8>=4, <8 x i32>=32) and the
+      largest legal vectors alike (VECTOR [64] OF INTEGER64 = 512 bytes ->
+      align 512, VECTOR [64] OF INTEGER32 = 256 -> 256). Since lane count
+      and element size are both powers of two their product already is one,
+      so the round-up loop below is a no-op in practice; it stays as a
+      guard. The total is rebuilt from the ELEMENT's alignment rather than
+      a TypeSizeBytes call: every
       scalar's size equals its alignment, and same-unit calls resolve in
       implementation order under the reference compiler, which
       TypeSizeBytes's implementation follows this one's (its ARRAY arm
@@ -1113,6 +1119,13 @@ BEGIN
       Bare scalar tids are 1..13; 1..12 is the vector-element family
       (TK_INTEGER..TK_REAL32), which also rejects pointers/ADRMEM and
       every registered aggregate tid by construction. }
+    { ResolveIntLiteral itself aborts on any node that is not an integer
+      literal or a CONST identifier, but with an array-flavoured message;
+      pre-check the shape here so the diagnostic names the vector lane
+      count. Mirrors the typechecker's VectorType arm. }
+    IF (NodeType(GetObj(te, 'lanes')) <> 'IntLiteral') AND
+       (NodeType(GetObj(te, 'lanes')) <> 'Identifier') THEN
+      AbortWith('codegen: vector lane count must be an integer literal or a CONST integer identifier');
     count := ResolveIntLiteral(GetObj(te, 'lanes'));
     elem_tid := ResolveTypeExpr(GetObj(te, 'element_type'));
     { Power-of-two probe by successive halving -- the source language's AND

@@ -2,15 +2,19 @@
 { Pins the vector representation decisions that fail silently if wrong:
   natural vector ABI alignment on the emitted allocas (TypeAlignBytes must
   agree with LLVM's datalayout exactly -- see TypeSizeBytes/TypeAlignBytes),
-  and the <n x i8> storage rule for BOOLEAN vectors. }
+  and the <n x i8> storage rule for BOOLEAN vectors. The largest legal
+  vector (64 lanes of INTEGER64 = 512 bytes) pins that the power-of-two
+  alignment has no cap, matching LLVM's PowerOf2Ceil(size) fallback. }
 { CHECK: alloca <4 x float>, align 16 }
 { CHECK: alloca <8 x i32>, align 32 }
 { CHECK: alloca <4 x i8>, align 4 }
+{ CHECK: alloca <64 x i64>, align 512 }
 PROGRAM VTypes;
 TYPE
   V4F = VECTOR [4] OF REAL32;
   V8I = VECTOR [8] OF INTEGER32;
   M4  = VECTOR [4] OF BOOLEAN;
+  V64L = VECTOR [64] OF INTEGER64;
 VAR
   gv: V4F;
 PROCEDURE Touch;
@@ -18,11 +22,13 @@ VAR
   a, b: V4F;
   iv: V8I;
   m: M4;
+  big: V64L;
 BEGIN
   b := a;
   gv := b;
   iv := iv;
-  m := m
+  m := m;
+  big := big
 END;
 BEGIN
   Touch

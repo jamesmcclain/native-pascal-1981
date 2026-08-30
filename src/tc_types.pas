@@ -256,16 +256,31 @@ BEGIN
       sites, exactly as for ArrayType bounds. }
     elem_node := GetObj(node, 'element_type');
     ResolveTypeExpr(elem_node, inner_tk, inner_aux, inner_aux2, inner_idx);
-    lanes_v := FoldVectorLanes(GetObj(node, 'lanes'));
+    bound_node := GetObj(node, 'lanes');
+    lanes_v := FoldVectorLanes(bound_node);
     { Power-of-two probe by successive halving: the source language's AND is
       boolean-only (no bitwise integer AND), so the classic
       `n AND (n-1) = 0` idiom is not expressible in this compiler's own
-      source. Negative/unresolvable counts fall out as not-a-power-of-two. }
+      source. }
     pow2 := lanes_v;
     WHILE (pow2 > 1) AND ((pow2 MOD 2) = 0) DO pow2 := pow2 DIV 2;
     IF NOT VectorScalarElemTk(inner_tk) THEN
     BEGIN
       AddError('Vector element type must be a scalar');
+      tk := TK_UNKNOWN;
+    END
+    ELSE IF (NodeType(bound_node) <> 'IntLiteral') AND (lanes_v < 0) THEN
+    BEGIN
+      { FoldVectorLanes takes exactly an integer literal or an identifier
+        naming an integer CONST -- the same two forms codegen's
+        ResolveIntLiteral accepts -- and returns -1 for anything else (a
+        computed expression like `VECTOR [2+2]`, or a name that is not an
+        integer CONST). Report that on its own; folding it into the range
+        message below would misdescribe it as out of range. A genuinely
+        negative literal (`VECTOR [-4]`) is an IntLiteral, so it skips this
+        arm and lands in the power-of-two check, which is the right message
+        for it. }
+      AddError('Vector lane count must be an integer literal or a CONST integer identifier');
       tk := TK_UNKNOWN;
     END
     ELSE IF (lanes_v < 2) OR (lanes_v > 64) OR (pow2 <> 1) THEN

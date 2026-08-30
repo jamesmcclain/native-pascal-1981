@@ -1155,6 +1155,22 @@ BEGIN
       this pass is itself another body-less declaration -- see above. }
     is_c := routines[ridx].is_c; { source of truth once ridx is known -- see note above }
     is_vararg := routines[ridx].is_vararg; { likewise }
+    IF is_c THEN
+    BEGIN
+      { Mirror of the fresh-declaration guard in the ELSE branch: a bare
+        VECTOR cannot cross a [C] signature (SSEUP vector-register classes
+        are not implemented). A [C] EXTERN is never FORWARD-restated, so
+        this arm is normally unreachable -- kept for symmetry with the
+        other belt-and-braces checks in this branch (duplicate body, EXTERN
+        redefinition). A vector nested in a record/ARRAY param stays legal;
+        ClassifyAggregate routes the whole aggregate MEMORY. }
+      IF is_func THEN
+        IF TypeKind(ret_tk) = TK_VECTOR THEN
+          AbortWith2('codegen: a VECTOR cannot cross a [C] routine signature: ', name);
+      FOR i := 1 TO n DO
+        IF TypeKind(tks[i]) = TK_VECTOR THEN
+          AbortWith2('codegen: a VECTOR cannot cross a [C] routine signature: ', name);
+    END;
     { The already-built fnty is reused verbatim here, so it must already
       reflect the same classification recomputed below -- true as long as
       the placeholder that first declared this name (the fresh-declaration
