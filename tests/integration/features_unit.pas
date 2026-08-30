@@ -14,6 +14,7 @@ BEGIN
   WRITELN('string-precision=', state.string_precision);
   WRITELN('readset-set-literal=', state.readset_set_literal);
   WRITELN('tuning-hints=', state.tuning_hints);
+  WRITELN('extended-const-intrinsics=', state.extended_const_intrinsics);
   WRITELN('strict-word-int=', state.strict_word_int);
   WRITELN('noalias-kernel-params=', state.noalias_kernel_params);
 END;

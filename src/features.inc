@@ -21,6 +21,7 @@ TYPE
     string_precision: BOOLEAN;
     readset_set_literal: BOOLEAN;
     tuning_hints: BOOLEAN;
+    extended_const_intrinsics: BOOLEAN;
     strict_word_int: BOOLEAN;
     noalias_kernel_params: BOOLEAN;
   END;

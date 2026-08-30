@@ -37,7 +37,7 @@ END;
 
 FUNCTION FoldConstInt(node: ADRMEM; VAR folded_value: INTEGER64): BOOLEAN;
 VAR
-  nt, op, name: Str255;
+  nt, op, name, ch: Str255;
   left, right, quotient, remainder: INTEGER64;
   si: INTEGER32;
   args: ADRMEM;
@@ -47,6 +47,12 @@ BEGIN
   IF nt = 'IntLiteral' THEN
   BEGIN
     folded_value := JsonIntegerValue(node);
+    FoldConstInt := TRUE;
+  END
+  ELSE IF nt = 'CharLiteral' THEN
+  BEGIN
+    ch := GetStr(node, 'value');
+    folded_value := ORD(ch[1]);
     FoldConstInt := TRUE;
   END
   ELSE IF nt = 'UnaryOp' THEN
@@ -100,7 +106,7 @@ BEGIN
   BEGIN
     name := UpperStr(GetStr(node, 'name'));
     args := GetObj(node, 'args');
-    IF ((name = 'ORD') OR (name = 'SUCC') OR (name = 'PRED')) AND
+    IF ((name = 'ORD') OR (name = 'CHR') OR (name = 'SUCC') OR (name = 'PRED')) AND
        (cJSON_GetArraySize(args) = 1) AND
        FoldConstInt(cJSON_GetArrayItem(args, 0), folded_value) THEN
     BEGIN
@@ -273,7 +279,7 @@ BEGIN
   errors_before := nerrors;
   result_tk := CheckExpr(node);
   expr_context_tk := saved_context;
-  IF IsInteger(target_tk) AND FoldConstInt(node, folded_value) THEN
+  IF IsInteger(target_tk) AND IsInteger(result_tk) AND FoldConstInt(node, folded_value) THEN
   BEGIN
     IF (nerrors = errors_before) AND NOT IntegerConstantFits(target_tk, folded_value) THEN
     BEGIN
@@ -454,12 +460,13 @@ END;
 
 FUNCTION CheckFuncCall(node: ADRMEM): INTEGER;
 VAR
-  name: Str255;
+  name, orig_name: Str255;
   args_arr, warg: ADRMEM;
   nargs, i, si: INTEGER32;
   atk: INTEGER;
 BEGIN
-  name := GetStr(node, 'name');
+  orig_name := GetStr(node, 'name');
+  name := UpperStr(orig_name);
   args_arr := GetObj(node, 'args');
   nargs := cJSON_GetArraySize(args_arr);
   IF name = 'WRD' THEN
@@ -652,7 +659,7 @@ BEGIN
         atk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
       IF i < symbols[si].nparams THEN
         IF NOT CanAssign(symbols[si].param_tk[i + 1], atk) THEN
-          AddError2('Argument type mismatch or implicit narrowing in call to ', name);
+          AddError2('Argument type mismatch or implicit narrowing in call to ', orig_name);
     END;
   CheckFuncCall := symbols[si].ret_tk;
 END;

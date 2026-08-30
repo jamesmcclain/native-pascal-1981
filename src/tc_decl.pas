@@ -252,6 +252,61 @@ END;
 
 PROCEDURE CheckBlock(block: ADRMEM); FORWARD;
 
+FUNCTION HasExtendedConstIntrinsic(node: ADRMEM): BOOLEAN;
+VAR
+  nm: Str255;
+  args: ADRMEM;
+  i, n: INTEGER32;
+BEGIN
+  HasExtendedConstIntrinsic := FALSE;
+  IF NodeType(node) = 'FuncCall' THEN
+  BEGIN
+    nm := UpperStr(GetStr(node, 'name'));
+    IF (nm = 'ORD') OR (nm = 'CHR') OR (nm = 'SUCC') OR (nm = 'PRED') THEN
+      HasExtendedConstIntrinsic := TRUE
+    ELSE
+    BEGIN
+      args := GetObj(node, 'args');
+      n := cJSON_GetArraySize(args);
+      FOR i := 0 TO n - 1 DO
+        IF HasExtendedConstIntrinsic(cJSON_GetArrayItem(args, i)) THEN
+          HasExtendedConstIntrinsic := TRUE;
+    END;
+  END;
+END;
+
+PROCEDURE CheckConstOrdinalBounds(node: ADRMEM);
+VAR
+  nm: Str255;
+  args: ADRMEM;
+  folded_value: INTEGER64;
+  arg_tk: INTEGER;
+BEGIN
+  IF NodeType(node) = 'FuncCall' THEN
+  BEGIN
+    nm := UpperStr(GetStr(node, 'name'));
+    args := GetObj(node, 'args');
+    IF ((nm = 'SUCC') OR (nm = 'PRED')) AND (cJSON_GetArraySize(args) = 1) THEN
+    BEGIN
+      arg_tk := CheckExpr(cJSON_GetArrayItem(args, 0));
+      IF FoldConstInt(cJSON_GetArrayItem(args, 0), folded_value) THEN
+      BEGIN
+        IF nm = 'SUCC' THEN folded_value := folded_value + 1 ELSE folded_value := folded_value - 1;
+        IF (arg_tk = TK_INTEGER) AND ((folded_value < -32767) OR (folded_value > 32767)) THEN
+        BEGIN
+          IF nm = 'SUCC' THEN AddError('Constant SUCC result outside INTEGER range')
+          ELSE AddError('Constant PRED result outside INTEGER range');
+        END
+        ELSE IF (arg_tk = TK_CHAR) AND ((folded_value < 0) OR (folded_value > 255)) THEN
+        BEGIN
+          IF nm = 'SUCC' THEN AddError('Constant SUCC result outside CHAR range')
+          ELSE AddError('Constant PRED result outside CHAR range');
+        END;
+      END;
+    END;
+  END;
+END;
+
 PROCEDURE CheckDecl(decl: ADRMEM);
 VAR
   nt, dname: Str255;
@@ -289,7 +344,11 @@ BEGIN
   ELSE IF nt = 'ConstDecl' THEN
   BEGIN
     dname := GetStr(decl, 'name');
+    IF HasExtendedConstIntrinsic(GetObj(decl, 'value')) AND
+       NOT active_features.extended_const_intrinsics THEN
+      AddError('CONST intrinsic calls require the extended-const-intrinsics feature');
     tk := CheckExpr(GetObj(decl, 'value'));
+    CheckConstOrdinalBounds(GetObj(decl, 'value'));
     si := DefineSymbol(dname, 'CONST', tk, 0, 0, 0);
     IF FoldConstInt(GetObj(decl, 'value'), const_value) THEN
     BEGIN

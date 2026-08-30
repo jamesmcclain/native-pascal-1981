@@ -250,7 +250,9 @@ BEGIN
   BEGIN
     val_str := CurLex;
     Expect('IDENTIFIER');
-    IF (StringEqual(UpperStr(val_str), 'WRD') OR StringEqual(UpperStr(val_str), 'BYWORD')) AND
+    IF (StringEqual(UpperStr(val_str), 'WRD') OR StringEqual(UpperStr(val_str), 'BYWORD') OR
+        StringEqual(UpperStr(val_str), 'ORD') OR StringEqual(UpperStr(val_str), 'CHR') OR
+        StringEqual(UpperStr(val_str), 'SUCC') OR StringEqual(UpperStr(val_str), 'PRED')) AND
        (CurKind = 'LPAREN') THEN
     BEGIN
       pos := pos + 1;

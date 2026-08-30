@@ -250,7 +250,7 @@ BEGIN
   BEGIN
     nm := UpperStr(GetStr(expr_node, 'name'));
     args := GetObj(expr_node, 'args');
-    IF ((nm = 'ORD') OR (nm = 'SUCC') OR (nm = 'PRED')) AND (ArrSize(args) = 1) AND
+    IF ((nm = 'ORD') OR (nm = 'CHR') OR (nm = 'SUCC') OR (nm = 'PRED')) AND (ArrSize(args) = 1) AND
        FoldConstInt(ArrItem(args, 0), folded) THEN
     BEGIN
       IF nm = 'SUCC' THEN folded := folded + 1
