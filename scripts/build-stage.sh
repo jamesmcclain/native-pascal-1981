@@ -69,6 +69,10 @@ elif [ "$stage_file" = "typechecker.pas" ]; then
   component_units=(argparse.pas features.pas tc_base.pas tc_types.pas tc_expr.pas tc_stmt.pas tc_decl.pas)
 elif [ "$stage_file" = "parser.pas" ]; then
   component_units=(argparse.pas ps_base.pas ps_expr.pas ps_stmt.pas ps_decl.pas)
+elif [ "$stage_file" = "driver.pas" ]; then
+  # Not a compiler stage: the user-facing driver, built by the finished
+  # compiler. It shares the argparse unit with the stages above.
+  component_units=(argparse.pas)
 elif [ "$stage_file" = "proxy.pas" ]; then
   # Not a compiler stage: the completion proxy, built by the finished
   # compiler. Same layering rule as the stages above -- lowest first, each
