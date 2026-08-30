@@ -309,6 +309,8 @@ VAR
   skind, fname: Str255;
   tk, aux, aux2, itk, new_tk, new_aux, current_idx_tk: INTEGER;
   fi: INTEGER32;
+  lane_ct: INTEGER;
+  folded_value: INTEGER64;
 BEGIN
   name := GetStr(node, 'name');
   si := LookupSymbol(name);
@@ -380,6 +382,26 @@ BEGIN
         IF NOT IsOrdinal(itk) AND (itk <> TK_UNKNOWN) THEN
           AddError('String index must be an ordinal type');
         tk := TK_CHAR;
+        aux := 0;
+        aux2 := 0;
+      END
+      ELSE IF tk = TK_VECTOR THEN
+      BEGIN
+        { v[i]: lane access. The VECTOR [n] registration (tc_types) carries
+          the scalar element kind in aux and the lane count in aux2; lanes
+          are 0-based (LOWER is always 0). The result is that scalar, with
+          no further element/aux to thread. A constant index outside
+          0..n-1 is a compile-time error; a variable index is unchecked,
+          matching arrays (no $INDEXCK machinery exists). }
+        lane_ct := aux2;
+        idx_expr := GetObj(sel, 'index_or_field');
+        itk := CheckExpr(idx_expr);
+        IF NOT IsOrdinal(itk) AND (itk <> TK_UNKNOWN) THEN
+          AddError('Vector lane index must be an ordinal type');
+        IF FoldConstInt(idx_expr, folded_value) THEN
+          IF (folded_value < 0) OR (folded_value >= lane_ct) THEN
+            AddError('Vector lane index out of range');
+        tk := aux;
         aux := 0;
         aux2 := 0;
       END

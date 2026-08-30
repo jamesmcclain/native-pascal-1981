@@ -866,6 +866,7 @@ VAR
   idx_val, offset: ADRMEM;
   fi: INTEGER;
   file_handle, file_fcb, file_call_args, file_raw_buf, discard: ADRMEM;
+  folded: INTEGER64;
 BEGIN
   nm := GetStr(node, 'name');
   symi := LookupSym(nm);
@@ -897,9 +898,19 @@ BEGIN
     kind := GetStr(sel, 'kind');
     IF kind = 'INDEX' THEN
     BEGIN
-      IF (TypeKind(cur_tid) <> TK_ARRAY) AND (TypeKind(cur_tid) <> TK_LSTRING) AND (TypeKind(cur_tid) <> TK_STRING) THEN
+      IF (TypeKind(cur_tid) <> TK_ARRAY) AND (TypeKind(cur_tid) <> TK_LSTRING)
+        AND (TypeKind(cur_tid) <> TK_STRING) AND (TypeKind(cur_tid) <> TK_VECTOR) THEN
         AbortWith('codegen: an INDEX selector was applied to a non-array');
       idx_expr := GetObj(sel, 'index_or_field');
+      { A vector lane index is 0-based (types[].lo = 0). A constant lane
+        index outside 0..lanes-1 is a compile-time error -- the same
+        re-validation M0 does for the type itself, since this file also
+        lowers frozen ASTs the typechecker never saw. A variable index is
+        not range-checked (no $INDEXCK machinery; arrays are unchecked
+        too). }
+      IF (TypeKind(cur_tid) = TK_VECTOR) AND FoldConstInt(idx_expr, folded) THEN
+        IF (folded < 0) OR (folded > types[cur_tid].hi) THEN
+          AbortWith('codegen: vector lane index out of range');
       idx_val := CodegenExpr(idx_expr);
       { The reference codegen (resolve_designator_ptr_typed, types_map.py)
         accepts any integer-family index width -- it just subtracts the
