@@ -28,6 +28,30 @@ BEGIN
     CodegenDecl(ArrItem(decls_arr, i));
 END;
 
+FUNCTION ConstExprIsChar(node: ADRMEM): BOOLEAN;
+VAR
+  nm: Str255;
+  ci: INTEGER32;
+  args: ADRMEM;
+BEGIN
+  ConstExprIsChar := FALSE;
+  IF NodeType(node) = 'CharLiteral' THEN
+    ConstExprIsChar := TRUE
+  ELSE IF NodeType(node) = 'Identifier' THEN
+  BEGIN
+    ci := LookupConst(GetStr(node, 'name'));
+    IF ci <> 0 THEN ConstExprIsChar := const_tbl[ci].is_char;
+  END
+  ELSE IF NodeType(node) = 'FuncCall' THEN
+  BEGIN
+    nm := UpperStr(GetStr(node, 'name'));
+    args := GetObj(node, 'args');
+    IF nm = 'CHR' THEN ConstExprIsChar := TRUE
+    ELSE IF ((nm = 'SUCC') OR (nm = 'PRED')) AND (ArrSize(args) = 1) THEN
+      ConstExprIsChar := ConstExprIsChar(ArrItem(args, 0));
+  END;
+END;
+
 FUNCTION SameIdentifier(a, b: Str255): BOOLEAN;
 { Case-insensitive identifier comparison. Symbol lookup elsewhere in this file
   is exact-case (the front end hands identifiers through unchanged), but a USES
@@ -1691,7 +1715,7 @@ BEGIN
       CONST inherits the CHAR-ness, so that codegen agrees with the type the
       typechecker already gave B (tc_decl.pas types a CONST from its value
       expression, so CharLiteral there is TK_CHAR without any change). }
-    IF NodeType(val_node) = 'CharLiteral' THEN
+    IF ConstExprIsChar(val_node) THEN
       is_char := TRUE
     ELSE IF NodeType(val_node) = 'Identifier' THEN
     BEGIN
