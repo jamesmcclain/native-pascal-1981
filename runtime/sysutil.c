@@ -306,6 +306,8 @@ int pas_sys_exec(const char *executable, const char *packed_args,
         return PAS_SYS_ERROR;
     }
     if (child == 0) {
+        /* Own process group so the parent can signal descendants too. */
+        (void) setpgid(0, 0);
         close(output_pipe[0]);
         close(exec_pipe[0]);
         dup2(output_pipe[1], STDOUT_FILENO);
@@ -319,6 +321,8 @@ int pas_sys_exec(const char *executable, const char *packed_args,
         }
         _exit(127);
     }
+    /* Race-free with the child: whichever setpgid runs first wins. */
+    (void) setpgid(child, child);
     close(output_pipe[1]);
     close(exec_pipe[1]);
     fcntl(output_pipe[0], F_SETFL, fcntl(output_pipe[0], F_GETFL) | O_NONBLOCK);
@@ -331,10 +335,17 @@ int pas_sys_exec(const char *executable, const char *packed_args,
         }
         if (monotonic_ms() >= deadline) {
             timed_out = 1;
-            kill(child, SIGTERM);
+            /* Signal the whole group. A surviving grandchild keeps the
+             * pipe write end open and would hang a blocking drain. */
+            if (kill(-child, SIGTERM) != 0)
+                (void) kill(child, SIGTERM);
             (void) poll(NULL, 0, 200);
-            if (waitpid(child, &status, WNOHANG) == 0)
-                kill(child, SIGKILL);
+            if (waitpid(child, &status, WNOHANG) == 0) {
+                if (kill(-child, SIGKILL) != 0)
+                    (void) kill(child, SIGKILL);
+            } else {
+                (void) kill(-child, SIGKILL);
+            }
             while (waitpid(child, &status, 0) < 0 && errno == EINTR) {
             }
             done = 1;
@@ -342,7 +353,10 @@ int pas_sys_exec(const char *executable, const char *packed_args,
         }
         (void) poll(NULL, 0, 10);
     }
-    fcntl(output_pipe[0], F_SETFL, fcntl(output_pipe[0], F_GETFL) & ~O_NONBLOCK);
+    /* On timeout a setsid descendant can still hold the write end, so
+     * do not block for EOF. The success path still waits for it. */
+    if (!timed_out)
+        fcntl(output_pipe[0], F_SETFL, fcntl(output_pipe[0], F_GETFL) & ~O_NONBLOCK);
     append_diagnostics(output_pipe[0], diagnostics, diagnostics_cap, &used);
     close(output_pipe[0]);
     {

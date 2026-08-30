@@ -162,6 +162,21 @@ BEGIN
   result := SysExec(executable, args, 20, exit_code, signal, diagnostics);
   Check(result = SYS_TIMEOUT, 'sleep timeout');
 
+  { Direct-child /bin/sleep cannot catch a grandchild holding the pipe.
+    sh -c 'sleep 3600' forks sleep; killing only sh would hang the drain. }
+  SysArgsFree(args);
+  SysArgsInit(args);
+  BufClear(executable);
+  BufClear(argument);
+  BufClear(script);
+  BufAppendStr(executable, '/bin/sh');
+  BufAppendStr(argument, '-c');
+  BufAppendStr(script, 'sleep 3600');
+  Check(SysArgsAdd(args, argument), 'timeout-drain shell option');
+  Check(SysArgsAdd(args, script), 'timeout-drain shell command');
+  result := SysExec(executable, args, 50, exit_code, signal, diagnostics);
+  Check(result = SYS_TIMEOUT, 'timeout with grandchild holding pipe');
+
   SysArgsFree(args);
   SysArgsInit(args);
   BufClear(executable);
