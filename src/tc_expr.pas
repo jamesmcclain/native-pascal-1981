@@ -460,12 +460,13 @@ END;
 
 FUNCTION CheckFuncCall(node: ADRMEM): INTEGER;
 VAR
-  name: Str255;
+  name, orig_name: Str255;
   args_arr, warg: ADRMEM;
   nargs, i, si: INTEGER32;
   atk: INTEGER;
 BEGIN
-  name := UpperStr(GetStr(node, 'name'));
+  orig_name := GetStr(node, 'name');
+  name := UpperStr(orig_name);
   args_arr := GetObj(node, 'args');
   nargs := cJSON_GetArraySize(args_arr);
   IF name = 'WRD' THEN
@@ -658,7 +659,7 @@ BEGIN
         atk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
       IF i < symbols[si].nparams THEN
         IF NOT CanAssign(symbols[si].param_tk[i + 1], atk) THEN
-          AddError2('Argument type mismatch or implicit narrowing in call to ', name);
+          AddError2('Argument type mismatch or implicit narrowing in call to ', orig_name);
     END;
   CheckFuncCall := symbols[si].ret_tk;
 END;
