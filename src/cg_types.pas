@@ -114,6 +114,23 @@ BEGIN
     PointerSpacesCompatible := types[from_tid].ptr_space = types[to_tid].ptr_space;
 END;
 
+FUNCTION AggStringTypesInterchangeable(a, b: INTEGER): BOOLEAN;
+{ The reference type system is structural: two LSTRING(n), or two STRING(n),
+  of equal capacity are assignment- and parameter-compatible regardless of
+  which TYPE declaration produced their tid (so `Str255`, `ByteStr` and
+  `ArgStr`, all LSTRING(255), interoperate freely). Verified against
+  `python3 -m pascal1981`: cross-named LSTRING/STRING `:=` and VAR/value
+  param passing are accepted, while a capacity mismatch is still rejected.
+  Mirrors the TK_SET looseness in TypesCompatibleForAssign below. A
+  TypeKind of TK_LSTRING/TK_STRING implies a registered tid (>= 14), so
+  reading types[].hi here is safe. }
+BEGIN
+  AggStringTypesInterchangeable :=
+    (TypeKind(a) = TypeKind(b)) AND
+    ((TypeKind(a) = TK_LSTRING) OR (TypeKind(a) = TK_STRING)) AND
+    (types[a].hi = types[b].hi);
+END;
+
 FUNCTION TypesCompatibleForAssign(from_tid, to_tid: INTEGER): BOOLEAN;
 { Exact tid equality is the normal rule everywhere else in this file, but
   two SET types are freely assignment-compatible with each other regardless
@@ -140,6 +157,7 @@ BEGIN
     ((from_tid = TK_INTEGER) AND (to_tid = TK_WORD)) OR
     ((from_tid = TK_ADRMEM) AND (TypeKind(to_tid) = TK_POINTER)) OR
     ((TypeKind(from_tid) = TK_POINTER) AND (to_tid = TK_ADRMEM)) OR
+    AggStringTypesInterchangeable(from_tid, to_tid) OR
     PointerSpacesCompatible(from_tid, to_tid);
 END;
 

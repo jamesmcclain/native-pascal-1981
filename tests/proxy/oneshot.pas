@@ -29,12 +29,10 @@ USES bytebuf, argparse, netsock, jsonx, httpio;
 VAR
   base_url: ADRMEM;
   host, path, effort, model, s, why: ByteStr;
-  { argparse's VAR outputs are its own ArgStr. It is the same LSTRING(255) as
-    ByteStr, but the two are distinct named types: neither a VAR parameter nor
-    even a plain assignment will take one for the other, so values cross by an
-    explicit copy. Two units each naming their own 255-byte string type is the
-    cost of keeping them independent, and a shared string type in the runtime
-    library would remove it. }
+  { argparse's VAR outputs are its own ArgStr, the same LSTRING(255) as
+    ByteStr. Codegen now treats structurally identical equal-capacity string
+    types as interchangeable (matching the reference), so an ArgStr VAR
+    output can be filled straight into a ByteStr with no copy. }
   astr: ArgStr;
   port, timeout_ms, max_tokens, rc, i, fd, max_head: INTEGER32;
   payload, msgs, m, tree: ADRMEM;
@@ -47,18 +45,6 @@ VAR
   finish_reason "length" and nothing to show for it. That is an upstream
   failure, not an empty completion, and treating it as the latter is what
   makes a proxy answer 200 with nothing in it. }
-{ Copy an argparse string into a bytebuf one, character by character, since
-  the compiler will not do it for us. }
-PROCEDURE ToByteStr(src: ArgStr; VAR dst: ByteStr);
-VAR
-  i, n: INTEGER;
-BEGIN
-  n := ORD(src[0]);
-  dst[0] := CHR(n);
-  FOR i := 1 TO n DO
-    dst[i] := src[i];
-END;
-
 FUNCTION ExtractContent(tree: ADRMEM; VAR out: ByteBuf;
                         VAR why: ByteStr): BOOLEAN;
 VAR
@@ -150,8 +136,7 @@ BEGIN
     path[0] := CHR(ORD(path[0]) - 1);
   CONCAT(path, '/chat/completions');
 
-  ArgGetStr('model', astr);
-  ToByteStr(astr, model);
+  ArgGetStr('model', model);
   timeout_ms := ArgGetInt('timeout') * 1000;
   max_tokens := ArgGetInt('max-tokens');
 
@@ -159,15 +144,13 @@ BEGIN
   JxAddStr(payload, 'model', model);
   JxAddInt(payload, 'max_tokens', max_tokens);
   JxAddNum(payload, 'temperature', 0.2);
-  ArgGetStr('reasoning-effort', astr);
-  ToByteStr(astr, effort);
+  ArgGetStr('reasoning-effort', effort);
   IF ORD(effort[0]) > 0 THEN
     JxAddStr(payload, 'reasoning_effort', effort);
   msgs := JxNewArray;
   m := JxNewObject;
   JxAddStr(m, 'role', 'system');
-  ArgGetStr('system', astr);
-  ToByteStr(astr, s);
+  ArgGetStr('system', s);
   JxAddStr(m, 'content', s);
   JxArrAppend(msgs, m);
   m := JxNewObject;
