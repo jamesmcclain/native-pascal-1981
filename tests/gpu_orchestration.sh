@@ -54,10 +54,10 @@ cp "$root/tests/gpu/vadd.typed.json" \
 cd "$work_dir"
 env PASCAL_EMIT_PTX=1 \
     PASCAL_DEVICE_TRIPLE=nvptx64-nvidia-cuda \
-    "$root/bin/codegen" < vadd.typed.json > vadd.ptx
+    "$root/bin/codegen" --dialect extended < vadd.typed.json > vadd.ptx
 
 env PASCAL_DEVICE_BACKEND=cuda \
-    "$root/bin/codegen" < host.typed.json > host.ll
+    "$root/bin/codegen" --dialect extended < host.typed.json > host.ll
 
 cat > dev_ptx_blob.s <<EOF
 	.section .rodata

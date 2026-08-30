@@ -69,6 +69,30 @@ bin/typechecker < "$work_dir/ast" > "$work_dir/typed"
 bin/codegen < "$work_dir/typed" > "$work_dir/ir"
 pass_test 'standalone stages default successfully'
 
+(
+  cd src
+  ../bin/lexer < argparse.pas > "$work_dir/bootstrap.tokens"
+  ../bin/parser < "$work_dir/bootstrap.tokens" > "$work_dir/bootstrap.ast"
+)
+status=0
+bin/typechecker < "$work_dir/bootstrap.ast" > "$work_dir/bootstrap.typed" \
+  2> "$work_dir/bootstrap.err" || status=$?
+if [ "$status" -ne 0 ] &&
+   grep -qF 'Type requires the extended dialect: INTEGER32' \
+     "$work_dir/bootstrap.err"; then
+  pass_test 'omitted bootstrap dialect rejects extended compiler source'
+else
+  fail_test 'omitted bootstrap dialect rejects extended compiler source'
+  cat "$work_dir/bootstrap.err" >&2
+fi
+if bin/typechecker --dialect extended < "$work_dir/bootstrap.ast" \
+     > "$work_dir/bootstrap-extended.typed" 2> "$work_dir/bootstrap-extended.err"; then
+  pass_test 'explicit extended bootstrap dialect accepts compiler source'
+else
+  fail_test 'explicit extended bootstrap dialect accepts compiler source'
+  cat "$work_dir/bootstrap-extended.err" >&2
+fi
+
 for dialect in vintage extended; do
   bin/parser --dialect "$dialect" < "$work_dir/tokens" > "$work_dir/parser-$dialect"
   compare_output "$work_dir/ast" "$work_dir/parser-$dialect" \
