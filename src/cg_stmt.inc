@@ -17,7 +17,7 @@ PROCEDURE CodegenStmtArray(arr: ADRMEM);
 PROCEDURE CodegenAssignStmt(stmt: ADRMEM);
 PROCEDURE CodegenIfStmt(stmt: ADRMEM);
 PROCEDURE CodegenCaseStmt(stmt: ADRMEM);
-PROCEDURE AttachUnrollHint(branch_inst: ADRMEM; count: INTEGER);
+PROCEDURE AttachUnrollHint(branch_inst: ADRMEM; count: INTEGER64);
 PROCEDURE CodegenWhileStmt(stmt: ADRMEM);
 PROCEDURE CodegenRepeatStmt(stmt: ADRMEM);
 PROCEDURE CodegenForStmt(stmt: ADRMEM);

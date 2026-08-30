@@ -412,7 +412,7 @@ BEGIN
   LLVMPositionBuilderAtEnd(builder, end_bb);
 END;
 
-PROCEDURE AttachUnrollHint(branch_inst: ADRMEM; count: INTEGER);
+PROCEDURE AttachUnrollHint(branch_inst: ADRMEM; count: INTEGER64);
 { LLVM loop metadata is a self-referential node. Construct with a null first
   operand, then replace it with the node value itself, as required by LLVM's
   loop pass manager. }

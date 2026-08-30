@@ -79,6 +79,8 @@ TYPE
                            [C]): its body lives in another compiland, so --
                            unlike a FORWARD -- a later body for the same name
                            in this same scope is an error, not a completion. }
+    has_const_int: BOOLEAN;
+    const_int: INTEGER64;
   END;
 
   TypeRec = RECORD
@@ -242,6 +244,8 @@ BEGIN
   symbols[nsymbols].ret_tk := TK_VOID;
   symbols[nsymbols].is_vararg := FALSE;
   symbols[nsymbols].is_extern := FALSE;
+  symbols[nsymbols].has_const_int := FALSE;
+  symbols[nsymbols].const_int := 0;
   DefineSymbol := nsymbols;
 END;
 
@@ -341,6 +345,8 @@ BEGIN
 END;
 
 PROCEDURE TcInit(VAR requested_features: FeatureSet);
+VAR
+  si: INTEGER32;
 BEGIN
   active_features := requested_features;
   is_device_compiland := FALSE;
@@ -356,6 +362,28 @@ BEGIN
   cur_func_aux := 0;
   cur_func_aux2 := 0;
   cur_func_name := '';
+  si := DefineSymbol('MAXINT', 'CONST', TK_INTEGER, 0, 0, 0);
+  symbols[si].has_const_int := TRUE;
+  symbols[si].const_int := 32767;
+  si := DefineSymbol('MAXWORD', 'CONST', TK_WORD, 0, 0, 0);
+  symbols[si].has_const_int := TRUE;
+  symbols[si].const_int := 65535;
+  IF active_features.wide_integers THEN
+  BEGIN
+    si := DefineSymbol('MAXINT32', 'CONST', TK_INTEGER32, 0, 0, 0);
+    symbols[si].has_const_int := TRUE;
+    symbols[si].const_int := 2147483647;
+    si := DefineSymbol('MAXWORD32', 'CONST', TK_WORD32, 0, 0, 0);
+    symbols[si].has_const_int := TRUE;
+    symbols[si].const_int := 4294967295;
+    si := DefineSymbol('MAXINT64', 'CONST', TK_INTEGER64, 0, 0, 0);
+    symbols[si].has_const_int := TRUE;
+    symbols[si].const_int := 9223372036854775807;
+    { MAXWORD64 cannot be represented in the signed INTEGER64 const_int
+      field. Its exact WORD64 type is still available to contextual checks;
+      codegen materializes the all-ones bit pattern directly. }
+    si := DefineSymbol('MAXWORD64', 'CONST', TK_WORD64, 0, 0, 0);
+  END;
 END;
 
 BEGIN

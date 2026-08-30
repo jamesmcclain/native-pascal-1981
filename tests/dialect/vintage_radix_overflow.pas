@@ -1,0 +1,6 @@
+PROGRAM VintageRadixOverflow;
+CONST
+  TOO_HIGH = 16#10000;
+  TOO_LOW = -16#8000;
+BEGIN
+END.

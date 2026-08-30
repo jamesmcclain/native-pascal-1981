@@ -47,6 +47,8 @@ TYPE
     ret_tk: INTEGER;
     is_vararg: BOOLEAN;
     is_extern: BOOLEAN;
+    has_const_int: BOOLEAN;
+    const_int: INTEGER64;
   END;
 
   TypeRec = RECORD

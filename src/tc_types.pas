@@ -15,12 +15,12 @@ FUNCTION cJSON_GetStringValue(item: ADRMEM): ADRMEM [C]; EXTERN;
 PROCEDURE ResolveTypeExpr(node: ADRMEM; VAR tk, aux, aux2, idx_tk: INTEGER);
 VAR
   nt, name, uname: Str255;
-  base_node, elem_node, fields_arr, tup, items, names_arr, ftype_node: ADRMEM;
+  base_node, elem_node, index_node, bound_node, fields_arr, tup, items, names_arr, ftype_node: ADRMEM;
   variants_arr, arm_node, tag_type_node: ADRMEM;
   inner_tk, inner_aux, inner_aux2, inner_idx: INTEGER;
   ti: INTEGER32;
   rid: INTEGER;
-  n, fi, nn, ni: INTEGER32;
+  n, fi, nn, ni, bound_si: INTEGER32;
   nm: Str255;
 BEGIN
   tk := TK_UNKNOWN;
@@ -180,6 +180,21 @@ BEGIN
     aux := inner_tk;
     aux2 := inner_aux;
     idx_tk := TK_INTEGER;
+    index_node := GetObj(node, 'index_range');
+    bound_node := GetObj(index_node, 'low');
+    IF NodeType(bound_node) = 'CharLiteral' THEN idx_tk := TK_CHAR
+    ELSE IF NodeType(bound_node) = 'BoolLiteral' THEN idx_tk := TK_BOOLEAN
+    ELSE IF NodeType(bound_node) = 'Identifier' THEN
+    BEGIN
+      bound_si := LookupSymbol(GetStr(bound_node, 'name'));
+      IF bound_si <> 0 THEN idx_tk := symbols[bound_si].tk;
+    END
+    ELSE IF (NodeType(bound_node) = 'IntLiteral') AND
+            (GetInt(bound_node, 'value') > 32767) THEN idx_tk := TK_WORD;
+    bound_node := GetObjOrNil(index_node, 'high');
+    IF bound_node <> NIL THEN
+      IF (NodeType(bound_node) = 'IntLiteral') AND
+         (GetInt(bound_node, 'value') > 32767) THEN idx_tk := TK_WORD;
   END
   ELSE IF nt = 'RecordType' THEN
   BEGIN

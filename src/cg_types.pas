@@ -67,7 +67,7 @@ BEGIN
   LookupField := found;
 END;
 
-FUNCTION RegisterType(tk: INTEGER; elem_tid, lo, hi: INTEGER; llvm_ty: ADRMEM): INTEGER;
+FUNCTION RegisterType(tk, elem_tid: INTEGER; lo, hi: INTEGER32; llvm_ty: ADRMEM): INTEGER;
 BEGIN
   IF ntypes >= MAX_TYPES THEN AbortWith('codegen: too many types');
   ntypes := ntypes + 1;
@@ -786,27 +786,21 @@ BEGIN
   SysVCoercedPiecePtr := LLVMBuildGEP2(builder, cstruct_ty, base, gep_idx, 2, MakeCStr(''));
 END;
 
-{ An array index bound is an INTEGER in this dialect, so a bound outside
-  INTEGER's range is not a wider array -- it is not a legal bound at all, and
-  the reference compiler rejects the literal outright. Saying so is the point
-  of this function: narrowing it silently produced a wrapped, negative upper
-  bound, and ARRAY [0..40000] OF CHAR then emitted `[4294941761 x i8]` -- a
-  4 GB array that fails much later, at link time, with a relocation overflow
-  no one could trace back to here. }
-FUNCTION CheckedIndexBound(wide: INTEGER64): INTEGER;
+{ Vintage array bounds can be INTEGER or WORD constants. Keep the widened
+  value until both bounds are known; ResolveTypeExpr then applies the manual's
+  negative-INTEGER-to-WORD adaptation when one bound selects WORD. }
+FUNCTION CheckedIndexBound(wide: INTEGER64): INTEGER32;
 BEGIN
-  { -32767, not -32768: this dialect's INTEGER range is symmetric, and the
-    reference compiler rejects the literal -32768 itself. }
-  IF (wide > 32767) OR (wide < -32767) THEN
+  IF (wide > MAXWORD) OR (wide < -32767) THEN
   BEGIN
-    AbortWith('codegen: array index bound is out of range for INTEGER (-32767..32767)');
+    AbortWith('codegen: array index bound is outside -32767..65535');
     CheckedIndexBound := 0;
   END
   ELSE
-    CheckedIndexBound := RETYPE(INTEGER, wide);
+    CheckedIndexBound := RETYPE(INTEGER32, wide);
 END;
 
-FUNCTION ResolveIntLiteral(node: ADRMEM): INTEGER;
+FUNCTION ResolveIntLiteral(node: ADRMEM): INTEGER32;
 { An array index bound is a full constant-expression AST node (the parser
   never unwraps it the way it does e.g. NamedType.param) -- so reading it
   needs to drill into the node's own 'value' field, not treat the node
@@ -888,12 +882,14 @@ VAR
   nm, unm, flavor, space_name: Str255;
   nt: Str255;
   tid: INTEGER;
-  elem_tid, lo, hi, space_code: INTEGER;
+  elem_tid, space_code: INTEGER;
+  lo, hi: INTEGER32;
   count: INTEGER32;
   arr_ty: ADRMEM;
   fields_arr, field_tuple, items, fnames_arr, ftype_expr: ADRMEM;
   variants_arr, arm_node, tag_type_expr: ADRMEM;
-  nfd, fi, fn2, fni, ai: INTEGER;
+  fn2: INTEGER;
+  nfd, fi, fni, ai: INTEGER32;
   field_tid, tag_tid: INTEGER;
   payload_align, payload_size, arm_off, fixed_off: INTEGER32;
   fname: Str255;
@@ -975,14 +971,14 @@ BEGIN
         TYPE of the name shadowed it: the probe above only skips a NamedType
         carrying a param. }
       IF GetObjOrNil(te, 'param') = NIL THEN hi := 256
-      ELSE hi := GetInt(te, 'param');
+      ELSE hi := ORD(GetInt(te, 'param'));
       arr_ty := LLVMArrayType(i8ty, hi + 1);
       tid := RegisterType(TK_LSTRING, TK_CHAR, 0, hi, arr_ty);
     END
     ELSE IF unm = 'STRING' THEN
     BEGIN
       IF GetObjOrNil(te, 'param') = NIL THEN hi := 256
-      ELSE hi := GetInt(te, 'param');
+      ELSE hi := ORD(GetInt(te, 'param'));
       arr_ty := LLVMArrayType(i8ty, hi);
       tid := RegisterType(TK_STRING, TK_CHAR, 1, hi, arr_ty);
     END
@@ -1015,6 +1011,9 @@ BEGIN
     ELSE
     BEGIN
       hi := ResolveIntLiteral(GetObj(GetObj(te, 'index_range'), 'high'));
+      IF (lo < 0) AND (hi > MAXINT) THEN lo := lo + MAXINT + 1 + MAXINT + 1;
+      IF (hi < 0) AND (lo > MAXINT) THEN hi := hi + MAXINT + 1 + MAXINT + 1;
+      IF lo > hi THEN AbortWith('codegen: invalid array index range');
       count := hi - lo + 1;
       arr_ty := LLVMArrayType(LLVMTypeForTk(elem_tid), count);
       tid := RegisterType(TK_ARRAY, elem_tid, lo, hi, arr_ty);
@@ -1216,6 +1215,7 @@ BEGIN
       const_tbl[nconsts].is_real := FALSE;
       const_tbl[nconsts].is_char := FALSE;
       const_tbl[nconsts].enum_tid := tid;
+      const_tbl[nconsts].integer_tid := 0;
       const_tbl[nconsts].ival := mi;
     END;
   END

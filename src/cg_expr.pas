@@ -1254,10 +1254,30 @@ BEGIN
     { These unsigned maxima have all bits set.  LLVMConstInt takes the
       machine bit pattern through the signed CLONG binding, so -1 is the
       correct i32/i64 payload; WRITE chooses %u/%llu from last_val_tk. }
-    IF nm = 'MAXWORD32' THEN
+    IF nm = 'MAXINT' THEN
+    BEGIN
+      res := LLVMConstInt(i16ty, 32767, 1);
+      last_val_tk := TK_INTEGER;
+    END
+    ELSE IF nm = 'MAXWORD' THEN
+    BEGIN
+      res := LLVMConstInt(i16ty, -1, 0);
+      last_val_tk := TK_WORD;
+    END
+    ELSE IF nm = 'MAXINT32' THEN
+    BEGIN
+      res := LLVMConstInt(i32ty, 2147483647, 1);
+      last_val_tk := TK_INTEGER32;
+    END
+    ELSE IF nm = 'MAXWORD32' THEN
     BEGIN
       res := LLVMConstInt(i32ty, -1, 0);
       last_val_tk := TK_WORD32;
+    END
+    ELSE IF nm = 'MAXINT64' THEN
+    BEGIN
+      res := LLVMConstInt(i64ty, 9223372036854775807, 1);
+      last_val_tk := TK_INTEGER64;
     END
     ELSE IF nm = 'MAXWORD64' THEN
     BEGIN
@@ -1303,8 +1323,12 @@ BEGIN
         END
         ELSE
         BEGIN
-          res := LLVMConstInt(i16ty, const_tbl[consti].ival, 1);
-          last_val_tk := TK_INTEGER;
+          last_val_tk := const_tbl[consti].integer_tid;
+          IF last_val_tk = 0 THEN last_val_tk := TK_INTEGER;
+          IF IsUnsignedWordTk(last_val_tk) THEN
+            res := LLVMConstInt(LLVMTypeForTk(last_val_tk), const_tbl[consti].ival, 0)
+          ELSE
+            res := LLVMConstInt(LLVMTypeForTk(last_val_tk), const_tbl[consti].ival, 1);
         END;
       END
       ELSE IF RoutineIsFunc(routi) THEN

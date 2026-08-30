@@ -271,6 +271,7 @@ VAR
   is_vararg, has_c: BOOLEAN;
   has_block_body: BOOLEAN;
   prior: INTEGER32;
+  const_value: INTEGER64;
 BEGIN
   nt := NodeType(decl);
   IF nt = 'VarDecl' THEN
@@ -290,6 +291,11 @@ BEGIN
     dname := GetStr(decl, 'name');
     tk := CheckExpr(GetObj(decl, 'value'));
     si := DefineSymbol(dname, 'CONST', tk, 0, 0, 0);
+    IF FoldConstInt(GetObj(decl, 'value'), const_value) THEN
+    BEGIN
+      symbols[si].has_const_int := TRUE;
+      symbols[si].const_int := const_value;
+    END;
   END
   ELSE IF nt = 'TypeDecl' THEN
   BEGIN

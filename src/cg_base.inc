@@ -277,7 +277,7 @@ TYPE
                         for an anonymous inline ARRAY/RECORD type_expr }
     tk: INTEGER;      { TK_ARRAY or TK_RECORD }
     elem_tid: INTEGER; { ARRAY only: the element type's id }
-    lo, hi: INTEGER;   { ARRAY only: the index range's bounds }
+    lo, hi: INTEGER32; { ARRAY/SET bounds can include vintage WORD values }
     is_super: BOOLEAN; { SUPER ARRAY is represented as a flat element pointer }
     ptr_space: INTEGER; { POINTER only: PTR_SPACE_PLAIN for `^T`, or the
                           PTR_SPACE_* code of an ADS pointer's space. Part of
@@ -318,6 +318,8 @@ TYPE
                          character instead of its ordinal. }
     enum_tid: INTEGER; { nonzero for an enumerated member constant; keeps
                           its declared enum identity for symbolic I/O. }
+    integer_tid: INTEGER; { exact integer width and signedness, or 0 for a
+                             non-integer constant }
     rval: REAL;
   END;
 

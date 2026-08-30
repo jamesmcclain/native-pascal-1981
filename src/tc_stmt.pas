@@ -96,9 +96,9 @@ BEGIN
     END
     ELSE
       target_tk := CheckDesignator(target_node);
-    expr_tk := CheckExpr(expr_node);
+    expr_tk := CheckExprForTarget(expr_node, target_tk);
     IF NOT CanAssign(target_tk, expr_tk) THEN
-      AddError('Cannot assign incompatible type');
+      AddError2('Cannot assign incompatible type without narrowing: ', varname);
   END
   ELSE IF nt = 'IfStmt' THEN
   BEGIN
@@ -136,8 +136,19 @@ BEGIN
       IF NOT IsOrdinal(vi) THEN
         AddError('FOR loop variable must be an ordinal type');
     END;
-    cond_tk := CheckExpr(GetObj(node, 'start'));
-    cond_tk := CheckExpr(GetObj(node, 'end'));
+    IF si <> 0 THEN
+    BEGIN
+      cond_tk := CheckExprForTarget(GetObj(node, 'start'), vi);
+      IF NOT CanAssign(vi, cond_tk) THEN
+        AddError2('FOR initial bound is not assignment compatible: ', varname);
+      cond_tk := CheckExprForTarget(GetObj(node, 'end'), vi);
+      IF NOT CanAssign(vi, cond_tk) THEN
+        AddError2('FOR final bound is not assignment compatible: ', varname);
+    END
+    ELSE BEGIN
+      cond_tk := CheckExpr(GetObj(node, 'start'));
+      cond_tk := CheckExpr(GetObj(node, 'end'));
+    END;
     CheckCompoundOrStmt(GetObj(node, 'body'));
   END
   ELSE IF nt = 'ProcCallStmt' THEN
@@ -331,10 +342,14 @@ BEGIN
         ELSE
           FOR i := 0 TO nargs - 1 DO
           BEGIN
-            expr_tk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
+            IF i < symbols[si].nparams THEN
+              expr_tk := CheckExprForTarget(cJSON_GetArrayItem(args_arr, i),
+                                            symbols[si].param_tk[i + 1])
+            ELSE
+              expr_tk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
             IF i < symbols[si].nparams THEN
               IF NOT CanAssign(symbols[si].param_tk[i + 1], expr_tk) THEN
-                AddError('Argument type mismatch');
+                AddError2('Argument type mismatch or implicit narrowing in call to ', pname);
           END;
       END;
     END;

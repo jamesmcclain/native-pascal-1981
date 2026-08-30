@@ -20,7 +20,7 @@ FUNCTION LLVMTypeForTk(tk: INTEGER): ADRMEM;
 FUNCTION TypeKind(tid: INTEGER): INTEGER;
 FUNCTION LookupNamedType(name: Str255): INTEGER;
 FUNCTION LookupField(rec_tid: INTEGER; fname: Str255): INTEGER;
-FUNCTION RegisterType(tk: INTEGER; elem_tid, lo, hi: INTEGER; llvm_ty: ADRMEM): INTEGER;
+FUNCTION RegisterType(tk, elem_tid: INTEGER; lo, hi: INTEGER32; llvm_ty: ADRMEM): INTEGER;
 FUNCTION EnsureGenericSetType: INTEGER;
 FUNCTION PointerSpacesCompatible(from_tid, to_tid: INTEGER): BOOLEAN;
 FUNCTION TypesCompatibleForAssign(from_tid, to_tid: INTEGER): BOOLEAN;
@@ -48,7 +48,7 @@ FUNCTION SysVPieceLLVMType(kind: INTEGER; nbytes: INTEGER32): ADRMEM;
 FUNCTION SysVCoercedStructType(n_pieces: INTEGER; VAR piece_kind: SysVPieceArr; VAR piece_bytes: SysVPieceSzArr): ADRMEM;
 FUNCTION SysVCoercedRetType(n_pieces: INTEGER; VAR piece_kind: SysVPieceArr; VAR piece_bytes: SysVPieceSzArr): ADRMEM;
 FUNCTION SysVCoercedPiecePtr(base: ADRMEM; cstruct_ty: ADRMEM; eb: INTEGER): ADRMEM;
-FUNCTION ResolveIntLiteral(node: ADRMEM): INTEGER;
+FUNCTION ResolveIntLiteral(node: ADRMEM): INTEGER32;
 FUNCTION TypeNameStrToTk(nm: Str255): INTEGER;
 FUNCTION ResolveTypeExpr(te: ADRMEM): INTEGER;
 

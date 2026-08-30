@@ -297,7 +297,7 @@ BEGIN
   BuildUnitInitOrder(root, local_ifaces);
 END;
 
-PROCEDURE InitFileStorage(slot: ADRMEM; elem_tid, structure: INTEGER; var_name: Str255);
+PROCEDURE InitFileStorage(slot: ADRMEM; elem_tid: INTEGER; structure: INTEGER32; var_name: Str255);
 { Allocates the FCB + inline element buffer at the file variable's own
   storage site and stores an opaque i8* to the FCB into `slot` -- mirrors
   the reference's _init_file_storage field for field (see filefcbty's own
@@ -1623,6 +1623,32 @@ BEGIN
   types[tid].name := name;
 END;
 
+FUNCTION MaxConstInteger32: INTEGER64;
+VAR
+  n: INTEGER64;
+BEGIN
+  n := 32767;
+  n := n * 32767;
+  n := n * 2;
+  n := n + 32767;
+  n := n + 32767;
+  n := n + 32767;
+  n := n + 32767;
+  MaxConstInteger32 := n + 1;
+END;
+
+FUNCTION ConstIntegerType(ival: INTEGER64): INTEGER;
+VAR
+  max_i32: INTEGER64;
+BEGIN
+  max_i32 := MaxConstInteger32;
+  IF (ival >= -32767) AND (ival <= 32767) THEN ConstIntegerType := TK_INTEGER
+  ELSE IF (ival >= 0) AND (ival <= 32767 * 2 + 1) THEN ConstIntegerType := TK_WORD
+  ELSE IF (ival >= (-max_i32 - 1)) AND (ival <= max_i32) THEN ConstIntegerType := TK_INTEGER32
+  ELSE IF (ival >= 0) AND (ival <= max_i32 * 2 + 1) THEN ConstIntegerType := TK_WORD32
+  ELSE ConstIntegerType := TK_INTEGER64;
+END;
+
 PROCEDURE CodegenConstDecl(decl: ADRMEM);
 { Every CONST this file's own native sources declare is a plain (optionally
   MINUS-negated) integer or REAL literal -- this compile-time-folds and
@@ -1637,13 +1663,14 @@ VAR
   rval: REAL;
   ival: INTEGER64;
   ci: INTEGER32;
-  enum_tid: INTEGER;
+  enum_tid, integer_tid: INTEGER;
 BEGIN
   name := GetStr(decl, 'name');
   val_node := GetObj(decl, 'value');
   is_real := FALSE;
   is_char := FALSE;
   enum_tid := 0;
+  integer_tid := 0;
   rval := 0.0;
   ival := 0;
   IF NodeType(val_node) = 'RealLiteral' THEN
@@ -1673,9 +1700,12 @@ BEGIN
       BEGIN
         is_char := const_tbl[ci].is_char;
         enum_tid := const_tbl[ci].enum_tid;
+        integer_tid := const_tbl[ci].integer_tid;
       END;
     END;
     ival := IntLiteralValue(val_node);
+    IF (NOT is_char) AND (enum_tid = 0) AND (integer_tid = 0) THEN
+      integer_tid := ConstIntegerType(ival);
   END;
   existing := LookupConst(name);
   IF existing <> 0 THEN
@@ -1691,7 +1721,8 @@ BEGIN
     BEGIN
       IF (const_tbl[existing].is_real <> is_real) OR
          (const_tbl[existing].is_char <> is_char) OR
-         (const_tbl[existing].enum_tid <> enum_tid) THEN
+         (const_tbl[existing].enum_tid <> enum_tid) OR
+         (const_tbl[existing].integer_tid <> integer_tid) THEN
         AbortWith2('codegen: conflicting const declaration: ', name);
       IF is_real THEN
       BEGIN
@@ -1709,6 +1740,7 @@ BEGIN
   const_tbl[nconsts].is_real := is_real;
   const_tbl[nconsts].is_char := is_char;
   const_tbl[nconsts].enum_tid := enum_tid;
+  const_tbl[nconsts].integer_tid := integer_tid;
   IF is_real THEN const_tbl[nconsts].rval := rval
   ELSE const_tbl[nconsts].ival := ival;
 END;

@@ -14,7 +14,7 @@ PROCEDURE BuildUnitInitOrder(root, local_ifaces: ADRMEM);
 PROCEDURE EmitUnitInitCalls;
 PROCEDURE BindUsesAlias(alias, ename: Str255);
 PROCEDURE CheckUsesClauses(root, local_ifaces: ADRMEM);
-PROCEDURE InitFileStorage(slot: ADRMEM; elem_tid, structure: INTEGER; var_name: Str255);
+PROCEDURE InitFileStorage(slot: ADRMEM; elem_tid: INTEGER; structure: INTEGER32; var_name: Str255);
 PROCEDURE RegisterPredeclaredFiles;
 PROCEDURE CodegenVarDecl(decl: ADRMEM);
 PROCEDURE ApplyLaunchBoundAttrs(decl, fn: ADRMEM);

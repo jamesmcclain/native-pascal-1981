@@ -133,10 +133,19 @@ kernel.
 
 Note that `INTEGER`'s range is symmetric: `-32768` is not a writable literal.
 
-## Integer literals take their width from context **[extended]**
+## Integer constants and context
 
-A literal is *not* limited to 16 bits in extended mode. It is typed by the
-context it appears in, so all of these are correct there:
+Vintage decimal and radix constants from `-32767` through `32767` have type
+`INTEGER`. Positive constants from `32768` through `65535` have type `WORD`.
+Vintage mode rejects constants outside `-32767..65535`. Unary minus does not
+make `-32768` valid because its operand is already a `WORD` constant.
+
+An `INTEGER` constant can adapt to a `WORD` context. This includes negative
+constants. The conversion keeps the 16-bit pattern, so `-1` becomes `65535`.
+An `INTEGER` variable does not adapt in this way.
+
+In extended mode, a literal can use a wide target type. These examples are
+valid:
 
 ```pascal
 VAR n: INTEGER32; w: INTEGER64;
@@ -151,7 +160,7 @@ BEGIN
 
 `tests/golden/19_wide_int_literals.pas` pins this behavior.
 
-A literal too large for its target type must not be relied on:
+A literal too large for its target type is an error:
 
 ```pascal
 VAR s: INTEGER;
@@ -160,9 +169,10 @@ BEGIN
 END
 ```
 
-The native compiler does not diagnose this case; it wraps silently, storing
-`-25536`. This is a **[native, extended]** limitation: vintage source should
-not contain the wide literal, while extended source can accidentally narrow it.
+The compiler also rejects implicit narrowing, such as assigning an
+`INTEGER32` variable to `INTEGER`. Use an explicit conversion when truncation
+is intentional. Assignment, value-parameter, array-index, and `FOR`-bound
+contexts apply the same constant range checks.
 
 **Historical note, because the wrong version of this was believed for a
 while:** until recently the native compiler *did* truncate every literal to 16
@@ -200,20 +210,12 @@ them now.
 Recorded rather than fixed. These are implementation limitations, not
 vintage-language restrictions.
 
-- **A literal out of range for its context type [extended].** The native
-  compiler wraps it silently. Its type model collapses every integer width
-  into one kind (see the comment at the top of `src/tc_decl.pas`), so it has
-  no target width to check.
-- **Implicit narrowing [extended].** The native compiler accepts an implicit
-  wide-to-`INTEGER` assignment. Use `RETYPE(INTEGER, n)` to make the
-  truncation explicit.
-- **Array index bounds [both].** They are `INTEGER`-ranged in the vintage core
-  and the extended surface. A bound outside that range is rejected by the
-  native compiler; its message comes from `CheckedIndexBound` in
-  `src/cg_types.pas`. Before that check existed, `ARRAY [0..40000] OF CHAR`
-  silently emitted `[4294941761 x i8]` — a 4 GB array that failed much later,
-  at link time, with a relocation overflow nothing could trace back to the
-  bound.
+- **Very large unsigned literals [extended].** The JSON AST stores numbers as
+  `REAL`, so decimal `WORD64` literals above `2^53` cannot preserve every bit.
+  Use `MAXWORD64` for the upper boundary.
+- **Array allocation size [both].** Vintage `WORD` bounds through `65535` are
+  retained. A large valid range can still request a correspondingly large
+  object from LLVM and the linker.
 
 ## Other things that cost time **[both, unless marked otherwise]**
 
