@@ -155,6 +155,9 @@ BEGIN
   result := SysExec(executable, args, 1000, exit_code, signal, diagnostics);
   Check((result = SYS_OK) AND (exit_code <> 0), 'false exit');
 
+  result := SysExec(executable, args, -1, exit_code, signal, diagnostics);
+  Check(result = SYS_ERROR, 'negative timeout');
+
   BufClear(executable);
   BufAppendStr(executable, '/bin/sleep');
   BufAppendChar(argument, '2');
@@ -176,6 +179,18 @@ BEGIN
   Check(SysArgsAdd(args, script), 'timeout-drain shell command');
   result := SysExec(executable, args, 50, exit_code, signal, diagnostics);
   Check(result = SYS_TIMEOUT, 'timeout with grandchild holding pipe');
+
+  { timeout_ms = 0 waits indefinitely: a short sleep must finish, not be
+    SIGTERM'd on the first loop iteration. }
+  SysArgsFree(args);
+  SysArgsInit(args);
+  BufClear(executable);
+  BufClear(argument);
+  BufAppendStr(executable, '/bin/sleep');
+  BufAppendStr(argument, '0.1');
+  Check(SysArgsAdd(args, argument), 'zero-timeout sleep argument');
+  result := SysExec(executable, args, 0, exit_code, signal, diagnostics);
+  Check((result = SYS_OK) AND (exit_code = 0), 'zero timeout waits');
 
   SysArgsFree(args);
   SysArgsInit(args);
