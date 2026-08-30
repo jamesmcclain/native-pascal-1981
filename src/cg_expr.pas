@@ -615,7 +615,11 @@ BEGIN
           BEGIN
             IF symi = 0 THEN
               AbortWith2('codegen: undefined variable: ', arg_nm);
-            IF symbols[symi].tk <> routines[ri].param_tk[i + 1] THEN
+            { Structurally-identical equal-capacity string types interoperate,
+              matching the reference -- see AggStringTypesInterchangeable. }
+            IF (symbols[symi].tk <> routines[ri].param_tk[i + 1])
+               AND NOT AggStringTypesInterchangeable(symbols[symi].tk,
+                         routines[ri].param_tk[i + 1]) THEN
               AbortWith2('codegen: VAR argument type mismatch calling: ', name);
             v := symbols[symi].llvm_val;
           END;
@@ -623,7 +627,10 @@ BEGIN
         ELSE IF NodeType(arg_node) = 'Designator' THEN
         BEGIN
           v := ComputeDesignatorAddress(arg_node);
-          IF last_val_tk <> routines[ri].param_tk[i + 1] THEN
+          { See AggStringTypesInterchangeable -- equal-capacity string types. }
+          IF (last_val_tk <> routines[ri].param_tk[i + 1])
+             AND NOT AggStringTypesInterchangeable(last_val_tk,
+                       routines[ri].param_tk[i + 1]) THEN
             AbortWith2('codegen: VAR argument type mismatch calling: ', name);
         END
         ELSE
@@ -660,7 +667,10 @@ BEGIN
           BEGIN
             IF symi = 0 THEN
               AbortWith2('codegen: undefined variable: ', arg_nm);
-            IF symbols[symi].tk <> routines[ri].param_tk[i + 1] THEN
+            { See AggStringTypesInterchangeable -- equal-capacity string types. }
+            IF (symbols[symi].tk <> routines[ri].param_tk[i + 1])
+               AND NOT AggStringTypesInterchangeable(symbols[symi].tk,
+                         routines[ri].param_tk[i + 1]) THEN
               AbortWith2('codegen: value-aggregate argument type mismatch calling: ', name);
             v := symbols[symi].llvm_val;
           END;
@@ -668,7 +678,10 @@ BEGIN
         ELSE IF NodeType(arg_node) = 'Designator' THEN
         BEGIN
           v := ComputeDesignatorAddress(arg_node);
-          IF last_val_tk <> routines[ri].param_tk[i + 1] THEN
+          { See AggStringTypesInterchangeable -- equal-capacity string types. }
+          IF (last_val_tk <> routines[ri].param_tk[i + 1])
+             AND NOT AggStringTypesInterchangeable(last_val_tk,
+                       routines[ri].param_tk[i + 1]) THEN
             AbortWith2('codegen: value-aggregate argument type mismatch calling: ', name);
         END
         ELSE IF (NodeType(arg_node) = 'StringLiteral')
