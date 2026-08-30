@@ -37,6 +37,7 @@ Install these packages before you build the toolchain (for example, on Debian or
   - `cg_expr_sets`: set operations on already-evaluated operands.
   - `cg_expr_support`: leaf expression-lowering helpers. It never evaluates an AST node.
   - `cg_expr_literals`: leaf lowering for assignments from compile-time string literals.
+  - `cg_expr_vector`: lowering for `VECTOR [n] OF scalar` operations.
   - `cg_expr`: expression lowering.
   - `cg_io`: WRITE/READ lowering.
   - `cg_stmt`: statement lowering.

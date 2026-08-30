@@ -141,6 +141,7 @@
 (*$INCLUDE:'cg_expr_sets.inc'*)
 (*$INCLUDE:'cg_expr_support.inc'*)
 (*$INCLUDE:'cg_expr_literals.inc'*)
+(*$INCLUDE:'cg_expr_vector.inc'*)
 (*$INCLUDE:'cg_expr.inc'*)
 (*$INCLUDE:'cg_io.inc'*)
 (*$INCLUDE:'cg_stmt.inc'*)
