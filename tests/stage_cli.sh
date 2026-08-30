@@ -128,5 +128,37 @@ for stage in parser typechecker codegen; do
   fi
 done
 
+# The token JSON is a stage interface, so the parser must not narrow its
+# integer fields to the dialect's 16-bit INTEGER. A LSTRING capacity past
+# 32767 came out of TRUNC wrapped (40000 as -25536), and a column past 32767
+# would be poison in the same way. The native lexer's own column counter
+# wraps at 16 bits today, but that is the lexer's limitation, not the
+# parser's contract -- both regressions are replayed straight into the
+# stage's stdin here.
+wide_cap_src="$work_dir/wide_cap.pas"
+cat > "$wide_cap_src" <<'EOF'
+PROGRAM WideCap;
+VAR s: LSTRING(40000);
+BEGIN
+END.
+EOF
+bin/lexer < "$wide_cap_src" > "$work_dir/wide_cap.tokens"
+if bin/parser < "$work_dir/wide_cap.tokens" > "$work_dir/wide_cap.ast" 2> "$work_dir/wide_cap.err" \
+   && grep -q '"param":[[:space:]]*40000' "$work_dir/wide_cap.ast"; then
+  pass_test 'parser keeps a STRING/LSTRING capacity past 16 bits intact'
+else
+  fail_test 'parser keeps a STRING/LSTRING capacity past 16 bits intact'
+  cat "$work_dir/wide_cap.err" >&2
+fi
+sed 's/"column":[[:space:]]*[0-9][0-9]*/"column":40000/g' \
+  "$work_dir/wide_cap.tokens" > "$work_dir/wide_col.tokens"
+if bin/parser < "$work_dir/wide_col.tokens" > "$work_dir/wide_col.ast" 2> "$work_dir/wide_col.err" \
+   && cmp -s "$work_dir/wide_cap.ast" "$work_dir/wide_col.ast"; then
+  pass_test 'parser accepts a column past 16 bits unchanged'
+else
+  fail_test 'parser accepts a column past 16 bits unchanged'
+  cat "$work_dir/wide_col.err" >&2
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
