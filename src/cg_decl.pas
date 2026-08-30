@@ -1201,6 +1201,22 @@ BEGIN
       ret_llvm_ty := voidty;
     END;
 
+    IF IsCForeignDecl(decl) THEN
+    BEGIN
+      { A bare VECTOR can never cross a [C] signature: the SysV
+        vector-register classes (SSEUP) are not implemented, and silently
+        routing a vector through MEMORY byval would disagree with the ABI
+        clang produces for the same C declaration. Vectors nested inside a
+        record/ARRAY parameter stay legal -- ClassifyAggregate routes the
+        whole aggregate MEMORY. }
+      IF is_func THEN
+        IF TypeKind(ret_tk) = TK_VECTOR THEN
+          AbortWith2('codegen: a VECTOR cannot cross a [C] routine signature: ', name);
+      FOR i := 1 TO n DO
+        IF TypeKind(tks[i]) = TK_VECTOR THEN
+          AbortWith2('codegen: a VECTOR cannot cross a [C] routine signature: ', name);
+    END;
+
     { The return has to be classified BEFORE the parameter list is built: a
       FUNCTION (plain Pascal or [C] FOREIGN alike) returning a MEMORY-class
       aggregate returns void and takes a hidden pointer to the caller's

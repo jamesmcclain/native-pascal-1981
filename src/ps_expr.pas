@@ -751,7 +751,33 @@ VAR
 BEGIN
   EnterTypeLevel;
   packed_flag := Match('PACKED');
-  IF (CurKind = 'ARRAY') OR (CurKind = 'SUPER') THEN
+  IF (CurKind = 'IDENTIFIER') AND (UpperStr(CurLex) = 'VECTOR') AND (NextKind = 'LBRACKET') THEN
+  BEGIN
+    { Contextual VECTOR type constructor, following the DEVICE precedent:
+      recognized in type position by identifier text plus a one-token
+      lookahead for '[', so a program using VECTOR as an identifier keeps
+      working. The lane count is a full constant-expression node -- both
+      later stages fold IntLiterals and CONST identifiers, nothing else.
+      PACKED VECTOR is rejected here, the earliest point a diagnostic can
+      fire. }
+    IF packed_flag THEN
+    BEGIN
+      EPrint('Parser Error: PACKED VECTOR is not supported');
+      exit(1);
+    END;
+    pos := pos + 1;
+    Expect('LBRACKET');
+    idx_range := ParseConstant;
+    Expect('RBRACKET');
+    Expect('OF');
+    elem_type := ParseType;
+    node := CreateNode('VectorType');
+    AddField(node, 'lanes', idx_range);
+    AddField(node, 'element_type', elem_type);
+    AddBoolField(node, 'packed', FALSE);
+    ParseType := node;
+  END
+  ELSE IF (CurKind = 'ARRAY') OR (CurKind = 'SUPER') THEN
   BEGIN
     is_super := (CurKind = 'SUPER');
     IF is_super THEN

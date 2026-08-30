@@ -472,6 +472,23 @@ BEGIN
   ELSE IF TypeKind(tid) = TK_LSTRING THEN TypeAlignBytes := 1
   ELSE IF TypeKind(tid) = TK_STRING THEN TypeAlignBytes := 1
   ELSE IF TypeKind(tid) = TK_SET THEN TypeAlignBytes := 8
+  ELSE IF TypeKind(tid) = TK_VECTOR THEN
+  BEGIN
+    { LLVM's natural vector ABI alignment: the total size rounded up to a
+      power of two. Verified against clang 20 x86-64 emitted global/alloca
+      alignments for the legal totals (2,4,8,16,32,64,128 bytes: <4 x i8>=4,
+      <2 x i8>=2, <8 x i32>=32, <32 x float>=128, ...). The total is rebuilt
+      from the ELEMENT's alignment rather than a TypeSizeBytes call: every
+      scalar's size equals its alignment, and same-unit calls resolve in
+      implementation order under the reference compiler, which
+      TypeSizeBytes's implementation follows this one's (its ARRAY arm
+      calling TypeAlignBytes is the allowed direction). The checklit
+      vector_types fixture pins this against the emitted alloca text. }
+    best := TypeAlignBytes(types[tid].elem_tid) * (types[tid].hi - types[tid].lo + 1);
+    fa := 1;
+    WHILE fa < best DO fa := fa * 2;
+    TypeAlignBytes := fa;
+  END
   ELSE
   BEGIN
     AbortWith('codegen: TypeAlignBytes: unsupported type');
@@ -520,6 +537,12 @@ BEGIN
   ELSE IF TypeKind(tid) = TK_STRING THEN TypeSizeBytes := types[tid].hi
   ELSE IF TypeKind(tid) = TK_SET THEN TypeSizeBytes := 32
   ELSE IF TypeKind(tid) = TK_POINTER THEN TypeSizeBytes := 8
+  ELSE IF TypeKind(tid) = TK_VECTOR THEN
+    { Vector lanes are packed -- no inter-lane padding, unlike an ARRAY's
+      RoundUpBytes stride -- so the size is exactly element-size * lanes.
+      Every legal element size is a power of two, so the ARRAY formula
+      would give the same answer; this spelling documents the intent. }
+    TypeSizeBytes := TypeSizeBytes(types[tid].elem_tid) * (types[tid].hi - types[tid].lo + 1)
   ELSE
   BEGIN
     AbortWith('codegen: TypeSizeBytes: unsupported type');
@@ -534,7 +557,8 @@ FUNCTION IsAggregateTk(tk: INTEGER): BOOLEAN;
   has no needs_copy flag of its own) can never drift apart. }
 BEGIN
   IsAggregateTk := (TypeKind(tk) = TK_ARRAY) OR (TypeKind(tk) = TK_RECORD) OR
-                   (TypeKind(tk) = TK_LSTRING) OR (TypeKind(tk) = TK_STRING);
+                   (TypeKind(tk) = TK_LSTRING) OR (TypeKind(tk) = TK_STRING) OR
+                   (TypeKind(tk) = TK_VECTOR);
 END;
 
 FUNCTION SysVMergeClass(a: INTEGER; b: INTEGER): INTEGER;
@@ -630,6 +654,16 @@ VAR
   sse_dbl: SysVFlagArr;
 BEGIN
   n_pieces := 0;
+  IF TypeKind(tk) = TK_VECTOR THEN
+  BEGIN
+    { Vector-register ABI classes (SSEUP) are not implemented, so a vector
+      is always MEMORY-class. Mostly defensive: a VECTOR in a [C] routine
+      signature is rejected before this runs (see cg_decl), so this only
+      fires for a vector nested inside a [C] record/ARRAY parameter, where
+      classifying the whole aggregate MEMORY is the correct answer anyway. }
+    agg_class := SYSV_CLASS_MEMORY;
+    RETURN;
+  END;
   size := TypeSizeBytes(tk);
   IF (size = 0) OR (size > 16) THEN
   BEGIN
@@ -908,6 +942,7 @@ VAR
   variants_arr, arm_node, tag_type_expr: ADRMEM;
   fn2: INTEGER;
   nfd, fi, fni, ai: INTEGER32;
+  pow2: INTEGER32;
   field_tid, tag_tid: INTEGER;
   payload_align, payload_size, arm_off, fixed_off: INTEGER32;
   fname: Str255;
@@ -1036,6 +1071,37 @@ BEGIN
       arr_ty := LLVMArrayType(LLVMTypeForTk(elem_tid), count);
       tid := RegisterType(TK_ARRAY, elem_tid, lo, hi, arr_ty);
     END;
+  END
+  ELSE IF nt = 'VectorType' THEN
+  BEGIN
+    IF GetBool(te, 'packed') THEN
+      AbortWith('codegen: PACKED vectors are not supported');
+    { Lane count and element kind are re-validated here, mirroring the
+      typechecker's VectorType rules exactly: this file also resolves type
+      expressions that never crossed a typechecker (frozen-AST .check
+      inputs, sizeof_synth synthesis), so the rules cannot be skipped.
+      Bare scalar tids are 1..13; 1..12 is the vector-element family
+      (TK_INTEGER..TK_REAL32), which also rejects pointers/ADRMEM and
+      every registered aggregate tid by construction. }
+    count := ResolveIntLiteral(GetObj(te, 'lanes'));
+    elem_tid := ResolveTypeExpr(GetObj(te, 'element_type'));
+    { Power-of-two probe by successive halving -- the source language's AND
+      is boolean-only (no bitwise integer AND), so the classic
+      `count AND (count-1) = 0` idiom is not expressible here. }
+    pow2 := count;
+    WHILE (pow2 > 1) AND ((pow2 MOD 2) = 0) DO pow2 := pow2 DIV 2;
+    IF (count < 2) OR (count > 64) OR (pow2 <> 1) THEN
+      AbortWith('codegen: vector lane count must be a power of two between 2 and 64');
+    IF (elem_tid < TK_INTEGER) OR (elem_tid > TK_REAL32) THEN
+      AbortWith('codegen: vector element type must be a scalar');
+    { BOOLEAN vectors are <n x i8> in memory (0/1 per lane), not <n x i1>:
+      byte-wide storage keeps SIZEOF, alignment and VAR storage uniform
+      with every other type. }
+    IF elem_tid = TK_BOOLEAN THEN
+      arr_ty := LLVMVectorType(i8ty, count)
+    ELSE
+      arr_ty := LLVMVectorType(LLVMTypeForTk(elem_tid), count);
+    tid := RegisterType(TK_VECTOR, elem_tid, 0, count - 1, arr_ty);
   END
   ELSE IF nt = 'RecordType' THEN
   BEGIN

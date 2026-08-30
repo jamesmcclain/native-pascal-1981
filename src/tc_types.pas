@@ -10,6 +10,53 @@ FUNCTION cJSON_GetArraySize(arr: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_GetArrayItem(arr: ADRMEM; index: CINT): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_GetStringValue(item: ADRMEM): ADRMEM [C]; EXTERN;
 
+FUNCTION VectorScalarElemTk(tk: INTEGER): BOOLEAN;
+{ The element kinds a VECTOR may hold: the integer family, REAL, BOOLEAN,
+  CHAR. Pointers, strings, arrays, records, sets, files, enums and other
+  vectors are diagnostics. This stage has no separate REAL32 tag -- REAL32
+  resolves to TK_REAL here (see the NamedType arm) -- so that spelling is
+  covered by the TK_REAL case, and the vintage 16-bit INTEGER/WORD pair is
+  deliberately included: vectors of the dialect's default width are exactly
+  representable. }
+BEGIN
+  VectorScalarElemTk := (tk = TK_INTEGER) OR (tk = TK_WORD) OR
+    (tk = TK_INTEGER8) OR (tk = TK_WORD8) OR (tk = TK_INTEGER32) OR
+    (tk = TK_WORD32) OR (tk = TK_INTEGER64) OR (tk = TK_WORD64) OR
+    (tk = TK_REAL) OR (tk = TK_BOOLEAN) OR (tk = TK_CHAR);
+END;
+
+FUNCTION FoldVectorLanes(node: ADRMEM): INTEGER;
+{ The lane count is a full constant-expression AST node. The acceptance rule
+  both stages implement identically: an integer literal, or an identifier
+  naming a previously-declared integer CONST (tc_decl sets has_const_int/
+  const_int for those). Computed expressions are deliberately not folded --
+  the codegen side's ResolveIntLiteral accepts exactly the same two forms,
+  so the two stages can never disagree about what a legal lane count is.
+  Returns -1 for anything unresolvable; the caller diagnoses. }
+VAR
+  nm: Str255;
+  si: INTEGER32;
+BEGIN
+  IF NodeType(node) = 'IntLiteral' THEN
+    FoldVectorLanes := RETYPE(INTEGER, GetInt(node, 'value'))
+  ELSE IF NodeType(node) = 'Identifier' THEN
+  BEGIN
+    nm := GetStr(node, 'name');
+    si := LookupSymbol(nm);
+    IF si <> 0 THEN
+    BEGIN
+      IF symbols[si].has_const_int THEN
+        FoldVectorLanes := RETYPE(INTEGER, symbols[si].const_int)
+      ELSE
+        FoldVectorLanes := -1;
+    END
+    ELSE
+      FoldVectorLanes := -1;
+  END
+  ELSE
+    FoldVectorLanes := -1;
+END;
+
 { ========================== type-expr resolution ======================= }
 
 PROCEDURE ResolveTypeExpr(node: ADRMEM; VAR tk, aux, aux2, idx_tk: INTEGER);
@@ -18,6 +65,7 @@ VAR
   base_node, elem_node, index_node, bound_node, fields_arr, tup, items, names_arr, ftype_node: ADRMEM;
   variants_arr, arm_node, tag_type_node: ADRMEM;
   inner_tk, inner_aux, inner_aux2, inner_idx: INTEGER;
+  lanes_v, pow2: INTEGER;
   ti: INTEGER32;
   rid: INTEGER;
   n, fi, nn, ni, bound_si: INTEGER32;
@@ -199,6 +247,39 @@ BEGIN
     IF bound_node <> NIL THEN
       IF (NodeType(bound_node) = 'IntLiteral') AND
          (GetInt(bound_node, 'value') > 32767) THEN idx_tk := TK_WORD;
+  END
+  ELSE IF nt = 'VectorType' THEN
+  BEGIN
+    { VECTOR [n] OF scalar: tk is TK_VECTOR, the element kind rides in aux,
+      the lane count in aux2 (the same aux2 slot an LSTRING borrows for its
+      .LEN marker), idx_tk unused. Validation happens here, not at the use
+      sites, exactly as for ArrayType bounds. }
+    elem_node := GetObj(node, 'element_type');
+    ResolveTypeExpr(elem_node, inner_tk, inner_aux, inner_aux2, inner_idx);
+    lanes_v := FoldVectorLanes(GetObj(node, 'lanes'));
+    { Power-of-two probe by successive halving: the source language's AND is
+      boolean-only (no bitwise integer AND), so the classic
+      `n AND (n-1) = 0` idiom is not expressible in this compiler's own
+      source. Negative/unresolvable counts fall out as not-a-power-of-two. }
+    pow2 := lanes_v;
+    WHILE (pow2 > 1) AND ((pow2 MOD 2) = 0) DO pow2 := pow2 DIV 2;
+    IF NOT VectorScalarElemTk(inner_tk) THEN
+    BEGIN
+      AddError('Vector element type must be a scalar');
+      tk := TK_UNKNOWN;
+    END
+    ELSE IF (lanes_v < 2) OR (lanes_v > 64) OR (pow2 <> 1) THEN
+    BEGIN
+      AddError('Vector lane count must be a power of two between 2 and 64');
+      tk := TK_UNKNOWN;
+    END
+    ELSE
+    BEGIN
+      tk := TK_VECTOR;
+      aux := inner_tk;
+      aux2 := lanes_v;
+      idx_tk := 0;
+    END;
   END
   ELSE IF nt = 'RecordType' THEN
   BEGIN

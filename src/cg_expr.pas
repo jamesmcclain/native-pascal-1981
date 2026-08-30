@@ -1459,6 +1459,13 @@ BEGIN
         IF nt = 'UpperExpr' THEN res := LLVMConstInt(i16ty, types[result_tid].hi, 1)
         ELSE res := LLVMConstInt(i16ty, 0, 1);
       END
+      ELSE IF TypeKind(result_tid) = TK_VECTOR THEN
+      BEGIN
+        { lo/hi were registered as 0/lanes-1, so the table read is identical
+          to the TK_ARRAY case. }
+        IF nt = 'UpperExpr' THEN res := LLVMConstInt(i16ty, types[result_tid].hi, 1)
+        ELSE res := LLVMConstInt(i16ty, types[result_tid].lo, 1);
+      END
       ELSE
       BEGIN
         AbortWith2('codegen: UPPER/LOWER not supported for variable: ', nm);

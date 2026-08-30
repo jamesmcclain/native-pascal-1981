@@ -221,6 +221,12 @@ CONST
     ResolveTypeExpr EnumType case). The manual reads enumerated values as
     numbers and writes them that way too by default (13610-13618), so an
     enum participates in I/O exactly like an INTEGER32. }
+  TK_VECTOR = 22; { a CPU SIMD vector type -- always a types[] entry (tid
+    >= 14, never a bare tid; 22 is itself >= 14, so TypeKind/LLVMTypeForTk
+    route it through the table exactly like TK_ARRAY): elem_tid holds the
+    element's scalar tid (TK_BOOLEAN elements are stored as <n x i8>, see
+    ResolveTypeExpr), lo/hi are 0/lanes-1 so LOWER/UPPER read the table
+    unchanged, and llvm_ty is the <n x T> vector type. }
 
   MAX_SYMBOLS = 500;
   MAX_SCOPES = 64;
