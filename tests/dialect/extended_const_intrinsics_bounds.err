@@ -1,1 +1,3 @@
+Type checking failed:
 Constant SUCC result outside INTEGER range
+Error: Failed to parse input AST JSON

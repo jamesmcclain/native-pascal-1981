@@ -37,7 +37,7 @@ END;
 
 FUNCTION FoldConstInt(node: ADRMEM; VAR folded_value: INTEGER64): BOOLEAN;
 VAR
-  nt, op, name: Str255;
+  nt, op, name, ch: Str255;
   left, right, quotient, remainder: INTEGER64;
   si: INTEGER32;
   args: ADRMEM;
@@ -47,6 +47,12 @@ BEGIN
   IF nt = 'IntLiteral' THEN
   BEGIN
     folded_value := JsonIntegerValue(node);
+    FoldConstInt := TRUE;
+  END
+  ELSE IF nt = 'CharLiteral' THEN
+  BEGIN
+    ch := GetStr(node, 'value');
+    folded_value := ORD(ch[1]);
     FoldConstInt := TRUE;
   END
   ELSE IF nt = 'UnaryOp' THEN
@@ -100,7 +106,7 @@ BEGIN
   BEGIN
     name := UpperStr(GetStr(node, 'name'));
     args := GetObj(node, 'args');
-    IF ((name = 'ORD') OR (name = 'SUCC') OR (name = 'PRED')) AND
+    IF ((name = 'ORD') OR (name = 'CHR') OR (name = 'SUCC') OR (name = 'PRED')) AND
        (cJSON_GetArraySize(args) = 1) AND
        FoldConstInt(cJSON_GetArrayItem(args, 0), folded_value) THEN
     BEGIN
@@ -459,7 +465,7 @@ VAR
   nargs, i, si: INTEGER32;
   atk: INTEGER;
 BEGIN
-  name := GetStr(node, 'name');
+  name := UpperStr(GetStr(node, 'name'));
   args_arr := GetObj(node, 'args');
   nargs := cJSON_GetArraySize(args_arr);
   IF name = 'WRD' THEN
