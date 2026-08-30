@@ -32,8 +32,8 @@ literals, `{$UNROLL}`, and launch-bound attributes. DEVICE units can use wide
 scalar types and tuning hints independently of the command-line dialect.
 
 Other gates are not implemented yet. For example, vintage mode still accepts
-wide integer constants and string precision. Thus, `--dialect vintage` is not
-yet a complete conformance check.
+wide integer constants. Thus, `--dialect vintage` is not yet a complete
+conformance check.
 
 ### Command-line contract
 
@@ -58,8 +58,8 @@ codegen --dialect <value>
 These command lines are the implemented transport contract. The typechecker
 and code generator resolve the selected dialect to shared feature state. They
 use that state for scalar types, C interoperability, anonymous `READSET` set
-literals, tuning hints, and enumerated I/O. Later work will apply it to the
-remaining language constructs.
+literals, tuning hints, enumerated I/O, and string precision. Later work will
+apply it to the remaining language constructs.
 
 Feature overrides such as repeated `-f wide-integers` options are not part of
 the native command-line contract yet. `argparse` stores one value for each
@@ -84,6 +84,18 @@ and to explicit text files.
 `BOOLEAN` keeps its documented vintage behavior in both dialects. Output is
 `TRUE` or `FALSE`. Input accepts those names without regard to letter case and
 also accepts the numeric ordinals `1` and `0`.
+
+## String precision
+
+In vintage mode, `::precision` does not limit string output. A string literal,
+`STRING` value, or `LSTRING` value writes its full contents. In
+`value:width:precision`, the width still pads the full value. The compiler
+ignores the precision.
+
+Extended mode uses string precision as the maximum number of characters to
+write. The width continues to specify the minimum field width. This rule does
+not change numeric formatting. Numeric width and precision have the same
+behavior in both dialects.
 
 ## READSET and tuning hints
 

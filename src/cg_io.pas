@@ -57,12 +57,12 @@ BEGIN
                                     LLVMPointerType(i8ptrty, 0), MakeCStr(''));
 END;
 
-PROCEDURE EmitStringWriteArg(addr: ADRMEM; tid: INTEGER; have_width: BOOLEAN; width_val: ADRMEM;
-  VAR fmt: Str255; vals: ADRMEM; VAR vi: INTEGER32);
-{ Appends a %.*s (or %*.*s with a width) format spec plus its (len, chars)
-  value pair for an LSTRING/STRING value already resolved to an address --
-  shared by the bare-Identifier and Designator (array/field selector) WRITE
-  argument paths, which differ only in how they got that address. }
+PROCEDURE EmitStringWriteArg(addr: ADRMEM; tid: INTEGER; have_width, have_prec: BOOLEAN;
+  width_val, prec_val: ADRMEM; VAR fmt: Str255; vals: ADRMEM; VAR vi: INTEGER32);
+{ Appends the bounded string format and arguments for an LSTRING/STRING value
+  already resolved to an address. Extended mode uses an explicit precision as
+  the character limit. Vintage mode retains the full stored length. This is
+  shared by the Identifier and Designator paths. }
 VAR
   gep_idx, len_ptr, len_val, chars_ptr: ADRMEM;
 BEGIN
@@ -87,7 +87,17 @@ BEGIN
     SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
     chars_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(tid), addr, gep_idx, 2, MakeCStr(''));
   END;
-  IF have_width THEN
+  IF active_features.string_precision AND have_prec THEN
+  BEGIN
+    CONCAT(fmt, '%*.*s');
+    IF have_width THEN
+      SetPtrArrayElem(vals, vi, width_val)
+    ELSE
+      SetPtrArrayElem(vals, vi, LLVMConstInt(i32ty, 0, 0));
+    vi := vi + 1;
+    len_val := prec_val;
+  END
+  ELSE IF have_width THEN
   BEGIN
     CONCAT(fmt, '%*.*s');
     SetPtrArrayElem(vals, vi, width_val);
@@ -298,10 +308,9 @@ BEGIN
     expr := GetObj(arg_node, 'expr');
     width_node := GetObjOrNil(arg_node, 'width');
     prec_node := GetObjOrNil(arg_node, 'precision');
-    { Precision is only ever consulted for REAL/REAL32's width+precision ->
-      %*.*f path below, matching the Python reference's faithful-1981
-      default (it ignores string precision and never consults precision
-      at all for the generic int/char/boolean case). }
+    { Numeric precision remains confined to REAL/REAL32. String precision is
+      consulted only when the extended feature is active. The generic
+      integer/char/boolean path ignores precision in both dialects. }
     have_width := width_node <> NIL;
     IF have_width THEN width_val := EvalPrintfIntArg(width_node);
     have_prec := prec_node <> NIL;
@@ -312,7 +321,18 @@ BEGIN
     BEGIN
       strval := DecodeStringLiteral(GetStr(expr, 'value'));
       v := LLVMBuildGlobalStringPtr(builder, MakeCStr(strval), MakeCStr('str'));
-      IF have_width THEN
+      IF active_features.string_precision AND have_prec THEN
+      BEGIN
+        CONCAT(fmt, '%*.*s');
+        IF have_width THEN
+          SetPtrArrayElem(vals, vi, width_val)
+        ELSE
+          SetPtrArrayElem(vals, vi, LLVMConstInt(i32ty, 0, 0));
+        vi := vi + 1;
+        SetPtrArrayElem(vals, vi, prec_val);
+        vi := vi + 1;
+      END
+      ELSE IF have_width THEN
       BEGIN
         CONCAT(fmt, '%*s');
         SetPtrArrayElem(vals, vi, width_val);
@@ -342,7 +362,8 @@ BEGIN
         END;
       END;
       IF is_lstring OR is_string THEN
-        EmitStringWriteArg(addr, lstr_tid, have_width, width_val, fmt, vals, vi)
+        EmitStringWriteArg(addr, lstr_tid, have_width, have_prec,
+                           width_val, prec_val, fmt, vals, vi)
       ELSE
       BEGIN
         v := CodegenExpr(expr);
@@ -358,7 +379,8 @@ BEGIN
       addr := ComputeDesignatorAddress(expr);
       lstr_tid := last_val_tk;
       IF (TypeKind(lstr_tid) = TK_LSTRING) OR (TypeKind(lstr_tid) = TK_STRING) THEN
-        EmitStringWriteArg(addr, lstr_tid, have_width, width_val, fmt, vals, vi)
+        EmitStringWriteArg(addr, lstr_tid, have_width, have_prec,
+                           width_val, prec_val, fmt, vals, vi)
       ELSE
       BEGIN
         v := LLVMBuildLoad2(builder, LLVMTypeForTk(lstr_tid), addr, MakeCStr(''));
