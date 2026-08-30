@@ -623,6 +623,34 @@ BEGIN
     AbortWith('codegen: WalkTypeLeaves: unsupported type in C aggregate');
 END;
 
+FUNCTION AggregateHasVectorLeaf(tid: INTEGER): BOOLEAN;
+{ TRUE if tid is a VECTOR, or transitively contains one through ARRAY
+  elements or RECORD fields. ClassifyAggregate uses this to force the whole
+  enclosing aggregate to MEMORY class: vector-register ABI classes (SSEUP)
+  are not implemented, and WalkTypeLeaves has no vector arm, so a small
+  (<= 16 byte) aggregate wrapping a vector would otherwise reach the
+  WalkTypeLeaves internal-error above. Same recursion shape as
+  WalkTypeLeaves, implemented ahead of it in file order. }
+VAR
+  i: INTEGER;
+  found: BOOLEAN;
+BEGIN
+  IF TypeKind(tid) = TK_VECTOR THEN
+    AggregateHasVectorLeaf := TRUE
+  ELSE IF TypeKind(tid) = TK_ARRAY THEN
+    AggregateHasVectorLeaf := AggregateHasVectorLeaf(types[tid].elem_tid)
+  ELSE IF TypeKind(tid) = TK_RECORD THEN
+  BEGIN
+    found := FALSE;
+    FOR i := 1 TO nfields DO
+      IF fields[i].rec_tid = tid THEN
+        IF AggregateHasVectorLeaf(fields[i].field_tid) THEN found := TRUE;
+    AggregateHasVectorLeaf := found;
+  END
+  ELSE
+    AggregateHasVectorLeaf := FALSE;
+END;
+
 PROCEDURE ClassifyAggregate(tk: INTEGER; VAR agg_class: INTEGER; VAR n_pieces: INTEGER;
                              VAR piece_kind: SysVPieceArr; VAR piece_bytes: SysVPieceSzArr);
 { The full System V AMD64 aggregate classifier. Splits an aggregate of at most
@@ -654,13 +682,15 @@ VAR
   sse_dbl: SysVFlagArr;
 BEGIN
   n_pieces := 0;
-  IF TypeKind(tk) = TK_VECTOR THEN
+  IF AggregateHasVectorLeaf(tk) THEN
   BEGIN
-    { Vector-register ABI classes (SSEUP) are not implemented, so a vector
-      is always MEMORY-class. Mostly defensive: a VECTOR in a [C] routine
-      signature is rejected before this runs (see cg_decl), so this only
-      fires for a vector nested inside a [C] record/ARRAY parameter, where
-      classifying the whole aggregate MEMORY is the correct answer anyway. }
+    { Vector-register ABI classes (SSEUP) are not implemented, so any
+      aggregate that is a vector -- or contains one through a field or
+      element -- is forced MEMORY-class. A bare VECTOR in a [C] routine
+      signature is rejected before this runs (see cg_decl); this arm covers
+      a vector nested inside a [C] record/ARRAY parameter, where classifying
+      the whole aggregate MEMORY is both the correct answer and the only
+      shape WalkTypeLeaves (which has no vector arm) can handle. }
     agg_class := SYSV_CLASS_MEMORY;
     RETURN;
   END;
