@@ -279,7 +279,7 @@ BEGIN
   errors_before := nerrors;
   result_tk := CheckExpr(node);
   expr_context_tk := saved_context;
-  IF IsInteger(target_tk) AND FoldConstInt(node, folded_value) THEN
+  IF IsInteger(target_tk) AND IsInteger(result_tk) AND FoldConstInt(node, folded_value) THEN
   BEGIN
     IF (nerrors = errors_before) AND NOT IntegerConstantFits(target_tk, folded_value) THEN
     BEGIN
