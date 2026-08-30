@@ -2,7 +2,7 @@
 
 INTERFACE;
 UNIT cg_util;
-USES jsonutil, cg_base;
+USES jsonutil, features, cg_base;
 
 CONST
   MAX_EXPR_DEPTH = 64;

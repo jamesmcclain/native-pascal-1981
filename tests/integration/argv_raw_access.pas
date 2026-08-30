@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 PROGRAM argv_raw_access(input, output);
 { The Pascal driver needs raw arguments, unlike PROGRAM heading parameters. }
 FUNCTION pas_arg_count: CINT [C]; EXTERN;

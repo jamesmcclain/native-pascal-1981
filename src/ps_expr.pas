@@ -929,7 +929,12 @@ BEGIN
       { NamedType.param is a bare int or identifier-name, not the full
         constant-expression node, matching parser.py's unwrapping. }
       IF StringEqual(CStrToStr255(cJSON_GetStringValue(cJSON_GetObjectItem(param_expr, MakeCStr('__node_type__')))), 'IntLiteral') THEN
-        AddIntField(node, 'param', TRUNC(cJSON_GetNumberValue(cJSON_GetObjectItem(param_expr, MakeCStr('value')))))
+        { Not TRUNC: the capacity is a 32-bit quantity on both ends --
+          cg_types reads this field back with GetInt -- and a capacity
+          past 32767 (LSTRING(40000), say) would be poison through the
+          16-bit INTEGER TRUNC produces. GetInt does the conversion in
+          32 bits, exactly as codegen will on the other side. }
+        AddIntField(node, 'param', GetInt(param_expr, 'value'))
       ELSE IF StringEqual(CStrToStr255(cJSON_GetStringValue(cJSON_GetObjectItem(param_expr, MakeCStr('__node_type__')))), 'Identifier') THEN
         AddStringField(node, 'param', CStrToStr255(cJSON_GetStringValue(cJSON_GetObjectItem(param_expr, MakeCStr('name')))))
       ELSE

@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 (*$INCLUDE:'argparse.inc'*)
 PROGRAM argparse_help(input, output);
 { --help prints the generated usage text and makes ArgParse return FALSE, with

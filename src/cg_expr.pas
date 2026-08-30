@@ -1,5 +1,6 @@
 { Implementations for cg_expr. }
 
+(*$INCLUDE:'features.inc'*)
 (*$INCLUDE:'jsonutil.inc'*)
 (*$INCLUDE:'cg_base.inc'*)
 (*$INCLUDE:'cg_util.inc'*)
@@ -1115,6 +1116,8 @@ BEGIN
   END
   ELSE IF nm = 'WRD8' THEN
   BEGIN
+    IF NOT (active_features.wide_integers OR is_device_compiland) THEN
+      AbortWith('codegen: WRD8 requires the extended dialect');
     { WRD8(x): truncate/retype to the 8-bit unsigned WORD8 -- the 8-bit
       sibling of WRD. Wider integers truncate to the low byte; i8-width
       values (CHAR/INTEGER8/WORD8) pass through unchanged; BOOLEAN (i1
@@ -1182,6 +1185,7 @@ FUNCTION CodegenExpr(node: ADRMEM): ADRMEM;
 VAR
   nt: Str255;
   nm: Str255;
+  nmu: Str255;
   symi: INTEGER32;
   consti: INTEGER32;
   routi: INTEGER32;
@@ -1248,24 +1252,45 @@ BEGIN
   ELSE IF nt = 'Identifier' THEN
   BEGIN
     nm := GetStr(node, 'name');
+    nmu := UpperStr(nm);
     { These unsigned maxima have all bits set.  LLVMConstInt takes the
       machine bit pattern through the signed CLONG binding, so -1 is the
       correct i32/i64 payload; WRITE chooses %u/%llu from last_val_tk. }
-    IF nm = 'MAXWORD32' THEN
+    IF nmu = 'MAXINT' THEN
+    BEGIN
+      res := LLVMConstInt(i16ty, 32767, 1);
+      last_val_tk := TK_INTEGER;
+    END
+    ELSE IF nmu = 'MAXWORD' THEN
+    BEGIN
+      res := LLVMConstInt(i16ty, -1, 0);
+      last_val_tk := TK_WORD;
+    END
+    ELSE IF nmu = 'MAXINT32' THEN
+    BEGIN
+      res := LLVMConstInt(i32ty, 2147483647, 1);
+      last_val_tk := TK_INTEGER32;
+    END
+    ELSE IF nmu = 'MAXWORD32' THEN
     BEGIN
       res := LLVMConstInt(i32ty, -1, 0);
       last_val_tk := TK_WORD32;
     END
-    ELSE IF nm = 'MAXWORD64' THEN
+    ELSE IF nmu = 'MAXINT64' THEN
+    BEGIN
+      res := LLVMConstInt(i64ty, 9223372036854775807, 1);
+      last_val_tk := TK_INTEGER64;
+    END
+    ELSE IF nmu = 'MAXWORD64' THEN
     BEGIN
       res := LLVMConstInt(i64ty, -1, 0);
       last_val_tk := TK_WORD64;
     END
-    ELSE IF (nm = 'THREADIDX_X') OR (nm = 'THREADIDX_Y') OR (nm = 'THREADIDX_Z') OR
-       (nm = 'BLOCKIDX_X') OR (nm = 'BLOCKIDX_Y') OR (nm = 'BLOCKIDX_Z') OR
-       (nm = 'BLOCKDIM_X') OR (nm = 'BLOCKDIM_Y') OR (nm = 'BLOCKDIM_Z') OR
-       (nm = 'GRIDDIM_X') OR (nm = 'GRIDDIM_Y') OR (nm = 'GRIDDIM_Z') THEN
-      res := CodegenDeviceIndex(nm)
+    ELSE IF (nmu = 'THREADIDX_X') OR (nmu = 'THREADIDX_Y') OR (nmu = 'THREADIDX_Z') OR
+       (nmu = 'BLOCKIDX_X') OR (nmu = 'BLOCKIDX_Y') OR (nmu = 'BLOCKIDX_Z') OR
+       (nmu = 'BLOCKDIM_X') OR (nmu = 'BLOCKDIM_Y') OR (nmu = 'BLOCKDIM_Z') OR
+       (nmu = 'GRIDDIM_X') OR (nmu = 'GRIDDIM_Y') OR (nmu = 'GRIDDIM_Z') THEN
+      res := CodegenDeviceIndex(nmu)
     ELSE
     BEGIN
     symi := LookupSym(nm);
@@ -1285,6 +1310,11 @@ BEGIN
           res := LLVMConstReal(dblty, const_tbl[consti].rval);
           last_val_tk := TK_REAL;
         END
+        ELSE IF const_tbl[consti].enum_tid <> 0 THEN
+        BEGIN
+          res := LLVMConstInt(i32ty, const_tbl[consti].ival, 0);
+          last_val_tk := const_tbl[consti].enum_tid;
+        END
         ELSE IF const_tbl[consti].is_char THEN
         BEGIN
           { Same shape a bare CharLiteral gets above: an unsigned i8 typed
@@ -1295,8 +1325,12 @@ BEGIN
         END
         ELSE
         BEGIN
-          res := LLVMConstInt(i16ty, const_tbl[consti].ival, 1);
-          last_val_tk := TK_INTEGER;
+          last_val_tk := const_tbl[consti].integer_tid;
+          IF last_val_tk = 0 THEN last_val_tk := TK_INTEGER;
+          IF IsUnsignedWordTk(last_val_tk) THEN
+            res := LLVMConstInt(LLVMTypeForTk(last_val_tk), const_tbl[consti].ival, 0)
+          ELSE
+            res := LLVMConstInt(LLVMTypeForTk(last_val_tk), const_tbl[consti].ival, 1);
         END;
       END
       ELSE IF RoutineIsFunc(routi) THEN

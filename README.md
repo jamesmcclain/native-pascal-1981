@@ -116,5 +116,5 @@ See [tests/README.md](tests/README.md) for more information about the compiler t
 To run all available test groups, type:
 
 ```bash
-make test test-gpu test-reference-parity test-elisp test-bootstrap
+make test-bootstrap test test-gpu test-reference-parity test-elisp
 ```

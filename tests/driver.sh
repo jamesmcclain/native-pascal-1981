@@ -29,6 +29,22 @@ exit 23
 EOF
 chmod +x "$stage_dir/fail-stage"
 
+record_dir="$work_dir/stage-args"
+mkdir -p "$record_dir"
+for stage in lexer parser typechecker codegen; do
+  cat > "$stage_dir/record-$stage" <<EOF
+#!/usr/bin/env bash
+{
+  printf 'argc=%s\\n' "\$#"
+  for arg in "\$@"; do
+    printf 'arg=%s\\n' "\$arg"
+  done
+} > "\$PASCAL1981_STAGE_ARG_DIR/$stage.args"
+cat
+EOF
+  chmod +x "$stage_dir/record-$stage"
+done
+
 cat > "$stage_dir/fake-clang" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' '--- clang invocation ---' >> "$PASCAL1981_FAKE_CLANG_LOG"
@@ -63,11 +79,38 @@ expect_stderr() {
   fi
 }
 
+check_stage_args() {
+  local dialect="$1"
+  local label="$2"
+  printf 'argc=0\n' > "$work_dir/expected-lexer-args"
+  printf 'argc=2\narg=--dialect\narg=%s\n' "$dialect" > "$work_dir/expected-stage-args"
+  for stage in lexer parser typechecker codegen; do
+    local expected="$work_dir/expected-stage-args"
+    if [ "$stage" = lexer ]; then
+      expected="$work_dir/expected-lexer-args"
+    fi
+    if cmp -s "$expected" "$record_dir/$stage.args"; then
+      pass=$((pass + 1))
+    else
+      echo "FAIL: $label: unexpected $stage argument array" >&2
+      diff -u "$expected" "$record_dir/$stage.args" >&2 || true
+      fail=$((fail + 1))
+    fi
+  done
+}
+
 stage_env=(
   "PASCAL1981_LEXER=$stage_dir/cat-stage"
   "PASCAL1981_PARSER=$stage_dir/cat-stage"
   "PASCAL1981_TYPECHECKER=$stage_dir/cat-stage"
   "PASCAL1981_CODEGEN=$stage_dir/cat-stage"
+)
+record_env=(
+  "PASCAL1981_LEXER=$stage_dir/record-lexer"
+  "PASCAL1981_PARSER=$stage_dir/record-parser"
+  "PASCAL1981_TYPECHECKER=$stage_dir/record-typechecker"
+  "PASCAL1981_CODEGEN=$stage_dir/record-codegen"
+  "PASCAL1981_STAGE_ARG_DIR=$record_dir"
 )
 
 expect_status 0 "$DRIVER" --version
@@ -78,12 +121,20 @@ fi
 
 expect_status 1 "$DRIVER"
 expect_stderr 'error: no input file specified'
+# Option-parsing diagnostics come from the shared argparse unit, so they read
+# the same here as they do for the parser/typechecker/codegen stages.
 expect_status 1 "$DRIVER" -o
-expect_stderr 'error: -o requires an argument'
+expect_stderr 'option requires a value: -o'
 expect_status 1 "$DRIVER" --device-triple
-expect_stderr 'error: --device-triple requires an argument'
+expect_stderr 'option requires a value: --device-triple'
+expect_status 1 "$DRIVER" --dialect
+expect_stderr 'option requires a value: --dialect'
+expect_status 1 "$DRIVER" --dialect invalid
+expect_stderr "error: invalid dialect 'invalid'; expected 'vintage' or 'extended'"
+expect_status 1 "$DRIVER" --dialect device
+expect_stderr "error: invalid dialect 'device'; expected 'vintage' or 'extended'"
 expect_status 1 "$DRIVER" --unknown source.pas
-expect_stderr 'error: unrecognized command line option: --unknown'
+expect_stderr 'unrecognized option: --unknown'
 
 source_file="$work_dir/source with spaces; and dollars $.pas"
 printf 'driver contract input\n' > "$source_file"
@@ -93,6 +144,20 @@ if ! cmp -s "$source_file" "$ir_file"; then
   echo 'FAIL: -S pipeline did not preserve the stage output' >&2
   fail=$((fail + 1))
 fi
+
+for dialect_arg in implicit vintage extended; do
+  rm -f "$record_dir"/*.args
+  driver_dialect_args=()
+  expected_dialect="$dialect_arg"
+  if [ "$dialect_arg" = implicit ]; then
+    expected_dialect=vintage
+  else
+    driver_dialect_args=(--dialect "$dialect_arg")
+  fi
+  expect_status 0 env "${record_env[@]}" "$DRIVER" "${driver_dialect_args[@]}" \
+    -S "$source_file" -o "$work_dir/$dialect_arg.ll"
+  check_stage_args "$expected_dialect" "$dialect_arg dialect"
+done
 
 expect_status 1 env "${stage_env[@]}" "$DRIVER" -S "$source_file" "$source_file"
 expect_stderr 'error: -c and -S require exactly one input file'
@@ -129,6 +194,26 @@ if [ "$(grep -cF -- '--- clang invocation ---' "$clang_log")" -ne 2 ]; then
   cat "$clang_log" >&2
   fail=$((fail + 1))
 fi
+
+# -O0..-O3 arrive as the glued short form of the -O integer option, and
+# -I/-L/-l are pass-through prefixes forwarded to clang verbatim, in order,
+# including repeated occurrences.
+: > "$clang_log"
+expect_status 0 env "${stage_env[@]}" "PASCAL1981_CC=$stage_dir/fake-clang" "PASCAL1981_FAKE_CLANG_LOG=$clang_log" \
+  "$DRIVER" -c -O2 -I/inc -L/libdir -L/other -lm "$source_file" -o "$work_dir/opt.o"
+if ! grep -qxF -- '-O2' "$clang_log"; then
+  echo 'FAIL: -O2 (glued short option) was not forwarded to clang' >&2
+  fail=$((fail + 1))
+fi
+for tok in -I/inc -L/libdir -L/other -lm; do
+  if ! grep -qxF -- "$tok" "$clang_log"; then
+    echo "FAIL: pass-through token $tok was not forwarded to clang" >&2
+    fail=$((fail + 1))
+  fi
+done
+
+expect_status 1 env "${stage_env[@]}" "$DRIVER" -O9 "$source_file"
+expect_stderr 'error: optimization level must be 0, 1, 2, or 3'
 
 if [ "$fail" -ne 0 ]; then
   echo "Driver contract results: $pass passed, $fail failed" >&2

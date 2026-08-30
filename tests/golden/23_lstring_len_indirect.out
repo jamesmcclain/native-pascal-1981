@@ -1,0 +1,5 @@
+array elem: 5
+array elem truncated: abcd (4)
+alias elem: 2
+deref: 4
+deref truncated: w (1)

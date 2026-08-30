@@ -1,9 +1,10 @@
 { Native Pascal compiler driver. Command-line parsing is kept here so that
   process control and option policy do not move into the C runtime. }
+(*$INCLUDE:'argparse.inc'*)
 (*$INCLUDE:'jsonutil.inc'*)
 PROGRAM pascal1981_driver(input, output);
 
-USES jsonutil;
+USES argparse, jsonutil;
 
 FUNCTION pas_arg_count: CINT [C]; EXTERN;
 FUNCTION pas_arg_value(index: CINT): ADRMEM [C]; EXTERN;
@@ -30,7 +31,8 @@ TYPE
 VAR
   inputs, extra_clang_args, extra_objects: RawArgArray;
   input_count, extra_clang_argc, extra_object_count, i: CINT;
-  current, output_file: ADRMEM;
+  ii, opt_num: INTEGER32;
+  output_file, dialect: ADRMEM;
   root_dir, lexer_bin, parser_bin, typechecker_bin, codegen_bin: ADRMEM;
   runtime_lib, cc_bin, opt_level, temp_ll, extra_ll, primary_ll, primary_output: ADRMEM;
   primary_compile_only: BOOLEAN;
@@ -39,7 +41,8 @@ VAR
   p1, p2, p3: ARRAY[0..1] OF CINT;
   pid1, pid2, pid3, pid4: CINT;
   status1, status2, status3, status4, clang_status, fail_code: CINT;
-  option: Str255;
+  option, opt_str: Str255;
+  arg_error: ArgStr;
   compile_only, ir_only, verbose: BOOLEAN;
 
 PROCEDURE Usage;
@@ -49,6 +52,7 @@ BEGIN
   WRITELN('  -c                      Compile to object file only (.o)');
   WRITELN('  -S                      Compile to LLVM IR (.ll) only');
   WRITELN('  -O0, -O1, -O2, -O3      Optimization level (default: -O1)');
+  WRITELN('  --dialect <name>        Language dialect: vintage or extended');
   WRITELN('  -I <dir>                Add directory to include search path');
   WRITELN('  -L <dir>                Add directory to library search path');
   WRITELN('  -l <lib>                Link with library');
@@ -61,6 +65,23 @@ PROCEDURE Fail(message: Str255);
 BEGIN
   EPrint(message);
   exit(1);
+END;
+
+PROCEDURE PrintArgError;
+VAR
+  msg: Str255;
+  i, n: INTEGER32;
+BEGIN
+  ArgError(arg_error);
+  n := ORD(arg_error[0]);
+  msg[0] := CHR(RETYPE(INTEGER, n));
+  i := 1;
+  WHILE i <= n DO
+  BEGIN
+    msg[i] := arg_error[i];
+    i := i + 1;
+  END;
+  EPrint(msg);
 END;
 
 FUNCTION Join(prefix, suffix: Str255): Str255;
@@ -103,16 +124,24 @@ BEGIN
   close(p3[0]); close(p3[1]);
 END;
 
-PROCEDURE ExecStage(stage, stage_name: ADRMEM; source_fd, destination_fd: CINT);
+PROCEDURE ExecStage(stage, stage_name, stage_dialect: ADRMEM;
+                    source_fd, destination_fd: CINT);
 VAR
-  args: ARRAY[0..1] OF ADRMEM;
+  args: ARRAY[0..3] OF ADRMEM;
 BEGIN
   dup2(source_fd, 0);
   dup2(destination_fd, 1);
   close(in_fd); close(out_fd);
   ClosePipes;
   args[0] := stage_name;
-  args[1] := NIL;
+  IF stage_dialect = NIL THEN
+    args[1] := NIL
+  ELSE
+  BEGIN
+    args[1] := MakeCStr('--dialect');
+    args[2] := stage_dialect;
+    args[3] := NIL;
+  END;
   execvp(stage, ADR args);
   exit(127);
 END;
@@ -132,13 +161,17 @@ BEGIN
       ELSE
       BEGIN
         pid1 := fork;
-        IF pid1 = 0 THEN ExecStage(lexer_bin, MakeCStr('lexer'), in_fd, p1[1]);
+        IF pid1 = 0 THEN ExecStage(lexer_bin, MakeCStr('lexer'), NIL,
+                                   in_fd, p1[1]);
         pid2 := fork;
-        IF pid2 = 0 THEN ExecStage(parser_bin, MakeCStr('parser'), p1[0], p2[1]);
+        IF pid2 = 0 THEN ExecStage(parser_bin, MakeCStr('parser'), dialect,
+                                   p1[0], p2[1]);
         pid3 := fork;
-        IF pid3 = 0 THEN ExecStage(typechecker_bin, MakeCStr('typechecker'), p2[0], p3[1]);
+        IF pid3 = 0 THEN ExecStage(typechecker_bin, MakeCStr('typechecker'), dialect,
+                                   p2[0], p3[1]);
         pid4 := fork;
-        IF pid4 = 0 THEN ExecStage(codegen_bin, MakeCStr('codegen'), p3[0], out_fd);
+        IF pid4 = 0 THEN ExecStage(codegen_bin, MakeCStr('codegen'), dialect,
+                                   p3[0], out_fd);
         close(in_fd); close(out_fd); ClosePipes;
         waitpid(pid1, ADR status1, 0); waitpid(pid2, ADR status2, 0);
         waitpid(pid3, ADR status3, 0); waitpid(pid4, ADR status4, 0);
@@ -199,89 +232,91 @@ BEGIN
 END;
 
 BEGIN
+  { Option parsing is delegated to the shared argparse unit, the same one the
+    parser, typechecker, and codegen stages use. -I/-L/-l are registered as
+    pass-through prefixes: argparse collects them verbatim, in order, so the
+    driver can forward them to clang without interpreting them. -O0..-O3 arrive
+    as the glued short form of the -O integer option. }
+  ArgBegin('pascal1981', 'Native Pascal-1981 compiler driver.');
+  ArgString('output', 'o', '', 'Place output into <file>');
+  ArgFlag('compile-only', 'c', 'Compile to object file only (.o)');
+  ArgFlag('ir-only', 'S', 'Compile to LLVM IR (.ll) only');
+  ArgFlag('verbose', 'v', 'Print pipeline commands');
+  ArgFlag('version', 'V', 'Display version information');
+  ArgInt('opt', 'O', 1, 'Optimization level 0..3 (default 1)');
+  ArgString('dialect', ARG_NO_SHORT, 'vintage',
+            'Language dialect: vintage or extended');
+  ArgString('device-triple', ARG_NO_SHORT, '', 'Override the device target triple');
+  ArgString('ptx-cpu', ARG_NO_SHORT, '', 'Override the PTX target CPU');
+  ArgString('device-backend', ARG_NO_SHORT, '', 'Select the device code backend');
+  ArgFlag('emit-ptx', ARG_NO_SHORT, 'Emit PTX assembly for device code');
+  ArgPassthrough('-I');
+  ArgPassthrough('-L');
+  ArgPassthrough('-l');
+
+  IF NOT ArgParse THEN
+  BEGIN
+    IF ArgHelpWanted THEN exit(0);
+    PrintArgError;
+    exit(1);
+  END;
+  IF ArgGetFlag('version') THEN
+  BEGIN
+    Version;
+    exit(0);
+  END;
+
   input_count := 0;
   extra_clang_argc := 0;
-  output_file := NIL;
-  emit_ptx := NIL;
-  device_triple := NIL;
-  ptx_cpu := NIL;
-  device_backend := NIL;
-  compile_only := FALSE;
-  ir_only := FALSE;
-  verbose := FALSE;
-  opt_level := MakeCStr('-O1');
-  i := 1;
-  WHILE i < pas_arg_count DO
+  compile_only := ArgGetFlag('compile-only');
+  ir_only := ArgGetFlag('ir-only');
+  verbose := ArgGetFlag('verbose');
+
+  IF ArgWasGiven('output') THEN output_file := ArgGetRaw('output')
+  ELSE output_file := NIL;
+
+  dialect := ArgGetRaw('dialect');
+  option := CStrToStr255(dialect);
+  IF (option <> 'vintage') AND (option <> 'extended') THEN
+    Fail(Join(Join('error: invalid dialect ''', option),
+              '''; expected ''vintage'' or ''extended'''));
+
+  opt_num := ArgGetInt('opt');
+  IF (opt_num < 0) OR (opt_num > 3) THEN
+    Fail('error: optimization level must be 0, 1, 2, or 3');
+  opt_str[0] := CHR(3);
+  opt_str[1] := '-';
+  opt_str[2] := 'O';
+  opt_str[3] := CHR(RETYPE(INTEGER, ORD('0') + opt_num));
+  opt_level := MakeCStr(opt_str);
+
+  IF ArgGetFlag('emit-ptx') THEN emit_ptx := MakeCStr('true')
+  ELSE emit_ptx := NIL;
+  IF ArgWasGiven('device-triple') THEN device_triple := ArgGetRaw('device-triple')
+  ELSE device_triple := NIL;
+  IF ArgWasGiven('ptx-cpu') THEN ptx_cpu := ArgGetRaw('ptx-cpu')
+  ELSE ptx_cpu := NIL;
+  IF ArgWasGiven('device-backend') THEN device_backend := ArgGetRaw('device-backend')
+  ELSE device_backend := NIL;
+
+  ii := 0;
+  WHILE ii < ArgPosCount DO
   BEGIN
-    current := pas_arg_value(i);
-    option := CStrToStr255(current);
-    IF option = '-o' THEN
-    BEGIN
-      i := i + 1;
-      IF i >= pas_arg_count THEN Fail('error: -o requires an argument');
-      output_file := pas_arg_value(i);
-    END
-    ELSE IF option = '-c' THEN
-      compile_only := TRUE
-    ELSE IF option = '-S' THEN
-      ir_only := TRUE
-    ELSE IF (option = '-v') OR (option = '--verbose') THEN
-      verbose := TRUE
-    ELSE IF (option = '-h') OR (option = '--help') THEN
-    BEGIN
-      Usage;
-      exit(0);
-    END
-    ELSE IF (option = '-V') OR (option = '--version') THEN
-    BEGIN
-      Version;
-      exit(0);
-    END
-    ELSE IF option = '--dialect' THEN
-    BEGIN
-      i := i + 1;
-      IF i >= pas_arg_count THEN Fail('error: --dialect requires an argument');
-    END
-    ELSE IF option = '--device-triple' THEN
-    BEGIN
-      i := i + 1;
-      IF i >= pas_arg_count THEN Fail('error: --device-triple requires an argument');
-      device_triple := pas_arg_value(i);
-    END
-    ELSE IF option = '--ptx-cpu' THEN
-    BEGIN
-      i := i + 1;
-      IF i >= pas_arg_count THEN Fail('error: --ptx-cpu requires an argument');
-      ptx_cpu := pas_arg_value(i);
-    END
-    ELSE IF option = '--device-backend' THEN
-    BEGIN
-      i := i + 1;
-      IF i >= pas_arg_count THEN Fail('error: --device-backend requires an argument');
-      device_backend := pas_arg_value(i);
-    END
-    ELSE IF (option = '-O0') OR (option = '-O1') OR (option = '-O2') OR
-            (option = '-O3') THEN
-      opt_level := current
-    ELSE IF option = '--emit-ptx' THEN
-      emit_ptx := MakeCStr('true')
-    ELSE IF (option[1] = '-') AND ((option[2] = 'I') OR (option[2] = 'L') OR
-            (option[2] = 'l')) THEN
-    BEGIN
-      IF extra_clang_argc >= MAX_INPUT_FILES THEN Fail('error: too many clang arguments');
-      extra_clang_args[extra_clang_argc] := current;
-      extra_clang_argc := extra_clang_argc + 1;
-    END
-    ELSE IF option[1] = '-' THEN
-      Fail(Join('error: unrecognized command line option: ', option))
-    ELSE
-    BEGIN
-      IF input_count >= MAX_INPUT_FILES THEN Fail('error: too many input files');
-      inputs[input_count] := current;
-      input_count := input_count + 1;
-    END;
-    i := i + 1;
+    IF input_count >= MAX_INPUT_FILES THEN Fail('error: too many input files');
+    inputs[input_count] := ArgPosRaw(ii);
+    input_count := input_count + 1;
+    ii := ii + 1;
   END;
+
+  ii := 0;
+  WHILE ii < ArgExtraCount DO
+  BEGIN
+    IF extra_clang_argc >= MAX_INPUT_FILES THEN Fail('error: too many clang arguments');
+    extra_clang_args[extra_clang_argc] := ArgExtraRaw(ii);
+    extra_clang_argc := extra_clang_argc + 1;
+    ii := ii + 1;
+  END;
+
   IF input_count = 0 THEN
   BEGIN
     EPrint('error: no input file specified');

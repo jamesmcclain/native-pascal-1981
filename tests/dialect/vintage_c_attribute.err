@@ -1,0 +1,3 @@
+Type checking failed:
+The [C] attribute requires the extended dialect: c_routine
+Error: Failed to parse input AST JSON

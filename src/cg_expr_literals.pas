@@ -1,5 +1,6 @@
 { Implementations for cg_expr_literals. }
 
+(*$INCLUDE:'features.inc'*)
 (*$INCLUDE:'jsonutil.inc'*)
 (*$INCLUDE:'cg_base.inc'*)
 (*$INCLUDE:'cg_util.inc'*)
@@ -9,7 +10,8 @@ IMPLEMENTATION OF cg_expr_literals;
 
 PROCEDURE CodegenLStringLiteralAssign(dest_addr: ADRMEM; dest_tid: INTEGER; s: Str255);
 VAR
-  i, len, cap: INTEGER;
+  i, len: INTEGER;
+  cap: INTEGER32;
   gep_idx, elem_ptr: ADRMEM;
 BEGIN
   len := ORD(s[0]);

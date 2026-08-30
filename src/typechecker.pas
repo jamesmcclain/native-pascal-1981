@@ -1,11 +1,13 @@
 { Typechecker composition root and JSON stream driver. }
 
+(*$INCLUDE:'argparse.inc'*)
+(*$INCLUDE:'features.inc'*)
 (*$INCLUDE:'jsonutil.inc'*)
 (*$INCLUDE:'tc_base.inc'*)
 (*$INCLUDE:'tc_decl.inc'*)
 PROGRAM pascal1981_typecheck(input, output);
 
-USES jsonutil, tc_base, tc_decl;
+USES argparse, features, jsonutil, tc_base, tc_decl;
 
 FUNCTION cJSON_Print(item: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION puts(str: ADRMEM): CINT [C]; EXTERN;
@@ -15,9 +17,57 @@ VAR
   root, out_str: ADRMEM;
   i: INTEGER32;
   res_c: CINT;
+  dialect_arg, arg_error: ArgStr;
+  resolved_features: FeatureSet;
+
+PROCEDURE PrintArgError;
+VAR
+  msg: Str255;
+  i, n: INTEGER32;
+BEGIN
+  ArgError(arg_error);
+  n := ORD(arg_error[0]);
+  msg[0] := CHR(RETYPE(INTEGER, n));
+  i := 1;
+  WHILE i <= n DO
+  BEGIN
+    msg[i] := arg_error[i];
+    i := i + 1;
+  END;
+  EPrint(msg);
+END;
+
+PROCEDURE ParseArgs;
+BEGIN
+  ArgBegin('typechecker', 'Pascal-1981 typechecker stage.');
+  ArgString('dialect', ARG_NO_SHORT, 'vintage',
+            'Language dialect: vintage or extended.');
+  IF NOT ArgParse THEN
+  BEGIN
+    IF ArgHelpWanted THEN exit(0);
+    PrintArgError;
+    exit(1);
+  END;
+  IF ArgPosCount <> 0 THEN
+  BEGIN
+    EPrint('error: typechecker accepts input only on standard input');
+    exit(1);
+  END;
+  ArgGetStr('dialect', dialect_arg);
+  IF (dialect_arg <> 'vintage') AND (dialect_arg <> 'extended') THEN
+  BEGIN
+    EPrint('error: invalid dialect; expected ''vintage'' or ''extended''');
+    exit(1);
+  END;
+END;
 
 BEGIN
-  TcInit;
+  ParseArgs;
+  IF dialect_arg = 'extended' THEN
+    ResolveFeatures(DIALECT_EXTENDED, resolved_features)
+  ELSE
+    ResolveFeatures(DIALECT_VINTAGE, resolved_features);
+  TcInit(resolved_features);
   root := ReadAllStdin;
   CheckRoot(root);
 

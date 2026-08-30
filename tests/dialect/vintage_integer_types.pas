@@ -1,0 +1,8 @@
+PROGRAM VintageIntegerTypes;
+VAR
+  i8: INTEGER8;
+  i16: INTEGER16;
+  i32: INTEGER32;
+  i64: INTEGER64;
+BEGIN
+END.

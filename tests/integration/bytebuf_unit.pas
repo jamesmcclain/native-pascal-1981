@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 (*$INCLUDE:'bytebuf.inc'*)
 PROGRAM bytebuf_unit(input, output);
 { Exercises the bytebuf unit, including the case the dialect makes easy to get
@@ -8,7 +9,7 @@ USES bytebuf;
 VAR
   b, other: ByteBuf;
   s: ByteStr;
-  i, n, mismatches: INTEGER32;
+  i, n, m, mismatches: INTEGER32;
 
 BEGIN
   { --- appending and access --- }
@@ -40,6 +41,29 @@ BEGIN
   BufAppendInt(b, n);
   BufSliceToStr(b, 0, BufLen(b), s);
   WRITELN('ints=', s);
+
+  { The ends of the INTEGER32 range. The absolute value of the minimum is not
+    representable in INTEGER32, so a formatter that takes the magnitude in the
+    argument's own width negates it into another negative number, never enters
+    its digit loop, and emits a bare "-". The minimum is checked both through a
+    variable and as a literal so the constant folder and codegen cannot cover up
+    for each other. }
+  BufClear(b);
+  n := -2147483647 - 1;
+  m := 2147483647;
+  BufAppendInt(b, n);
+  BufAppendChar(b, ' ');
+  BufAppendInt(b, m);
+  BufAppendChar(b, ' ');
+  BufAppendInt(b, -2147483648);
+  BufAppendChar(b, ' ');
+  BufAppendInt(b, -1);
+  BufAppendChar(b, ' ');
+  BufAppendInt(b, -100);
+  BufAppendChar(b, ' ');
+  BufAppendInt(b, 1000000000);
+  BufSliceToStr(b, 0, BufLen(b), s);
+  WRITELN('edges=', s);
 
   { --- equality and appending one buffer to another --- }
   BufClear(b);

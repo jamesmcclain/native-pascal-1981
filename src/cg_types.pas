@@ -1,5 +1,6 @@
 { Implementations for cg_types. }
 
+(*$INCLUDE:'features.inc'*)
 (*$INCLUDE:'jsonutil.inc'*)
 (*$INCLUDE:'cg_base.inc'*)
 (*$INCLUDE:'cg_util.inc'*)
@@ -66,7 +67,7 @@ BEGIN
   LookupField := found;
 END;
 
-FUNCTION RegisterType(tk: INTEGER; elem_tid, lo, hi: INTEGER; llvm_ty: ADRMEM): INTEGER;
+FUNCTION RegisterType(tk, elem_tid: INTEGER; lo, hi: INTEGER32; llvm_ty: ADRMEM): INTEGER;
 BEGIN
   IF ntypes >= MAX_TYPES THEN AbortWith('codegen: too many types');
   ntypes := ntypes + 1;
@@ -77,6 +78,7 @@ BEGIN
   types[ntypes].hi := hi;
   types[ntypes].is_super := FALSE;
   types[ntypes].ptr_space := PTR_SPACE_PLAIN;
+  types[ntypes].enum_values := NIL;
   types[ntypes].llvm_ty := llvm_ty;
   RegisterType := ntypes;
 END;
@@ -784,27 +786,21 @@ BEGIN
   SysVCoercedPiecePtr := LLVMBuildGEP2(builder, cstruct_ty, base, gep_idx, 2, MakeCStr(''));
 END;
 
-{ An array index bound is an INTEGER in this dialect, so a bound outside
-  INTEGER's range is not a wider array -- it is not a legal bound at all, and
-  the reference compiler rejects the literal outright. Saying so is the point
-  of this function: narrowing it silently produced a wrapped, negative upper
-  bound, and ARRAY [0..40000] OF CHAR then emitted `[4294941761 x i8]` -- a
-  4 GB array that fails much later, at link time, with a relocation overflow
-  no one could trace back to here. }
-FUNCTION CheckedIndexBound(wide: INTEGER64): INTEGER;
+{ Vintage array bounds can be INTEGER or WORD constants. Keep the widened
+  value until both bounds are known; ResolveTypeExpr then applies the manual's
+  negative-INTEGER-to-WORD adaptation when one bound selects WORD. }
+FUNCTION CheckedIndexBound(wide: INTEGER64): INTEGER32;
 BEGIN
-  { -32767, not -32768: this dialect's INTEGER range is symmetric, and the
-    reference compiler rejects the literal -32768 itself. }
-  IF (wide > 32767) OR (wide < -32767) THEN
+  IF (wide > MAXWORD) OR (wide < -32767) THEN
   BEGIN
-    AbortWith('codegen: array index bound is out of range for INTEGER (-32767..32767)');
+    AbortWith('codegen: array index bound is outside -32767..65535');
     CheckedIndexBound := 0;
   END
   ELSE
-    CheckedIndexBound := RETYPE(INTEGER, wide);
+    CheckedIndexBound := RETYPE(INTEGER32, wide);
 END;
 
-FUNCTION ResolveIntLiteral(node: ADRMEM): INTEGER;
+FUNCTION ResolveIntLiteral(node: ADRMEM): INTEGER32;
 { An array index bound is a full constant-expression AST node (the parser
   never unwraps it the way it does e.g. NamedType.param) -- so reading it
   needs to drill into the node's own 'value' field, not treat the node
@@ -852,8 +848,18 @@ VAR
   unm: Str255;
 BEGIN
   unm := UpperStr(nm);
-  IF (unm = 'INTEGER') OR (unm = 'INTEGER16') THEN tid := TK_INTEGER
-  ELSE IF (unm = 'WORD') OR (unm = 'WORD16') THEN tid := TK_WORD
+  IF ((unm = 'INTEGER8') OR (unm = 'INTEGER16') OR (unm = 'INTEGER32') OR
+      (unm = 'INTEGER64') OR (unm = 'WORD8') OR (unm = 'WORD16') OR
+      (unm = 'WORD32') OR (unm = 'WORD64')) AND
+     (NOT (active_features.wide_integers OR is_device_compiland)) THEN
+    AbortWith2('codegen: type requires the extended dialect: ', nm);
+  IF ((unm = 'CSHORT') OR (unm = 'CINT') OR (unm = 'CLONG') OR
+      (unm = 'CSIZE_T')) AND (NOT FeaturesAreExtended(active_features)) THEN
+    AbortWith2('codegen: type requires the extended dialect: ', nm);
+  IF unm = 'INTEGER' THEN tid := TK_INTEGER
+  ELSE IF unm = 'INTEGER16' THEN tid := TK_INTEGER
+  ELSE IF unm = 'WORD' THEN tid := TK_WORD
+  ELSE IF unm = 'WORD16' THEN tid := TK_WORD
   ELSE IF unm = 'INTEGER8' THEN tid := TK_INTEGER8
   ELSE IF unm = 'WORD8' THEN tid := TK_WORD8
   ELSE IF unm = 'INTEGER32' THEN tid := TK_INTEGER32
@@ -876,12 +882,14 @@ VAR
   nm, unm, flavor, space_name: Str255;
   nt: Str255;
   tid: INTEGER;
-  elem_tid, lo, hi, space_code: INTEGER;
+  elem_tid, space_code: INTEGER;
+  lo, hi: INTEGER32;
   count: INTEGER32;
   arr_ty: ADRMEM;
   fields_arr, field_tuple, items, fnames_arr, ftype_expr: ADRMEM;
   variants_arr, arm_node, tag_type_expr: ADRMEM;
-  nfd, fi, fn2, fni, ai: INTEGER;
+  fn2: INTEGER;
+  nfd, fi, fni, ai: INTEGER32;
   field_tid, tag_tid: INTEGER;
   payload_align, payload_size, arm_off, fixed_off: INTEGER32;
   fname: Str255;
@@ -912,28 +920,48 @@ BEGIN
     named_tid := 0;
     IF GetObjOrNil(te, 'param') = NIL THEN named_tid := LookupNamedType(nm);
     IF named_tid <> 0 THEN tid := named_tid
-    ELSE IF (unm = 'INTEGER') OR (unm = 'INTEGER16') THEN tid := TK_INTEGER
+    ELSE IF unm = 'INTEGER' THEN tid := TK_INTEGER
     ELSE IF unm = 'REAL' THEN tid := TK_REAL
     ELSE IF unm = 'BOOLEAN' THEN tid := TK_BOOLEAN
     ELSE IF unm = 'CHAR' THEN tid := TK_CHAR
-    ELSE IF (unm = 'WORD') OR (unm = 'WORD16') THEN tid := TK_WORD
-    ELSE IF unm = 'INTEGER8' THEN tid := TK_INTEGER8
-    ELSE IF unm = 'WORD8' THEN tid := TK_WORD8
-    ELSE IF unm = 'INTEGER32' THEN tid := TK_INTEGER32
-    ELSE IF unm = 'WORD32' THEN tid := TK_WORD32
-    ELSE IF unm = 'INTEGER64' THEN tid := TK_INTEGER64
-    ELSE IF unm = 'WORD64' THEN tid := TK_WORD64
-    ELSE IF (unm = 'REAL32') THEN tid := TK_REAL32
-    ELSE IF unm = 'REAL64' THEN tid := TK_REAL
-    ELSE IF unm = 'ADRMEM' THEN tid := TK_ADRMEM
-    { C-ABI fixed-width aliases for [C]; EXTERN declarations, mapped the
-      same way the Python reference's BUILTIN_TYPE_ALIASES does: CCHAR->i8,
-      CSHORT->i16, CINT->i32, CLONG/CSIZE_T->i64 (LP64), CDOUBLE->f64. }
-    ELSE IF unm = 'CCHAR' THEN tid := TK_CHAR
-    ELSE IF unm = 'CSHORT' THEN tid := TK_INTEGER
-    ELSE IF unm = 'CINT' THEN tid := TK_INTEGER32
-    ELSE IF (unm = 'CLONG') OR (unm = 'CSIZE_T') THEN tid := TK_INTEGER64
-    ELSE IF unm = 'CDOUBLE' THEN tid := TK_REAL
+    ELSE IF unm = 'WORD' THEN tid := TK_WORD
+    ELSE IF (unm = 'INTEGER8') OR (unm = 'INTEGER16') OR (unm = 'INTEGER32') OR
+            (unm = 'INTEGER64') OR (unm = 'WORD8') OR (unm = 'WORD16') OR
+            (unm = 'WORD32') OR (unm = 'WORD64') THEN
+    BEGIN
+      IF NOT (active_features.wide_integers OR is_device_compiland) THEN
+        AbortWith2('codegen: type requires the extended dialect: ', nm);
+      IF unm = 'INTEGER8' THEN tid := TK_INTEGER8
+      ELSE IF unm = 'INTEGER16' THEN tid := TK_INTEGER
+      ELSE IF unm = 'INTEGER32' THEN tid := TK_INTEGER32
+      ELSE IF unm = 'INTEGER64' THEN tid := TK_INTEGER64
+      ELSE IF unm = 'WORD8' THEN tid := TK_WORD8
+      ELSE IF unm = 'WORD16' THEN tid := TK_WORD
+      ELSE IF unm = 'WORD32' THEN tid := TK_WORD32
+      ELSE tid := TK_WORD64;
+    END
+    ELSE IF (unm = 'REAL32') OR (unm = 'REAL64') THEN
+    BEGIN
+      IF NOT (active_features.wide_reals OR is_device_compiland) THEN
+        AbortWith2('codegen: type requires the extended dialect: ', nm);
+      IF unm = 'REAL32' THEN tid := TK_REAL32
+      ELSE tid := TK_REAL;
+    END
+    ELSE IF (unm = 'ADRMEM') OR (unm = 'ADSMEM') THEN tid := TK_ADRMEM
+    { C-ABI fixed-width aliases for [C]; EXTERN declarations. }
+    ELSE IF (unm = 'CPTR') OR (unm = 'CCHAR') OR (unm = 'CSHORT') OR
+            (unm = 'CINT') OR (unm = 'CLONG') OR (unm = 'CSIZE_T') OR
+            (unm = 'CDOUBLE') THEN
+    BEGIN
+      IF NOT FeaturesAreExtended(active_features) THEN
+        AbortWith2('codegen: type requires the extended dialect: ', nm);
+      IF unm = 'CPTR' THEN tid := TK_ADRMEM
+      ELSE IF unm = 'CCHAR' THEN tid := TK_CHAR
+      ELSE IF unm = 'CSHORT' THEN tid := TK_INTEGER
+      ELSE IF unm = 'CINT' THEN tid := TK_INTEGER32
+      ELSE IF (unm = 'CLONG') OR (unm = 'CSIZE_T') THEN tid := TK_INTEGER64
+      ELSE tid := TK_REAL;
+    END
     ELSE IF unm = 'TEXT' THEN
       tid := RegisterType(TK_FILE, TK_CHAR, 0, 1, i8ptrty)
     ELSE IF unm = 'LSTRING' THEN
@@ -943,14 +971,14 @@ BEGIN
         TYPE of the name shadowed it: the probe above only skips a NamedType
         carrying a param. }
       IF GetObjOrNil(te, 'param') = NIL THEN hi := 256
-      ELSE hi := GetInt(te, 'param');
+      ELSE hi := ORD(GetInt(te, 'param'));
       arr_ty := LLVMArrayType(i8ty, hi + 1);
       tid := RegisterType(TK_LSTRING, TK_CHAR, 0, hi, arr_ty);
     END
     ELSE IF unm = 'STRING' THEN
     BEGIN
       IF GetObjOrNil(te, 'param') = NIL THEN hi := 256
-      ELSE hi := GetInt(te, 'param');
+      ELSE hi := ORD(GetInt(te, 'param'));
       arr_ty := LLVMArrayType(i8ty, hi);
       tid := RegisterType(TK_STRING, TK_CHAR, 1, hi, arr_ty);
     END
@@ -983,6 +1011,9 @@ BEGIN
     ELSE
     BEGIN
       hi := ResolveIntLiteral(GetObj(GetObj(te, 'index_range'), 'high'));
+      IF (lo < 0) AND (hi > MAXINT) THEN lo := lo + MAXINT + 1 + MAXINT + 1;
+      IF (hi < 0) AND (lo > MAXINT) THEN hi := hi + MAXINT + 1 + MAXINT + 1;
+      IF lo > hi THEN AbortWith('codegen: invalid array index range');
       count := hi - lo + 1;
       arr_ty := LLVMArrayType(LLVMTypeForTk(elem_tid), count);
       tid := RegisterType(TK_ARRAY, elem_tid, lo, hi, arr_ty);
@@ -1166,13 +1197,13 @@ BEGIN
       the reference's own constants-table registration (codegen/decls.py's
       self.constants) -- which is what lets a member stand anywhere a
       compile-time integer constant is legal (array bounds, FOR bounds,
-      CASE arms). The bounds recorded on the type are the ordinal range,
-      and I/O treats the value as a plain INTEGER32: the manual reads
-      enumerated values as numbers, not names (djvu.txt:13610-13618), and
-      writes them that way under the vintage defaults too. }
+      CASE arms). The bounds recorded on the type are the ordinal range.
+      Vintage I/O uses that ordinal, while extended I/O uses the retained
+      member names. }
     values_arr := GetObj(te, 'values');
     count := ArrSize(values_arr);
     tid := RegisterType(TK_ENUM, 0, 0, RETYPE(INTEGER, count - 1), i32ty);
+    types[tid].enum_values := values_arr;
     FOR mi := 0 TO count - 1 DO
     BEGIN
       fname := CStrToStr255(cJSON_GetStringValue(ArrItem(values_arr, mi)));
@@ -1183,6 +1214,8 @@ BEGIN
       const_tbl[nconsts].name := fname;
       const_tbl[nconsts].is_real := FALSE;
       const_tbl[nconsts].is_char := FALSE;
+      const_tbl[nconsts].enum_tid := tid;
+      const_tbl[nconsts].integer_tid := 0;
       const_tbl[nconsts].ival := mi;
     END;
   END

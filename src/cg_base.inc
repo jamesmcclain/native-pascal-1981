@@ -2,7 +2,7 @@
 
 INTERFACE;
 UNIT cg_base;
-USES jsonutil;
+USES jsonutil, features;
 
 FUNCTION LLVMContextCreate: ADRMEM [C];
 FUNCTION LLVMModuleCreateWithNameInContext(id: ADRMEM; ctx: ADRMEM): ADRMEM [C];
@@ -277,13 +277,15 @@ TYPE
                         for an anonymous inline ARRAY/RECORD type_expr }
     tk: INTEGER;      { TK_ARRAY or TK_RECORD }
     elem_tid: INTEGER; { ARRAY only: the element type's id }
-    lo, hi: INTEGER;   { ARRAY only: the index range's bounds }
+    lo, hi: INTEGER32; { ARRAY/SET bounds can include vintage WORD values }
     is_super: BOOLEAN; { SUPER ARRAY is represented as a flat element pointer }
     ptr_space: INTEGER; { POINTER only: PTR_SPACE_PLAIN for `^T`, or the
                           PTR_SPACE_* code of an ADS pointer's space. Part of
                           the pointer's identity for assignment compatibility,
                           independently of the LLVM address space, which is
                           zero for every space outside an NVPTX compiland. }
+    enum_values: ADRMEM; { ENUM only: borrowed cJSON array of member names,
+                           retained for symbolic extended-dialect I/O. }
     llvm_ty: ADRMEM;   { the cached LLVMTypeRef for this type }
   END;
 
@@ -314,6 +316,10 @@ TYPE
                          cg_expr to rebuild the value as an i8 CHAR rather
                          than an i16 INTEGER, so that WRITELN prints a
                          character instead of its ordinal. }
+    enum_tid: INTEGER; { nonzero for an enumerated member constant; keeps
+                          its declared enum identity for symbolic I/O. }
+    integer_tid: INTEGER; { exact integer width and signedness, or 0 for a
+                             non-integer constant }
     rval: REAL;
   END;
 
@@ -452,12 +458,13 @@ VAR
     pas_args_init after declarations (and their file storage) exist. }
   write_fmt_fnty, write_fmt_fn: ADRMEM; { pas_write_fmt(fcb*, fmt, ...) --
     the file-targeted counterpart of printf_fn above, same varargs shape. }
+  enum_write_token_fnty, enum_write_token_fn: ADRMEM;
   fread_int_fnty, fread_int_fn: ADRMEM;
   fread_word_fnty, fread_word_fn: ADRMEM;
   fread_ptr_fnty, fread_ptr_fn: ADRMEM; { pointer-as-number READ, the manual's
     implementation-defined round-trip format (13620-13623). }
-  fread_enum_name_fnty, fread_enum_name_fn: ADRMEM; { BOOLEAN-by-name-or-number
-    READ from a file (manual 13610-13618). }
+  fread_enum_name_fnty, fread_enum_name_fn: ADRMEM; { enum/BOOLEAN
+    name-or-number READ from a file. }
   fread_real_fnty, fread_real_fn: ADRMEM;
   fread_char_fnty, fread_char_fn: ADRMEM;
   fread_lstring_fnty, fread_lstring_fn: ADRMEM;
@@ -637,5 +644,8 @@ VAR
   n_unit_order: INTEGER32;
   unit_visit_state: ARRAY [1..MAX_UNITS] OF INTEGER32; { 0=unvisited, 1=in-progress (on DFS stack), 2=done }
 
+  active_features: FeatureSet;
+
+PROCEDURE CgInitFeatures(VAR requested_features: FeatureSet);
 
 END;

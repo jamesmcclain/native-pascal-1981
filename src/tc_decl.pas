@@ -12,28 +12,19 @@
   jsonutil.pas, and this file) end to end: EXTERN/FORWARD declarations (no
   body to check -- the real definition is a separately-compiled/linked
   object, or comes later in the same file), the ADRMEM/CPTR address types
-  and the CINT/CCHAR/CSHORT/CLONG/CSIZE_T/CDOUBLE C-ABI width aliases (each
-  resolved to the vintage type of matching flavor, since this v1 type-kind
-  model doesn't track width), the wide INTEGER8/16/32/64, WORD8/16/32/64,
-  and REAL32/64 extension names (same width-collapsing treatment), the
+  and the CINT/CCHAR/CSHORT/CLONG/CSIZE_T/CDOUBLE C-ABI width aliases, the
+  wide INTEGER8/16/32/64 and WORD8/16/32/64 extension names (with exact
+  integer width and signedness retained), the REAL32/64 extension names, the
   local_interfaces a USES clause splices in (their TYPE/PROC/FUNC
   signatures are registered exactly like an EXTERN decl's), pointer
   arithmetic (POINTER +/- an ordinal offset) and dereference (`p^`), STRING/
   LSTRING character indexing (`s[i]`), the ORD/CHR/TRUNC/ROUND/SIZEOF/ODD/
   SUCC/PRED/ABS/SQR/SQRT/SIN/COS/LN/EXP/ARCTAN/FLOAT/HIBYTE/LOBYTE/WRD/
-  WRD8/BYWORD builtins (checked against this file's own coarse tk model --
-  e.g. WRD8 returns TK_WORD since there is no separate WORD8 tag here,
-  unlike codegen.pas's own tid scheme; codegen.pas re-resolves every type
-  itself by walking the AST directly rather than consuming this file's
-  inferred tk annotations, so that coarseness only affects this file's own
-  downstream error-checking precision, not the IR codegen.pas ultimately
-  emits), and non-PROGRAM compilation units (MODULE/INTERFACE/
+  WRD8/BYWORD builtins, and non-PROGRAM compilation units (MODULE/INTERFACE/
   IMPLEMENTATION, which put `decls` directly on the root instead of nesting
-  under a `block` the way a PROGRAM does -- see CheckUnit). DEVICE MODULE
-  checks, VARARGS attribute checks, and UNIT interface/implementation
-  signature *matching* (validating IMPLEMENTATION bodies against their
-  INTERFACE signatures) are still deferred; those aren't exercised by this
-  repository's own native sources, which is what self-hosting requires.
+  under a `block` the way a PROGRAM does -- see CheckUnit). This stage also
+  checks DEVICE context, VARARGS attributes, UNIT interface/implementation
+  signatures, and the extended type/C-ABI gates.
 
   Self-hosting note: as of the pointer/aux2-chaining and ImplementationUnit
   fixes, lexer.pas, parser.pas, jsonutil.pas, and typechecker.pas itself
@@ -53,19 +44,10 @@
   Annotation contract: the Python reference stamps a `resolved_type`
   attribute onto most (not textually all -- see below) IntLiteral/
   RealLiteral nodes (and the operand of a signed IntLiteral unary +/-),
-  naming the literal's width/precision for codegen -- context_type's exact
-  width (e.g. Integer32Type for a CINT target) when the surrounding context
-  calls for one of the WORD/INTEGERn/REAL32 family, else the default
-  IntegerType/RealType. Two known, functionally-harmless gaps remain
-  against byte-identical parity with the Python reference (neither affects
-  a single fixture in tests/fixtures/typecheck/, and neither changes
-  codegen output, since the default IntegerType/RealType tag and no tag at
-  all are handled identically by codegen):
-    1. Because this v1 type-kind model collapses all integer widths into
-       TK_INTEGER (and all WORD widths into TK_WORD), it always tags the
-       default IntegerType/RealType regardless of a width-specific target
-       context, rather than e.g. Integer32Type for a CINT-typed target.
-    2. The Python reference itself does not tag perfectly consistently --
+  naming the literal's width/precision for codegen. Contextual annotation
+  is completed by the integer range-checking pass. One functionally harmless
+  gap remains against byte-identical parity with the Python reference:
+    1. The Python reference itself does not tag perfectly consistently --
        e.g. a second `len := 0;` inside a nested IF's compound statement,
        assigning the exact same IntLiteral(0) to the exact same INTEGER
        variable as an earlier top-level `len := 0;` that DOES get tagged,
@@ -78,6 +60,7 @@
 
 { Declaration and unit checking implementation. }
 
+(*$INCLUDE:'features.inc'*)
 (*$INCLUDE:'jsonutil.inc'*)
 (*$INCLUDE:'tc_base.inc'*)
 (*$INCLUDE:'tc_types.inc'*)
@@ -89,9 +72,181 @@ IMPLEMENTATION OF tc_decl;
 FUNCTION cJSON_GetArraySize(arr: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_GetArrayItem(arr: ADRMEM; index: CINT): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_GetStringValue(item: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION cJSON_CreateBool(b: CINT): ADRMEM [C]; EXTERN;
+FUNCTION cJSON_ReplaceItemInObject(obj: ADRMEM; key: ADRMEM; newitem: ADRMEM): CINT [C]; EXTERN;
 
 FUNCTION HasExternMarkerDecl(decl: ADRMEM): BOOLEAN; FORWARD;
 FUNCTION IsForeignRoutineDecl(decl: ADRMEM): BOOLEAN; FORWARD;
+
+VAR
+  device_export_names: ARRAY [1..MAX_SYMBOLS] OF Str255;
+  ndevice_exports: INTEGER32;
+
+FUNCTION IsDeviceExport(name: Str255): BOOLEAN;
+VAR
+  i: INTEGER32;
+  found: BOOLEAN;
+  target, candidate: Str255;
+BEGIN
+  found := FALSE;
+  target := UpperStr(name);
+  FOR i := 1 TO ndevice_exports DO
+  BEGIN
+    candidate := UpperStr(device_export_names[i]);
+    IF candidate = target THEN found := TRUE;
+  END;
+  IsDeviceExport := found;
+END;
+
+PROCEDURE LoadDeviceExports(root: ADRMEM);
+VAR
+  iface, params: ADRMEM;
+  i, n: INTEGER32;
+BEGIN
+  ndevice_exports := 0;
+  iface := GetObjOrNil(root, 'interface');
+  IF GetBool(root, 'is_device') AND (iface <> NIL) THEN
+  BEGIN
+    params := GetObjOrNil(iface, 'params');
+    IF params <> NIL THEN
+    BEGIN
+      n := cJSON_GetArraySize(params);
+      FOR i := 0 TO n - 1 DO
+        IF ndevice_exports < MAX_SYMBOLS THEN
+        BEGIN
+          ndevice_exports := ndevice_exports + 1;
+          device_export_names[ndevice_exports] :=
+            CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(params, i)));
+        END;
+    END;
+  END;
+END;
+
+PROCEDURE MarkDeviceExports(root: ADRMEM);
+VAR
+  decls, decl: ADRMEM;
+  i, n: INTEGER32;
+  nt: Str255;
+  rc: CINT;
+BEGIN
+  decls := GetObjOrNil(root, 'decls');
+  IF decls <> NIL THEN
+  BEGIN
+    n := cJSON_GetArraySize(decls);
+    FOR i := 0 TO n - 1 DO
+    BEGIN
+      decl := cJSON_GetArrayItem(decls, i);
+      nt := NodeType(decl);
+      IF ((nt = 'ProcDecl') OR (nt = 'FuncDecl')) AND
+         IsDeviceExport(GetStr(decl, 'name')) THEN
+        rc := cJSON_ReplaceItemInObject(decl, MakeCStr('is_exported_entry'),
+                                        cJSON_CreateBool(1));
+    END;
+  END;
+END;
+
+FUNCTION FoldTuningIntLiteral(node: ADRMEM; VAR literal_value: INTEGER32): BOOLEAN;
+VAR
+  nt, op: Str255;
+  inner: INTEGER32;
+BEGIN
+  nt := NodeType(node);
+  IF nt = 'IntLiteral' THEN
+  BEGIN
+    literal_value := GetInt(node, 'value');
+    FoldTuningIntLiteral := TRUE;
+  END
+  ELSE IF nt = 'UnaryOp' THEN
+  BEGIN
+    op := GetStr(node, 'op');
+    IF ((op = 'PLUS') OR (op = 'MINUS')) AND
+       FoldTuningIntLiteral(GetObj(node, 'operand'), inner) THEN
+    BEGIN
+      IF op = 'MINUS' THEN literal_value := -inner ELSE literal_value := inner;
+      FoldTuningIntLiteral := TRUE;
+    END
+    ELSE
+      FoldTuningIntLiteral := FALSE;
+  END
+  ELSE
+    FoldTuningIntLiteral := FALSE;
+END;
+
+PROCEDURE CheckLaunchBoundAttrs(decl: ADRMEM; is_function: BOOLEAN);
+VAR
+  attrs, attr, args: ADRMEM;
+  i, j, nattrs, nargs: INTEGER32;
+  nm: Str255;
+  has_maxntid, has_reqntid, valid, folded: BOOLEAN;
+  literal_value, axis_max, total: INTEGER32;
+BEGIN
+  attrs := GetObj(decl, 'attributes');
+  nattrs := cJSON_GetArraySize(attrs);
+  has_maxntid := FALSE;
+  has_reqntid := FALSE;
+  FOR i := 0 TO nattrs - 1 DO
+  BEGIN
+    nm := GetStr(cJSON_GetArrayItem(attrs, i), 'name');
+    IF nm = 'MAXNTID' THEN has_maxntid := TRUE;
+    IF nm = 'REQNTID' THEN has_reqntid := TRUE;
+  END;
+  IF has_maxntid AND has_reqntid AND
+     (active_features.tuning_hints OR is_device_compiland) AND
+     is_device_compiland THEN
+    AddError('[MAXNTID] and [REQNTID] cannot be used together on the same kernel');
+
+  FOR i := 0 TO nattrs - 1 DO
+  BEGIN
+    attr := cJSON_GetArrayItem(attrs, i);
+    nm := GetStr(attr, 'name');
+    IF (nm = 'MAXNTID') OR (nm = 'REQNTID') OR (nm = 'MINCTASM') THEN
+    BEGIN
+      IF NOT (active_features.tuning_hints OR is_device_compiland) THEN
+        AddError2('Launch-bound attribute requires the extended dialect: ', nm)
+      ELSE IF NOT is_device_compiland THEN
+        AddError2('Launch-bound attribute is only valid in DEVICE code: ', nm)
+      ELSE IF is_function THEN
+        AddError2('Launch-bound attribute is only valid on PROCEDUREs: ', nm)
+      ELSE IF NOT (GetBool(decl, 'is_exported_entry') OR
+                   IsDeviceExport(GetStr(decl, 'name'))) THEN
+        AddError2('Launch-bound attribute requires an exported kernel procedure: ', nm)
+      ELSE BEGIN
+        args := GetObj(attr, 'arg');
+        nargs := cJSON_GetArraySize(args);
+        IF ((nm = 'MINCTASM') AND (nargs <> 1)) OR
+           ((nm <> 'MINCTASM') AND ((nargs < 1) OR (nargs > 3))) THEN
+          AddError2('Invalid launch-bound dimension argument count: ', nm)
+        ELSE BEGIN
+          valid := TRUE;
+          total := 1;
+          FOR j := 0 TO nargs - 1 DO
+          BEGIN
+            literal_value := 0;
+            folded := FoldTuningIntLiteral(cJSON_GetArrayItem(args, j), literal_value);
+            IF (NOT folded) OR (literal_value < 1) THEN
+            BEGIN
+              AddError2('Launch-bound dimensions must be positive integer literals: ', nm);
+              valid := FALSE;
+            END
+            ELSE IF nm <> 'MINCTASM' THEN
+            BEGIN
+              IF j < 2 THEN axis_max := 1024 ELSE axis_max := 64;
+              IF literal_value > axis_max THEN
+              BEGIN
+                AddError2('Launch-bound dimension exceeds the CUDA architectural maximum: ', nm);
+                valid := FALSE;
+              END
+              ELSE
+                total := total * literal_value;
+            END;
+          END;
+          IF valid AND (nm <> 'MINCTASM') AND (total > 1024) THEN
+            AddError2('Launch-bound total threads exceed the CUDA architectural maximum: ', nm);
+        END;
+      END;
+    END;
+  END;
+END;
 
 { ============================== declarations ============================ }
 
@@ -113,9 +268,10 @@ VAR
   saved_func_ret_tk, saved_func_aux, saved_func_aux2: INTEGER;
   attrs_arr, attr_item: ADRMEM;
   nattrs, ai: INTEGER32;
-  is_vararg: BOOLEAN;
+  is_vararg, has_c: BOOLEAN;
   has_block_body: BOOLEAN;
   prior: INTEGER32;
+  const_value: INTEGER64;
 BEGIN
   nt := NodeType(decl);
   IF nt = 'VarDecl' THEN
@@ -135,6 +291,11 @@ BEGIN
     dname := GetStr(decl, 'name');
     tk := CheckExpr(GetObj(decl, 'value'));
     si := DefineSymbol(dname, 'CONST', tk, 0, 0, 0);
+    IF FoldConstInt(GetObj(decl, 'value'), const_value) THEN
+    BEGIN
+      symbols[si].has_const_int := TRUE;
+      symbols[si].const_int := const_value;
+    END;
   END
   ELSE IF nt = 'TypeDecl' THEN
   BEGIN
@@ -238,13 +399,27 @@ BEGIN
       Attribute names are already canonical uppercase in the AST (see
       parser.pas ParseAttributeItem), so no case-folding is needed. }
     is_vararg := FALSE;
+    has_c := FALSE;
     attrs_arr := GetObj(decl, 'attributes');
     nattrs := cJSON_GetArraySize(attrs_arr);
     FOR ai := 0 TO nattrs - 1 DO
     BEGIN
       attr_item := cJSON_GetArrayItem(attrs_arr, ai);
-      IF GetStr(attr_item, 'name') = 'VARARGS' THEN is_vararg := TRUE;
+      nm := GetStr(attr_item, 'name');
+      IF nm = 'VARARGS' THEN is_vararg := TRUE;
+      { The parser canonicalizes both [C] and [CDECL] to a one-character
+        LSTRING. A CHAR literal cannot compare directly with that aggregate. }
+      IF (ORD(nm[0]) = 1) AND (nm[1] = 'C') THEN has_c := TRUE;
     END;
+    IF has_c AND (NOT FeaturesAreExtended(active_features)) THEN
+      AddError2('The [C] attribute requires the extended dialect: ', dname);
+    IF is_vararg AND (NOT FeaturesAreExtended(active_features)) THEN
+      AddError2('The [VARARGS] attribute requires the extended dialect: ', dname);
+    IF is_vararg AND (NOT has_c) THEN
+      AddError2('[VARARGS] requires the [C] attribute: ', dname);
+    IF is_vararg AND is_device_compiland THEN
+      AddError2('[VARARGS] is not permitted in DEVICE code: ', dname);
+    CheckLaunchBoundAttrs(decl, nt = 'FuncDecl');
     symbols[si].is_vararg := is_vararg;
 
     { Check the routine body (if any) in its own scope, with parameters
@@ -681,7 +856,10 @@ VAR
   nt: Str255;
   decls_arr, init_body: ADRMEM;
   n, i: INTEGER32;
+  saved_device: BOOLEAN;
 BEGIN
+  saved_device := is_device_compiland;
+  is_device_compiland := GetBool(root, 'is_device');
   nt := NodeType(root);
   IF nt = 'ProgramUnit' THEN
     CheckBlock(GetObj(root, 'block'))
@@ -698,6 +876,7 @@ BEGIN
       IF init_body <> NIL THEN CheckStmtList(init_body);
     END;
   END;
+  is_device_compiland := saved_device;
 END;
 
 { ========================= local-interface support ======================== }
@@ -780,6 +959,7 @@ VAR
   ifaces, decls_arr: ADRMEM;
   n, ni, m, di: INTEGER32;
   iface: ADRMEM;
+  saved_device: BOOLEAN;
 BEGIN
   ifaces := GetObj(root, 'local_interfaces');
   IF ifaces <> NIL THEN
@@ -788,18 +968,23 @@ BEGIN
     FOR ni := 0 TO n - 1 DO
     BEGIN
       iface := cJSON_GetArrayItem(ifaces, ni);
+      saved_device := is_device_compiland;
+      is_device_compiland := GetBool(iface, 'is_device');
       decls_arr := GetObj(iface, 'decls');
       m := cJSON_GetArraySize(decls_arr);
       FOR di := 0 TO m - 1 DO
         CheckDecl(cJSON_GetArrayItem(decls_arr, di));
+      is_device_compiland := saved_device;
     END;
   END;
 END;
 
 PROCEDURE CheckRoot(root: ADRMEM);
 BEGIN
+  LoadDeviceExports(root);
   CheckLocalInterfaces(root);
   CheckLocalInterfaceUses(root, GetObj(root, 'local_interfaces'));
+  MarkDeviceExports(root);
   CheckUnit(root);
 END;
 

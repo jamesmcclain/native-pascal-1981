@@ -2,7 +2,7 @@
 
 INTERFACE;
 UNIT tc_base;
-USES jsonutil;
+USES jsonutil, features;
 
 CONST
   TK_UNKNOWN = 0;
@@ -19,6 +19,12 @@ CONST
   TK_FILE = 11;
   TK_SET = 12;
   TK_ENUM = 13;
+  TK_INTEGER8 = 14;
+  TK_INTEGER32 = 15;
+  TK_INTEGER64 = 16;
+  TK_WORD8 = 17;
+  TK_WORD32 = 18;
+  TK_WORD64 = 19;
 
   MAX_SYMBOLS = 2000;
   MAX_TYPES = 500;
@@ -41,6 +47,8 @@ TYPE
     ret_tk: INTEGER;
     is_vararg: BOOLEAN;
     is_extern: BOOLEAN;
+    has_const_int: BOOLEAN;
+    const_int: INTEGER64;
   END;
 
   TypeRec = RECORD
@@ -76,8 +84,10 @@ VAR
   cur_func_ret_tk: INTEGER;
   cur_func_aux, cur_func_aux2: INTEGER;
   cur_func_name: Str255;
+  active_features: FeatureSet;
+  is_device_compiland: BOOLEAN;
 
-PROCEDURE TcInit;
+PROCEDURE TcInit(VAR requested_features: FeatureSet);
 PROCEDURE AddError(msg: Str255);
 PROCEDURE AddError2(msg: Str255; name: Str255);
 FUNCTION UpperStr(s: Str255): Str255;
@@ -91,6 +101,10 @@ FUNCTION GetObjOrNil(obj: ADRMEM; key: Str255): ADRMEM;
 PROCEDURE AddFieldEntry(record_id: INTEGER; fname: Str255; ftk, faux, faux2: INTEGER);
 FUNCTION LookupField(record_id: INTEGER; fname: Str255): INTEGER32;
 PROCEDURE AddUniqueRecordField(record_id: INTEGER; fname: Str255; ftk, faux, faux2: INTEGER);
+FUNCTION IsInteger(tk: INTEGER): BOOLEAN;
+FUNCTION IsSignedInteger(tk: INTEGER): BOOLEAN;
+FUNCTION IsUnsignedInteger(tk: INTEGER): BOOLEAN;
+FUNCTION IntegerBits(tk: INTEGER): INTEGER;
 FUNCTION IsOrdinal(tk: INTEGER): BOOLEAN;
 FUNCTION IsNumeric(tk: INTEGER): BOOLEAN;
 

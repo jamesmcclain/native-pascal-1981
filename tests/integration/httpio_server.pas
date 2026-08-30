@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 (*$INCLUDE:'bytebuf.inc'*)
 (*$INCLUDE:'netsock.inc'*)
 (*$INCLUDE:'httpio.inc'*)

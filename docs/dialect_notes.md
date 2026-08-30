@@ -8,30 +8,76 @@ modern Pascal or C programmer expects, with a bias toward the ones that fail
 Everything here has been verified against the native compiler in this tree
 rather than inferred from its sources.
 
-## There are two dialects
+## There are two command-line dialects
 
-The native language has a **vintage core** and an **extended** surface.
-**Vintage** is the faithful 1981 language: `INTEGER`, `WORD`, `REAL`, `CHAR`,
-`BOOLEAN`, `STRING`, `LSTRING`, and nothing else. Enum I/O is ordinal, `::N`
-precision is ignored on strings, and there are no wide types.
+The native compiler has a **vintage** dialect and an **extended** dialect.
+The default is `vintage`. This dialect implements the 1981 language, including
+16-bit `INTEGER` and `WORD` types. Enum I/O uses ordinals, and string precision
+has no effect.
 
-**Extended** adds an umbrella of extensions. The ones that matter here are:
+The `extended` dialect activates these feature groups:
 
-- `wide-integers` — `INTEGER8`/`INTEGER32`/`INTEGER64` and
-  `WORD8`/`WORD32`/`WORD64`, the `INTEGER16`/`WORD16` synonyms, **and wide
-  integer constants**.
-- `wide-reals` — `REAL32`, and `REAL64` as a synonym for `REAL`.
-- `symbolic-enum-io`, `string-precision`, `readset-set-literal`,
-  `tuning-hints` (launch-bound attributes and `{$UNROLL n}`).
+- `wide-integers`: `INTEGER8`, `INTEGER32`, `INTEGER64`, `WORD8`, `WORD32`,
+  `WORD64`, the `INTEGER16` and `WORD16` synonyms, and wide integer constants.
+- `wide-reals`: `REAL32`, and `REAL64` as a synonym for `REAL`.
+- `symbolic-enum-io`, `string-precision`, `readset-set-literal`, and
+  `tuning-hints`.
+- C interoperability types and attributes.
 
-The native stages implement the extended surface unconditionally. The native
-driver accepts `--dialect <value>`, but merely consumes it; it neither validates
-it nor passes it to the lexer, parser, typechecker, or code generator. There
-is therefore no selectable native vintage mode today. “Vintage” in this file
-means the vintage-core subset of the native language; do not use the driver's
-`--dialect vintage` as a conformance check. `INTEGER32` and wide literals
-remain extended-only language features, despite being accepted by the native
-pipeline for every value of that option.
+Vintage mode rejects wide scalar type names, `WRD8`, C ABI type aliases, and
+`[C]`, `[CDECL]`, and `[VARARGS]`. It also rejects anonymous `READSET` set
+literals and `{$UNROLL}` outside DEVICE code.
+
+### Command-line contract
+
+The driver accepts only `vintage` and `extended` as case-sensitive dialect
+values. The driver uses `vintage` when the command does not contain a dialect
+option. For example:
+
+```sh
+bin/pascal1981 -S tests/golden/01_hello.pas -o /tmp/hello.ll
+bin/pascal1981 --dialect extended -S tests/golden/01_hello.pas -o /tmp/hello.ll
+```
+
+The standalone parser, typechecker, and code generator also default to
+`vintage`. These stages accept data only on standard input. An explicit
+extended pipeline has this form:
+
+```sh
+bin/lexer < tests/golden/01_hello.pas |
+  bin/parser --dialect extended |
+  bin/typechecker --dialect extended |
+  bin/codegen --dialect extended > /tmp/hello.ll
+```
+
+The lexer is dialect-neutral. It creates the same token stream for both
+dialects and records directive metadata for later stages. Do not pass a
+dialect option to the lexer.
+
+The driver reports `error: --dialect requires an argument` when the value is
+missing. It reports `error: invalid dialect '<value>'; expected 'vintage' or
+'extended'` when the value is invalid. The standalone stages report equivalent
+errors.
+
+The typechecker and code generator resolve the dialect to a shared feature
+set. They use this set for scalar types, integer ranges, C interoperability,
+`READSET`, tuning hints, enum I/O, and string precision.
+
+`DEVICE` is a compiland kind, not a command-line dialect. DEVICE context can
+activate wide scalar types and tuning hints independently of `--dialect`.
+The command line does not accept `device` as a dialect value.
+
+The native command line does not support `-f` feature overrides. Thus, users
+cannot activate one extended feature in vintage mode. Use `--dialect extended`
+to activate the complete extended feature set.
+
+### Bootstrap dialect
+
+Compiler sources use extended types and C interoperability declarations.
+`scripts/build-stage.sh` passes `--dialect extended` to each parser,
+typechecker, and code generator that builds these sources. It does not pass a
+dialect option to a lexer. Use `make test-bootstrap` to rebuild all bootstrap
+generations and check the `gen3` and `gen4` fixed point.
 
 The scope tags below state where a rule applies: **[both]** means a
 vintage-core rule that remains true in the native extended surface;
@@ -39,6 +85,46 @@ vintage-core rule that remains true in the native extended surface;
 limitation of this repository's implementation. A native limitation applies
 to every program compiled by the native pipeline unless the text says
 otherwise.
+
+## Enumerated and BOOLEAN I/O
+
+Vintage `WRITE` and `WRITELN` print a user-defined enumerated value as its
+numeric ordinal. Vintage `READ` and `READLN` accept a numeric ordinal for that
+value. Extended mode writes the member identifier and reads member identifiers
+without regard to letter case. These rules apply to standard input and output
+and to explicit text files.
+
+`BOOLEAN` keeps its documented vintage behavior in both dialects. Output is
+`TRUE` or `FALSE`. Input accepts those names without regard to letter case and
+also accepts the numeric ordinals `1` and `0`.
+
+## String precision
+
+In vintage mode, `::precision` does not limit string output. A string literal,
+`STRING` value, or `LSTRING` value writes its full contents. In
+`value:width:precision`, the width still pads the full value. The compiler
+ignores the precision.
+
+Extended mode uses string precision as the maximum number of characters to
+write. The width continues to specify the minimum field width. This rule does
+not change numeric formatting. Numeric width and precision have the same
+behavior in both dialects.
+
+## READSET and tuning hints
+
+In vintage mode, the final `READSET` argument must be a declared `SET OF CHAR`
+value. Extended mode also accepts an anonymous set constructor, such as
+`['a'..'z']`. This rule does not remove vintage support for declared sets.
+
+The `{$UNROLL n}` directive requires extended mode or DEVICE code. The count
+must be a positive integer. The lexer always records the directive. The
+typechecker decides whether the selected dialect permits it.
+
+`[MAXNTID]`, `[REQNTID]`, and `[MINCTASM]` require DEVICE code. DEVICE context
+also activates them when the command-line dialect is vintage. These attributes
+are valid only on exported kernel procedures. Dimensions must be positive
+integer literals. CUDA axis and total-thread limits apply to `MAXNTID` and
+`REQNTID`. A kernel cannot have both attributes.
 
 ## Integer widths
 
@@ -59,10 +145,19 @@ otherwise.
 
 Note that `INTEGER`'s range is symmetric: `-32768` is not a writable literal.
 
-## Integer literals take their width from context **[extended]**
+## Integer constants and context
 
-A literal is *not* limited to 16 bits in extended mode. It is typed by the
-context it appears in, so all of these are correct there:
+Vintage decimal and radix constants from `-32767` through `32767` have type
+`INTEGER`. Positive constants from `32768` through `65535` have type `WORD`.
+Vintage mode rejects constants outside `-32767..65535`. Unary minus does not
+make `-32768` valid because its operand is already a `WORD` constant.
+
+An `INTEGER` constant can adapt to a `WORD` context. This includes negative
+constants. The conversion keeps the 16-bit pattern, so `-1` becomes `65535`.
+An `INTEGER` variable does not adapt in this way.
+
+In extended mode, a literal can use a wide target type. These examples are
+valid:
 
 ```pascal
 VAR n: INTEGER32; w: INTEGER64;
@@ -77,7 +172,7 @@ BEGIN
 
 `tests/golden/19_wide_int_literals.pas` pins this behavior.
 
-A literal too large for its target type must not be relied on:
+A literal too large for its target type is an error:
 
 ```pascal
 VAR s: INTEGER;
@@ -86,9 +181,10 @@ BEGIN
 END
 ```
 
-The native compiler does not diagnose this case; it wraps silently, storing
-`-25536`. This is a **[native, extended]** limitation: vintage source should
-not contain the wide literal, while extended source can accidentally narrow it.
+The compiler also rejects implicit narrowing, such as assigning an
+`INTEGER32` variable to `INTEGER`. Use an explicit conversion when truncation
+is intentional. Assignment, value-parameter, array-index, and `FOR`-bound
+contexts apply the same constant range checks.
 
 **Historical note, because the wrong version of this was believed for a
 while:** until recently the native compiler *did* truncate every literal to 16
@@ -121,25 +217,30 @@ them now.
 
 `ORD` does not have this problem: `ORD` of an `INTEGER32` keeps its width.
 
+## Differences from the Python compiler
+
+The native compiler and the Python compiler differ for two vintage `WORD`
+constant cases. The Python compiler rejects untyped positive constants from
+`32768` through `65535`. The native compiler accepts these constants as
+`WORD`, as specified in the August 1981 manual.
+
+The Python compiler also rejects negative `INTEGER` constants in a `WORD`
+context. The native compiler keeps the 16-bit pattern. For example, it converts
+`-1` to `65535` in that context.
+
+The Python command line supports individual `-f` feature overrides. The native
+command line supports only the `vintage` and `extended` feature sets.
+
 ## Native limitations **[native]**
 
-Recorded rather than fixed. These are implementation limitations, not
-vintage-language restrictions.
+These are implementation limitations, not vintage-language restrictions.
 
-- **A literal out of range for its context type [extended].** The native
-  compiler wraps it silently. Its type model collapses every integer width
-  into one kind (see the comment at the top of `src/tc_decl.pas`), so it has
-  no target width to check.
-- **Implicit narrowing [extended].** The native compiler accepts an implicit
-  wide-to-`INTEGER` assignment. Use `RETYPE(INTEGER, n)` to make the
-  truncation explicit.
-- **Array index bounds [both].** They are `INTEGER`-ranged in the vintage core
-  and the extended surface. A bound outside that range is rejected by the
-  native compiler; its message comes from `CheckedIndexBound` in
-  `src/cg_types.pas`. Before that check existed, `ARRAY [0..40000] OF CHAR`
-  silently emitted `[4294941761 x i8]` — a 4 GB array that failed much later,
-  at link time, with a relocation overflow nothing could trace back to the
-  bound.
+- **Very large unsigned literals [extended].** The JSON AST stores numbers as
+  `REAL`, so decimal `WORD64` literals above `2^53` cannot preserve every bit.
+  Use `MAXWORD64` for the upper boundary.
+- **Array allocation size [both].** Vintage `WORD` bounds through `65535` are
+  retained. A large valid range can still request a correspondingly large
+  object from LLVM and the linker.
 
 ## Other things that cost time **[both, unless marked otherwise]**
 
@@ -177,8 +278,6 @@ least once:
    is `INTEGER32`. A vintage program has no such type; keep its values within
    `INTEGER` or use an appropriate vintage representation.
 2. No `TRUNC` or `ROUND` on a value that can exceed 32767 **[both]**.
-3. A literal assigned to a plain `INTEGER` is inside `-32767..32767`; the
-   native compiler will not tell you if it is not.
-4. Do not treat `bin/pascal1981 --dialect vintage` as a vintage conformance
-   check; the native pipeline does not implement dialect selection.
-5. `make test-bootstrap` still reaches a byte-identical `gen3`/`gen4`.
+3. A literal assigned to a plain `INTEGER` is inside `-32767..32767`.
+4. Extended code uses an explicit `--dialect extended` option.
+5. `make test-bootstrap` reaches a byte-identical `gen3` and `gen4`.

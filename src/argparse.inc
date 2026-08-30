@@ -28,16 +28,26 @@
   Grammar accepted:
 
       --long value        --long=value        --flag
-      -s value            -s=value            -f
-      --                  (ends options; everything after is positional)
+      -s value            -s=value            -f          -sVALUE
 
   Deliberately not supported, to stay implementable and period-appropriate:
   bundled short flags (-abc for -a -b -c), abbreviated/prefix matching of long
-  names, repeated options accumulating a list, subcommands, and callbacks --
-  the dialect has no procedural type, so a callback-style API is impossible
+  names, repeated named options accumulating a list, subcommands, and callbacks
+  -- the dialect has no procedural type, so a callback-style API is impossible
   here regardless.
 
+  -sVALUE (a short option glued to its value, no space or '=') is accepted, but
+  only for a registered short option; it is what makes -O2 and -Idir work.
+
   An option with no short form registers ARG_NO_SHORT as its short_name.
+
+  Pass-through prefixes. ArgPassthrough('-I') registers a token prefix that the
+  parser must not treat as an error when it does not name a registered option:
+  any unrecognized token that starts with a registered prefix is collected
+  verbatim, in command-line order, and read back through ArgExtraCount /
+  ArgExtraRaw. This models clang-style opaque flags (-I, -L, -l) that a tool
+  forwards to another program without interpreting them, including their
+  repeated and glued (-Ldir) forms. Up to ARG_MAX_PASSTHRU prefixes.
 
   Values are not copied. A parsed value is a pointer straight into the argv
   the C runtime holds, which lives for the life of the process, so a value of
@@ -49,14 +59,16 @@
   into argparse.pas itself ahead of its IMPLEMENTATION. }
 
 INTERFACE;
-UNIT argparse (ArgBegin, ArgFlag, ArgString, ArgInt, ArgReal,
+UNIT argparse (ArgBegin, ArgFlag, ArgString, ArgInt, ArgReal, ArgPassthrough,
                ArgParse, ArgHelpWanted, ArgError, ArgUsage,
                ArgGetFlag, ArgGetInt, ArgGetReal, ArgGetStr, ArgGetRaw,
-               ArgWasGiven, ArgPosCount, ArgPosRaw, ArgPosStr);
+               ArgWasGiven, ArgPosCount, ArgPosRaw, ArgPosStr,
+               ArgExtraCount, ArgExtraRaw, ArgExtraStr);
 
 CONST
   ARG_MAX_OPTIONS    = 32;
-  ARG_MAX_POSITIONAL = 32;
+  ARG_MAX_POSITIONAL = 256;
+  ARG_MAX_PASSTHRU   = 8;
   ARG_NO_SHORT       = ' ';   { pass as short_name when an option has none }
 
 TYPE
@@ -74,6 +86,12 @@ PROCEDURE ArgInt(long_name: ArgStr; short_name: CHAR;
                  default_value: INTEGER32; help: ArgStr);
 PROCEDURE ArgReal(long_name: ArgStr; short_name: CHAR;
                   default_value: REAL; help: ArgStr);
+
+{ Register a token prefix that ArgParse collects verbatim instead of rejecting
+  when it does not name a registered option. See the header note; read the
+  collected tokens back with ArgExtraCount / ArgExtraRaw. Registering more than
+  ARG_MAX_PASSTHRU prefixes is reported through ArgError at ArgParse time. }
+PROCEDURE ArgPassthrough(prefix: ArgStr);
 
 { Parsing. ArgParse returns FALSE both for a bad command line and for --help;
   the two are told apart by ArgHelpWanted, so the caller chooses the exit
@@ -107,5 +125,11 @@ FUNCTION ArgWasGiven(long_name: ArgStr): BOOLEAN;
 FUNCTION ArgPosCount: INTEGER32;
 FUNCTION ArgPosRaw(i: INTEGER32): ADRMEM;
 PROCEDURE ArgPosStr(i: INTEGER32; VAR out: ArgStr);
+
+{ Pass-through tokens collected by a registered ArgPassthrough prefix, in
+  command-line order, 0-based. ArgExtraRaw yields NIL for an out-of-range idx. }
+FUNCTION ArgExtraCount: INTEGER32;
+FUNCTION ArgExtraRaw(i: INTEGER32): ADRMEM;
+PROCEDURE ArgExtraStr(i: INTEGER32; VAR out: ArgStr);
 
 END;

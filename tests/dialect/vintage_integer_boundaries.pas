@@ -1,0 +1,36 @@
+PROGRAM VintageIntegerBoundaries(output);
+CONST
+  DEC_WORD = 65535;
+  HEX_INTEGER = 16#7FFF;
+  HEX_WORD_LOW = 16#8000;
+  HEX_WORD_HIGH = 16#FFFF;
+VAR
+  i: INTEGER;
+  w: WORD;
+  table: ARRAY[32768..32769] OF WORD;
+
+PROCEDURE ShowWord(n: WORD);
+BEGIN
+  WRITELN(n)
+END;
+
+BEGIN
+  i := -32767;
+  WRITELN(i);
+  i := 32767;
+  WRITELN(i);
+  w := 32768;
+  WRITELN(w);
+  w := DEC_WORD;
+  WRITELN(w);
+  w := -32767;
+  WRITELN(w);
+  WRITELN(HEX_INTEGER);
+  WRITELN(HEX_WORD_LOW);
+  WRITELN(HEX_WORD_HIGH);
+  ShowWord(65535);
+  table[32768] := 65535;
+  WRITELN(table[32768]);
+  FOR w := 65535 TO 65534 DO
+    WRITELN('not reached')
+END.

@@ -33,6 +33,13 @@ trap cleanup EXIT
 
 cd "$here"
 ./corpus_smoke.build.sh "$compiler" "$work/corpus-smoke"
+extended_compiler="$work/pascal1981-extended"
+cat > "$extended_compiler" <<EOF
+#!/usr/bin/env bash
+exec "$compiler" --dialect extended "\$@"
+EOF
+chmod +x "$extended_compiler"
+compiler="$extended_compiler"
 
 if [[ -z "$base_url" ]]; then
     python3 "$here/stub_upstream.py" --port-file "$work/stub.port" >"$work/stub.log" 2>&1 &

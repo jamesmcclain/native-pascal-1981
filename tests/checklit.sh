@@ -83,7 +83,14 @@ for fixture in "${FIXTURES[@]}"; do
   trap 'rm -rf "$work_dir"' EXIT
   out_ll="$work_dir/out.ll"
 
-  command=("$DRIVER" -S "$fixture" -o "$out_ll")
+  dialect="$(grep -E '^\{ *DIALECT: *(vintage|extended) *\}$' "$fixture" \
+    | sed -E 's/^\{ *DIALECT: *//; s/ *\}$//' | head -n 1 || true)"
+  dialect_args=()
+  if [ -n "$dialect" ]; then
+    dialect_args=(--dialect "$dialect")
+  fi
+
+  command=("$DRIVER" "${dialect_args[@]}" -S "$fixture" -o "$out_ll")
   if [[ "$fixture" = *.check ]]; then
     input=$(grep -E '\{ *CHECK-INPUT: *' "$fixture" \
               | sed -E 's/^.*\{ *CHECK-INPUT: *//; s/ *\}[[:space:]]*$//' \
@@ -95,7 +102,7 @@ for fixture in "${FIXTURES[@]}"; do
       trap - EXIT
       continue
     fi
-    command=(bin/codegen)
+    command=(bin/codegen "${dialect_args[@]}")
   fi
 
   status=0

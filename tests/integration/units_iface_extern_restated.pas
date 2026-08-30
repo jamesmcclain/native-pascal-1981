@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 (*$INCLUDE:'units_iface_extern_restated.esplit.inc'*)
 PROGRAM UnitsIfaceExternRestated(output);
 USES esplit;

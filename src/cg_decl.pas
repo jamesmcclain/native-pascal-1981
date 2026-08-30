@@ -1,5 +1,6 @@
 { Implementations for cg_decl. }
 
+(*$INCLUDE:'features.inc'*)
 (*$INCLUDE:'jsonutil.inc'*)
 (*$INCLUDE:'cg_base.inc'*)
 (*$INCLUDE:'cg_util.inc'*)
@@ -296,7 +297,7 @@ BEGIN
   BuildUnitInitOrder(root, local_ifaces);
 END;
 
-PROCEDURE InitFileStorage(slot: ADRMEM; elem_tid, structure: INTEGER; var_name: Str255);
+PROCEDURE InitFileStorage(slot: ADRMEM; elem_tid: INTEGER; structure: INTEGER32; var_name: Str255);
 { Allocates the FCB + inline element buffer at the file variable's own
   storage site and stores an opaque i8* to the FCB into `slot` -- mirrors
   the reference's _init_file_storage field for field (see filefcbty's own
@@ -422,6 +423,31 @@ BEGIN
   END;
 END;
 
+FUNCTION TuningIntLiteralValue(node: ADRMEM): INTEGER32;
+VAR
+  nt, op: Str255;
+  literal_value: INTEGER32;
+BEGIN
+  nt := NodeType(node);
+  IF nt = 'IntLiteral' THEN
+    TuningIntLiteralValue := GetInt(node, 'value')
+  ELSE IF nt = 'UnaryOp' THEN
+  BEGIN
+    op := GetStr(node, 'op');
+    literal_value := TuningIntLiteralValue(GetObj(node, 'operand'));
+    IF op = 'MINUS' THEN TuningIntLiteralValue := -literal_value
+    ELSE IF op = 'PLUS' THEN TuningIntLiteralValue := literal_value
+    ELSE BEGIN
+      AbortWith('codegen: launch-bound dimension must be an integer literal');
+      TuningIntLiteralValue := 0;
+    END;
+  END
+  ELSE BEGIN
+    AbortWith('codegen: launch-bound dimension must be an integer literal');
+    TuningIntLiteralValue := 0;
+  END;
+END;
+
 PROCEDURE ApplyLaunchBoundAttrs(decl, fn: ADRMEM);
 { NVPTX consumes launch bounds through legacy !nvvm.annotations metadata.
   They are ptxas facts, so no host-target approximation is emitted. }
@@ -430,6 +456,10 @@ VAR
   i, j, n, nargs: INTEGER32;
   nm, key: Str255;
 BEGIN
+  IF NOT (active_features.tuning_hints OR is_device_compiland) THEN
+    AbortWith('codegen: launch-bound attributes require the extended dialect');
+  IF NOT is_device_compiland THEN
+    AbortWith('codegen: launch-bound attributes require DEVICE code');
   IF NOT is_nvptx_device THEN
     AbortWith('codegen: launch-bound attributes require an NVPTX DEVICE target');
   attrs := GetObj(decl, 'attributes');
@@ -460,12 +490,31 @@ BEGIN
         mds := AllocPtrArray(3);
         SetPtrArrayElem(mds, 0, LLVMValueAsMetadata(fn));
         SetPtrArrayElem(mds, 1, LLVMMDStringInContext2(ctx, MakeCStr(key), ORD(key[0])));
-        SetPtrArrayElem(mds, 2, LLVMValueAsMetadata(LLVMConstInt(i32ty, ResolveIntLiteral(ArrItem(args, j)), 0)));
+        SetPtrArrayElem(mds, 2, LLVMValueAsMetadata(LLVMConstInt(i32ty, TuningIntLiteralValue(ArrItem(args, j)), 0)));
         mdnode := LLVMMDNodeInContext2(ctx, mds, 3);
         LLVMAddNamedMetadataOperand(modl, MakeCStr('nvvm.annotations'), LLVMMetadataAsValue(ctx, mdnode));
       END;
     END;
   END;
+END;
+
+FUNCTION HasCAttribute(decl: ADRMEM): BOOLEAN;
+VAR
+  attrs_arr, item: ADRMEM;
+  i, nattrs: INTEGER32;
+  attr_nm: Str255;
+  found: BOOLEAN;
+BEGIN
+  attrs_arr := GetObj(decl, 'attributes');
+  nattrs := ArrSize(attrs_arr);
+  found := FALSE;
+  FOR i := 0 TO nattrs - 1 DO
+  BEGIN
+    item := ArrItem(attrs_arr, i);
+    attr_nm := GetStr(item, 'name');
+    IF (ORD(attr_nm[0]) = 1) AND (attr_nm[1] = 'C') THEN found := TRUE;
+  END;
+  HasCAttribute := found;
 END;
 
 FUNCTION IsCForeignDecl(decl: ADRMEM): BOOLEAN;
@@ -997,6 +1046,14 @@ VAR
   sig_ok: BOOLEAN;
 BEGIN
   name := GetStr(decl, 'name');
+  IF HasCAttribute(decl) AND (NOT FeaturesAreExtended(active_features)) THEN
+    AbortWith2('codegen: [C] requires the extended dialect: ', name);
+  IF IsVarargsDecl(decl) AND (NOT FeaturesAreExtended(active_features)) THEN
+    AbortWith2('codegen: [VARARGS] requires the extended dialect: ', name);
+  IF IsVarargsDecl(decl) AND (NOT HasCAttribute(decl)) THEN
+    AbortWith2('codegen: [VARARGS] requires [C]: ', name);
+  IF IsVarargsDecl(decl) AND is_device_compiland THEN
+    AbortWith2('codegen: [VARARGS] is not permitted in DEVICE code: ', name);
   body_blk := GetObj(decl, 'body');
   has_block_body := NodeType(body_blk) = 'Block';
   { IsCForeignDecl(decl) reflects only THIS decl node's own attributes/
@@ -1566,6 +1623,32 @@ BEGIN
   types[tid].name := name;
 END;
 
+FUNCTION MaxConstInteger32: INTEGER64;
+VAR
+  n: INTEGER64;
+BEGIN
+  n := 32767;
+  n := n * 32767;
+  n := n * 2;
+  n := n + 32767;
+  n := n + 32767;
+  n := n + 32767;
+  n := n + 32767;
+  MaxConstInteger32 := n + 1;
+END;
+
+FUNCTION ConstIntegerType(ival: INTEGER64): INTEGER;
+VAR
+  max_i32: INTEGER64;
+BEGIN
+  max_i32 := MaxConstInteger32;
+  IF (ival >= -32767) AND (ival <= 32767) THEN ConstIntegerType := TK_INTEGER
+  ELSE IF (ival >= 0) AND (ival <= 32767 * 2 + 1) THEN ConstIntegerType := TK_WORD
+  ELSE IF (ival >= (-max_i32 - 1)) AND (ival <= max_i32) THEN ConstIntegerType := TK_INTEGER32
+  ELSE IF (ival >= 0) AND (ival <= max_i32 * 2 + 1) THEN ConstIntegerType := TK_WORD32
+  ELSE ConstIntegerType := TK_INTEGER64;
+END;
+
 PROCEDURE CodegenConstDecl(decl: ADRMEM);
 { Every CONST this file's own native sources declare is a plain (optionally
   MINUS-negated) integer or REAL literal -- this compile-time-folds and
@@ -1580,11 +1663,14 @@ VAR
   rval: REAL;
   ival: INTEGER64;
   ci: INTEGER32;
+  enum_tid, integer_tid: INTEGER;
 BEGIN
   name := GetStr(decl, 'name');
   val_node := GetObj(decl, 'value');
   is_real := FALSE;
   is_char := FALSE;
+  enum_tid := 0;
+  integer_tid := 0;
   rval := 0.0;
   ival := 0;
   IF NodeType(val_node) = 'RealLiteral' THEN
@@ -1610,9 +1696,16 @@ BEGIN
     ELSE IF NodeType(val_node) = 'Identifier' THEN
     BEGIN
       ci := LookupConst(GetStr(val_node, 'name'));
-      IF ci <> 0 THEN is_char := const_tbl[ci].is_char;
+      IF ci <> 0 THEN
+      BEGIN
+        is_char := const_tbl[ci].is_char;
+        enum_tid := const_tbl[ci].enum_tid;
+        integer_tid := const_tbl[ci].integer_tid;
+      END;
     END;
     ival := IntLiteralValue(val_node);
+    IF (NOT is_char) AND (enum_tid = 0) AND (integer_tid = 0) THEN
+      integer_tid := ConstIntegerType(ival);
   END;
   existing := LookupConst(name);
   IF existing <> 0 THEN
@@ -1627,7 +1720,9 @@ BEGIN
        (NOT lowering_spliced_interface) THEN
     BEGIN
       IF (const_tbl[existing].is_real <> is_real) OR
-         (const_tbl[existing].is_char <> is_char) THEN
+         (const_tbl[existing].is_char <> is_char) OR
+         (const_tbl[existing].enum_tid <> enum_tid) OR
+         (const_tbl[existing].integer_tid <> integer_tid) THEN
         AbortWith2('codegen: conflicting const declaration: ', name);
       IF is_real THEN
       BEGIN
@@ -1644,6 +1739,8 @@ BEGIN
   const_tbl[nconsts].name := name;
   const_tbl[nconsts].is_real := is_real;
   const_tbl[nconsts].is_char := is_char;
+  const_tbl[nconsts].enum_tid := enum_tid;
+  const_tbl[nconsts].integer_tid := integer_tid;
   IF is_real THEN const_tbl[nconsts].rval := rval
   ELSE const_tbl[nconsts].ival := ival;
 END;

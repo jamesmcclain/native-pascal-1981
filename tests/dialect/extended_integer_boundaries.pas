@@ -1,0 +1,31 @@
+{ DIALECT: extended }
+PROGRAM ExtendedIntegerBoundaries(output);
+CONST
+  WIDE_CONST = 4294967295;
+VAR
+  i8: INTEGER8;
+  w8: WORD8;
+  i32: INTEGER32;
+  w32: WORD32;
+  i64: INTEGER64;
+  w64: WORD64;
+
+PROCEDURE TakeWord32(n: WORD32);
+BEGIN
+END;
+
+BEGIN
+  i8 := -128;
+  i8 := 127;
+  w8 := 0;
+  w8 := 255;
+  i32 := -2147483648;
+  i32 := 2147483647;
+  w32 := 4294967295;
+  w32 := WIDE_CONST;
+  i64 := -MAXINT64 - 1;
+  i64 := MAXINT64;
+  w64 := MAXINT64;
+  w64 := MAXWORD64;
+  TakeWord32(4294967295)
+END.

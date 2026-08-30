@@ -4,7 +4,7 @@
 
 INTERFACE;
 UNIT cg_stmt;
-USES jsonutil, cg_base, cg_util, cg_types, cg_symbols, cg_expr, cg_io;
+USES jsonutil, features, cg_base, cg_util, cg_types, cg_symbols, cg_expr, cg_io;
 
 FUNCTION IntToStr255(n: INTEGER32): Str255;
 FUNCTION LabelKey(node: ADRMEM; key: Str255): Str255;
@@ -17,7 +17,7 @@ PROCEDURE CodegenStmtArray(arr: ADRMEM);
 PROCEDURE CodegenAssignStmt(stmt: ADRMEM);
 PROCEDURE CodegenIfStmt(stmt: ADRMEM);
 PROCEDURE CodegenCaseStmt(stmt: ADRMEM);
-PROCEDURE AttachUnrollHint(branch_inst: ADRMEM; count: INTEGER);
+PROCEDURE AttachUnrollHint(branch_inst: ADRMEM; count: INTEGER64);
 PROCEDURE CodegenWhileStmt(stmt: ADRMEM);
 PROCEDURE CodegenRepeatStmt(stmt: ADRMEM);
 PROCEDURE CodegenForStmt(stmt: ADRMEM);

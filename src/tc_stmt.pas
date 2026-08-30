@@ -1,5 +1,6 @@
 { Statement checking implementation. }
 
+(*$INCLUDE:'features.inc'*)
 (*$INCLUDE:'jsonutil.inc'*)
 (*$INCLUDE:'tc_base.inc'*)
 (*$INCLUDE:'tc_types.inc'*)
@@ -11,6 +12,20 @@ FUNCTION cJSON_GetArraySize(arr: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_GetArrayItem(arr: ADRMEM; index: CINT): ADRMEM [C]; EXTERN;
 
 PROCEDURE CheckStmt(node: ADRMEM); FORWARD;
+
+PROCEDURE CheckUnrollHint(node: ADRMEM; loop_name: Str255);
+VAR
+  unroll_node: ADRMEM;
+BEGIN
+  unroll_node := GetObjOrNil(node, 'unroll');
+  IF unroll_node <> NIL THEN
+  BEGIN
+    IF NOT (active_features.tuning_hints OR is_device_compiland) THEN
+      AddError2('{$UNROLL} requires the extended dialect on ', loop_name)
+    ELSE IF GetInt(node, 'unroll') < 1 THEN
+      AddError('{$UNROLL} count must be a positive integer');
+  END;
+END;
 
 { =============================== statements ============================= }
 
@@ -81,9 +96,9 @@ BEGIN
     END
     ELSE
       target_tk := CheckDesignator(target_node);
-    expr_tk := CheckExpr(expr_node);
+    expr_tk := CheckExprForTarget(expr_node, target_tk);
     IF NOT CanAssign(target_tk, expr_tk) THEN
-      AddError('Cannot assign incompatible type');
+      AddError2('Cannot assign incompatible type without narrowing: ', varname);
   END
   ELSE IF nt = 'IfStmt' THEN
   BEGIN
@@ -95,6 +110,7 @@ BEGIN
   END
   ELSE IF nt = 'WhileStmt' THEN
   BEGIN
+    CheckUnrollHint(node, 'WHILE');
     cond_tk := CheckExpr(GetObj(node, 'cond'));
     IF (cond_tk <> TK_BOOLEAN) AND (cond_tk <> TK_UNKNOWN) THEN
       AddError('WHILE condition must be BOOLEAN');
@@ -102,6 +118,7 @@ BEGIN
   END
   ELSE IF nt = 'RepeatStmt' THEN
   BEGIN
+    CheckUnrollHint(node, 'REPEAT');
     cond_tk := CheckExpr(GetObj(node, 'cond'));
     IF (cond_tk <> TK_BOOLEAN) AND (cond_tk <> TK_UNKNOWN) THEN
       AddError('REPEAT UNTIL condition must be BOOLEAN');
@@ -109,6 +126,7 @@ BEGIN
   END
   ELSE IF nt = 'ForStmt' THEN
   BEGIN
+    CheckUnrollHint(node, 'FOR');
     varname := GetStr(node, 'var');
     si := LookupSymbol(varname);
     IF si = 0 THEN
@@ -118,8 +136,19 @@ BEGIN
       IF NOT IsOrdinal(vi) THEN
         AddError('FOR loop variable must be an ordinal type');
     END;
-    cond_tk := CheckExpr(GetObj(node, 'start'));
-    cond_tk := CheckExpr(GetObj(node, 'end'));
+    IF si <> 0 THEN
+    BEGIN
+      cond_tk := CheckExprForTarget(GetObj(node, 'start'), vi);
+      IF NOT CanAssign(vi, cond_tk) THEN
+        AddError2('FOR initial bound is not assignment compatible: ', varname);
+      cond_tk := CheckExprForTarget(GetObj(node, 'end'), vi);
+      IF NOT CanAssign(vi, cond_tk) THEN
+        AddError2('FOR final bound is not assignment compatible: ', varname);
+    END
+    ELSE BEGIN
+      cond_tk := CheckExpr(GetObj(node, 'start'));
+      cond_tk := CheckExpr(GetObj(node, 'end'));
+    END;
     CheckCompoundOrStmt(GetObj(node, 'body'));
   END
   ELSE IF nt = 'ProcCallStmt' THEN
@@ -240,7 +269,12 @@ BEGIN
           ELSE IF symbols[si].tk <> TK_STRING THEN
             AddError('READSET destination must be STRING or LSTRING');
         END;
-        cond_tk := CheckExpr(cJSON_GetArrayItem(args_arr, start_arg + 1));
+        warg := cJSON_GetArrayItem(args_arr, start_arg + 1);
+        IF (NodeType(warg) = 'SetConstructor') AND
+           (GetObjOrNil(warg, 'type_name') = NIL) AND
+           (NOT active_features.readset_set_literal) THEN
+          AddError('Character Set Expected: READSET set argument must be a declared SET OF CHAR value');
+        cond_tk := CheckExpr(warg);
         IF cond_tk <> TK_SET THEN
           AddError('READSET set argument must be a SET OF CHAR value');
       END;
@@ -308,10 +342,14 @@ BEGIN
         ELSE
           FOR i := 0 TO nargs - 1 DO
           BEGIN
-            expr_tk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
+            IF i < symbols[si].nparams THEN
+              expr_tk := CheckExprForTarget(cJSON_GetArrayItem(args_arr, i),
+                                            symbols[si].param_tk[i + 1])
+            ELSE
+              expr_tk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
             IF i < symbols[si].nparams THEN
               IF NOT CanAssign(symbols[si].param_tk[i + 1], expr_tk) THEN
-                AddError('Argument type mismatch');
+                AddError2('Argument type mismatch or implicit narrowing in call to ', pname);
           END;
       END;
     END;

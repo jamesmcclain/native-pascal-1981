@@ -62,7 +62,10 @@ FUNCTION SysWriteFile(VAR path: ByteBuf; VAR contents: ByteBuf): BOOLEAN;
 
 { SysArgs serializes arguments after argv[0] as NUL-terminated byte strings;
   SysExec supplies executable as argv[0].  A normally-exited program, including
-  one with a nonzero exit code, returns SYS_OK with exit_code set. }
+  one with a nonzero exit code, returns SYS_OK with exit_code set.
+  timeout_ms is a millisecond bound: 0 waits indefinitely; a positive value
+  kills the child process group after that many milliseconds and returns
+  SYS_TIMEOUT; a negative value is rejected with SYS_ERROR. }
 PROCEDURE SysArgsInit(VAR args: SysArgs);
 PROCEDURE SysArgsFree(VAR args: SysArgs);
 FUNCTION SysArgsAdd(VAR args: SysArgs; VAR arg: ByteBuf): BOOLEAN;

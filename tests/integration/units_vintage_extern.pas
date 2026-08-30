@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 (*$INCLUDE:'units_vintage_extern.vsplit.inc'*)
 PROGRAM UnitsVintageExtern(output);
 USES vsplit;

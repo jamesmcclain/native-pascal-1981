@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 (*$INCLUDE:'argparse.inc'*)
 PROGRAM argparse_errors(input, output);
 { The diagnostic paths. ArgBegin resets all state, so one program can run

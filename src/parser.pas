@@ -1,5 +1,6 @@
 { Pascal-1981 Native Parser implementation in extended IBM Pascal 2.0 dialect. }
 
+(*$INCLUDE:'argparse.inc'*)
 (*$INCLUDE:'jsonutil.inc'*)
 (*$INCLUDE:'ps_base.inc'*)
 (*$INCLUDE:'ps_expr.inc'*)
@@ -7,7 +8,7 @@
 (*$INCLUDE:'ps_decl.inc'*)
 PROGRAM pascal1981_parse(input, output);
 
-USES jsonutil, ps_base, ps_expr, ps_stmt, ps_decl;
+USES argparse, jsonutil, ps_base, ps_expr, ps_stmt, ps_decl;
 
 
 VAR
@@ -17,8 +18,51 @@ VAR
   n_ifaces, rc: CINT;
   ii: INTEGER32;
   res_c: CINT;
+  dialect_arg, arg_error: ArgStr;
+
+PROCEDURE PrintArgError;
+VAR
+  msg: Str255;
+  i, n: INTEGER32;
+BEGIN
+  ArgError(arg_error);
+  n := ORD(arg_error[0]);
+  msg[0] := CHR(RETYPE(INTEGER, n));
+  i := 1;
+  WHILE i <= n DO
+  BEGIN
+    msg[i] := arg_error[i];
+    i := i + 1;
+  END;
+  EPrint(msg);
+END;
+
+PROCEDURE ParseArgs;
+BEGIN
+  ArgBegin('parser', 'Pascal-1981 parser stage.');
+  ArgString('dialect', ARG_NO_SHORT, 'vintage',
+            'Language dialect: vintage or extended.');
+  IF NOT ArgParse THEN
+  BEGIN
+    IF ArgHelpWanted THEN exit(0);
+    PrintArgError;
+    exit(1);
+  END;
+  IF ArgPosCount <> 0 THEN
+  BEGIN
+    EPrint('error: parser accepts input only on standard input');
+    exit(1);
+  END;
+  ArgGetStr('dialect', dialect_arg);
+  IF (dialect_arg <> 'vintage') AND (dialect_arg <> 'extended') THEN
+  BEGIN
+    EPrint('error: invalid dialect; expected ''vintage'' or ''extended''');
+    exit(1);
+  END;
+END;
 
 BEGIN
+  ParseArgs;
   pos := 0;
   expr_depth := 0;
   stmt_depth := 0;

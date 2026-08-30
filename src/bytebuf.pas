@@ -135,7 +135,8 @@ END;
 PROCEDURE BufAppendInt(VAR b: ByteBuf; v: INTEGER32);
 VAR
   digits: ARRAY [0..31] OF CHAR;
-  n, count, d: INTEGER32;
+  n, d: INTEGER64;
+  count: INTEGER32;
   negative: BOOLEAN;
 BEGIN
   IF v = 0 THEN
@@ -143,6 +144,12 @@ BEGIN
   ELSE
   BEGIN
     negative := v < 0;
+    { The magnitude is taken in INTEGER64, not in the argument's own width:
+      the absolute value of the INTEGER32 minimum is not representable as an
+      INTEGER32, so a negation that wraps leaves `n` negative, the `n > 0` digit
+      loop below never runs, and the buffer gets a bare "-" with no digits.
+      Widening costs one sign-extend and keeps the loop in the positive domain,
+      where DIV and MOD behave the same under either rounding convention. }
     n := v;
     IF negative THEN n := -n;
     count := 0;

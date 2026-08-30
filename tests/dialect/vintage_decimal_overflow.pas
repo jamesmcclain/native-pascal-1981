@@ -1,0 +1,6 @@
+PROGRAM VintageDecimalOverflow;
+CONST
+  TOO_HIGH = 65536;
+  TOO_LOW = -32768;
+BEGIN
+END.
