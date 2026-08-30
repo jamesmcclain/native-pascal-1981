@@ -36,6 +36,10 @@ VAR
   arg_nspecs:    INTEGER32;
   arg_positional: ARRAY [0..ARG_MAX_POSITIONAL] OF ADRMEM;
   arg_npositional: INTEGER32;
+  arg_passthru:  ARRAY [0..ARG_MAX_PASSTHRU] OF ArgStr;
+  arg_npassthru: INTEGER32;
+  arg_extra:     ARRAY [0..ARG_MAX_POSITIONAL] OF ADRMEM;
+  arg_nextra:    INTEGER32;
   arg_prog:      ArgStr;
   arg_desc:      ArgStr;
   arg_error_msg: ArgStr;
@@ -213,6 +217,8 @@ PROCEDURE ArgBegin(program_name: ArgStr; description: ArgStr);
 BEGIN
   arg_nspecs := 0;
   arg_npositional := 0;
+  arg_npassthru := 0;
+  arg_nextra := 0;
   arg_have_error := FALSE;
   arg_help_wanted := FALSE;
   ArgSetStr(arg_prog, program_name);
@@ -271,6 +277,55 @@ PROCEDURE ArgReal(long_name: ArgStr; short_name: CHAR;
 BEGIN
   ArgAdd(long_name, short_name, help, ARG_KIND_REAL);
   IF arg_nspecs > 0 THEN arg_specs[arg_nspecs - 1].def_real := default_value;
+END;
+
+PROCEDURE ArgPassthrough(prefix: ArgStr);
+BEGIN
+  IF arg_npassthru >= ARG_MAX_PASSTHRU THEN
+    ArgFail('too many pass-through prefixes: ', prefix)
+  ELSE
+  BEGIN
+    ArgSetStr(arg_passthru[arg_npassthru], prefix);
+    arg_npassthru := arg_npassthru + 1;
+  END;
+END;
+
+{ TRUE when s starts with prefix (prefix non-empty and no longer than s). }
+FUNCTION ArgHasPrefix(s: ArgStr; prefix: ArgStr): BOOLEAN;
+VAR
+  i, n, m: INTEGER32;
+  ok: BOOLEAN;
+BEGIN
+  n := ORD(s[0]);
+  m := ORD(prefix[0]);
+  IF (m = 0) OR (m > n) THEN
+    ArgHasPrefix := FALSE
+  ELSE
+  BEGIN
+    ok := TRUE;
+    i := 1;
+    WHILE (i <= m) AND ok DO
+    BEGIN
+      IF s[i] <> prefix[i] THEN ok := FALSE;
+      i := i + 1;
+    END;
+    ArgHasPrefix := ok;
+  END;
+END;
+
+FUNCTION ArgMatchPassthru(token: ArgStr): BOOLEAN;
+VAR
+  i: INTEGER32;
+  found: BOOLEAN;
+BEGIN
+  found := FALSE;
+  i := 0;
+  WHILE (i < arg_npassthru) AND (NOT found) DO
+  BEGIN
+    IF ArgHasPrefix(token, arg_passthru[i]) THEN found := TRUE;
+    i := i + 1;
+  END;
+  ArgMatchPassthru := found;
 END;
 
 { ------------------------------------------------------------------ }
@@ -407,12 +462,13 @@ END;
 
 FUNCTION ArgParse: BOOLEAN;
 VAR
-  i, argc, eq, slot: INTEGER32;
+  i, argc, eq, slot, glued: INTEGER32;
   raw: ADRMEM;
   token, name: ArgStr;
   only_positional, needs_value: BOOLEAN;
 BEGIN
   arg_npositional := 0;
+  arg_nextra := 0;
   arg_help_wanted := FALSE;
   only_positional := FALSE;
   argc := pas_arg_count;
@@ -441,6 +497,7 @@ BEGIN
     ELSE IF (ORD(token[0]) >= 2) AND (token[1] = '-') THEN
     BEGIN
       eq := ArgSplitEq(token, name);
+      glued := -1;
       IF token[2] = '-' THEN
       BEGIN
         ArgDropPrefix(name, 2);
@@ -448,22 +505,43 @@ BEGIN
       END
       ELSE IF ORD(name[0]) = 2 THEN
         slot := ArgFindShort(name[2])
+      ELSE IF (eq < 0) AND (ORD(name[0]) > 2) THEN
+      BEGIN
+        { -sVALUE: a short option glued straight to its value. }
+        slot := ArgFindShort(name[2]);
+        IF slot >= 0 THEN glued := 2;
+      END
       ELSE
         slot := -1;
 
       IF slot < 0 THEN
-        ArgFail('unrecognized option: ', token)
+      BEGIN
+        IF ArgMatchPassthru(token) THEN
+        BEGIN
+          IF arg_nextra < ARG_MAX_POSITIONAL THEN
+          BEGIN
+            arg_extra[arg_nextra] := raw;
+            arg_nextra := arg_nextra + 1;
+          END
+          ELSE
+            ArgFail('too many pass-through arguments at: ', token);
+        END
+        ELSE
+          ArgFail('unrecognized option: ', token);
+      END
       ELSE
       BEGIN
         arg_specs[slot].given := TRUE;
         needs_value := arg_specs[slot].kind <> ARG_KIND_FLAG;
         IF NOT needs_value THEN
         BEGIN
-          IF eq >= 0 THEN
+          IF (eq >= 0) OR (glued >= 0) THEN
             ArgFail('option takes no value: ', token)
           ELSE
             arg_specs[slot].flag_on := TRUE;
         END
+        ELSE IF glued >= 0 THEN
+          arg_specs[slot].value_ptr := ArgValueAfterEq(raw, glued)
         ELSE IF eq >= 0 THEN
           arg_specs[slot].value_ptr := ArgValueAfterEq(raw, eq)
         ELSE
@@ -608,6 +686,27 @@ BEGIN
     ArgSetStr(out, '')
   ELSE
     ArgCStrToStr(arg_positional[i], out);
+END;
+
+FUNCTION ArgExtraCount: INTEGER32;
+BEGIN
+  ArgExtraCount := arg_nextra;
+END;
+
+FUNCTION ArgExtraRaw(i: INTEGER32): ADRMEM;
+BEGIN
+  IF (i < 0) OR (i >= arg_nextra) THEN
+    ArgExtraRaw := NIL
+  ELSE
+    ArgExtraRaw := arg_extra[i];
+END;
+
+PROCEDURE ArgExtraStr(i: INTEGER32; VAR out: ArgStr);
+BEGIN
+  IF (i < 0) OR (i >= arg_nextra) THEN
+    ArgSetStr(out, '')
+  ELSE
+    ArgCStrToStr(arg_extra[i], out);
 END;
 
 BEGIN
