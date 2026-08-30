@@ -57,7 +57,16 @@ BEGIN
     ELSE IF uname = 'BOOLEAN' THEN tk := TK_BOOLEAN
     ELSE IF uname = 'CHAR' THEN tk := TK_CHAR
     ELSE IF uname = 'STRING' THEN tk := TK_STRING
-    ELSE IF uname = 'LSTRING' THEN tk := TK_STRING
+    { LSTRING shares TK_STRING with the fixed STRING -- this v1 type-kind
+      model does not track a string's capacity or flavor -- but the two are
+      not interchangeable for one construct: .LEN designates an LSTRING's
+      leading length byte and is an error on a STRING. aux2 = 1 is the flag
+      that tells them apart; nothing else reads aux2 for a string. }
+    ELSE IF uname = 'LSTRING' THEN
+    BEGIN
+      tk := TK_STRING;
+      aux2 := 1;
+    END
     { Wide-integer/real extension names (feature-gated under the extended
       dialect): this v1 type-kind model doesn't track width, so each just
       aliases to its base kind -- matching how INTEGER32/WORD32/etc. behave

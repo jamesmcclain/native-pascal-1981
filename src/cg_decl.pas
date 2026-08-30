@@ -1576,13 +1576,15 @@ VAR
   name: Str255;
   val_node: ADRMEM;
   existing: INTEGER32;
-  is_real: BOOLEAN;
+  is_real, is_char: BOOLEAN;
   rval: REAL;
   ival: INTEGER64;
+  ci: INTEGER32;
 BEGIN
   name := GetStr(decl, 'name');
   val_node := GetObj(decl, 'value');
   is_real := FALSE;
+  is_char := FALSE;
   rval := 0.0;
   ival := 0;
   IF NodeType(val_node) = 'RealLiteral' THEN
@@ -1596,7 +1598,22 @@ BEGIN
     is_real := TRUE;
     rval := 0.0 - GetReal(GetObj(val_node, 'operand'), 'value');
   END
-  ELSE ival := IntLiteralValue(val_node);
+  ELSE
+  BEGIN
+    { A CHAR CONST folds to its ordinal like any other, and is_char is what
+      distinguishes it afterwards. `CONST B = A;` where A is itself a CHAR
+      CONST inherits the CHAR-ness, so that codegen agrees with the type the
+      typechecker already gave B (tc_decl.pas types a CONST from its value
+      expression, so CharLiteral there is TK_CHAR without any change). }
+    IF NodeType(val_node) = 'CharLiteral' THEN
+      is_char := TRUE
+    ELSE IF NodeType(val_node) = 'Identifier' THEN
+    BEGIN
+      ci := LookupConst(GetStr(val_node, 'name'));
+      IF ci <> 0 THEN is_char := const_tbl[ci].is_char;
+    END;
+    ival := IntLiteralValue(val_node);
+  END;
   existing := LookupConst(name);
   IF existing <> 0 THEN
   BEGIN
@@ -1609,7 +1626,8 @@ BEGIN
     IF (NOT in_local_scope) AND defining_implementation AND
        (NOT lowering_spliced_interface) THEN
     BEGIN
-      IF const_tbl[existing].is_real <> is_real THEN
+      IF (const_tbl[existing].is_real <> is_real) OR
+         (const_tbl[existing].is_char <> is_char) THEN
         AbortWith2('codegen: conflicting const declaration: ', name);
       IF is_real THEN
       BEGIN
@@ -1625,6 +1643,7 @@ BEGIN
   nconsts := nconsts + 1;
   const_tbl[nconsts].name := name;
   const_tbl[nconsts].is_real := is_real;
+  const_tbl[nconsts].is_char := is_char;
   IF is_real THEN const_tbl[nconsts].rval := rval
   ELSE const_tbl[nconsts].ival := ival;
 END;

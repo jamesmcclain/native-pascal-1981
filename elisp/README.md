@@ -95,14 +95,14 @@ PATH="$PWD/bin:$PATH" emacs -Q --batch -L elisp \
 ## LLM code completion (optional)
 
 `pascal1981-mode` can offer TAB-triggered code completion from a local LLM,
-through a small HTTP proxy in `tools/pascal1981_completion_proxy.py`. This
-is off by default and entirely optional.
+through a small HTTP proxy, `bin/pascal1981-proxy`, built by `make` from
+`src/proxy.pas`. This is off by default and entirely optional.
 
 **Emacs never starts, stops, or supervises the proxy.** You run it yourself,
 outside of Emacs, before you enable completion:
 
 ```sh
-python3 tools/pascal1981_completion_proxy.py
+bin/pascal1981-proxy
 ```
 
 By default it listens on `127.0.0.1:8790` and talks to an
@@ -112,7 +112,7 @@ flag (`--help` lists them all); point it at a different backend with
 `--llm-base-url`:
 
 ```sh
-python3 tools/pascal1981_completion_proxy.py --llm-base-url http://192.0.2.10:8080/v1
+bin/pascal1981-proxy --llm-base-url http://192.0.2.10:8080/v1
 ```
 
 The one setting that stays an environment variable, `LLM_API_KEY`, is the
@@ -127,17 +127,15 @@ to help completion quality while costing prompt size and latency; it stays
 available (off by default) in case a future prompt shape changes that, not
 because it's currently recommended.
 
-The prompt wording sent to the model lives in `tools/prompts/system_prompt.txt`
-(a plain text file, not a string literal in the proxy), so it can be read
-and tuned without touching code. Override it with `--system-prompt-file`
-without editing the bundled file. The bundled prompt is deliberately
-minimal — a full-corpus experiment found that an elaborate, heavily
-instructed prompt was itself the dominant cause of a failure mode where the
-model echoed text already before the cursor instead of continuing past it;
-stripping the prompt down to almost nothing eliminated that failure
-entirely (0/64 occurrences across two different backends, vs. 22-30% under
-the old wording). Resist the urge to add guardrail language back in without
-re-measuring its effect.
+The prompt wording sent to the model is a single line, in
+`PxSystemPrompt` in `src/proxycore.pas`; `--system-prompt-file` replaces it
+with the contents of a text file. It is deliberately minimal — a full-corpus
+experiment found that an elaborate, heavily instructed prompt was itself the
+dominant cause of a failure mode where the model echoed text already before
+the cursor instead of continuing past it; stripping the prompt down to almost
+nothing eliminated that failure entirely (0/64 occurrences across two
+different backends, vs. 22-30% under the old wording). Resist the urge to add
+guardrail language back in without re-measuring its effect.
 
 If the proxy isn't running, or you haven't started it yet, completion
 requests just fail — TAB falls back to ordinary indentation. There is no

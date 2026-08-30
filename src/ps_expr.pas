@@ -205,11 +205,7 @@ BEGIN
   IF CurKind = 'INTEGER_LITERAL' THEN
   BEGIN
     node := CreateNode('IntLiteral');
-    { CurValueInt returns INTEGER32 (it holds a literal's full folded value),
-      but AddIntField's value param is a plain INTEGER and the language has
-      no implicit INTEGER32 -> INTEGER narrowing; RETYPE makes the
-      deliberate truncation explicit. }
-    AddIntField(node, 'value', RETYPE(INTEGER, CurValueInt()));
+    AddIntField(node, 'value', CurValueInt());
     Expect('INTEGER_LITERAL');
     ParseConstant := node;
   END
@@ -285,14 +281,10 @@ BEGIN
     IF CurKind = 'INTEGER_LITERAL' THEN
     BEGIN
       node := CreateNode('IntLiteral');
-      { CurValueInt returns INTEGER32 (it holds a literal's full folded
-        value), but AddIntField's value param is a plain INTEGER and the
-        language has no implicit INTEGER32 -> INTEGER narrowing; RETYPE
-        makes the deliberate truncation explicit. }
       IF sign_neg THEN
-        AddIntField(node, 'value', -RETYPE(INTEGER, CurValueInt()))
+        AddIntField(node, 'value', -CurValueInt())
       ELSE
-        AddIntField(node, 'value', RETYPE(INTEGER, CurValueInt()));
+        AddIntField(node, 'value', CurValueInt());
       Expect('INTEGER_LITERAL');
       ParseConstant := node;
     END
@@ -354,11 +346,7 @@ BEGIN
   ELSE IF CurKind = 'INTEGER_LITERAL' THEN
   BEGIN
     node := CreateNode('IntLiteral');
-    { CurValueInt returns INTEGER32 (it holds a literal's full folded value),
-      but AddIntField's value param is a plain INTEGER and the language has
-      no implicit INTEGER32 -> INTEGER narrowing; RETYPE makes the
-      deliberate truncation explicit. }
-    AddIntField(node, 'value', RETYPE(INTEGER, CurValueInt()));
+    AddIntField(node, 'value', CurValueInt());
     Expect('INTEGER_LITERAL');
     ParseFactor := node;
   END

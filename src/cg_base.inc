@@ -43,6 +43,12 @@ PROCEDURE LLVMSetMetadata(v: ADRMEM; kind: CINT; md: ADRMEM) [C];
 PROCEDURE LLVMReplaceMDNodeOperandWith(v: ADRMEM; idx: CINT; replacement: ADRMEM) [C];
 FUNCTION LLVMBuildGlobalStringPtr(b: ADRMEM; str: ADRMEM; name: ADRMEM): ADRMEM [C];
 FUNCTION LLVMConstInt(ty: ADRMEM; n: CLONG; signext: CINT): ADRMEM [C];
+
+{ Truncation toward zero into 64 bits, in the runtime because Pascal's TRUNC
+  cannot do it: TRUNC lowers to a float-to-int conversion at this dialect's
+  16-bit INTEGER width, so it destroys any value outside -32767..32767. This
+  is how an integer literal's value is read out of the AST. }
+FUNCTION pas_double_to_int64(val: REAL): CLONG [C];
 FUNCTION LLVMConstReal(ty: ADRMEM; n: REAL): ADRMEM [C];
 FUNCTION LLVMAddGlobal(m: ADRMEM; ty: ADRMEM; name: ADRMEM): ADRMEM [C];
 PROCEDURE LLVMSetInitializer(gvar: ADRMEM; val: ADRMEM) [C];
@@ -299,6 +305,15 @@ TYPE
     is_real: BOOLEAN; { TRUE if this CONST was instead a (optionally
                          negated) REAL literal, e.g. `CONST RADIX = 1.0e9;`
                          -- rval holds its value in that case, ival unused. }
+    is_char: BOOLEAN; { TRUE if this CONST was a CHAR literal, e.g.
+                         `CONST TAB = CHR(9)`'s literal cousin `CONST
+                         SPACE = ' '`. ival holds the ordinal, exactly as
+                         for an integer CONST, so every numeric use (array
+                         bounds, set ranges, ORD) keeps working unchanged;
+                         this flag only tells the materializing site in
+                         cg_expr to rebuild the value as an i8 CHAR rather
+                         than an i16 INTEGER, so that WRITELN prints a
+                         character instead of its ordinal. }
     rval: REAL;
   END;
 

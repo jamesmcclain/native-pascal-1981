@@ -79,7 +79,20 @@ BEGIN
     skind := GetStr(sel, 'kind');
     IF skind = 'FIELD' THEN
     BEGIN
-      IF tk <> TK_RECORD THEN
+      fname := UpperStr(CStrToStr255(cJSON_GetStringValue(GetObj(sel, 'index_or_field'))));
+      IF (tk = TK_STRING) AND (aux2 = 1) THEN
+      BEGIN
+        { An LSTRING's only field: .LEN is its leading length byte, a CHAR
+          (hence the ORD() around it at every use). Assignable, which is how
+          a program truncates a string in place. A fixed STRING has no
+          length byte and so no .LEN -- aux2 = 1 marks the LSTRING. }
+        IF fname <> 'LEN' THEN
+          AddError('LSTRING has no such field');
+        tk := TK_CHAR;
+        aux := 0;
+        aux2 := 0;
+      END
+      ELSE IF tk <> TK_RECORD THEN
       BEGIN
         AddError('Field selector on non-record value');
         tk := TK_UNKNOWN;

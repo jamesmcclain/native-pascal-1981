@@ -11,6 +11,7 @@ FUNCTION malloc(size: CINT): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateObject: ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateString(val: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateNumber(num: REAL): ADRMEM [C]; EXTERN;
+FUNCTION pas_int64_to_double(v: INTEGER64): REAL [C]; EXTERN;
 FUNCTION cJSON_CreateBool(b: CINT): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateNull: ADRMEM [C]; EXTERN;
 PROCEDURE cJSON_AddItemToObject(obj: ADRMEM; key: ADRMEM; item: ADRMEM) [C]; EXTERN;
@@ -20,6 +21,7 @@ FUNCTION cJSON_GetArraySize(arr: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_GetArrayItem(arr: ADRMEM; index: CINT): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_GetStringValue(item: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_GetNumberValue(item: ADRMEM): REAL [C]; EXTERN;
+FUNCTION pas_cjson_int32(item: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_IsTrue(item: ADRMEM): CINT [C]; EXTERN;
 FUNCTION getchar: CINT [C]; EXTERN;
 PROCEDURE free(ptr: ADRMEM) [C]; EXTERN;
@@ -77,9 +79,16 @@ BEGIN
   AddField(obj, key_str, cJSON_CreateString(v_ptr));
 END;
 
-PROCEDURE AddIntField(obj: ADRMEM; key_str: Str255; val_int: INTEGER);
+PROCEDURE AddIntField(obj: ADRMEM; key_str: Str255; val_int: INTEGER64);
 BEGIN
-  AddField(obj, key_str, cJSON_CreateNumber(val_int));
+  { INTEGER64, not INTEGER. This took the dialect's 16-bit INTEGER, and
+    quietly truncated every value written through it -- which is where an
+    integer literal above 32767 was lost on its way into the AST: the lexer
+    read 40000 correctly and the parser stored -25536, so codegen never saw
+    anything else. A narrower parameter here would have to be RETYPEd at
+    every call site, which is exactly what the parser used to do. The JSON
+    number it becomes is a double, so values are exact up to 2^53. }
+  AddField(obj, key_str, cJSON_CreateNumber(pas_int64_to_double(val_int)));
 END;
 
 PROCEDURE AddRealField(obj: ADRMEM; key_str: Str255; val_real: REAL);
@@ -155,11 +164,21 @@ FUNCTION GetInt(obj: ADRMEM; key: Str255): INTEGER32;
 VAR
   item: ADRMEM;
 BEGIN
+  { Not TRUNC. TRUNC produces this dialect's INTEGER, which is 16 bits, so
+    every value from 32768 up wrapped on the way out of a function whose
+    declared result is INTEGER32 -- silently, and far from the call site.
+    pas_cjson_int32 does the conversion in the runtime, in 32 bits.
+
+    No stage reads a value that large today, so this fixes no live bug in the
+    compiler; it makes the declared result type true, which is what the next
+    caller will assume. Note that array bounds do NOT come through here
+    intact: ResolveIntLiteral in cg_types.pas returns INTEGER, and that is
+    where a bound above 32767 is lost. See docs/dialect_notes.md. }
   item := GetObj(obj, key);
   IF item = NIL THEN
     GetInt := 0
   ELSE
-    GetInt := TRUNC(cJSON_GetNumberValue(item));
+    GetInt := RETYPE(INTEGER32, pas_cjson_int32(item));
 END;
 
 FUNCTION GetReal(obj: ADRMEM; key: Str255): REAL;

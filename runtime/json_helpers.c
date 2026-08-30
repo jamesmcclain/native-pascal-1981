@@ -22,6 +22,52 @@ const cJSON *pas_cjson_child(const cJSON *item, int index)
     return child;
 }
 
+/* A JSON number as a 32-bit integer, truncated toward zero.
+ *
+ * Pascal's TRUNC yields this dialect's INTEGER, which is 16 bits, so a JSON
+ * value of 65536 comes back as 0 through it -- silently, and a long way from
+ * where it was read. Anything reading a length, a limit, an array bound or a
+ * byte count out of JSON needs the full 32 bits, so the conversion happens
+ * here instead. See docs/dialect_notes.md.
+ *
+ * Out-of-range values are clamped rather than converted: casting a double
+ * beyond int's range is undefined behaviour in C, and a caller checking
+ * whether a value is integral will see the clamped result differ from the
+ * original and reject it, which is the right answer for a number no 32-bit
+ * field can hold.
+ */
+int pas_cjson_int32(const cJSON *item)
+{
+    double value;
+
+    if (item == NULL || !cJSON_IsNumber(item))
+        return 0;
+    value = item->valuedouble;
+    if (value > 2147483647.0)
+        return 2147483647;
+    if (value < -2147483648.0)
+        return -2147483647 - 1;
+    return (int) value;
+}
+
+/* The same, in 64 bits, for a value a 32-bit field cannot hold -- an
+ * INTEGER64 literal, say. A JSON number is a double, so this is exact up to
+ * 2^53, which is far past any literal a program writes by hand.
+ */
+long long pas_cjson_int64(const cJSON *item)
+{
+    double value;
+
+    if (item == NULL || !cJSON_IsNumber(item))
+        return 0;
+    value = item->valuedouble;
+    if (value >= 9223372036854775808.0)
+        return 9223372036854775807LL;
+    if (value <= -9223372036854775809.0)
+        return -9223372036854775807LL - 1;
+    return (long long) value;
+}
+
 char *pas_read_text_file(const char *path)
 {
     FILE *stream;

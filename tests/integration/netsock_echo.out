@@ -1,0 +1,10 @@
+read-outcome=0
+received=100000
+matches=TRUE
+echoed-all=TRUE
+child-status=0
+split=TRUE
+  host=127.0.0.1 port=8080 path=/v1
+default-port=TRUE
+  host=example.invalid port=80 path=/v1/chat
+https-refused=TRUE

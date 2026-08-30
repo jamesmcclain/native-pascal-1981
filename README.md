@@ -4,6 +4,12 @@ This repository contains a native compiler for the 1981 IBM Pascal dialect. It t
 
 <img width="1536" height="864" alt="image" src="https://github.com/user-attachments/assets/f59a2d0f-468b-41b2-838c-b76729f15975" />
 
+> **Writing Pascal in this repository?** Read
+> [`docs/dialect_notes.md`](docs/dialect_notes.md) first. It covers what the
+> vintage and extended dialects each provide, how wide each integer type is,
+> and the handful of constructs that fail silently rather than with an error —
+> `TRUNC` narrowing to 16 bits being the one that has cost the most time.
+
 ## System Prerequisites
 
 Install these packages before you build the toolchain (for example, on Debian or Ubuntu Linux x86_64):
@@ -15,7 +21,7 @@ Install these packages before you build the toolchain (for example, on Debian or
 - `indent` (C code formatting tool)
 - `python3` and `pip3` with the reference compiler package:
   ```bash
-  pip3 install 'https://github.com/jamesmcclain/pascal-1981/archive/110529df8b79e6495709406d92e613995d77559b.zip'
+  pip3 install 'https://github.com/jamesmcclain/pascal-1981/archive/887770633e07d1ca654303f038a18fb437d70e81.zip'
   ```
 
 ## Repository Layout
@@ -30,6 +36,7 @@ Install these packages before you build the toolchain (for example, on Debian or
 - `bin/`: Compiler driver (`pascal1981-native`, alias `pascal1981`) and stage binaries (`lexer`, `parser`, `typechecker`, `codegen`).
 - `scripts/`: Build scripts (`build-stage.sh`), formatting scripts (`beautify.sh`), and git hooks (run `git config core.hooksPath scripts/hooks` once per clone to enable the pre-commit formatting hook — it's local config, so a fresh checkout won't run it until you do). The multi-generation bootstrap itself is driven by the root `Makefile`'s `bootstrap` target, not a standalone script.
 - `tests/`: Test suites (golden files, unit tests, integration tests, dialect fixtures).
+- `docs/`: The dialect's [EBNF grammar](docs/ebnf_grammar.md) and notes on its [widths, literals, and silent failure modes](docs/dialect_notes.md).
 
 ## Building
 
@@ -105,3 +112,9 @@ The `test-gpu` target skips the test if a CUDA prerequisite is not available.
 The `test-reference-parity` target requires Python and pytest. The `test-elisp` target requires Emacs and builds the compiler stages first.
 
 See [tests/README.md](tests/README.md) for more information about the compiler test suites.
+
+To run all available test groups, type:
+
+```bash
+make test test-gpu test-reference-parity test-elisp test-bootstrap
+```

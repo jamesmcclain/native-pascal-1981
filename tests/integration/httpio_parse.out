@@ -1,0 +1,15 @@
+post: parsed=TRUE method=POST path=/complete cl=17 malformed=FALSE
+  body-present=17
+  ctype-found=TRUE
+  ctype=[application/json]
+  absent=FALSE
+get: parsed=TRUE method=GET path=/health cl=-1 malformed=FALSE
+bad-length: parsed=TRUE method=POST path=/complete cl=-2 malformed=FALSE
+empty-length: parsed=TRUE method=POST path=/complete cl=-2 malformed=FALSE
+huge-length: parsed=TRUE method=POST path=/complete cl=-2 malformed=FALSE
+bare-lf: parsed=TRUE method=GET path=/health cl=4 malformed=FALSE
+  body-present=4
+incomplete: parsed=FALSE
+malformed-line: parsed=TRUE method=GARBAGE path= cl=-1 malformed=TRUE
+extra-spaces: parsed=TRUE method=GET path=/spaced cl=-1 malformed=FALSE
+reasons: 200=OK 400=Bad Request 413=Payload Too Large 502=Bad Gateway 599=Unknown

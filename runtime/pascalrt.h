@@ -112,9 +112,59 @@ void  pas_fread_filename(struct pas_file_fcb *src,
 
 /* ---- Process command-line arguments (cmdline.c) ---- */
 
+/* --- TCP sockets (netsock.c) ------------------------------------------- */
+/* Read outcomes that are not byte counts. Distinct values because a caller
+ * implementing a request timeout has to tell "deadline passed" from "peer
+ * closed the connection". */
+#define PAS_SOCK_ERROR   (-1L)
+#define PAS_SOCK_TIMEOUT (-2L)
+
+long long pas_double_to_int64(double value);
+double pas_int64_to_double(long long value);
+
+void  pas_net_init(void);
+void  pas_net_autoreap(void);
+int   pas_tcp_listen(const char *host, int port, int backlog);
+int   pas_tcp_port(int fd);
+int   pas_tcp_accept(int listen_fd);
+int   pas_tcp_connect(const char *host, int port, int timeout_ms);
+long  pas_sock_read(int fd, char *buf, long cap, int timeout_ms);
+long  pas_sock_write(int fd, const char *buf, long len);
+void  pas_sock_shutdown_write(int fd);
+void  pas_sock_close(int fd);
+int   pas_url_split(const char *url, char *host, int hostcap,
+                    int *port, char *path, int pathcap);
+
 int         pas_arg_count(void);
 const char *pas_arg_value(int index);
 char       *pas_toolchain_root(void);
+
+/* ---- POSIX system utilities (sysutil.c) -------------------------- */
+
+#define PAS_SYS_OK       0
+#define PAS_SYS_ERROR   (-1)
+#define PAS_SYS_TIMEOUT (-2)
+#define PAS_SYS_SIGNAL  (-3)
+
+#define PAS_SYS_ENTRY_OTHER 0
+#define PAS_SYS_ENTRY_DIR   1
+#define PAS_SYS_ENTRY_FILE  2
+
+void *pas_sys_dir_open(const char *path);
+/* Returns 0 at end, -1 on error, or entry kind + 1. */
+int   pas_sys_dir_next(void *handle, char *name, int namecap);
+int   pas_sys_dir_close(void *handle);
+int   pas_sys_temp_dir(const char *prefix, char *out, int outcap);
+int   pas_sys_remove_tree(const char *path);
+/* The caller releases a successful read result with pas_sys_free. */
+char *pas_sys_read_file(const char *path, int *out_len);
+int   pas_sys_write_file(const char *path, const char *data, int len);
+void  pas_sys_free(void *ptr);
+/* packed_args is a sequence of NUL-terminated argv entries, excluding argv[0]. */
+int   pas_sys_exec(const char *executable, const char *packed_args,
+                   int packed_args_len, int timeout_ms, int *exit_code,
+                   int *term_signal, char *diagnostics, int diagnostics_cap,
+                   int *diagnostics_len);
 
 /* ---- stdin READ / READLN (readq.c) ---- */
 
