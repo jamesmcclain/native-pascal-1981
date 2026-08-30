@@ -1,4 +1,3 @@
-{ DIALECT: vintage }
 PROGRAM VintageEnumIo(input, output);
 TYPE
   Color = (RED, GREEN, BLUE);

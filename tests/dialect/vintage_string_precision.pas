@@ -1,4 +1,3 @@
-{ DIALECT: vintage }
 PROGRAM VintageStringPrecision(output);
 VAR
   fixed_text: STRING(8);
