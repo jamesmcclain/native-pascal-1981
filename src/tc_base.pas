@@ -1,5 +1,6 @@
 { Shared-state implementation for the native type checker. }
 
+(*$INCLUDE:'features.inc'*)
 (*$INCLUDE:'jsonutil.inc'*)
 (*$INCLUDE:'tc_base.inc'*)
 IMPLEMENTATION OF tc_base;
@@ -29,10 +30,17 @@ CONST
     doesn't need to track for element/IN/set-operator checking. }
   TK_ENUM     = 13; { a user-declared enumerated type. This coarse model
     doesn't distinguish one enum type from another (or from its members'
-    constant symbols): every enum and enum constant carries TK_ENUM, the
-    same deliberate looseness the rest of this file applies where a v1
-    shape check is the documented scope. codegen.pas is the enforcement
-    backstop, exactly as for the other coarse distinctions here. }
+    constant symbols): every enum and enum constant carries TK_ENUM. }
+  { Exact integer-family kinds preserve the declaration width and signedness
+    needed for contextual literal checks. INTEGER16 and WORD16 use the vintage
+    TK_INTEGER and TK_WORD kinds. These values need not match codegen's private
+    kind numbers because the stages exchange the JSON AST, not kind ids. }
+  TK_INTEGER8  = 14;
+  TK_INTEGER32 = 15;
+  TK_INTEGER64 = 16;
+  TK_WORD8     = 17;
+  TK_WORD32    = 18;
+  TK_WORD64    = 19;
 
   MAX_SYMBOLS = 2000;
   MAX_TYPES   = 500;
@@ -71,6 +79,8 @@ TYPE
                            [C]): its body lives in another compiland, so --
                            unlike a FORWARD -- a later body for the same name
                            in this same scope is an error, not a completion. }
+    has_const_int: BOOLEAN;
+    const_int: INTEGER64;
   END;
 
   TypeRec = RECORD
@@ -114,6 +124,9 @@ VAR
 
   cur_func_ret_tk: INTEGER; { TK_VOID when not inside a function }
   cur_func_aux, cur_func_aux2: INTEGER;
+  active_features: FeatureSet;
+  is_device_compiland: BOOLEAN;
+
   cur_func_name: Str255;   { '' when not inside a function. `F := expr`
                              inside F's own body assigns through the
                              return-value slot (RETURN's target) rather than
@@ -231,6 +244,8 @@ BEGIN
   symbols[nsymbols].ret_tk := TK_VOID;
   symbols[nsymbols].is_vararg := FALSE;
   symbols[nsymbols].is_extern := FALSE;
+  symbols[nsymbols].has_const_int := FALSE;
+  symbols[nsymbols].const_int := 0;
   DefineSymbol := nsymbols;
 END;
 
@@ -293,18 +308,48 @@ BEGIN
     AddFieldEntry(record_id, fname, ftk, faux, faux2);
 END;
 
+FUNCTION IsSignedInteger(tk: INTEGER): BOOLEAN;
+BEGIN
+  IsSignedInteger := (tk = TK_INTEGER8) OR (tk = TK_INTEGER) OR
+    (tk = TK_INTEGER32) OR (tk = TK_INTEGER64);
+END;
+
+FUNCTION IsUnsignedInteger(tk: INTEGER): BOOLEAN;
+BEGIN
+  IsUnsignedInteger := (tk = TK_WORD8) OR (tk = TK_WORD) OR
+    (tk = TK_WORD32) OR (tk = TK_WORD64);
+END;
+
+FUNCTION IsInteger(tk: INTEGER): BOOLEAN;
+BEGIN
+  IsInteger := IsSignedInteger(tk) OR IsUnsignedInteger(tk);
+END;
+
+FUNCTION IntegerBits(tk: INTEGER): INTEGER;
+BEGIN
+  IF (tk = TK_INTEGER8) OR (tk = TK_WORD8) THEN IntegerBits := 8
+  ELSE IF (tk = TK_INTEGER) OR (tk = TK_WORD) THEN IntegerBits := 16
+  ELSE IF (tk = TK_INTEGER32) OR (tk = TK_WORD32) THEN IntegerBits := 32
+  ELSE IF (tk = TK_INTEGER64) OR (tk = TK_WORD64) THEN IntegerBits := 64
+  ELSE IntegerBits := 0;
+END;
+
 FUNCTION IsOrdinal(tk: INTEGER): BOOLEAN;
 BEGIN
-  IsOrdinal := (tk = TK_INTEGER) OR (tk = TK_WORD) OR (tk = TK_CHAR) OR (tk = TK_BOOLEAN) OR (tk = TK_ENUM);
+  IsOrdinal := IsInteger(tk) OR (tk = TK_CHAR) OR (tk = TK_BOOLEAN) OR (tk = TK_ENUM);
 END;
 
 FUNCTION IsNumeric(tk: INTEGER): BOOLEAN;
 BEGIN
-  IsNumeric := (tk = TK_INTEGER) OR (tk = TK_REAL) OR (tk = TK_WORD);
+  IsNumeric := IsInteger(tk) OR (tk = TK_REAL);
 END;
 
-PROCEDURE TcInit;
+PROCEDURE TcInit(VAR requested_features: FeatureSet);
+VAR
+  si: INTEGER32;
 BEGIN
+  active_features := requested_features;
+  is_device_compiland := FALSE;
   nsymbols := 0;
   scope_top := 0;
   ntypes := 0;
@@ -317,6 +362,28 @@ BEGIN
   cur_func_aux := 0;
   cur_func_aux2 := 0;
   cur_func_name := '';
+  si := DefineSymbol('MAXINT', 'CONST', TK_INTEGER, 0, 0, 0);
+  symbols[si].has_const_int := TRUE;
+  symbols[si].const_int := 32767;
+  si := DefineSymbol('MAXWORD', 'CONST', TK_WORD, 0, 0, 0);
+  symbols[si].has_const_int := TRUE;
+  symbols[si].const_int := 65535;
+  IF active_features.wide_integers THEN
+  BEGIN
+    si := DefineSymbol('MAXINT32', 'CONST', TK_INTEGER32, 0, 0, 0);
+    symbols[si].has_const_int := TRUE;
+    symbols[si].const_int := 2147483647;
+    si := DefineSymbol('MAXWORD32', 'CONST', TK_WORD32, 0, 0, 0);
+    symbols[si].has_const_int := TRUE;
+    symbols[si].const_int := 4294967295;
+    si := DefineSymbol('MAXINT64', 'CONST', TK_INTEGER64, 0, 0, 0);
+    symbols[si].has_const_int := TRUE;
+    symbols[si].const_int := 9223372036854775807;
+    { MAXWORD64 cannot be represented in the signed INTEGER64 const_int
+      field. Its exact WORD64 type is still available to contextual checks;
+      codegen materializes the all-ones bit pattern directly. }
+    si := DefineSymbol('MAXWORD64', 'CONST', TK_WORD64, 0, 0, 0);
+  END;
 END;
 
 BEGIN

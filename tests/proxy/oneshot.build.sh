@@ -5,5 +5,5 @@ set -euo pipefail
 
 fixture_dir="$(pwd)"
 cd ../../src
-"$1" "$fixture_dir/oneshot.pas" bytebuf.pas argparse.pas netsock.pas \
+"$1" --dialect extended "$fixture_dir/oneshot.pas" bytebuf.pas argparse.pas netsock.pas \
      jsonx.pas httpio.pas -o "$2"

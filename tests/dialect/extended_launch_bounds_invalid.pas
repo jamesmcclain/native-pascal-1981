@@ -1,0 +1,34 @@
+{ DIALECT: extended }
+DEVICE INTERFACE;
+UNIT DINVALID (badzero, badaxis, badtotal, badpair, badcount, badfunction);
+PROCEDURE badzero;
+PROCEDURE badaxis;
+PROCEDURE badtotal;
+PROCEDURE badpair;
+PROCEDURE badcount;
+FUNCTION badfunction: INTEGER32;
+END;
+DEVICE IMPLEMENTATION OF DINVALID;
+PROCEDURE badzero [MAXNTID(0)];
+BEGIN
+END;
+PROCEDURE badaxis [REQNTID(1, 1, 65)];
+BEGIN
+END;
+PROCEDURE badtotal [MAXNTID(1024, 2)];
+BEGIN
+END;
+PROCEDURE badpair [MAXNTID(8), REQNTID(8)];
+BEGIN
+END;
+PROCEDURE badcount [MINCTASM(1, 2)];
+BEGIN
+END;
+FUNCTION badfunction: INTEGER32 [MAXNTID(64)];
+BEGIN
+  badfunction := 0
+END;
+PROCEDURE helper [MAXNTID(64)];
+BEGIN
+END;
+.

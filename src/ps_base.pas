@@ -274,8 +274,15 @@ BEGIN
       p_tok^.line := 1;
 
     field := cJSON_GetObjectItem(item, k_col);
+    { Not TRUNC, same conversion as line above: col is INTEGER32, and the
+      column of a source line longer than 32767 characters does not fit the
+      16-bit INTEGER TRUNC produces -- it would be poison in every
+      diagnostic that prints it. The lexer's own column counter still
+      wraps at 16 bits, but the token JSON is a stage interface, not a
+      private struct, so this side must not assume the producer stays
+      narrow. }
     IF field <> NIL THEN
-      p_tok^.col := TRUNC(cJSON_GetNumberValue(field))
+      p_tok^.col := RETYPE(INTEGER32, pas_cjson_int32(field))
     ELSE
       p_tok^.col := 1;
 

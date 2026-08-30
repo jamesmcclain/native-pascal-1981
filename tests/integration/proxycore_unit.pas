@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 (*$INCLUDE:'bytebuf.inc'*)
 (*$INCLUDE:'jsonx.inc'*)
 (*$INCLUDE:'proxycore.inc'*)

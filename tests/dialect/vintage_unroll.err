@@ -1,0 +1,3 @@
+Type checking failed:
+{$UNROLL} requires the extended dialect on FOR
+Error: Failed to parse input AST JSON

@@ -4,7 +4,7 @@
 
 INTERFACE;
 UNIT cg_expr_shape;
-USES jsonutil, cg_base, cg_util, cg_types, cg_symbols;
+USES jsonutil, features, cg_base, cg_util, cg_types, cg_symbols;
 
 FUNCTION StaticDesignatorType(node: ADRMEM): INTEGER;
 FUNCTION IsStringShapedExpr(node: ADRMEM): BOOLEAN;

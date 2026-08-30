@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 { Plain-Pascal (non-[C]) analog of c_aggregate_return.pas/c_coerced_aggregate.pas:
   exercises the same SysV byval/sret/coerced classification, now applied to
   ordinary PROCEDURE/FUNCTION declarations instead of [C] FOREIGN ones. There

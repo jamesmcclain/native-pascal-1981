@@ -4,7 +4,7 @@
 
 INTERFACE;
 UNIT cg_expr;
-USES jsonutil, cg_base, cg_util, cg_types, cg_symbols;
+USES jsonutil, features, cg_base, cg_util, cg_types, cg_symbols;
 
 PROCEDURE EmitSetRangeLoop(slot: ADRMEM; low_node, high_node: ADRMEM);
 FUNCTION CodegenSetConstructor(node: ADRMEM): ADRMEM;

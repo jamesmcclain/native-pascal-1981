@@ -82,10 +82,9 @@
   looseness relative to the Python reference's constant-only version) --
   same-width arithmetic/comparisons still use signed instructions,
   matching the reference's own hardcoded sdiv/srem/icmp-signed even for
-  WORD) and INTEGER8 (8-bit signed, tid TK_INTEGER8, LLVM i8 -- unlike the
-  reference this file has no feature-gate mechanism, so INTEGER8 is always
-  available rather than gated behind -f wide-integers; only a compile-time
-  INTEGER *literal* -- bare or unary-MINUS-wrapped -- may assign into an
+  WORD) and INTEGER8 (8-bit signed, tid TK_INTEGER8, LLVM i8 -- available
+  only with `wide-integers` or in DEVICE code; only a compile-time INTEGER
+  *literal* -- bare or unary-MINUS-wrapped -- may assign into an
   INTEGER8 target, truncated to i8, matching the reference's constant-only
   exemption more closely since narrowing isn't something this file wants
   to allow silently for a non-constant value); plus HIBYTE/LOBYTE
@@ -131,6 +130,8 @@
   unsupported construct, prints a diagnostic and exits 1 without emitting
   IR, matching the other native stages' error convention. }
 
+(*$INCLUDE:'argparse.inc'*)
+(*$INCLUDE:'features.inc'*)
 (*$INCLUDE:'jsonutil.inc'*)
 (*$INCLUDE:'cg_base.inc'*)
 (*$INCLUDE:'cg_util.inc'*)
@@ -146,7 +147,7 @@
 (*$INCLUDE:'cg_decl.inc'*)
 PROGRAM pascal1981_codegen(input, output);
 
-USES jsonutil, cg_base, cg_util, cg_types, cg_symbols, cg_expr_shape, cg_expr_sets, cg_expr_support, cg_expr_literals, cg_expr, cg_io, cg_stmt, cg_decl;
+USES argparse, features, jsonutil, cg_base, cg_util, cg_types, cg_symbols, cg_expr_shape, cg_expr_sets, cg_expr_support, cg_expr_literals, cg_expr, cg_io, cg_stmt, cg_decl;
 
 { ============================== driver =================================== }
 
@@ -172,8 +173,57 @@ VAR
   target_ref, target_machine, target_layout, ptx_buffer, ptx_cpu: ADRMEM;
   emit_ptx: BOOLEAN;
   unit_name_len, unit_name_i: INTEGER;
+  dialect_arg, arg_error: ArgStr;
+  resolved_features: FeatureSet;
+
+PROCEDURE PrintArgError;
+VAR
+  msg: Str255;
+  i, n: INTEGER32;
+BEGIN
+  ArgError(arg_error);
+  n := ORD(arg_error[0]);
+  msg[0] := CHR(RETYPE(INTEGER, n));
+  i := 1;
+  WHILE i <= n DO
+  BEGIN
+    msg[i] := arg_error[i];
+    i := i + 1;
+  END;
+  EPrint(msg);
+END;
+
+PROCEDURE ParseArgs;
+BEGIN
+  ArgBegin('codegen', 'Pascal-1981 code generator stage.');
+  ArgString('dialect', ARG_NO_SHORT, 'vintage',
+            'Language dialect: vintage or extended.');
+  IF NOT ArgParse THEN
+  BEGIN
+    IF ArgHelpWanted THEN exit(0);
+    PrintArgError;
+    exit(1);
+  END;
+  IF ArgPosCount <> 0 THEN
+  BEGIN
+    EPrint('error: codegen accepts input only on standard input');
+    exit(1);
+  END;
+  ArgGetStr('dialect', dialect_arg);
+  IF (dialect_arg <> 'vintage') AND (dialect_arg <> 'extended') THEN
+  BEGIN
+    EPrint('error: invalid dialect; expected ''vintage'' or ''extended''');
+    exit(1);
+  END;
+END;
 
 BEGIN
+  ParseArgs;
+  IF dialect_arg = 'extended' THEN
+    ResolveFeatures(DIALECT_EXTENDED, resolved_features)
+  ELSE
+    ResolveFeatures(DIALECT_VINTAGE, resolved_features);
+  CgInitFeatures(resolved_features);
   expr_depth := 0;
   stmt_depth := 0;
   root := ReadAllStdin;
@@ -361,6 +411,13 @@ BEGIN
   SetPtrArrayElem(param_arr, 1, i8ptrty);
   write_fmt_fnty := LLVMFunctionType(i32ty, param_arr, 2, 1);
   write_fmt_fn := LLVMAddFunction(modl, MakeCStr('pas_write_fmt'), write_fmt_fnty);
+
+  param_arr := AllocPtrArray(3);
+  SetPtrArrayElem(param_arr, 0, i32ty);
+  SetPtrArrayElem(param_arr, 1, LLVMPointerType(i8ptrty, 0));
+  SetPtrArrayElem(param_arr, 2, i32ty);
+  enum_write_token_fnty := LLVMFunctionType(i8ptrty, param_arr, 3, 0);
+  enum_write_token_fn := LLVMAddFunction(modl, MakeCStr('pas_enum_write_token'), enum_write_token_fnty);
 
   param_arr := AllocPtrArray(2);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));

@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 { A [C] FOREIGN routine taking a <=16-byte RECORD by value: SysV COERCED
   class, so the record travels in one or two registers instead of a byval
   memory copy. The C callees (c_coerced_aggregate.c) are compiled by clang

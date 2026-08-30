@@ -1,0 +1,9 @@
+opt=2
+verbose=TRUE
+output=out.bin
+extra=4
+  -Iinc
+  -L/lib/a
+  -L/lib/b
+  -lm
+positional=35

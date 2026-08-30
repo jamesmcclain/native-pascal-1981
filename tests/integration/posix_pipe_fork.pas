@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 PROGRAM posix_pipe_fork(input, output);
 { Prove the direct POSIX calls that the Pascal driver will use. }
 FUNCTION pipe(fds: ADRMEM): CINT [C]; EXTERN;

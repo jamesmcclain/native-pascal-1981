@@ -1,0 +1,8 @@
+PROGRAM VintageWordTypes;
+VAR
+  w8: WORD8;
+  w16: WORD16;
+  w32: WORD32;
+  w64: WORD64;
+BEGIN
+END.

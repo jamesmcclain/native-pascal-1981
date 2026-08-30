@@ -104,7 +104,7 @@ class HostUsesDeviceInterfaceTests(unittest.TestCase):
 
     def _codegen(self, source: Path, expect_success: bool = True):
         result = subprocess.run(
-            [NATIVE_CODEGEN],
+            [NATIVE_CODEGEN, "--dialect", "extended"],
             cwd=ROOT,
             input=_typed_ast(source),
             text=True,
@@ -168,7 +168,7 @@ class HostUsesDeviceInterfaceTests(unittest.TestCase):
     # one is driven by editing a typed AST that the front end did accept.
 
     def _codegen_ast(self, ast: str):
-        return subprocess.run([NATIVE_CODEGEN],
+        return subprocess.run([NATIVE_CODEGEN, "--dialect", "extended"],
                               cwd=ROOT,
                               input=ast,
                               text=True,

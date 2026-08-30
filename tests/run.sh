@@ -79,6 +79,21 @@ run_single_test() {
   local work_dir
   work_dir="$(mktemp -d)"
 
+  local dialect=""
+  dialect="$(grep -E '^\{ *DIALECT: *(vintage|extended) *\}$' "$test_src" \
+    | sed -E 's/^\{ *DIALECT: *//; s/ *\}$//' | head -n 1 || true)"
+  if [ -z "$dialect" ] && [ -f "$test_dir/$base_name.dialect" ]; then
+    dialect="$(tr -d ' \r\n' < "$test_dir/$base_name.dialect")"
+    if [ "$dialect" != vintage ] && [ "$dialect" != extended ]; then
+      echo "error: invalid test dialect '$dialect' in $test_dir/$base_name.dialect" >&2
+      return 1
+    fi
+  fi
+  local dialect_args=()
+  if [ -n "$dialect" ]; then
+    dialect_args=(--dialect "$dialect")
+  fi
+
   local test_bin="$work_dir/$base_name"
   local actual_out="$work_dir/$base_name.actual.out"
   local actual_err="$work_dir/$base_name.actual.err"
@@ -92,12 +107,35 @@ run_single_test() {
   local build_script="$test_dir/$base_name.build.sh"
   local compile_code=0
   if [ -f "$build_script" ]; then
-    local abs_driver
+    local abs_driver driver_for_build
     abs_driver="$(realpath "$DRIVER")"
-    (cd "$test_dir" && bash "$(basename "$build_script")" "$abs_driver" "$test_bin") \
+    driver_for_build="$abs_driver"
+    if [ -n "$dialect" ]; then
+      local shim_root="$work_dir/toolchain-shim"
+      mkdir -p "$shim_root/bin" "$shim_root/runtime/build"
+      ln -s "$(cd "$(dirname "$abs_driver")/../runtime/build" && pwd)/libpascalrt.a" \
+        "$shim_root/runtime/build/libpascalrt.a"
+      driver_for_build="$shim_root/bin/pascal1981-test-driver"
+      cat > "$driver_for_build" <<EOF
+#!/usr/bin/env bash
+exec "$abs_driver" --dialect "$dialect" "\$@"
+EOF
+      cat > "$shim_root/bin/lexer" <<EOF
+#!/usr/bin/env bash
+exec "$(dirname "$abs_driver")/lexer" "\$@"
+EOF
+      for stage in parser typechecker codegen; do
+        cat > "$shim_root/bin/$stage" <<EOF
+#!/usr/bin/env bash
+exec "$(dirname "$abs_driver")/$stage" --dialect "$dialect" "\$@"
+EOF
+      done
+      chmod +x "$shim_root/bin/"*
+    fi
+    (cd "$test_dir" && bash "$(basename "$build_script")" "$driver_for_build" "$test_bin") \
       > "$work_dir/compile.out" 2> "$work_dir/compile.err" || compile_code=$?
   else
-    "$DRIVER" "$test_src" -o "$test_bin" > "$work_dir/compile.out" 2> "$work_dir/compile.err" || compile_code=$?
+    "$DRIVER" "${dialect_args[@]}" "$test_src" -o "$test_bin" > "$work_dir/compile.out" 2> "$work_dir/compile.err" || compile_code=$?
   fi
 
   # Negative compilation test. A sibling .err fixture, when present, also

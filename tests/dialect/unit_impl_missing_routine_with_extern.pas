@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 (*$INCLUDE:'unit_impl_missing_routine_with_extern.inc'*)
 IMPLEMENTATION OF mixedunit;
 

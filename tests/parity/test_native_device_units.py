@@ -57,7 +57,7 @@ class NativeDeviceUnitTests(unittest.TestCase):
 
     def _emit_ptx(self, source: Path) -> str:
         result = subprocess.run(
-            [NATIVE_CODEGEN],
+            [NATIVE_CODEGEN, "--dialect", "extended"],
             cwd=ROOT,
             input=_typed_ast(source),
             text=True,

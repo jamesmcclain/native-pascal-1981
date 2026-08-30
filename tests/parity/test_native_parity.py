@@ -99,7 +99,8 @@ def _native_pipeline(source, stages, cwd=ROOT):
     for stage in ("parser", "typechecker", "codegen")[:stages - 1]:
         if result.returncode:
             return result
-        result = _run([NATIVE[stage]], result.stdout, cwd)
+        result = _run([NATIVE[stage], "--dialect", "extended"], result.stdout,
+                      cwd)
     return result
 
 

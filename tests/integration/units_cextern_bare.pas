@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 (*$INCLUDE:'units_cextern_bare.cbare.inc'*)
 PROGRAM UnitsCExternBare(output);
 USES cbare;

@@ -3,7 +3,7 @@
 
 INTERFACE;
 UNIT cg_expr_sets;
-USES jsonutil, cg_base, cg_util, cg_types, cg_symbols;
+USES jsonutil, features, cg_base, cg_util, cg_types, cg_symbols;
 
 PROCEDURE SetRuntimeBit(slot: ADRMEM; ordinal_val: ADRMEM);
 FUNCTION CodegenSetMember(ordinal_val, set_val: ADRMEM): ADRMEM;

@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 PROGRAM toolchain_root(input, output);
 FUNCTION pas_toolchain_root: ADRMEM [C]; EXTERN;
 VAR

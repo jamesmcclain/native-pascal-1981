@@ -22,9 +22,15 @@ check_empty_tmp() {
 
 cd "$here"
 ./corpus_reference.build.sh "$compiler" "$work/corpus-reference"
-TMPDIR="$tmp_root" "$work/corpus-reference" "$here/corpus" "$compiler" "$(dirname "$repo")"
+extended_compiler="$work/pascal1981-extended"
+cat > "$extended_compiler" <<EOF
+#!/usr/bin/env bash
+exec "$compiler" --dialect extended "\$@"
+EOF
+chmod +x "$extended_compiler"
+TMPDIR="$tmp_root" "$work/corpus-reference" "$here/corpus" "$extended_compiler" "$(dirname "$repo")"
 check_empty_tmp
-if TMPDIR="$tmp_root" "$work/corpus-reference" "$work/no-such-corpus" "$compiler" "$(dirname "$repo")" \
+if TMPDIR="$tmp_root" "$work/corpus-reference" "$work/no-such-corpus" "$extended_compiler" "$(dirname "$repo")" \
     >/dev/null 2>&1; then
     echo "corpus reference accepted a nonexistent corpus directory" >&2
     exit 1

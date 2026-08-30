@@ -9,6 +9,7 @@ match=TRUE
 ci=TRUE
 ci_neg=FALSE
 ints=0 8790 -1234 100000
+edges=-2147483648 2147483647 -2147483648 -1 -100 1000000000
 eq=TRUE neq=FALSE
 joined=abcdef
 roundtrip=TRUE

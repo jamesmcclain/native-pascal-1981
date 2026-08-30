@@ -160,7 +160,8 @@ int   pas_sys_remove_tree(const char *path);
 char *pas_sys_read_file(const char *path, int *out_len);
 int   pas_sys_write_file(const char *path, const char *data, int len);
 void  pas_sys_free(void *ptr);
-/* packed_args is a sequence of NUL-terminated argv entries, excluding argv[0]. */
+/* packed_args is a sequence of NUL-terminated argv entries, excluding argv[0].
+ * timeout_ms: 0 waits indefinitely; >0 is a millisecond bound; <0 is EINVAL. */
 int   pas_sys_exec(const char *executable, const char *packed_args,
                    int packed_args_len, int timeout_ms, int *exit_code,
                    int *term_signal, char *diagnostics, int diagnostics_cap,

@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 PROGRAM posix_execvp(input, output);
 FUNCTION malloc(size: CINT): ADRMEM [C]; EXTERN;
 FUNCTION fork: CINT [C]; EXTERN;

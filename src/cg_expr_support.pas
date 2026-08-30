@@ -1,5 +1,6 @@
 { Implementations for cg_expr_support. }
 
+(*$INCLUDE:'features.inc'*)
 (*$INCLUDE:'jsonutil.inc'*)
 (*$INCLUDE:'cg_base.inc'*)
 (*$INCLUDE:'cg_util.inc'*)

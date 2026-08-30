@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 (*$INCLUDE:'bytebuf.inc'*)
 (*$INCLUDE:'jsonx.inc'*)
 PROGRAM jsonx_unit(input, output);

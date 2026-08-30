@@ -1,5 +1,6 @@
 { Implementations for cg_io. }
 
+(*$INCLUDE:'features.inc'*)
 (*$INCLUDE:'jsonutil.inc'*)
 (*$INCLUDE:'cg_base.inc'*)
 (*$INCLUDE:'cg_util.inc'*)
@@ -27,12 +28,41 @@ BEGIN
   EvalPrintfIntArg := v;
 END;
 
-PROCEDURE EmitStringWriteArg(addr: ADRMEM; tid: INTEGER; have_width: BOOLEAN; width_val: ADRMEM;
-  VAR fmt: Str255; vals: ADRMEM; VAR vi: INTEGER32);
-{ Appends a %.*s (or %*.*s with a width) format spec plus its (len, chars)
-  value pair for an LSTRING/STRING value already resolved to an address --
-  shared by the bare-Identifier and Designator (array/field selector) WRITE
-  argument paths, which differ only in how they got that address. }
+FUNCTION EnumNameTable(tid: INTEGER): ADRMEM;
+{ Build the const-char* name vector used by the extended enum readers and
+  writer. The enum AST remains alive for the whole compilation, so TypeRec
+  can retain its values array without copying names into another fixed table. }
+VAR
+  values_arr, tbl, gep_idx, slot: ADRMEM;
+  i, count: INTEGER32;
+  member_name: Str255;
+BEGIN
+  values_arr := types[tid].enum_values;
+  IF values_arr = NIL THEN AbortWith('codegen: enum member names are unavailable');
+  count := ArrSize(values_arr);
+  tbl := EntryAlloca(LLVMArrayType(i8ptrty, count), 'enumnames');
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+  FOR i := 0 TO count - 1 DO
+  BEGIN
+    SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, i, 0));
+    slot := LLVMBuildGEP2(builder, LLVMArrayType(i8ptrty, count), tbl,
+                          gep_idx, 2, MakeCStr(''));
+    member_name := CStrToStr255(cJSON_GetStringValue(ArrItem(values_arr, i)));
+    LLVMBuildStore(builder,
+      LLVMBuildGlobalStringPtr(builder, MakeCStr(member_name), MakeCStr('enumname')),
+      slot);
+  END;
+  EnumNameTable := LLVMBuildBitCast(builder, tbl,
+                                    LLVMPointerType(i8ptrty, 0), MakeCStr(''));
+END;
+
+PROCEDURE EmitStringWriteArg(addr: ADRMEM; tid: INTEGER; have_width, have_prec: BOOLEAN;
+  width_val, prec_val: ADRMEM; VAR fmt: Str255; vals: ADRMEM; VAR vi: INTEGER32);
+{ Appends the bounded string format and arguments for an LSTRING/STRING value
+  already resolved to an address. Extended mode uses an explicit precision as
+  the character limit. Vintage mode retains the full stored length. This is
+  shared by the Identifier and Designator paths. }
 VAR
   gep_idx, len_ptr, len_val, chars_ptr: ADRMEM;
 BEGIN
@@ -57,7 +87,17 @@ BEGIN
     SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
     chars_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(tid), addr, gep_idx, 2, MakeCStr(''));
   END;
-  IF have_width THEN
+  IF active_features.string_precision AND have_prec THEN
+  BEGIN
+    CONCAT(fmt, '%*.*s');
+    IF have_width THEN
+      SetPtrArrayElem(vals, vi, width_val)
+    ELSE
+      SetPtrArrayElem(vals, vi, LLVMConstInt(i32ty, 0, 0));
+    vi := vi + 1;
+    len_val := prec_val;
+  END
+  ELSE IF have_width THEN
   BEGIN
     CONCAT(fmt, '%*.*s');
     SetPtrArrayElem(vals, vi, width_val);
@@ -82,7 +122,7 @@ PROCEDURE EmitScalarWriteArg(in_v: ADRMEM; tid: INTEGER; have_width, have_prec: 
 VAR
   out_v: ADRMEM;
   handled_own_args: BOOLEAN;
-  is_true, bool_str: ADRMEM;
+  is_true, bool_str, call_args: ADRMEM;
 BEGIN
   out_v := in_v;
   handled_own_args := FALSE;
@@ -162,10 +202,21 @@ BEGIN
   END
   ELSE IF TypeKind(tid) = TK_ENUM THEN
   BEGIN
-    { An enumerated value writes as its ordinal number -- the vintage
-      default (the reference's symbolic-enum-io feature is off by default).
-      The value is already i32, the enum's storage, so no extend. }
-    IF have_width THEN CONCAT(fmt, '%*d') ELSE CONCAT(fmt, '%d');
+    IF active_features.symbolic_enum_io THEN
+    BEGIN
+      call_args := AllocPtrArray(3);
+      SetPtrArrayElem(call_args, 0, in_v);
+      SetPtrArrayElem(call_args, 1, EnumNameTable(tid));
+      SetPtrArrayElem(call_args, 2, LLVMConstInt(i32ty, types[tid].hi + 1, 0));
+      out_v := LLVMBuildCall2(builder, enum_write_token_fnty,
+                              enum_write_token_fn, call_args, 3, MakeCStr('enumtoken'));
+      IF have_width THEN CONCAT(fmt, '%*s') ELSE CONCAT(fmt, '%s');
+    END
+    ELSE
+    BEGIN
+      { Vintage enumerated values use their numeric ordinal. }
+      IF have_width THEN CONCAT(fmt, '%*d') ELSE CONCAT(fmt, '%d');
+    END;
   END
   ELSE IF TypeKind(tid) = TK_POINTER THEN
   BEGIN
@@ -257,10 +308,9 @@ BEGIN
     expr := GetObj(arg_node, 'expr');
     width_node := GetObjOrNil(arg_node, 'width');
     prec_node := GetObjOrNil(arg_node, 'precision');
-    { Precision is only ever consulted for REAL/REAL32's width+precision ->
-      %*.*f path below, matching the Python reference's faithful-1981
-      default (it ignores string precision and never consults precision
-      at all for the generic int/char/boolean case). }
+    { Numeric precision remains confined to REAL/REAL32. String precision is
+      consulted only when the extended feature is active. The generic
+      integer/char/boolean path ignores precision in both dialects. }
     have_width := width_node <> NIL;
     IF have_width THEN width_val := EvalPrintfIntArg(width_node);
     have_prec := prec_node <> NIL;
@@ -271,7 +321,18 @@ BEGIN
     BEGIN
       strval := DecodeStringLiteral(GetStr(expr, 'value'));
       v := LLVMBuildGlobalStringPtr(builder, MakeCStr(strval), MakeCStr('str'));
-      IF have_width THEN
+      IF active_features.string_precision AND have_prec THEN
+      BEGIN
+        CONCAT(fmt, '%*.*s');
+        IF have_width THEN
+          SetPtrArrayElem(vals, vi, width_val)
+        ELSE
+          SetPtrArrayElem(vals, vi, LLVMConstInt(i32ty, 0, 0));
+        vi := vi + 1;
+        SetPtrArrayElem(vals, vi, prec_val);
+        vi := vi + 1;
+      END
+      ELSE IF have_width THEN
       BEGIN
         CONCAT(fmt, '%*s');
         SetPtrArrayElem(vals, vi, width_val);
@@ -301,7 +362,8 @@ BEGIN
         END;
       END;
       IF is_lstring OR is_string THEN
-        EmitStringWriteArg(addr, lstr_tid, have_width, width_val, fmt, vals, vi)
+        EmitStringWriteArg(addr, lstr_tid, have_width, have_prec,
+                           width_val, prec_val, fmt, vals, vi)
       ELSE
       BEGIN
         v := CodegenExpr(expr);
@@ -317,7 +379,8 @@ BEGIN
       addr := ComputeDesignatorAddress(expr);
       lstr_tid := last_val_tk;
       IF (TypeKind(lstr_tid) = TK_LSTRING) OR (TypeKind(lstr_tid) = TK_STRING) THEN
-        EmitStringWriteArg(addr, lstr_tid, have_width, width_val, fmt, vals, vi)
+        EmitStringWriteArg(addr, lstr_tid, have_width, have_prec,
+                           width_val, prec_val, fmt, vals, vi)
       ELSE
       BEGIN
         v := LLVMBuildLoad2(builder, LLVMTypeForTk(lstr_tid), addr, MakeCStr(''));
@@ -422,14 +485,24 @@ BEGIN
   END
   ELSE IF TypeKind(tid) = TK_ENUM THEN
   BEGIN
-    { Enumerated values read as a numeric ordinal -- the manual reads them
-      as numbers, not names (13610-13618), and the reference does the same
-      with symbolic-enum-io off. Storage is i32, matching pas_read_int's
-      output width, so no conversion. }
     tmp32 := EntryAlloca(i32ty, '');
-    call_args := AllocPtrArray(1);
-    SetPtrArrayElem(call_args, 0, tmp32);
-    loaded := LLVMBuildCall2(builder, read_int_fnty, read_int_fn, call_args, 1, MakeCStr(''));
+    IF active_features.symbolic_enum_io THEN
+    BEGIN
+      call_args := AllocPtrArray(3);
+      SetPtrArrayElem(call_args, 0, tmp32);
+      SetPtrArrayElem(call_args, 1, EnumNameTable(tid));
+      SetPtrArrayElem(call_args, 2, LLVMConstInt(i32ty, types[tid].hi + 1, 0));
+      loaded := LLVMBuildCall2(builder, read_enum_name_fnty,
+                               read_enum_name_fn, call_args, 3, MakeCStr(''));
+    END
+    ELSE
+    BEGIN
+      { Vintage enumerated values read as numeric ordinals. }
+      call_args := AllocPtrArray(1);
+      SetPtrArrayElem(call_args, 0, tmp32);
+      loaded := LLVMBuildCall2(builder, read_int_fnty, read_int_fn,
+                               call_args, 1, MakeCStr(''));
+    END;
     loaded := LLVMBuildLoad2(builder, i32ty, tmp32, MakeCStr(''));
     LLVMBuildStore(builder, loaded, addr);
   END
@@ -722,21 +795,44 @@ BEGIN
     END
     ELSE IF TypeKind(tid) = TK_ENUM THEN
     BEGIN
-      { Enumerated values read as a numeric ordinal (manual 13610-13618);
-        i32 storage matches the reader's output width. }
       tmp32 := EntryAlloca(i32ty, '');
-      IF using_file THEN
+      IF active_features.symbolic_enum_io THEN
       BEGIN
+        IF using_file THEN
+        BEGIN
+          call_args := AllocPtrArray(4);
+          SetPtrArrayElem(call_args, 0, fcb_ptr);
+          SetPtrArrayElem(call_args, 1, tmp32);
+          SetPtrArrayElem(call_args, 2, EnumNameTable(tid));
+          SetPtrArrayElem(call_args, 3, LLVMConstInt(i32ty, types[tid].hi + 1, 0));
+          loaded := LLVMBuildCall2(builder, fread_enum_name_fnty,
+                                   fread_enum_name_fn, call_args, 4, MakeCStr(''));
+        END
+        ELSE
+        BEGIN
+          call_args := AllocPtrArray(3);
+          SetPtrArrayElem(call_args, 0, tmp32);
+          SetPtrArrayElem(call_args, 1, EnumNameTable(tid));
+          SetPtrArrayElem(call_args, 2, LLVMConstInt(i32ty, types[tid].hi + 1, 0));
+          loaded := LLVMBuildCall2(builder, read_enum_name_fnty,
+                                   read_enum_name_fn, call_args, 3, MakeCStr(''));
+        END;
+      END
+      ELSE IF using_file THEN
+      BEGIN
+        { Vintage enumerated values read as numeric ordinals. }
         call_args := AllocPtrArray(2);
         SetPtrArrayElem(call_args, 0, fcb_ptr);
         SetPtrArrayElem(call_args, 1, tmp32);
-        loaded := LLVMBuildCall2(builder, fread_int_fnty, fread_int_fn, call_args, 2, MakeCStr(''));
+        loaded := LLVMBuildCall2(builder, fread_int_fnty,
+                                 fread_int_fn, call_args, 2, MakeCStr(''));
       END
       ELSE
       BEGIN
         call_args := AllocPtrArray(1);
         SetPtrArrayElem(call_args, 0, tmp32);
-        loaded := LLVMBuildCall2(builder, read_int_fnty, read_int_fn, call_args, 1, MakeCStr(''));
+        loaded := LLVMBuildCall2(builder, read_int_fnty,
+                                 read_int_fn, call_args, 1, MakeCStr(''));
       END;
       loaded := LLVMBuildLoad2(builder, i32ty, tmp32, MakeCStr(''));
       LLVMBuildStore(builder, loaded, addr);
@@ -849,6 +945,10 @@ BEGIN
   cap := LLVMConstInt(i32ty, types[tid].hi, 0);
 
   set_node := ArrItem(args, start_idx + 1);
+  IF (NodeType(set_node) = 'SetConstructor') AND
+     (GetObjOrNil(set_node, 'type_name') = NIL) AND
+     (NOT active_features.readset_set_literal) THEN
+    AbortWith('codegen: anonymous READSET set literals require the extended dialect');
   set_val := CodegenExpr(set_node);
   IF TypeKind(last_val_tk) <> TK_SET THEN
     AbortWith('codegen: READSET set argument must be SET OF CHAR');

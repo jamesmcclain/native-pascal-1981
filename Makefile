@@ -28,17 +28,17 @@ STAGE_SRCS := src/jsonutil.pas src/jsonutil.inc scripts/build-stage.sh
 # lowest layer first -- the same order scripts/build-stage.sh compiles and
 # links them in. Attached to the codegen targets alone, below, rather than to
 # every stage.
-CODEGEN_UNITS := cg_base cg_util cg_types cg_symbols cg_expr_shape cg_expr_sets cg_expr_support cg_expr_literals cg_expr cg_io cg_stmt cg_decl
+CODEGEN_UNITS := argparse features cg_base cg_util cg_types cg_symbols cg_expr_shape cg_expr_sets cg_expr_support cg_expr_literals cg_expr cg_io cg_stmt cg_decl
 CODEGEN_SRCS := $(foreach u,$(CODEGEN_UNITS),src/$(u).pas src/$(u).inc)
 # typechecker follows the same separately-compiled unit pattern as codegen.
 # Its list is also lowest layer first and must match scripts/build-stage.sh.
-TYPECHECKER_UNITS := tc_base tc_types tc_expr tc_stmt tc_decl
+TYPECHECKER_UNITS := argparse features tc_base tc_types tc_expr tc_stmt tc_decl
 TYPECHECKER_SRCS := $(foreach u,$(TYPECHECKER_UNITS),src/$(u).pas src/$(u).inc)
 # parser follows the same separately-compiled unit pattern. Its list is
 # lowest layer first and must match scripts/build-stage.sh. ps_expr also owns
 # type parsing: SIZEOF(type) reaches types from factors while ADS(space) reaches
 # expressions from types, so the 1981 unit DAG cannot split that SCC further.
-PARSER_UNITS := ps_base ps_expr ps_stmt ps_decl
+PARSER_UNITS := argparse ps_base ps_expr ps_stmt ps_decl
 PARSER_SRCS := $(foreach u,$(PARSER_UNITS),src/$(u).pas src/$(u).inc)
 GEN1_BINS := $(addprefix $(BUILD_DIR)/gen1/,$(STAGES))
 GEN2_BINS := $(addprefix $(BUILD_DIR)/gen2/,$(STAGES))
@@ -58,7 +58,7 @@ $(RUNTIME_LIB): $(RUNTIME_SRCS)
 
 driver: $(DRIVER_BIN)
 
-$(DRIVER_BIN): src/driver.pas $(STAGE_SRCS) $(GEN4_BINS) $(FIXED_POINT) $(RUNTIME_LIB) | $(BIN_DIR)
+$(DRIVER_BIN): src/driver.pas src/argparse.pas src/argparse.inc $(STAGE_SRCS) $(GEN4_BINS) $(FIXED_POINT) $(RUNTIME_LIB) | $(BIN_DIR)
 	NATIVE_LEXER="$(abspath $(BUILD_DIR)/gen4/lexer)" NATIVE_PARSER="$(abspath $(BUILD_DIR)/gen4/parser)" NATIVE_TYPECHECKER="$(abspath $(BUILD_DIR)/gen4/typechecker)" NATIVE_CODEGEN="$(abspath $(BUILD_DIR)/gen4/codegen)" ./scripts/build-stage.sh $< $@
 	ln -sf pascal1981-native $(DRIVER_ALIAS)
 
@@ -135,6 +135,7 @@ test-native: test-driver test-sysutil $(ASTCOMPARE_BIN) $(PROXY_BIN)
 	./tests/run.sh
 	./tests/checklit.sh
 	./tests/depth.sh
+	./tests/stage_cli.sh
 	./tests/astcompare.sh
 
 # Reusable POSIX filesystem and process primitives, exercised from Pascal.

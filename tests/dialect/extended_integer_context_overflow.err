@@ -1,0 +1,10 @@
+Type checking failed:
+Negative integer constant out of range for INTEGER8
+Positive integer constant out of range for INTEGER8
+Negative integer constant out of range for WORD8
+Positive integer constant out of range for WORD8
+Negative integer constant out of range for INTEGER32
+Positive integer constant out of range for INTEGER32
+Negative integer constant out of range for WORD32
+Positive integer constant out of range for WORD32
+Error: Failed to parse input AST JSON

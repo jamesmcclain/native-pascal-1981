@@ -1,0 +1,6 @@
+PROGRAM VintageRealTypes;
+VAR
+  r32: REAL32;
+  r64: REAL64;
+BEGIN
+END.

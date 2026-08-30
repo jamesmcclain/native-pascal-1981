@@ -1,3 +1,4 @@
+{ DIALECT: extended }
 { Nested RECORD-in-RECORD and a bare ARRAY-by-value [C] parameter, at both
   COERCED (<=16 bytes) and MEMORY (>16 bytes) sizes -- SysVAggClass and the
   byval/coercion paths only ever see a flat leaf walk (WalkTypeLeaves), so

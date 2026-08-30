@@ -139,7 +139,7 @@ class NativeKernelParamAttrTests(unittest.TestCase):
         if emit_ptx:
             env["PASCAL_EMIT_PTX"] = "1"
         env.update(extra_env or {})
-        result = subprocess.run([NATIVE_CODEGEN],
+        result = subprocess.run([NATIVE_CODEGEN, "--dialect", "extended"],
                                 cwd=ROOT,
                                 input=ast,
                                 text=True,
@@ -208,7 +208,7 @@ class NativeKernelParamAttrTests(unittest.TestCase):
                                       "END;\n"
                                       ".\n")
             ast = _typed_ast(implementation)
-        result = subprocess.run([NATIVE_CODEGEN],
+        result = subprocess.run([NATIVE_CODEGEN, "--dialect", "extended"],
                                 cwd=ROOT,
                                 input=ast,
                                 text=True,
@@ -229,7 +229,7 @@ class NativeLaunchAbiTests(unittest.TestCase):
             source = Path(directory) / "main.pas"
             source.write_text(_LAUNCH_PROGRAM)
             ast = _typed_ast(source)
-        result = subprocess.run([NATIVE_CODEGEN],
+        result = subprocess.run([NATIVE_CODEGEN, "--dialect", "extended"],
                                 cwd=ROOT,
                                 input=ast,
                                 text=True,

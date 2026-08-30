@@ -1,0 +1,4 @@
+Type checking failed:
+Integer constant is outside the vintage range -32767..65535
+Integer constant is outside the vintage range -32767..65535
+Error: Failed to parse input AST JSON

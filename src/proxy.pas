@@ -29,6 +29,12 @@ USES bytebuf, argparse, jsonx, netsock, httpio, proxycore;
 CONST
   PX_MAX_HEAD = 65000;   { header block ceiling, per connection }
 
+  { Upper bound on --upstream-timeout.  A day is far past anything useful for
+    an editor completion, and it keeps the millisecond count well inside
+    INTEGER32 (which tops out around 24.8 days), so the conversion in
+    Configure cannot overflow. }
+  PX_MAX_TIMEOUT_SECONDS = 86400.0;
+
 VAR
   cfg: PxConfig;
   listen_fd, conn_fd, pid, bound_port: INTEGER32;
@@ -38,6 +44,7 @@ VAR
 FUNCTION getenv(name: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION pas_read_text_file(path: ADRMEM): ADRMEM [C]; EXTERN;
 PROCEDURE pas_eprint(msg: ADRMEM) [C]; EXTERN;
+FUNCTION pas_double_to_int64(x: REAL): CLONG [C]; EXTERN;
 
 { argparse's VAR outputs are its own ArgStr: the same LSTRING(255) as ByteStr,
   but a distinct named type, so neither a VAR parameter nor an assignment will
@@ -381,6 +388,7 @@ VAR
   url: ByteBuf;
   path: ByteStr;
   ok: BOOLEAN;
+  timeout_s: REAL;
 BEGIN
   PxConfigInit(cfg);
   ok := TRUE;
@@ -414,7 +422,21 @@ BEGIN
   cfg.max_tokens := ArgGetInt('max-tokens');
   cfg.max_lines := ArgGetInt('max-lines');
   cfg.temperature := ArgGetReal('temperature');
-  cfg.timeout_ms := TRUNC(ArgGetReal('upstream-timeout') * 1000.0);
+  { Not TRUNC: it lowers to a 16-bit float-to-int conversion, so every timeout
+    above 32.767 s -- the 20 s default is fine, but the corpus runs pass 60 --
+    would be poison rather than a millisecond count, and that value goes
+    straight to the socket as SO_RCVTIMEO.  pas_double_to_int64 clamps instead
+    of leaving the conversion undefined, and PX_MAX_TIMEOUT_SECONDS keeps the
+    milliseconds inside INTEGER32 so the narrowing is exact. }
+  timeout_s := ArgGetReal('upstream-timeout');
+  IF (timeout_s <= 0.0) OR (timeout_s > PX_MAX_TIMEOUT_SECONDS) THEN
+  BEGIN
+    NoteStr('--upstream-timeout must be greater than 0 and at most 86400 seconds');
+    ok := FALSE;
+  END
+  ELSE
+    cfg.timeout_ms := RETYPE(INTEGER32,
+                             pas_double_to_int64(timeout_s * 1000.0));
 
   ArgGetStr('grammar-file', astr);
   ToByteStr(astr, path);
