@@ -265,8 +265,11 @@ least once:
   compile. Carry an `INTEGER32` index against a base pointer instead.
 - **Two `LSTRING(255)` types from different units are not interchangeable**,
   neither as a `VAR` parameter nor by assignment. Copy character by character.
-- **`CONST` accepts foldable integers, reals and `CHAR`s only.** String
-  constants are not supported, and a `CONST` value cannot be a function call.
+- **`CONST` accepts literals, named constants, and `WRD`/`BYWORD` constant
+  constructors.** Multi-character string constants are supported. `WRD(x)`
+  and `BYWORD(hi, lo)` are the only function-shaped forms in the vintage
+  `constant` grammar; ordinary calls, including `ORD`, `CHR`, `SUCC`, and
+  `PRED`, are not valid `CONST` values.
 - **There is no implicit `INTEGER64` to `REAL` conversion [extended]**, and
   `FLOAT()` accepts only a plain `INTEGER`. The runtime's
   `pas_int64_to_double` exists because there is no way to write that
