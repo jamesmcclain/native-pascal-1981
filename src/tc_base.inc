@@ -19,6 +19,12 @@ CONST
   TK_FILE = 11;
   TK_SET = 12;
   TK_ENUM = 13;
+  TK_INTEGER8 = 14;
+  TK_INTEGER32 = 15;
+  TK_INTEGER64 = 16;
+  TK_WORD8 = 17;
+  TK_WORD32 = 18;
+  TK_WORD64 = 19;
 
   MAX_SYMBOLS = 2000;
   MAX_TYPES = 500;
@@ -93,6 +99,10 @@ FUNCTION GetObjOrNil(obj: ADRMEM; key: Str255): ADRMEM;
 PROCEDURE AddFieldEntry(record_id: INTEGER; fname: Str255; ftk, faux, faux2: INTEGER);
 FUNCTION LookupField(record_id: INTEGER; fname: Str255): INTEGER32;
 PROCEDURE AddUniqueRecordField(record_id: INTEGER; fname: Str255; ftk, faux, faux2: INTEGER);
+FUNCTION IsInteger(tk: INTEGER): BOOLEAN;
+FUNCTION IsSignedInteger(tk: INTEGER): BOOLEAN;
+FUNCTION IsUnsignedInteger(tk: INTEGER): BOOLEAN;
+FUNCTION IntegerBits(tk: INTEGER): INTEGER;
 FUNCTION IsOrdinal(tk: INTEGER): BOOLEAN;
 FUNCTION IsNumeric(tk: INTEGER): BOOLEAN;
 

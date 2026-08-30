@@ -30,10 +30,17 @@ CONST
     doesn't need to track for element/IN/set-operator checking. }
   TK_ENUM     = 13; { a user-declared enumerated type. This coarse model
     doesn't distinguish one enum type from another (or from its members'
-    constant symbols): every enum and enum constant carries TK_ENUM, the
-    same deliberate looseness the rest of this file applies where a v1
-    shape check is the documented scope. codegen.pas is the enforcement
-    backstop, exactly as for the other coarse distinctions here. }
+    constant symbols): every enum and enum constant carries TK_ENUM. }
+  { Exact integer-family kinds preserve the declaration width and signedness
+    needed for contextual literal checks. INTEGER16 and WORD16 use the vintage
+    TK_INTEGER and TK_WORD kinds. These values need not match codegen's private
+    kind numbers because the stages exchange the JSON AST, not kind ids. }
+  TK_INTEGER8  = 14;
+  TK_INTEGER32 = 15;
+  TK_INTEGER64 = 16;
+  TK_WORD8     = 17;
+  TK_WORD32    = 18;
+  TK_WORD64    = 19;
 
   MAX_SYMBOLS = 2000;
   MAX_TYPES   = 500;
@@ -297,14 +304,40 @@ BEGIN
     AddFieldEntry(record_id, fname, ftk, faux, faux2);
 END;
 
+FUNCTION IsSignedInteger(tk: INTEGER): BOOLEAN;
+BEGIN
+  IsSignedInteger := (tk = TK_INTEGER8) OR (tk = TK_INTEGER) OR
+    (tk = TK_INTEGER32) OR (tk = TK_INTEGER64);
+END;
+
+FUNCTION IsUnsignedInteger(tk: INTEGER): BOOLEAN;
+BEGIN
+  IsUnsignedInteger := (tk = TK_WORD8) OR (tk = TK_WORD) OR
+    (tk = TK_WORD32) OR (tk = TK_WORD64);
+END;
+
+FUNCTION IsInteger(tk: INTEGER): BOOLEAN;
+BEGIN
+  IsInteger := IsSignedInteger(tk) OR IsUnsignedInteger(tk);
+END;
+
+FUNCTION IntegerBits(tk: INTEGER): INTEGER;
+BEGIN
+  IF (tk = TK_INTEGER8) OR (tk = TK_WORD8) THEN IntegerBits := 8
+  ELSE IF (tk = TK_INTEGER) OR (tk = TK_WORD) THEN IntegerBits := 16
+  ELSE IF (tk = TK_INTEGER32) OR (tk = TK_WORD32) THEN IntegerBits := 32
+  ELSE IF (tk = TK_INTEGER64) OR (tk = TK_WORD64) THEN IntegerBits := 64
+  ELSE IntegerBits := 0;
+END;
+
 FUNCTION IsOrdinal(tk: INTEGER): BOOLEAN;
 BEGIN
-  IsOrdinal := (tk = TK_INTEGER) OR (tk = TK_WORD) OR (tk = TK_CHAR) OR (tk = TK_BOOLEAN) OR (tk = TK_ENUM);
+  IsOrdinal := IsInteger(tk) OR (tk = TK_CHAR) OR (tk = TK_BOOLEAN) OR (tk = TK_ENUM);
 END;
 
 FUNCTION IsNumeric(tk: INTEGER): BOOLEAN;
 BEGIN
-  IsNumeric := (tk = TK_INTEGER) OR (tk = TK_REAL) OR (tk = TK_WORD);
+  IsNumeric := IsInteger(tk) OR (tk = TK_REAL);
 END;
 
 PROCEDURE TcInit(VAR requested_features: FeatureSet);

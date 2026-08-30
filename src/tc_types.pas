@@ -68,14 +68,17 @@ BEGIN
       tk := TK_STRING;
       aux2 := 1;
     END
-    { Wide-integer/real extension names (feature-gated under the extended
-      dialect): this v1 type-kind model doesn't track width, so each just
-      aliases to its base kind -- matching how INTEGER32/WORD32/etc. behave
-      identically to INTEGER/WORD for every check this stage performs. }
+    { Wide integer names retain exact width and signedness. INTEGER16 and
+      WORD16 are extension spellings for the vintage 16-bit kinds. }
     ELSE IF (uname = 'INTEGER8') OR (uname = 'INTEGER16') OR (uname = 'INTEGER32') OR (uname = 'INTEGER64') THEN
     BEGIN
       IF active_features.wide_integers OR is_device_compiland THEN
-        tk := TK_INTEGER
+      BEGIN
+        IF uname = 'INTEGER8' THEN tk := TK_INTEGER8
+        ELSE IF uname = 'INTEGER32' THEN tk := TK_INTEGER32
+        ELSE IF uname = 'INTEGER64' THEN tk := TK_INTEGER64
+        ELSE tk := TK_INTEGER;
+      END
       ELSE BEGIN
         AddError2('Type requires the extended dialect: ', name);
         tk := TK_UNKNOWN;
@@ -84,7 +87,12 @@ BEGIN
     ELSE IF (uname = 'WORD8') OR (uname = 'WORD16') OR (uname = 'WORD32') OR (uname = 'WORD64') THEN
     BEGIN
       IF active_features.wide_integers OR is_device_compiland THEN
-        tk := TK_WORD
+      BEGIN
+        IF uname = 'WORD8' THEN tk := TK_WORD8
+        ELSE IF uname = 'WORD32' THEN tk := TK_WORD32
+        ELSE IF uname = 'WORD64' THEN tk := TK_WORD64
+        ELSE tk := TK_WORD;
+      END
       ELSE BEGIN
         AddError2('Type requires the extended dialect: ', name);
         tk := TK_UNKNOWN;
@@ -121,7 +129,10 @@ BEGIN
         aux := TK_CHAR;
       END
       ELSE IF uname = 'CCHAR' THEN tk := TK_CHAR
-      ELSE IF (uname = 'CSHORT') OR (uname = 'CINT') OR (uname = 'CLONG') OR (uname = 'CSIZE_T') THEN tk := TK_INTEGER
+      ELSE IF uname = 'CSHORT' THEN tk := TK_INTEGER
+      ELSE IF uname = 'CINT' THEN tk := TK_INTEGER32
+      ELSE IF uname = 'CLONG' THEN tk := TK_INTEGER64
+      ELSE IF uname = 'CSIZE_T' THEN tk := TK_WORD64
       ELSE tk := TK_REAL;
     END
     ELSE IF uname = 'TEXT' THEN

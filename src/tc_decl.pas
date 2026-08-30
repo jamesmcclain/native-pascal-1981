@@ -12,22 +12,15 @@
   jsonutil.pas, and this file) end to end: EXTERN/FORWARD declarations (no
   body to check -- the real definition is a separately-compiled/linked
   object, or comes later in the same file), the ADRMEM/CPTR address types
-  and the CINT/CCHAR/CSHORT/CLONG/CSIZE_T/CDOUBLE C-ABI width aliases (each
-  resolved to the vintage type of matching flavor, since this v1 type-kind
-  model doesn't track width), the wide INTEGER8/16/32/64, WORD8/16/32/64,
-  and REAL32/64 extension names (same width-collapsing treatment), the
+  and the CINT/CCHAR/CSHORT/CLONG/CSIZE_T/CDOUBLE C-ABI width aliases, the
+  wide INTEGER8/16/32/64 and WORD8/16/32/64 extension names (with exact
+  integer width and signedness retained), the REAL32/64 extension names, the
   local_interfaces a USES clause splices in (their TYPE/PROC/FUNC
   signatures are registered exactly like an EXTERN decl's), pointer
   arithmetic (POINTER +/- an ordinal offset) and dereference (`p^`), STRING/
   LSTRING character indexing (`s[i]`), the ORD/CHR/TRUNC/ROUND/SIZEOF/ODD/
   SUCC/PRED/ABS/SQR/SQRT/SIN/COS/LN/EXP/ARCTAN/FLOAT/HIBYTE/LOBYTE/WRD/
-  WRD8/BYWORD builtins (checked against this file's own coarse tk model --
-  e.g. WRD8 returns TK_WORD since there is no separate WORD8 tag here,
-  unlike codegen.pas's own tid scheme; codegen.pas re-resolves every type
-  itself by walking the AST directly rather than consuming this file's
-  inferred tk annotations, so that coarseness only affects this file's own
-  downstream error-checking precision, not the IR codegen.pas ultimately
-  emits), and non-PROGRAM compilation units (MODULE/INTERFACE/
+  WRD8/BYWORD builtins, and non-PROGRAM compilation units (MODULE/INTERFACE/
   IMPLEMENTATION, which put `decls` directly on the root instead of nesting
   under a `block` the way a PROGRAM does -- see CheckUnit). This stage also
   checks DEVICE context, VARARGS attributes, UNIT interface/implementation
@@ -51,19 +44,10 @@
   Annotation contract: the Python reference stamps a `resolved_type`
   attribute onto most (not textually all -- see below) IntLiteral/
   RealLiteral nodes (and the operand of a signed IntLiteral unary +/-),
-  naming the literal's width/precision for codegen -- context_type's exact
-  width (e.g. Integer32Type for a CINT target) when the surrounding context
-  calls for one of the WORD/INTEGERn/REAL32 family, else the default
-  IntegerType/RealType. Two known, functionally-harmless gaps remain
-  against byte-identical parity with the Python reference (neither affects
-  a single fixture in tests/fixtures/typecheck/, and neither changes
-  codegen output, since the default IntegerType/RealType tag and no tag at
-  all are handled identically by codegen):
-    1. Because this v1 type-kind model collapses all integer widths into
-       TK_INTEGER (and all WORD widths into TK_WORD), it always tags the
-       default IntegerType/RealType regardless of a width-specific target
-       context, rather than e.g. Integer32Type for a CINT-typed target.
-    2. The Python reference itself does not tag perfectly consistently --
+  naming the literal's width/precision for codegen. Contextual annotation
+  is completed by the integer range-checking pass. One functionally harmless
+  gap remains against byte-identical parity with the Python reference:
+    1. The Python reference itself does not tag perfectly consistently --
        e.g. a second `len := 0;` inside a nested IF's compound statement,
        assigning the exact same IntLiteral(0) to the exact same INTEGER
        variable as an earlier top-level `len := 0;` that DOES get tagged,

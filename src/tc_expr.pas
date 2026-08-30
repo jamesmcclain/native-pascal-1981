@@ -26,24 +26,47 @@ BEGIN
 END;
 
 FUNCTION CanAssign(target_tk, expr_tk: INTEGER): BOOLEAN;
+VAR
+  target_bits, expr_bits: INTEGER;
 BEGIN
+  target_bits := IntegerBits(target_tk);
+  expr_bits := IntegerBits(expr_tk);
   IF (target_tk = TK_UNKNOWN) OR (expr_tk = TK_UNKNOWN) THEN
     CanAssign := TRUE
   ELSE IF target_tk = expr_tk THEN
     CanAssign := TRUE
-  ELSE IF (target_tk = TK_REAL) AND (expr_tk = TK_INTEGER) THEN
+  ELSE IF (target_tk = TK_REAL) AND IsSignedInteger(expr_tk) THEN
     CanAssign := TRUE
-  ELSE IF (target_tk = TK_WORD) AND (expr_tk = TK_INTEGER) THEN
-    { The vintage "INTEGER constant changes to WORD" rule (manual). The
-      Python reference only allows this for a *constant* INTEGER
-      expression; this file, like codegen.pas's own TypesCompatibleForAssign,
-      simplifies by allowing it for any INTEGER-typed expression, not just
-      literals -- a documented, deliberate looseness, not an oversight. }
-    CanAssign := TRUE
+  ELSE IF IsInteger(target_tk) AND IsInteger(expr_tk) THEN
+  BEGIN
+    { Constant-sensitive signed-to-unsigned adaptation is checked by callers.
+      Keep it provisionally compatible here. Other implicit conversions must
+      widen without losing a sign bit. }
+    IF IsUnsignedInteger(target_tk) AND IsSignedInteger(expr_tk) THEN
+      CanAssign := TRUE
+    ELSE IF IsSignedInteger(target_tk) AND IsUnsignedInteger(expr_tk) THEN
+      CanAssign := target_bits > expr_bits
+    ELSE
+      { Width-aware narrowing diagnostics are added by the semantic pass.
+        Preserve the former coarse model's compatibility until then. }
+      CanAssign := TRUE;
+  END
   ELSE IF (target_tk = TK_POINTER) AND (expr_tk = TK_POINTER) THEN
     CanAssign := TRUE
   ELSE
     CanAssign := FALSE;
+END;
+
+FUNCTION IntegerResultType(left_tk, right_tk: INTEGER): INTEGER;
+VAR
+  left_bits, right_bits: INTEGER;
+BEGIN
+  left_bits := IntegerBits(left_tk);
+  right_bits := IntegerBits(right_tk);
+  IF left_bits > right_bits THEN IntegerResultType := left_tk
+  ELSE IF right_bits > left_bits THEN IntegerResultType := right_tk
+  ELSE IF IsUnsignedInteger(left_tk) THEN IntegerResultType := left_tk
+  ELSE IntegerResultType := right_tk;
 END;
 
 FUNCTION CheckDesignator(node: ADRMEM): INTEGER;
@@ -263,8 +286,8 @@ BEGIN
       AddError('ODD requires exactly one argument')
     ELSE BEGIN
       atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
-      IF (atk <> TK_INTEGER) AND (atk <> TK_WORD) AND (atk <> TK_UNKNOWN) THEN
-        AddError('ODD argument must be INTEGER or WORD');
+      IF NOT IsInteger(atk) AND (atk <> TK_UNKNOWN) THEN
+        AddError('ODD argument must be an integer type');
     END;
     CheckFuncCall := TK_BOOLEAN;
     RETURN;
@@ -278,8 +301,8 @@ BEGIN
     END
     ELSE BEGIN
       atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
-      IF (atk <> TK_INTEGER) AND (atk <> TK_WORD) AND (atk <> TK_CHAR) AND (atk <> TK_ENUM) AND (atk <> TK_UNKNOWN) THEN
-        AddError('SUCC/PRED argument must be INTEGER, WORD, CHAR, or an enumerated type');
+      IF NOT IsOrdinal(atk) AND (atk <> TK_UNKNOWN) THEN
+        AddError('SUCC/PRED argument must be an ordinal type');
       CheckFuncCall := atk;
     END;
     RETURN;
@@ -293,8 +316,8 @@ BEGIN
     END
     ELSE BEGIN
       atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
-      IF (atk <> TK_INTEGER) AND (atk <> TK_WORD) AND (atk <> TK_REAL) AND (atk <> TK_UNKNOWN) THEN
-        AddError('ABS/SQR argument must be INTEGER, WORD, or REAL');
+      IF NOT IsNumeric(atk) AND (atk <> TK_UNKNOWN) THEN
+        AddError('ABS/SQR argument must be numeric');
       CheckFuncCall := atk;
     END;
     RETURN;
@@ -306,8 +329,8 @@ BEGIN
       AddError('SQRT/SIN/COS/LN/EXP/ARCTAN/FLOAT requires exactly one argument')
     ELSE BEGIN
       atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
-      IF (atk <> TK_INTEGER) AND (atk <> TK_WORD) AND (atk <> TK_REAL) AND (atk <> TK_UNKNOWN) THEN
-        AddError('SQRT/SIN/COS/LN/EXP/ARCTAN/FLOAT argument must be INTEGER, WORD, or REAL');
+      IF NOT IsNumeric(atk) AND (atk <> TK_UNKNOWN) THEN
+        AddError('SQRT/SIN/COS/LN/EXP/ARCTAN/FLOAT argument must be numeric');
     END;
     CheckFuncCall := TK_REAL;
     RETURN;
@@ -318,8 +341,8 @@ BEGIN
       AddError('HIBYTE/LOBYTE requires exactly one argument')
     ELSE BEGIN
       atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
-      IF (atk <> TK_INTEGER) AND (atk <> TK_WORD) AND (atk <> TK_UNKNOWN) THEN
-        AddError('HIBYTE/LOBYTE argument must be INTEGER or WORD');
+      IF NOT IsInteger(atk) AND (atk <> TK_UNKNOWN) THEN
+        AddError('HIBYTE/LOBYTE argument must be an integer type');
     END;
     CheckFuncCall := TK_CHAR;
     RETURN;
@@ -335,12 +358,7 @@ BEGIN
       IF NOT IsOrdinal(atk) AND (atk <> TK_UNKNOWN) THEN
         AddError('WRD8 argument must be an ordinal type');
     END;
-    { typechecker.pas's coarse type model has no distinct WORD8 tag (see
-      the header comment); codegen.pas resolves the real result type
-      independently by re-walking the AST itself, so this tag is only
-      used for this file's own downstream error-checking, same as WRD
-      returning TK_WORD above. }
-    CheckFuncCall := TK_WORD;
+    CheckFuncCall := TK_WORD8;
     RETURN;
   END;
   IF (name = 'EOF') OR (name = 'EOLN') THEN
@@ -566,7 +584,7 @@ BEGIN
       ELSE IF (lt = TK_REAL) OR (rt = TK_REAL) THEN
         CheckExpr := TK_REAL
       ELSE
-        CheckExpr := TK_INTEGER;
+        CheckExpr := IntegerResultType(lt, rt);
     END;
   END
   ELSE IF nt = 'UnaryOp' THEN
