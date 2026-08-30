@@ -162,7 +162,8 @@ BEGIN
     ResolveTypeExpr(base_node, inner_tk, inner_aux, inner_aux2, inner_idx);
     tk := TK_POINTER;
     aux := inner_tk;
-    aux2 := inner_aux;
+    IF (inner_tk = TK_STRING) AND (inner_aux2 = 1) THEN aux2 := 1
+    ELSE aux2 := inner_aux;
   END
   ELSE IF nt = 'FileType' THEN
   BEGIN
@@ -178,7 +179,10 @@ BEGIN
     ResolveTypeExpr(elem_node, inner_tk, inner_aux, inner_aux2, inner_idx);
     tk := TK_ARRAY;
     aux := inner_tk;
-    aux2 := inner_aux;
+    { An LSTRING element has no aux of its own; keep its .LEN marker alive
+      by folding it into the array's aux2 (see the string aux2 flag above). }
+    IF (inner_tk = TK_STRING) AND (inner_aux2 = 1) THEN aux2 := 1
+    ELSE aux2 := inner_aux;
     idx_tk := TK_INTEGER;
     index_node := GetObj(node, 'index_range');
     bound_node := GetObj(index_node, 'low');

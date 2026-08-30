@@ -395,8 +395,18 @@ BEGIN
         new_tk := aux;
         new_aux := aux2;
         tk := new_tk;
-        aux := new_aux;
-        aux2 := 0;
+        { An LSTRING element/pointee carries its .LEN marker in the aux2 slot
+          (a string never uses aux); route it back to aux2 so a[i].LEN and
+          p^.LEN resolve instead of hitting the non-record selector error. }
+        IF new_tk = TK_STRING THEN
+        BEGIN
+          aux := 0;
+          aux2 := new_aux;
+        END
+        ELSE BEGIN
+          aux := new_aux;
+          aux2 := 0;
+        END;
       END;
     END
     ELSE IF skind = 'DEREF' THEN
@@ -422,8 +432,18 @@ BEGIN
         new_tk := aux;
         new_aux := aux2;
         tk := new_tk;
-        aux := new_aux;
-        aux2 := 0;
+        { An LSTRING element/pointee carries its .LEN marker in the aux2 slot
+          (a string never uses aux); route it back to aux2 so a[i].LEN and
+          p^.LEN resolve instead of hitting the non-record selector error. }
+        IF new_tk = TK_STRING THEN
+        BEGIN
+          aux := 0;
+          aux2 := new_aux;
+        END
+        ELSE BEGIN
+          aux := new_aux;
+          aux2 := 0;
+        END;
       END;
     END;
   END;
