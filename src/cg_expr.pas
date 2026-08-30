@@ -1185,6 +1185,7 @@ FUNCTION CodegenExpr(node: ADRMEM): ADRMEM;
 VAR
   nt: Str255;
   nm: Str255;
+  nmu: Str255;
   symi: INTEGER32;
   consti: INTEGER32;
   routi: INTEGER32;
@@ -1251,44 +1252,45 @@ BEGIN
   ELSE IF nt = 'Identifier' THEN
   BEGIN
     nm := GetStr(node, 'name');
+    nmu := UpperStr(nm);
     { These unsigned maxima have all bits set.  LLVMConstInt takes the
       machine bit pattern through the signed CLONG binding, so -1 is the
       correct i32/i64 payload; WRITE chooses %u/%llu from last_val_tk. }
-    IF nm = 'MAXINT' THEN
+    IF nmu = 'MAXINT' THEN
     BEGIN
       res := LLVMConstInt(i16ty, 32767, 1);
       last_val_tk := TK_INTEGER;
     END
-    ELSE IF nm = 'MAXWORD' THEN
+    ELSE IF nmu = 'MAXWORD' THEN
     BEGIN
       res := LLVMConstInt(i16ty, -1, 0);
       last_val_tk := TK_WORD;
     END
-    ELSE IF nm = 'MAXINT32' THEN
+    ELSE IF nmu = 'MAXINT32' THEN
     BEGIN
       res := LLVMConstInt(i32ty, 2147483647, 1);
       last_val_tk := TK_INTEGER32;
     END
-    ELSE IF nm = 'MAXWORD32' THEN
+    ELSE IF nmu = 'MAXWORD32' THEN
     BEGIN
       res := LLVMConstInt(i32ty, -1, 0);
       last_val_tk := TK_WORD32;
     END
-    ELSE IF nm = 'MAXINT64' THEN
+    ELSE IF nmu = 'MAXINT64' THEN
     BEGIN
       res := LLVMConstInt(i64ty, 9223372036854775807, 1);
       last_val_tk := TK_INTEGER64;
     END
-    ELSE IF nm = 'MAXWORD64' THEN
+    ELSE IF nmu = 'MAXWORD64' THEN
     BEGIN
       res := LLVMConstInt(i64ty, -1, 0);
       last_val_tk := TK_WORD64;
     END
-    ELSE IF (nm = 'THREADIDX_X') OR (nm = 'THREADIDX_Y') OR (nm = 'THREADIDX_Z') OR
-       (nm = 'BLOCKIDX_X') OR (nm = 'BLOCKIDX_Y') OR (nm = 'BLOCKIDX_Z') OR
-       (nm = 'BLOCKDIM_X') OR (nm = 'BLOCKDIM_Y') OR (nm = 'BLOCKDIM_Z') OR
-       (nm = 'GRIDDIM_X') OR (nm = 'GRIDDIM_Y') OR (nm = 'GRIDDIM_Z') THEN
-      res := CodegenDeviceIndex(nm)
+    ELSE IF (nmu = 'THREADIDX_X') OR (nmu = 'THREADIDX_Y') OR (nmu = 'THREADIDX_Z') OR
+       (nmu = 'BLOCKIDX_X') OR (nmu = 'BLOCKIDX_Y') OR (nmu = 'BLOCKIDX_Z') OR
+       (nmu = 'BLOCKDIM_X') OR (nmu = 'BLOCKDIM_Y') OR (nmu = 'BLOCKDIM_Z') OR
+       (nmu = 'GRIDDIM_X') OR (nmu = 'GRIDDIM_Y') OR (nmu = 'GRIDDIM_Z') THEN
+      res := CodegenDeviceIndex(nmu)
     ELSE
     BEGIN
     symi := LookupSym(nm);
