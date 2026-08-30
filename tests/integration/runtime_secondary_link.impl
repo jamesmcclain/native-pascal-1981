@@ -1,0 +1,11 @@
+(*$INCLUDE:'runtime_secondary_link.inc'*)
+IMPLEMENTATION OF rtcall;
+PROCEDURE Emit;
+VAR
+  s: LSTRING(255);
+BEGIN
+  s := 'secondary compiland reached the runtime';
+  WRITELN(s);
+END;
+BEGIN
+END.

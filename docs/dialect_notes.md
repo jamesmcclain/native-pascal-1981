@@ -263,8 +263,19 @@ least once:
 - **Pointers compare only with `=` and `<>`.** There is no pointer subtraction
   and no relational comparison, so a C-style `while (p < end)` walk does not
   compile. Carry an `INTEGER32` index against a base pointer instead.
-- **Two `LSTRING(255)` types from different units are not interchangeable**,
-  neither as a `VAR` parameter nor by assignment. Copy character by character.
+- **Structurally identical string types are interchangeable when their
+  capacities match.** `Str255`, `ByteStr` and `ArgStr` (all `LSTRING(255)`,
+  each declared in its own unit) assign to one another and pass as `VAR` or
+  value parameters with no copy. A capacity mismatch (`LSTRING(255)` into
+  `LSTRING(100)`) is still rejected, and an `LSTRING(n)` never mixes with a
+  fixed `STRING(n)`. This matches the reference type system, which is
+  structural rather than name-based.
+- **A `STRING(n)` is exactly n characters**, like `PACKED ARRAY [1..n] OF
+  CHAR`. A shorter string literal does not fit: `s := 'ten'` for `s:
+  STRING(10)` is rejected with `string literal length does not match STRING
+  capacity`. Use `LSTRING(n)`, which carries a length byte in element `0` and
+  accepts any length up to `n`; a `STRING(n)` or `CHAR` value converts to
+  `LSTRING` automatically on assignment.
 - **`CONST` accepts literals, named constants, and `WRD`/`BYWORD` constant
   constructors.** Multi-character string constants are supported. `WRD(x)`
   and `BYWORD(hi, lo)` are the only function-shaped forms in the vintage
