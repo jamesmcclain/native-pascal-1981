@@ -10,9 +10,10 @@
 (*$INCLUDE:'cg_expr_sets.inc'*)
 (*$INCLUDE:'cg_expr_support.inc'*)
 (*$INCLUDE:'cg_expr_literals.inc'*)
+(*$INCLUDE:'cg_expr_vector.inc'*)
 (*$INCLUDE:'cg_expr.inc'*)
 IMPLEMENTATION OF cg_expr;
-USES cg_expr_shape, cg_expr_sets, cg_expr_support, cg_expr_literals;
+USES cg_expr_shape, cg_expr_sets, cg_expr_support, cg_expr_literals, cg_expr_vector;
 
 FUNCTION CodegenExpr(node: ADRMEM): ADRMEM; FORWARD;
 FUNCTION ComputeDesignatorAddress(node: ADRMEM): ADRMEM; FORWARD;
@@ -1560,6 +1561,24 @@ BEGIN
       res := CodegenSimpleBuiltin(nm, GetObj(node, 'args'))
     ELSE IF nm = 'DEVALLOC' THEN
       res := CodegenDevAlloc(GetObj(node, 'args'))
+    ELSE IF nm = 'VSPLAT' THEN
+    BEGIN
+      { VSPLAT(x, V): the second argument is a VECTOR type NAME, not a
+        value -- it parses as a bare Identifier and is resolved against the
+        named-type table here (the typechecker's VSPLAT rule mirrors this).
+        A new pattern for this dialect: no other builtin takes a type name. }
+      call_args := GetObj(node, 'args');
+      IF ArrSize(call_args) <> 2 THEN
+        AbortWith('codegen: VSPLAT expects (scalar, VECTOR type name)');
+      IF NodeType(ArrItem(call_args, 1)) <> 'Identifier' THEN
+        AbortWith('codegen: VSPLAT second argument must be a VECTOR type name');
+      result_tid := LookupNamedType(GetStr(ArrItem(call_args, 1), 'name'));
+      IF (result_tid = 0) OR (TypeKind(result_tid) <> TK_VECTOR) THEN
+        AbortWith2('codegen: VSPLAT type argument is not a VECTOR type: ', GetStr(ArrItem(call_args, 1), 'name'));
+      res := CodegenExpr(ArrItem(call_args, 0));
+      res := CodegenVSplat(res, last_val_tk, result_tid, ArrItem(call_args, 0));
+      last_val_tk := result_tid;
+    END
     ELSE IF (nm = 'EOF') OR (nm = 'EOLN') THEN
     BEGIN
       call_args := AllocPtrArray(1);

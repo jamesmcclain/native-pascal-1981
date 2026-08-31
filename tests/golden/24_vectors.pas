@@ -45,5 +45,20 @@ BEGIN
   m[3] := FALSE;
   FOR i := 0 TO 3 DO
     IF m[i] THEN WRITE('T ') ELSE WRITE('F ');
+  WRITELN;
+
+  { M2b: VSPLAT -- constant scalar (folds to a splat constant), runtime
+    scalar (insertelement + zero-mask shufflevector), and a BOOLEAN mask. }
+  d := VSPLAT(2.5, V4D);
+  FOR i := 0 TO 3 DO WRITE(d[i]:0:2, ' ');
+  WRITELN;
+  d := VSPLAT(d[0] + 0.5, V4D);
+  FOR i := 0 TO 3 DO WRITE(d[i]:0:2, ' ');
+  WRITELN;
+  iv := VSPLAT(9, V8I);
+  WRITELN(iv[0], ' ', iv[7]);
+  m := VSPLAT(TRUE, M4);
+  FOR i := 0 TO 3 DO
+    IF m[i] THEN WRITE('T ') ELSE WRITE('F ');
   WRITELN
 END.

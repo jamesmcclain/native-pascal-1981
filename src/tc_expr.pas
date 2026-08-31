@@ -655,6 +655,34 @@ BEGIN
     CheckFuncCall := TK_BOOLEAN;
     RETURN;
   END;
+  IF name = 'VSPLAT' THEN
+  BEGIN
+    { VSPLAT(x, V): x a scalar, V a VECTOR TYPE NAME (a bare Identifier,
+      resolved against the type table -- not CheckExpr'd as a value). This
+      entry is mandatory: an untyped builtin falls through to the
+      'Undefined function' arm below. The result kind is bare TK_VECTOR --
+      this stage's model carries no lane count / element kind through a
+      call result (codegen's table is the backstop, as for SETs). }
+    IF nargs <> 2 THEN
+      AddError('VSPLAT requires exactly two arguments (a scalar and a VECTOR type name)')
+    ELSE
+    BEGIN
+      atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
+      warg := cJSON_GetArrayItem(args_arr, 1);
+      IF NodeType(warg) <> 'Identifier' THEN
+        AddError('VSPLAT second argument must be a VECTOR type name')
+      ELSE
+      BEGIN
+        si := LookupType(GetStr(warg, 'name'));
+        IF (si = 0) OR (types[si].tk <> TK_VECTOR) THEN
+          AddError('VSPLAT type argument is not a VECTOR type')
+        ELSE IF (atk <> TK_UNKNOWN) AND NOT CanAssign(types[si].aux, atk) THEN
+          AddError('VSPLAT scalar argument is not assignable to the vector element type');
+      END;
+    END;
+    CheckFuncCall := TK_VECTOR;
+    RETURN;
+  END;
   si := LookupSymbol(name);
   IF si = 0 THEN
   BEGIN
