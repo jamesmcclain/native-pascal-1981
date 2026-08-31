@@ -1,0 +1,5 @@
+Type checking failed:
+LAUNCH first argument must be a kernel identifier
+LAUNCH cannot resolve kernel procedure: missing_kernel
+LAUNCH kernel identifier is not a procedure: not_kernel
+Error: Failed to parse input AST JSON

@@ -43,7 +43,7 @@ VAR
   status1, status2, status3, status4, clang_status, fail_code: CINT;
   option, opt_str: Str255;
   arg_error: ArgStr;
-  compile_only, ir_only, verbose: BOOLEAN;
+  compile_only, ir_only, verbose, ptx_only: BOOLEAN;
 
 PROCEDURE Usage;
 BEGIN
@@ -51,6 +51,7 @@ BEGIN
   WRITELN('  -o <file>               Place output into <file>');
   WRITELN('  -c                      Compile to object file only (.o)');
   WRITELN('  -S                      Compile to LLVM IR (.ll) only');
+  WRITELN('  --emit-ptx              Emit PTX assembly (.ptx) for device code');
   WRITELN('  -O0, -O1, -O2, -O3      Optimization level (default: -O1)');
   WRITELN('  --dialect <name>        Language dialect: vintage or extended');
   WRITELN('  --target-cpu <cpu>      Host target CPU (LLVM target-cpu attribute)');
@@ -295,7 +296,7 @@ BEGIN
   ArgString('target-cpu', ARG_NO_SHORT, '', 'Host target CPU (LLVM target-cpu attribute)');
   ArgString('target-features', ARG_NO_SHORT, '', 'Host target features, e.g. +avx2,+fma');
   ArgString('device-backend', ARG_NO_SHORT, '', 'Select the device code backend');
-  ArgFlag('emit-ptx', ARG_NO_SHORT, 'Emit PTX assembly for device code');
+  ArgFlag('emit-ptx', ARG_NO_SHORT, 'Emit PTX assembly (.ptx) for device code');
   ArgFlag('noalias-kernel-params', ARG_NO_SHORT,
           'Mark device kernel pointer parameters noalias');
   ArgPassthrough('-I');
@@ -318,6 +319,15 @@ BEGIN
   extra_clang_argc := 0;
   compile_only := ArgGetFlag('compile-only');
   ir_only := ArgGetFlag('ir-only');
+  { PTX is the codegen stage's final product, not something clang can be
+    handed: --emit-ptx therefore stops after codegen exactly as -S does,
+    rather than needing -S spelled alongside it. Written without it, the
+    driver used to pass the PTX text to clang as if it were LLVM IR, and
+    the only report was clang's own "expected top-level entity". }
+  ptx_only := ArgGetFlag('emit-ptx');
+  IF ptx_only AND compile_only THEN
+    Fail('error: --emit-ptx and -c cannot be combined');
+  ir_only := ir_only OR ptx_only;
   verbose := ArgGetFlag('verbose');
 
   IF ArgWasGiven('output') THEN output_file := ArgGetRaw('output')
@@ -378,10 +388,11 @@ BEGIN
     exit(1);
   END;
   IF (input_count > 1) AND (compile_only OR ir_only) THEN
-    Fail('error: -c and -S require exactly one input file');
+    Fail('error: -c, -S and --emit-ptx require exactly one input file');
   IF output_file = NIL THEN
   BEGIN
-    IF ir_only THEN output_file := DefaultOutput(inputs[0], '.ll')
+    IF ptx_only THEN output_file := DefaultOutput(inputs[0], '.ptx')
+    ELSE IF ir_only THEN output_file := DefaultOutput(inputs[0], '.ll')
     ELSE IF compile_only THEN output_file := DefaultOutput(inputs[0], '.o')
     ELSE output_file := DefaultOutput(inputs[0], '');
   END;
@@ -413,7 +424,9 @@ BEGIN
   END;
   IF ir_only THEN
   BEGIN
-    IF verbose THEN EPrint('[driver] Emitted IR');
+    IF verbose THEN
+      IF ptx_only THEN EPrint('[driver] Emitted PTX')
+      ELSE EPrint('[driver] Emitted IR');
   END
   ELSE
   BEGIN

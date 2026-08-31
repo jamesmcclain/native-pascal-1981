@@ -1,0 +1,7 @@
+(*$INCLUDE:'cpu_device_launch.inc'*)
+DEVICE IMPLEMENTATION OF INCREMENTU;
+PROCEDURE INCREMENT(cell: ADS(GLOBAL) OF INTEGER32);
+BEGIN
+  cell^ := cell^ + 1
+END;
+.
