@@ -254,6 +254,15 @@ BEGIN
       the lane count in aux2 (the same aux2 slot an LSTRING borrows for its
       .LEN marker), idx_tk unused. Validation happens here, not at the use
       sites, exactly as for ArrayType bounds. }
+    { VECTOR is an extended-dialect construct, gated the same way as the wide
+      integer/real and C-ABI type names above. A DEVICE compiland is always
+      extended in practice, so it is admitted here too. }
+    IF NOT (FeaturesAreExtended(active_features) OR is_device_compiland) THEN
+    BEGIN
+      AddError('VECTOR types require the extended dialect');
+      tk := TK_UNKNOWN;
+      RETURN;
+    END;
     elem_node := GetObj(node, 'element_type');
     ResolveTypeExpr(elem_node, inner_tk, inner_aux, inner_aux2, inner_idx);
     bound_node := GetObj(node, 'lanes');
