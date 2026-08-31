@@ -33,4 +33,16 @@ FUNCTION CodegenVectorUnaryOp(op: Str255; v: ADRMEM; vec_tid: INTEGER): ADRMEM;
   VANY/VALL). }
 FUNCTION CodegenVReduce(nm: Str255; vec_val: ADRMEM; vec_tid: INTEGER): ADRMEM;
 
+{ Lanewise comparison `l <op> r` of two same-type vectors -> a
+  VECTOR [n] OF BOOLEAN mask (<n x i8> of 0/1). op is 'EQ' 'NEQ' 'LT' 'LE'
+  'GT' 'GE'. The caller has evaluated the operands and passes their tids;
+  it also computes the result mask tid (EnsureBoolVectorType). }
+FUNCTION CodegenVectorCmp(op: Str255; lval, rval: ADRMEM; lvec_tid, rvec_tid: INTEGER): ADRMEM;
+
+{ VSELECT(m, a, b): per lane, m's lane picks a's or b's. m is a
+  VECTOR [n] OF BOOLEAN, a and b the same VECTOR [n] OF T; result is that
+  T vector. All three operands are already evaluated. }
+FUNCTION CodegenVSelect(mask_val, a_val, b_val: ADRMEM;
+                        mask_tid, a_tid, b_tid: INTEGER): ADRMEM;
+
 END;

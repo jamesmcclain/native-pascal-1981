@@ -720,6 +720,23 @@ BEGIN
     CheckFuncCall := TK_VECTOR;
     RETURN;
   END;
+  IF name = 'VSELECT' THEN
+  BEGIN
+    { VSELECT(m, a, b): m a mask VECTOR, a and b VECTORs; result is a's
+      VECTOR type (bare TK_VECTOR in this coarse model -- codegen's table
+      checks lane counts and that a, b agree). }
+    IF nargs <> 3 THEN
+      AddError('VSELECT requires exactly three arguments (a mask VECTOR and two VECTOR branches)')
+    ELSE
+      FOR i := 0 TO 2 DO
+      BEGIN
+        atk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
+        IF (atk <> TK_VECTOR) AND (atk <> TK_UNKNOWN) THEN
+          AddError('VSELECT arguments must all be VECTOR values');
+      END;
+    CheckFuncCall := TK_VECTOR;
+    RETURN;
+  END;
   si := LookupSymbol(name);
   IF si = 0 THEN
   BEGIN

@@ -96,6 +96,26 @@ BEGIN
   EnsureGenericSetType := generic_set_tid;
 END;
 
+FUNCTION EnsureBoolVectorType(n: INTEGER32): INTEGER;
+{ The type of a lanewise VECTOR comparison result: VECTOR [n] OF BOOLEAN,
+  i.e. <n x i8> with 0/1 per lane (M0's mask storage rule). Reuses an
+  existing entry -- a named mask type, or one made by an earlier compare --
+  and registers one only if none has that lane count yet, exactly the
+  lazy-canonical-tid trick EnsureGenericSetType uses for SET binop results. }
+VAR
+  i: INTEGER;
+  found: INTEGER;
+BEGIN
+  found := 0;
+  FOR i := 1 TO ntypes DO
+    IF (types[i].tk = TK_VECTOR) AND (types[i].elem_tid = TK_BOOLEAN)
+       AND (types[i].lo = 0) AND (types[i].hi = n - 1) THEN
+      found := i;
+  IF found = 0 THEN
+    found := RegisterType(TK_VECTOR, TK_BOOLEAN, 0, n - 1, LLVMVectorType(i8ty, n));
+  EnsureBoolVectorType := found;
+END;
+
 FUNCTION PointerSpacesCompatible(from_tid, to_tid: INTEGER): BOOLEAN;
 { Assignment compatibility between two pointer types, mirroring the reference
   type system's PointerType.equivalent_to: a plain `^T` is a wildcard against
@@ -152,7 +172,16 @@ BEGIN
     representation (see LLVMTypeForTk's TK_ADRMEM case). So ADRMEM and any
     POINTER are mutually assignment-compatible here too, matching that
     reference definition rather than inventing a new looseness. }
+  { Two VECTOR types are assignment-compatible when they have the same
+    element kind and lane count, regardless of which TYPE declaration (or
+    none -- a comparison result via EnsureBoolVectorType, a VSPLAT/VSELECT
+    result) produced the tid. Same structural rule as SET just above; every
+    such vector has the identical <n x T> layout. }
   TypesCompatibleForAssign := (from_tid = to_tid) OR
+    ((TypeKind(from_tid) = TK_VECTOR) AND (TypeKind(to_tid) = TK_VECTOR)
+       AND (types[from_tid].elem_tid = types[to_tid].elem_tid)
+       AND (types[from_tid].lo = types[to_tid].lo)
+       AND (types[from_tid].hi = types[to_tid].hi)) OR
     ((TypeKind(from_tid) = TK_SET) AND (TypeKind(to_tid) = TK_SET)) OR
     ((from_tid = TK_INTEGER) AND (to_tid = TK_WORD)) OR
     ((from_tid = TK_ADRMEM) AND (TypeKind(to_tid) = TK_POINTER)) OR

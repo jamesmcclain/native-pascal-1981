@@ -4,11 +4,13 @@ TYPE
   V4F = VECTOR [4] OF REAL32;
   V8I = VECTOR [8] OF INTEGER32;
   M4  = VECTOR [4] OF BOOLEAN;
+  M8  = VECTOR [8] OF BOOLEAN;
   V4D = VECTOR [4] OF REAL;
 VAR
   a, b: V4F;
   iv, iw, ix: V8I;
   m, m2: M4;
+  mk: M8;
   d, e, f: V4D;
   i: INTEGER;
 BEGIN
@@ -112,5 +114,28 @@ BEGIN
   IF VANY(m) THEN WRITELN('any T') ELSE WRITELN('any F');
   IF VALL(m) THEN WRITELN('all T') ELSE WRITELN('all F');
   m2 := VSPLAT(TRUE, M4);
-  IF VALL(m2) THEN WRITELN('all2 T') ELSE WRITELN('all2 F')
+  IF VALL(m2) THEN WRITELN('all2 T') ELSE WRITELN('all2 F');
+
+  { M4: lanewise comparison -> a BOOLEAN mask, then VANY/VALL and VSELECT. }
+  FOR i := 0 TO 7 DO iv[i] := i;        { 0 1 2 3 4 5 6 7 }
+  iw := VSPLAT(4, V8I);
+  mk := iv < iw;                        { T T T T F F F F }
+  IF VANY(mk) THEN WRITELN('cany T') ELSE WRITELN('cany F');
+  IF VALL(mk) THEN WRITELN('call T') ELSE WRITELN('call F');
+  FOR i := 0 TO 7 DO
+    IF mk[i] THEN WRITE('T ') ELSE WRITE('F ');
+  WRITELN;
+  ix := VSELECT(mk, iv, VSPLAT(-1, V8I));
+  FOR i := 0 TO 7 DO WRITE(ix[i], ' ');
+  WRITELN;
+
+  FOR i := 0 TO 3 DO e[i] := i * 1.0;   { 0 1 2 3 }
+  f := VSPLAT(2.0, V4D);
+  m := e >= f;                          { F F T T }
+  FOR i := 0 TO 3 DO
+    IF m[i] THEN WRITE('T ') ELSE WRITE('F ');
+  WRITELN;
+  d := VSELECT(m, e, f);                { 2 2 2 3 }
+  FOR i := 0 TO 3 DO WRITE(d[i]:0:2, ' ');
+  WRITELN
 END.

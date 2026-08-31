@@ -47,3 +47,9 @@ iprod 256
 any T
 all F
 all2 T
+cany T
+call F
+T T T T F F F F 
+0 1 2 3 -1 -1 -1 -1 
+F F T T 
+2.00 2.00 2.00 3.00 

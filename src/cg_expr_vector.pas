@@ -300,5 +300,86 @@ BEGIN
   CodegenVReduce := callres;
 END;
 
+FUNCTION CodegenVectorCmp(op: Str255; lval, rval: ADRMEM; lvec_tid, rvec_tid: INTEGER): ADRMEM;
+{ icmp/fcmp lanewise -> <n x i1>, then zext to the <n x i8> a BOOLEAN
+  vector is stored as. Integer predicates are signed except for a WORD*
+  element; CHAR/BOOLEAN elements use signed too, matching scalar
+  CodegenBinOp (their values are small and non-negative). }
+VAR
+  elem: INTEGER;
+  n: INTEGER32;
+  is_float, uns: BOOLEAN;
+  cmp: ADRMEM;
+BEGIN
+  IF lvec_tid <> rvec_tid THEN
+  BEGIN
+    AbortWith('codegen: mixed-type operands are not supported (no implicit promotion)');
+    CodegenVectorCmp := NIL;
+    RETURN;
+  END;
+  elem := types[lvec_tid].elem_tid;
+  n := types[lvec_tid].hi - types[lvec_tid].lo + 1;
+  is_float := (elem = TK_REAL) OR (elem = TK_REAL32);
+  uns := IsUnsignedWordTk(elem);
+  cmp := NIL;
+  IF is_float THEN
+  BEGIN
+    IF op = 'EQ' THEN cmp := LLVMBuildFCmp(builder, LLVMRealOEQ, lval, rval, MakeCStr(''))
+    ELSE IF op = 'NEQ' THEN cmp := LLVMBuildFCmp(builder, LLVMRealONE, lval, rval, MakeCStr(''))
+    ELSE IF op = 'LT' THEN cmp := LLVMBuildFCmp(builder, LLVMRealOLT, lval, rval, MakeCStr(''))
+    ELSE IF op = 'LE' THEN cmp := LLVMBuildFCmp(builder, LLVMRealOLE, lval, rval, MakeCStr(''))
+    ELSE IF op = 'GT' THEN cmp := LLVMBuildFCmp(builder, LLVMRealOGT, lval, rval, MakeCStr(''))
+    ELSE IF op = 'GE' THEN cmp := LLVMBuildFCmp(builder, LLVMRealOGE, lval, rval, MakeCStr(''))
+    ELSE AbortWith2('codegen: bad VECTOR comparison operator: ', op);
+  END
+  ELSE
+  BEGIN
+    IF op = 'EQ' THEN cmp := LLVMBuildICmp(builder, LLVMIntEQ, lval, rval, MakeCStr(''))
+    ELSE IF op = 'NEQ' THEN cmp := LLVMBuildICmp(builder, LLVMIntNE, lval, rval, MakeCStr(''))
+    ELSE IF op = 'LT' THEN
+    BEGIN
+      IF uns THEN cmp := LLVMBuildICmp(builder, LLVMIntULT, lval, rval, MakeCStr(''))
+      ELSE cmp := LLVMBuildICmp(builder, LLVMIntSLT, lval, rval, MakeCStr(''));
+    END
+    ELSE IF op = 'LE' THEN
+    BEGIN
+      IF uns THEN cmp := LLVMBuildICmp(builder, LLVMIntULE, lval, rval, MakeCStr(''))
+      ELSE cmp := LLVMBuildICmp(builder, LLVMIntSLE, lval, rval, MakeCStr(''));
+    END
+    ELSE IF op = 'GT' THEN
+    BEGIN
+      IF uns THEN cmp := LLVMBuildICmp(builder, LLVMIntUGT, lval, rval, MakeCStr(''))
+      ELSE cmp := LLVMBuildICmp(builder, LLVMIntSGT, lval, rval, MakeCStr(''));
+    END
+    ELSE IF op = 'GE' THEN
+    BEGIN
+      IF uns THEN cmp := LLVMBuildICmp(builder, LLVMIntUGE, lval, rval, MakeCStr(''))
+      ELSE cmp := LLVMBuildICmp(builder, LLVMIntSGE, lval, rval, MakeCStr(''));
+    END
+    ELSE AbortWith2('codegen: bad VECTOR comparison operator: ', op);
+  END;
+  CodegenVectorCmp := LLVMBuildZExt(builder, cmp, LLVMVectorType(i8ty, n), MakeCStr(''));
+END;
+
+FUNCTION CodegenVSelect(mask_val, a_val, b_val: ADRMEM;
+                        mask_tid, a_tid, b_tid: INTEGER): ADRMEM;
+{ trunc the <n x i8> mask to <n x i1>, then a lanewise select. }
+VAR
+  n: INTEGER32;
+  cond: ADRMEM;
+BEGIN
+  IF (TypeKind(mask_tid) <> TK_VECTOR) OR (types[mask_tid].elem_tid <> TK_BOOLEAN) THEN
+    AbortWith('codegen: VSELECT mask must be a VECTOR OF BOOLEAN');
+  IF a_tid <> b_tid THEN
+    AbortWith('codegen: VSELECT branches must have the same VECTOR type');
+  IF TypeKind(a_tid) <> TK_VECTOR THEN
+    AbortWith('codegen: VSELECT branches must be VECTOR values');
+  IF (types[mask_tid].hi - types[mask_tid].lo) <> (types[a_tid].hi - types[a_tid].lo) THEN
+    AbortWith('codegen: VSELECT mask and branch lane counts differ');
+  n := types[a_tid].hi - types[a_tid].lo + 1;
+  cond := LLVMBuildTrunc(builder, mask_val, LLVMVectorType(i1ty, n), MakeCStr(''));
+  CodegenVSelect := LLVMBuildSelect(builder, cond, a_val, b_val, MakeCStr(''));
+END;
+
 BEGIN
 END.

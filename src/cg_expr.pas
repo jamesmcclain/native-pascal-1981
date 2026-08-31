@@ -337,11 +337,23 @@ BEGIN
     terminal assignment is the only option. }
   IF (TypeKind(ltk) = TK_VECTOR) OR (TypeKind(rtk) = TK_VECTOR) THEN
   BEGIN
-    { Elementwise arithmetic/logic. Both operands must be the identical
-      VECTOR type -- CodegenVectorBinOp emits the mixed-type error otherwise
-      (a scalar operand also lands here since its tk is not TK_VECTOR). }
-    res := CodegenVectorBinOp(op, lval, rval, ltk, rtk);
-    last_val_tk := ltk;
+    { Elementwise arithmetic/logic, or a lanewise comparison. Both operands
+      must be the identical VECTOR type -- the callee emits the mixed-type
+      error otherwise (a scalar operand also lands here since its tk is not
+      TK_VECTOR). A comparison yields a VECTOR [n] OF BOOLEAN mask. }
+    IF (op = 'EQ') OR (op = 'NEQ') OR (op = 'LT') OR (op = 'LE') OR (op = 'GT') OR (op = 'GE') THEN
+    BEGIN
+      res := CodegenVectorCmp(op, lval, rval, ltk, rtk);
+      IF TypeKind(ltk) = TK_VECTOR THEN
+        last_val_tk := EnsureBoolVectorType(types[ltk].hi - types[ltk].lo + 1)
+      ELSE
+        last_val_tk := EnsureBoolVectorType(types[rtk].hi - types[rtk].lo + 1);
+    END
+    ELSE
+    BEGIN
+      res := CodegenVectorBinOp(op, lval, rval, ltk, rtk);
+      last_val_tk := ltk;
+    END;
   END
   ELSE IF (op = 'AND') OR (op = 'OR') THEN
   BEGIN
@@ -1235,6 +1247,8 @@ VAR
   target_item, target_str, sizeof_synth: ADRMEM;
   sizeof_bytes: INTEGER32;
   call_args: ADRMEM;
+  vsel_mask, vsel_a, vsel_b: ADRMEM;
+  vsel_mask_tid, vsel_a_tid, vsel_b_tid: INTEGER;
 BEGIN
   EnterExprLevel;
   nt := NodeType(node);
@@ -1606,6 +1620,23 @@ BEGIN
       IF TypeKind(last_val_tk) <> TK_VECTOR THEN
         AbortWith2('codegen: reduction argument is not a VECTOR: ', nm);
       res := CodegenVReduce(nm, res, last_val_tk);
+    END
+    ELSE IF nm = 'VSELECT' THEN
+    BEGIN
+      { VSELECT(m, a, b): lanewise pick. m is a VECTOR OF BOOLEAN mask,
+        a and b the same VECTOR type; result is that type. }
+      call_args := GetObj(node, 'args');
+      IF ArrSize(call_args) <> 3 THEN
+        AbortWith('codegen: VSELECT expects (mask, a, b)');
+      vsel_mask := CodegenExpr(ArrItem(call_args, 0));
+      vsel_mask_tid := last_val_tk;
+      vsel_a := CodegenExpr(ArrItem(call_args, 1));
+      vsel_a_tid := last_val_tk;
+      vsel_b := CodegenExpr(ArrItem(call_args, 2));
+      vsel_b_tid := last_val_tk;
+      res := CodegenVSelect(vsel_mask, vsel_a, vsel_b,
+                            vsel_mask_tid, vsel_a_tid, vsel_b_tid);
+      last_val_tk := vsel_a_tid;
     END
     ELSE IF (nm = 'EOF') OR (nm = 'EOLN') THEN
     BEGIN

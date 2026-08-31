@@ -162,6 +162,7 @@ CONST
   LLVMAbortProcessAction = 0;
 
   LLVMIntEQ  = 32; LLVMIntNE  = 33;
+  LLVMIntUGT = 34; LLVMIntUGE = 35; LLVMIntULT = 36; LLVMIntULE = 37;
   LLVMIntSGT = 38; LLVMIntSGE = 39; LLVMIntSLT = 40; LLVMIntSLE = 41;
 
   LLVMRealOEQ = 1; LLVMRealOGT = 2; LLVMRealOGE = 3;
