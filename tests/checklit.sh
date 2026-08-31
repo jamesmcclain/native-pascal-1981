@@ -16,6 +16,8 @@
 #   { CHECK-COUNT: N <substring that must appear exactly N times> }
 #   { CHECK-ENV: NAME=value }   (optional, sets an env var for this fixture's
 #                                 codegen invocation, e.g. PASCAL_EMIT_PTX=1)
+#   { CHECK-FLAGS: --opt val }  (optional, extra driver args for the compile,
+#                                 e.g. --target-cpu x86-64-v3)
 #   { CHECK-INPUT: path.json }  (required for .check files; path is relative
 #                                 to the repository root)
 #
@@ -90,7 +92,17 @@ for fixture in "${FIXTURES[@]}"; do
     dialect_args=(--dialect "$dialect")
   fi
 
-  command=("$DRIVER" "${dialect_args[@]}" -S "$fixture" -o "$out_ll")
+  # CHECK-FLAGS: extra driver command-line arguments for this fixture's
+  # compile (word-split on spaces). Used to exercise options like
+  # --target-cpu / --target-features without environment variables.
+  flag_args=()
+  while IFS= read -r line; do
+    # shellcheck disable=SC2206
+    flag_args+=($line)
+  done < <(grep -E '\{ *CHECK-FLAGS: *' "$fixture" \
+              | sed -E 's/^.*\{ *CHECK-FLAGS: *//; s/ *\}[[:space:]]*$//')
+
+  command=("$DRIVER" "${dialect_args[@]}" "${flag_args[@]}" -S "$fixture" -o "$out_ll")
   if [[ "$fixture" = *.check ]]; then
     input=$(grep -E '\{ *CHECK-INPUT: *' "$fixture" \
               | sed -E 's/^.*\{ *CHECK-INPUT: *//; s/ *\}[[:space:]]*$//' \

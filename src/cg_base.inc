@@ -157,6 +157,11 @@ FUNCTION LLVMCreateEnumAttribute(ctx: ADRMEM; kind_id: CINT; val: CLONG): ADRMEM
 FUNCTION LLVMCreateTypeAttribute(ctx: ADRMEM; kind_id: CINT; ty: ADRMEM): ADRMEM [C];
 PROCEDURE LLVMAddCallSiteAttribute(call: ADRMEM; idx: CINT; attr: ADRMEM) [C];
 PROCEDURE LLVMAddAttributeAtIndex(fn: ADRMEM; idx: CINT; attr: ADRMEM) [C];
+{ Attaches a string attribute (`"A"="V"`) to the function itself -- the exact
+  mechanism clang uses for per-function `target-cpu` / `target-features`.
+  Avoids the unsigned function-attribute index (`~0U`), which this dialect's
+  16-bit INTEGER cannot spell as a positive literal. }
+PROCEDURE LLVMAddTargetDependentFunctionAttr(fn: ADRMEM; a: ADRMEM; v: ADRMEM) [C];
 
 CONST
   LLVMAbortProcessAction = 0;
@@ -412,6 +417,10 @@ TYPE
 
 VAR
   ctx, modl, builder: ADRMEM;
+  { --target-cpu / --target-features, forwarded from the driver as codegen CLI
+    options (never env). NIL when the option was not given. Applied as
+    per-function string attributes to every function this compiland defines. }
+  target_cpu_cstr, target_features_cstr: ADRMEM;
   i32ty, i16ty, i8ty, i1ty, i64ty, dblty, f32ty, i8ptrty, voidty: ADRMEM;
   setty: ADRMEM; { the one physical set representation shared by every SET
                    type regardless of declared base range, matching the

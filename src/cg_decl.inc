@@ -6,6 +6,7 @@ INTERFACE;
 UNIT cg_decl;
 USES jsonutil, features, cg_base, cg_util, cg_types, cg_symbols, cg_expr, cg_io, cg_stmt;
 
+PROCEDURE ApplyTargetAttrs(fn: ADRMEM);
 PROCEDURE CodegenDeclList(decls_arr: ADRMEM);
 FUNCTION SameIdentifier(a, b: Str255): BOOLEAN;
 FUNCTION FindUnitIndex(local_ifaces: ADRMEM; unit_name: Str255): INTEGER32;

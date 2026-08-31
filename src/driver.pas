@@ -37,6 +37,7 @@ VAR
   runtime_lib, cc_bin, opt_level, temp_ll, extra_ll, primary_ll, primary_output: ADRMEM;
   primary_compile_only: BOOLEAN;
   emit_ptx, device_triple, ptx_cpu, device_backend: ADRMEM;
+  target_cpu, target_features: ADRMEM;
   in_fd, out_fd: CINT;
   p1, p2, p3: ARRAY[0..1] OF CINT;
   pid1, pid2, pid3, pid4: CINT;
@@ -53,6 +54,8 @@ BEGIN
   WRITELN('  -S                      Compile to LLVM IR (.ll) only');
   WRITELN('  -O0, -O1, -O2, -O3      Optimization level (default: -O1)');
   WRITELN('  --dialect <name>        Language dialect: vintage or extended');
+  WRITELN('  --target-cpu <cpu>      Host target CPU (LLVM target-cpu attribute)');
+  WRITELN('  --target-features <fs>  Host target features, e.g. +avx2,+fma');
   WRITELN('  -I <dir>                Add directory to include search path');
   WRITELN('  -L <dir>                Add directory to library search path');
   WRITELN('  -l <lib>                Link with library');
@@ -125,23 +128,38 @@ BEGIN
 END;
 
 PROCEDURE ExecStage(stage, stage_name, stage_dialect: ADRMEM;
+                    fwd_target_cpu, fwd_target_features: ADRMEM;
                     source_fd, destination_fd: CINT);
+{ fwd_target_cpu / fwd_target_features are NIL except on the codegen stage,
+  and even there only when the driver was given the matching option. They are
+  passed as ordinary CLI arguments -- the driver <-> stage interface is CLI
+  only, never environment. }
 VAR
-  args: ARRAY[0..3] OF ADRMEM;
+  args: ARRAY[0..7] OF ADRMEM;
+  n: INTEGER32;
 BEGIN
   dup2(source_fd, 0);
   dup2(destination_fd, 1);
   close(in_fd); close(out_fd);
   ClosePipes;
   args[0] := stage_name;
-  IF stage_dialect = NIL THEN
-    args[1] := NIL
-  ELSE
+  n := 1;
+  IF stage_dialect <> NIL THEN
   BEGIN
-    args[1] := MakeCStr('--dialect');
-    args[2] := stage_dialect;
-    args[3] := NIL;
+    args[n] := MakeCStr('--dialect'); args[n + 1] := stage_dialect;
+    n := n + 2;
   END;
+  IF fwd_target_cpu <> NIL THEN
+  BEGIN
+    args[n] := MakeCStr('--target-cpu'); args[n + 1] := fwd_target_cpu;
+    n := n + 2;
+  END;
+  IF fwd_target_features <> NIL THEN
+  BEGIN
+    args[n] := MakeCStr('--target-features'); args[n + 1] := fwd_target_features;
+    n := n + 2;
+  END;
+  args[n] := NIL;
   execvp(stage, ADR args);
   exit(127);
 END;
@@ -162,16 +180,16 @@ BEGIN
       BEGIN
         pid1 := fork;
         IF pid1 = 0 THEN ExecStage(lexer_bin, MakeCStr('lexer'), NIL,
-                                   in_fd, p1[1]);
+                                   NIL, NIL, in_fd, p1[1]);
         pid2 := fork;
         IF pid2 = 0 THEN ExecStage(parser_bin, MakeCStr('parser'), dialect,
-                                   p1[0], p2[1]);
+                                   NIL, NIL, p1[0], p2[1]);
         pid3 := fork;
         IF pid3 = 0 THEN ExecStage(typechecker_bin, MakeCStr('typechecker'), dialect,
-                                   p2[0], p3[1]);
+                                   NIL, NIL, p2[0], p3[1]);
         pid4 := fork;
         IF pid4 = 0 THEN ExecStage(codegen_bin, MakeCStr('codegen'), dialect,
-                                   p3[0], out_fd);
+                                   target_cpu, target_features, p3[0], out_fd);
         close(in_fd); close(out_fd); ClosePipes;
         waitpid(pid1, ADR status1, 0); waitpid(pid2, ADR status2, 0);
         waitpid(pid3, ADR status3, 0); waitpid(pid4, ADR status4, 0);
@@ -248,6 +266,8 @@ BEGIN
             'Language dialect: vintage or extended');
   ArgString('device-triple', ARG_NO_SHORT, '', 'Override the device target triple');
   ArgString('ptx-cpu', ARG_NO_SHORT, '', 'Override the PTX target CPU');
+  ArgString('target-cpu', ARG_NO_SHORT, '', 'Host target CPU (LLVM target-cpu attribute)');
+  ArgString('target-features', ARG_NO_SHORT, '', 'Host target features, e.g. +avx2,+fma');
   ArgString('device-backend', ARG_NO_SHORT, '', 'Select the device code backend');
   ArgFlag('emit-ptx', ARG_NO_SHORT, 'Emit PTX assembly for device code');
   ArgPassthrough('-I');
@@ -296,6 +316,10 @@ BEGIN
   ELSE device_triple := NIL;
   IF ArgWasGiven('ptx-cpu') THEN ptx_cpu := ArgGetRaw('ptx-cpu')
   ELSE ptx_cpu := NIL;
+  IF ArgWasGiven('target-cpu') THEN target_cpu := ArgGetRaw('target-cpu')
+  ELSE target_cpu := NIL;
+  IF ArgWasGiven('target-features') THEN target_features := ArgGetRaw('target-features')
+  ELSE target_features := NIL;
   IF ArgWasGiven('device-backend') THEN device_backend := ArgGetRaw('device-backend')
   ELSE device_backend := NIL;
 

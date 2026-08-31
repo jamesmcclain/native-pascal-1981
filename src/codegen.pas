@@ -199,6 +199,10 @@ BEGIN
   ArgBegin('codegen', 'Pascal-1981 code generator stage.');
   ArgString('dialect', ARG_NO_SHORT, 'vintage',
             'Language dialect: vintage or extended.');
+  ArgString('target-cpu', ARG_NO_SHORT, '',
+            'Target CPU for the host object (LLVM target-cpu attribute).');
+  ArgString('target-features', ARG_NO_SHORT, '',
+            'Target features, comma-separated (LLVM target-features attribute).');
   IF NOT ArgParse THEN
   BEGIN
     IF ArgHelpWanted THEN exit(0);
@@ -216,6 +220,13 @@ BEGIN
     EPrint('error: invalid dialect; expected ''vintage'' or ''extended''');
     exit(1);
   END;
+  { Raw C strings, handed straight to LLVMAddTargetDependentFunctionAttr. NIL
+    unless the option was given -- an empty value would emit an empty
+    attribute, which is not the same as no attribute. }
+  IF ArgWasGiven('target-cpu') THEN target_cpu_cstr := ArgGetRaw('target-cpu')
+  ELSE target_cpu_cstr := NIL;
+  IF ArgWasGiven('target-features') THEN target_features_cstr := ArgGetRaw('target-features')
+  ELSE target_features_cstr := NIL;
 END;
 
 BEGIN
@@ -320,6 +331,7 @@ BEGIN
     SetPtrArrayElem(param_arr, 1, LLVMPointerType(i8ptrty, 0));
     main_fnty := LLVMFunctionType(i32ty, param_arr, 2, 0);
     main_fn := LLVMAddFunction(modl, MakeCStr('main'), main_fnty);
+    ApplyTargetAttrs(main_fn);
     main_argc_val := LLVMGetParam(main_fn, 0);
     main_argv_val := LLVMGetParam(main_fn, 1);
     entry_bb := LLVMAppendBasicBlockInContext(ctx, main_fn, MakeCStr('entry'));
@@ -815,6 +827,7 @@ BEGIN
       CONCAT(init_name, unit_name);
       init_fnty := LLVMFunctionType(i32ty, NIL, 0, 0);
       init_fn := LLVMAddFunction(modl, MakeCStr(init_name), init_fnty);
+      ApplyTargetAttrs(init_fn);
       init_bb := LLVMAppendBasicBlockInContext(ctx, init_fn, MakeCStr('entry'));
       LLVMPositionBuilderAtEnd(builder, init_bb);
       cur_fn := init_fn;

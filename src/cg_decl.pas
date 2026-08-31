@@ -19,6 +19,21 @@ IMPLEMENTATION OF cg_decl;
 PROCEDURE CodegenDecl(decl: ADRMEM); FORWARD;
 FUNCTION IsExternDirectiveDecl(decl: ADRMEM): BOOLEAN; FORWARD;
 
+PROCEDURE ApplyTargetAttrs(fn: ADRMEM);
+{ Attach the driver's --target-cpu / --target-features as per-function string
+  attributes, mirroring clang. Inert (both cstrs NIL) unless the options were
+  given. Applied to every function this compiland defines -- `main`, each
+  user PROCEDURE/FUNCTION, and a unit's `pascal_init_<name>` body -- so the
+  backend selects the requested ISA for straight-line and routine code alike.
+  Harmless on a bare [C] EXTERN declaration (LLVM ignores the attribute on a
+  function with no body). }
+BEGIN
+  IF target_cpu_cstr <> NIL THEN
+    LLVMAddTargetDependentFunctionAttr(fn, MakeCStr('target-cpu'), target_cpu_cstr);
+  IF target_features_cstr <> NIL THEN
+    LLVMAddTargetDependentFunctionAttr(fn, MakeCStr('target-features'), target_features_cstr);
+END;
+
 PROCEDURE CodegenDeclList(decls_arr: ADRMEM);
 VAR
   n, i: INTEGER32;
@@ -1338,6 +1353,7 @@ BEGIN
       IF is_vararg THEN vararg_flag := 1 ELSE vararg_flag := 0;
       fnty := LLVMFunctionType(ret_llvm_ty, param_llvm_types, n_llvm, vararg_flag);
       fn := LLVMAddFunction(modl, MakeCStr(name), fnty);
+      ApplyTargetAttrs(fn);
     END;
 
     { Reusing an init-declared function means the LLVM signature that call
