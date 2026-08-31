@@ -145,6 +145,18 @@ reliably stay current through real command dispatch in batch mode."
       (should (eq (get-text-property (match-beginning 0) 'face)
                   'font-lock-constant-face)))))
 
+(ert-deftest pascal1981-tests-mode-faces-vector ()
+  "VECTOR in type position paints as a type."
+  (skip-unless (pascal1981-tests--have-binaries))
+  (pascal1981-tests--with-pas
+      (concat "PROGRAM DEMO;\nTYPE V = VECTOR [4] OF INTEGER;\n"
+              "VAR A : V;\nBEGIN\nEND.\n")
+    (let ((case-fold-search nil))
+      (goto-char (point-min))
+      (search-forward "VECTOR")
+      (should (eq (get-text-property (match-beginning 0) 'face)
+                  'font-lock-type-face)))))
+
 (ert-deftest pascal1981-tests-indent-nested ()
   "BEGIN opens a block. THEN does not stack when the next line is BEGIN."
   (skip-unless (pascal1981-tests--have-binaries))

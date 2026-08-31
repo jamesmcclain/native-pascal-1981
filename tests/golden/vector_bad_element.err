@@ -1,0 +1,3 @@
+Type checking failed:
+Vector element type must be a scalar
+Error: Failed to parse input AST JSON

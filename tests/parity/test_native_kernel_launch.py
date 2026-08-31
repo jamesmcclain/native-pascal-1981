@@ -128,23 +128,25 @@ def _typed_ast(source: Path) -> str:
 class NativeKernelParamAttrTests(unittest.TestCase):
     """Facts LLVM cannot infer for a bare device pointer parameter."""
 
-    def _emit(self, extra_env=None, emit_ptx=False):
+    def _emit(self, extra_args=None, emit_ptx=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "kh").write_text(_DEVICE_INTERFACE)
             implementation = root / "kh.pas"
             implementation.write_text(_DEVICE_IMPLEMENTATION)
             ast = _typed_ast(implementation)
-        env = {**os.environ, "PASCAL_DEVICE_TRIPLE": GPU_TRIPLE}
+        args = [
+            NATIVE_CODEGEN, "--dialect", "extended", "--device-triple",
+            GPU_TRIPLE
+        ]
         if emit_ptx:
-            env["PASCAL_EMIT_PTX"] = "1"
-        env.update(extra_env or {})
-        result = subprocess.run([NATIVE_CODEGEN, "--dialect", "extended"],
+            args.append("--emit-ptx")
+        args += list(extra_args or [])
+        result = subprocess.run(args,
                                 cwd=ROOT,
                                 input=ast,
                                 text=True,
-                                capture_output=True,
-                                env=env)
+                                capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
 
@@ -183,7 +185,7 @@ class NativeKernelParamAttrTests(unittest.TestCase):
         self.assertNotIn("noalias", self._emit())
 
     def test_noalias_present_on_every_buffer_when_opted_into(self):
-        ir = self._emit(extra_env={"PASCAL_NOALIAS_KERNEL_PARAMS": "1"})
+        ir = self._emit(extra_args=["--noalias-kernel-params"])
         self.assertEqual(self._signature(ir, "scale").count("noalias"), 2)
 
     def test_host_triple_gets_no_kernel_entry_attributes(self):
@@ -224,20 +226,17 @@ class NativeKernelParamAttrTests(unittest.TestCase):
 class NativeLaunchAbiTests(unittest.TestCase):
     """LAUNCH resolves its entry the way the CUDA driver does."""
 
-    def _emit(self, env_extra=None):
+    def _emit(self, extra_args=None):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "main.pas"
             source.write_text(_LAUNCH_PROGRAM)
             ast = _typed_ast(source)
-        result = subprocess.run([NATIVE_CODEGEN, "--dialect", "extended"],
-                                cwd=ROOT,
-                                input=ast,
-                                text=True,
-                                capture_output=True,
-                                env={
-                                    **os.environ,
-                                    **(env_extra or {})
-                                })
+        result = subprocess.run(
+            [NATIVE_CODEGEN, "--dialect", "extended", *(extra_args or [])],
+            cwd=ROOT,
+            input=ast,
+            text=True,
+            capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
 
@@ -260,7 +259,7 @@ class NativeLaunchAbiTests(unittest.TestCase):
         self.assertIn("i64 1 }", ir)
 
     def test_cuda_backend_emits_no_registry_or_thunk(self):
-        ir = self._emit(env_extra={"PASCAL_DEVICE_BACKEND": "cuda"})
+        ir = self._emit(extra_args=["--device-backend", "cuda"])
         # The kernel is the loaded PTX module, dispatched by name, so the host
         # object carries neither an in-process registry nor a dispatch thunk,
         # and the PTX blob is supplied by its own object at link time.

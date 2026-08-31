@@ -1,6 +1,6 @@
 { CHECK-INPUT: tests/reference/codegen/host_launch_abi.ast.json }
 { DIALECT: extended }
-{ CHECK-ENV: PASCAL_DEVICE_BACKEND=cuda }
+{ CHECK-FLAGS: --device-backend cuda }
 { CHECK-NOT: __pas_klaunch_bump }
 { CHECK-NOT: __pas_kregnames }
 { CHECK: @__pas_device_ptx = external constant }

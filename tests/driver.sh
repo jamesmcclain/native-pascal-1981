@@ -159,6 +159,58 @@ for dialect_arg in implicit vintage extended; do
   check_stage_args "$expected_dialect" "$dialect_arg dialect"
 done
 
+# The device / PTX and host target options are forwarded (as CLI args, never
+# env) to the codegen stage only, appended after --dialect. --emit-ptx and
+# --noalias-kernel-params forward as bare flags; the rest carry a value.
+rm -f "$record_dir"/*.args
+expect_status 0 env "${record_env[@]}" "$DRIVER" --dialect extended \
+  --emit-ptx --device-triple nvptx64-nvidia-cuda --ptx-cpu sm_80 \
+  --device-backend cuda --noalias-kernel-params \
+  -S "$source_file" -o "$work_dir/device-fwd.ll"
+printf 'argc=10\narg=--dialect\narg=extended\narg=--emit-ptx\narg=--noalias-kernel-params\narg=--device-triple\narg=nvptx64-nvidia-cuda\narg=--ptx-cpu\narg=sm_80\narg=--device-backend\narg=cuda\n' \
+  > "$work_dir/expected-codegen-device-args"
+if cmp -s "$work_dir/expected-codegen-device-args" "$record_dir/codegen.args"; then
+  pass=$((pass + 1))
+else
+  echo "FAIL: device options: unexpected codegen argument array" >&2
+  diff -u "$work_dir/expected-codegen-device-args" "$record_dir/codegen.args" >&2 || true
+  fail=$((fail + 1))
+fi
+printf 'argc=2\narg=--dialect\narg=extended\n' > "$work_dir/expected-device-plain-args"
+for stage in parser typechecker; do
+  if cmp -s "$work_dir/expected-device-plain-args" "$record_dir/$stage.args"; then
+    pass=$((pass + 1))
+  else
+    echo "FAIL: a device option leaked into the $stage stage" >&2
+    diff -u "$work_dir/expected-device-plain-args" "$record_dir/$stage.args" >&2 || true
+    fail=$((fail + 1))
+  fi
+done
+
+rm -f "$record_dir"/*.args
+expect_status 0 env "${record_env[@]}" "$DRIVER" --dialect extended \
+  --target-cpu skylake-avx512 --target-features +avx512f,+avx512vl \
+  -S "$source_file" -o "$work_dir/target-cpu.ll"
+printf 'argc=6\narg=--dialect\narg=extended\narg=--target-cpu\narg=skylake-avx512\narg=--target-features\narg=+avx512f,+avx512vl\n' \
+  > "$work_dir/expected-codegen-target-args"
+if cmp -s "$work_dir/expected-codegen-target-args" "$record_dir/codegen.args"; then
+  pass=$((pass + 1))
+else
+  echo "FAIL: --target-cpu/--target-features: unexpected codegen argument array" >&2
+  diff -u "$work_dir/expected-codegen-target-args" "$record_dir/codegen.args" >&2 || true
+  fail=$((fail + 1))
+fi
+printf 'argc=2\narg=--dialect\narg=extended\n' > "$work_dir/expected-plain-dialect-args"
+for stage in parser typechecker; do
+  if cmp -s "$work_dir/expected-plain-dialect-args" "$record_dir/$stage.args"; then
+    pass=$((pass + 1))
+  else
+    echo "FAIL: --target-cpu leaked into the $stage stage" >&2
+    diff -u "$work_dir/expected-plain-dialect-args" "$record_dir/$stage.args" >&2 || true
+    fail=$((fail + 1))
+  fi
+done
+
 expect_status 1 env "${stage_env[@]}" "$DRIVER" -S "$source_file" "$source_file"
 expect_stderr 'error: -c and -S require exactly one input file'
 

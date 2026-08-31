@@ -8,11 +8,12 @@
 (*$INCLUDE:'cg_symbols.inc'*)
 (*$INCLUDE:'cg_expr_support.inc'*)
 (*$INCLUDE:'cg_expr_literals.inc'*)
+(*$INCLUDE:'cg_expr_vector.inc'*)
 (*$INCLUDE:'cg_expr.inc'*)
 (*$INCLUDE:'cg_io.inc'*)
 (*$INCLUDE:'cg_stmt.inc'*)
 IMPLEMENTATION OF cg_stmt;
-USES cg_expr_support, cg_expr_literals;
+USES cg_expr_support, cg_expr_literals, cg_expr_vector;
 
 { ============================== statements ================================ }
 
@@ -1227,6 +1228,31 @@ BEGIN
     AbortWith2('codegen: unknown device orchestration builtin: ', name);
 END;
 
+PROCEDURE CodegenVStoreStmt(args: ADRMEM);
+{ VSTORE(arr, i, v): store v's lanes into arr[i .. i+n-1]. Statement form
+  (like SYNCTHREADS / DEVCOPYTO); the wide store itself is in
+  cg_expr_vector. arr must be a bare array variable. }
+VAR
+  a0, idx_v, vec_v: ADRMEM;
+  symi: INTEGER32;
+  idx_tk, vec_tk: INTEGER;
+BEGIN
+  IF ArrSize(args) <> 3 THEN
+    AbortWith('codegen: VSTORE expects (array, index, vector)');
+  a0 := ArrItem(args, 0);
+  IF NodeType(a0) <> 'Identifier' THEN
+    AbortWith('codegen: VSTORE first argument must be an array variable');
+  symi := LookupSym(GetStr(a0, 'name'));
+  IF symi = 0 THEN
+    AbortWith2('codegen: undefined variable: ', GetStr(a0, 'name'));
+  idx_v := CodegenExpr(ArrItem(args, 1)); idx_tk := last_val_tk;
+  vec_v := CodegenExpr(ArrItem(args, 2)); vec_tk := last_val_tk;
+  IF TypeKind(vec_tk) <> TK_VECTOR THEN
+    AbortWith('codegen: VSTORE third argument must be a VECTOR value');
+  CodegenVStore(symbols[symi].llvm_val, symbols[symi].tk,
+                idx_v, idx_tk, vec_v, vec_tk, ArrItem(args, 1));
+END;
+
 PROCEDURE CodegenProcCallStmt(stmt: ADRMEM);
 VAR
   name: Str255;
@@ -1245,6 +1271,8 @@ BEGIN
     CodegenDeviceSync(name)
   ELSE IF (name = 'DEVCOPYTO') OR (name = 'DEVCOPYFROM') OR (name = 'DEVFREE') THEN
     CodegenDeviceOrchestration(name, GetObj(stmt, 'args'))
+  ELSE IF name = 'VSTORE' THEN
+    CodegenVStoreStmt(GetObj(stmt, 'args'))
   ELSE IF name = 'WRITELN' THEN
     CodegenWriteArgs(GetObj(stmt, 'args'), TRUE)
   ELSE IF name = 'WRITE' THEN

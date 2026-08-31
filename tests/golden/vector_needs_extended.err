@@ -1,0 +1,3 @@
+Type checking failed:
+VECTOR types require the extended dialect
+Error: Failed to parse input AST JSON

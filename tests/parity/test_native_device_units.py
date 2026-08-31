@@ -57,15 +57,14 @@ class NativeDeviceUnitTests(unittest.TestCase):
 
     def _emit_ptx(self, source: Path) -> str:
         result = subprocess.run(
-            [NATIVE_CODEGEN, "--dialect", "extended"],
+            [
+                NATIVE_CODEGEN, "--dialect", "extended", "--device-triple",
+                GPU_TRIPLE, "--emit-ptx"
+            ],
             cwd=ROOT,
             input=_typed_ast(source),
             text=True,
             capture_output=True,
-            env={
-                **os.environ, "PASCAL_DEVICE_TRIPLE": GPU_TRIPLE,
-                "PASCAL_EMIT_PTX": "1"
-            },
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("llvm.nvvm.read.ptx.sreg.tid.x1", result.stdout)

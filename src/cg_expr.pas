@@ -10,9 +10,10 @@
 (*$INCLUDE:'cg_expr_sets.inc'*)
 (*$INCLUDE:'cg_expr_support.inc'*)
 (*$INCLUDE:'cg_expr_literals.inc'*)
+(*$INCLUDE:'cg_expr_vector.inc'*)
 (*$INCLUDE:'cg_expr.inc'*)
 IMPLEMENTATION OF cg_expr;
-USES cg_expr_shape, cg_expr_sets, cg_expr_support, cg_expr_literals;
+USES cg_expr_shape, cg_expr_sets, cg_expr_support, cg_expr_literals, cg_expr_vector;
 
 FUNCTION CodegenExpr(node: ADRMEM): ADRMEM; FORWARD;
 FUNCTION ComputeDesignatorAddress(node: ADRMEM): ADRMEM; FORWARD;
@@ -334,7 +335,27 @@ BEGIN
     procedure call with "Undefined procedure: EXIT"), so early-return from
     deep inside nested IFs isn't expressible here regardless. A single
     terminal assignment is the only option. }
-  IF (op = 'AND') OR (op = 'OR') THEN
+  IF (TypeKind(ltk) = TK_VECTOR) OR (TypeKind(rtk) = TK_VECTOR) THEN
+  BEGIN
+    { Elementwise arithmetic/logic, or a lanewise comparison. Both operands
+      must be the identical VECTOR type -- the callee emits the mixed-type
+      error otherwise (a scalar operand also lands here since its tk is not
+      TK_VECTOR). A comparison yields a VECTOR [n] OF BOOLEAN mask. }
+    IF (op = 'EQ') OR (op = 'NEQ') OR (op = 'LT') OR (op = 'LE') OR (op = 'GT') OR (op = 'GE') THEN
+    BEGIN
+      res := CodegenVectorCmp(op, lval, rval, ltk, rtk);
+      IF TypeKind(ltk) = TK_VECTOR THEN
+        last_val_tk := EnsureBoolVectorType(types[ltk].hi - types[ltk].lo + 1)
+      ELSE
+        last_val_tk := EnsureBoolVectorType(types[rtk].hi - types[rtk].lo + 1);
+    END
+    ELSE
+    BEGIN
+      res := CodegenVectorBinOp(op, lval, rval, ltk, rtk);
+      last_val_tk := ltk;
+    END;
+  END
+  ELSE IF (op = 'AND') OR (op = 'OR') THEN
   BEGIN
     IF (ltk <> TK_BOOLEAN) OR (rtk <> TK_BOOLEAN) THEN
       AbortWith('codegen: AND/OR require BOOLEAN operands');
@@ -480,6 +501,13 @@ VAR
 BEGIN
   v := CodegenExpr(operand_node);
   tk := last_val_tk;
+  IF TypeKind(tk) = TK_VECTOR THEN
+  BEGIN
+    res := CodegenVectorUnaryOp(op, v, tk);
+    last_val_tk := tk;
+    CodegenUnaryOp := res;
+    RETURN;
+  END;
   IF op = 'MINUS' THEN
   BEGIN
     IF (tk = TK_INTEGER) OR (tk = TK_WORD) THEN res := LLVMBuildSub(builder, LLVMConstInt(i16ty, 0, 1), v, MakeCStr(''))
@@ -866,6 +894,7 @@ VAR
   idx_val, offset: ADRMEM;
   fi: INTEGER;
   file_handle, file_fcb, file_call_args, file_raw_buf, discard: ADRMEM;
+  folded: INTEGER64;
 BEGIN
   nm := GetStr(node, 'name');
   symi := LookupSym(nm);
@@ -897,9 +926,19 @@ BEGIN
     kind := GetStr(sel, 'kind');
     IF kind = 'INDEX' THEN
     BEGIN
-      IF (TypeKind(cur_tid) <> TK_ARRAY) AND (TypeKind(cur_tid) <> TK_LSTRING) AND (TypeKind(cur_tid) <> TK_STRING) THEN
+      IF (TypeKind(cur_tid) <> TK_ARRAY) AND (TypeKind(cur_tid) <> TK_LSTRING)
+        AND (TypeKind(cur_tid) <> TK_STRING) AND (TypeKind(cur_tid) <> TK_VECTOR) THEN
         AbortWith('codegen: an INDEX selector was applied to a non-array');
       idx_expr := GetObj(sel, 'index_or_field');
+      { A vector lane index is 0-based (types[].lo = 0). A constant lane
+        index outside 0..lanes-1 is a compile-time error -- the same
+        re-validation M0 does for the type itself, since this file also
+        lowers frozen ASTs the typechecker never saw. A variable index is
+        not range-checked (no $INDEXCK machinery; arrays are unchecked
+        too). }
+      IF (TypeKind(cur_tid) = TK_VECTOR) AND FoldConstInt(idx_expr, folded) THEN
+        IF (folded < 0) OR (folded > types[cur_tid].hi) THEN
+          AbortWith('codegen: vector lane index out of range');
       idx_val := CodegenExpr(idx_expr);
       { The reference codegen (resolve_designator_ptr_typed, types_map.py)
         accepts any integer-family index width -- it just subtracts the
@@ -1208,6 +1247,10 @@ VAR
   target_item, target_str, sizeof_synth: ADRMEM;
   sizeof_bytes: INTEGER32;
   call_args: ADRMEM;
+  vsel_mask, vsel_a, vsel_b: ADRMEM;
+  vsel_mask_tid, vsel_a_tid, vsel_b_tid: INTEGER;
+  vld_idx: ADRMEM;
+  vld_idx_tk: INTEGER;
 BEGIN
   EnterExprLevel;
   nt := NodeType(node);
@@ -1459,6 +1502,13 @@ BEGIN
         IF nt = 'UpperExpr' THEN res := LLVMConstInt(i16ty, types[result_tid].hi, 1)
         ELSE res := LLVMConstInt(i16ty, 0, 1);
       END
+      ELSE IF TypeKind(result_tid) = TK_VECTOR THEN
+      BEGIN
+        { lo/hi were registered as 0/lanes-1, so the table read is identical
+          to the TK_ARRAY case. }
+        IF nt = 'UpperExpr' THEN res := LLVMConstInt(i16ty, types[result_tid].hi, 1)
+        ELSE res := LLVMConstInt(i16ty, types[result_tid].lo, 1);
+      END
       ELSE
       BEGIN
         AbortWith2('codegen: UPPER/LOWER not supported for variable: ', nm);
@@ -1542,6 +1592,78 @@ BEGIN
       res := CodegenSimpleBuiltin(nm, GetObj(node, 'args'))
     ELSE IF nm = 'DEVALLOC' THEN
       res := CodegenDevAlloc(GetObj(node, 'args'))
+    ELSE IF nm = 'VSPLAT' THEN
+    BEGIN
+      { VSPLAT(x, V): the second argument is a VECTOR type NAME, not a
+        value -- it parses as a bare Identifier and is resolved against the
+        named-type table here (the typechecker's VSPLAT rule mirrors this).
+        A new pattern for this dialect: no other builtin takes a type name. }
+      call_args := GetObj(node, 'args');
+      IF ArrSize(call_args) <> 2 THEN
+        AbortWith('codegen: VSPLAT expects (scalar, VECTOR type name)');
+      IF NodeType(ArrItem(call_args, 1)) <> 'Identifier' THEN
+        AbortWith('codegen: VSPLAT second argument must be a VECTOR type name');
+      result_tid := LookupNamedType(GetStr(ArrItem(call_args, 1), 'name'));
+      IF (result_tid = 0) OR (TypeKind(result_tid) <> TK_VECTOR) THEN
+        AbortWith2('codegen: VSPLAT type argument is not a VECTOR type: ', GetStr(ArrItem(call_args, 1), 'name'));
+      res := CodegenExpr(ArrItem(call_args, 0));
+      res := CodegenVSplat(res, last_val_tk, result_tid, ArrItem(call_args, 0));
+      last_val_tk := result_tid;
+    END
+    ELSE IF (nm = 'VSUM') OR (nm = 'VPROD') OR (nm = 'VMIN') OR (nm = 'VMAX')
+         OR (nm = 'VANY') OR (nm = 'VALL') THEN
+    BEGIN
+      { Horizontal reduction: one VECTOR argument -> a scalar. CodegenVReduce
+        emits the llvm.vector.reduce.* intrinsic and sets last_val_tk. }
+      call_args := GetObj(node, 'args');
+      IF ArrSize(call_args) <> 1 THEN
+        AbortWith2('codegen: reduction takes exactly one VECTOR argument: ', nm);
+      res := CodegenExpr(ArrItem(call_args, 0));
+      IF TypeKind(last_val_tk) <> TK_VECTOR THEN
+        AbortWith2('codegen: reduction argument is not a VECTOR: ', nm);
+      res := CodegenVReduce(nm, res, last_val_tk);
+    END
+    ELSE IF nm = 'VSELECT' THEN
+    BEGIN
+      { VSELECT(m, a, b): lanewise pick. m is a VECTOR OF BOOLEAN mask,
+        a and b the same VECTOR type; result is that type. }
+      call_args := GetObj(node, 'args');
+      IF ArrSize(call_args) <> 3 THEN
+        AbortWith('codegen: VSELECT expects (mask, a, b)');
+      vsel_mask := CodegenExpr(ArrItem(call_args, 0));
+      vsel_mask_tid := last_val_tk;
+      vsel_a := CodegenExpr(ArrItem(call_args, 1));
+      vsel_a_tid := last_val_tk;
+      vsel_b := CodegenExpr(ArrItem(call_args, 2));
+      vsel_b_tid := last_val_tk;
+      res := CodegenVSelect(vsel_mask, vsel_a, vsel_b,
+                            vsel_mask_tid, vsel_a_tid, vsel_b_tid);
+      last_val_tk := vsel_a_tid;
+    END
+    ELSE IF nm = 'VLOAD' THEN
+    BEGIN
+      { VLOAD(arr, i, V): load arr[i .. i+n-1] as a V vector. arr is a bare
+        array variable; V is a VECTOR type NAME (a bare Identifier, resolved
+        against the type table -- the same new pattern as VSPLAT). }
+      call_args := GetObj(node, 'args');
+      IF ArrSize(call_args) <> 3 THEN
+        AbortWith('codegen: VLOAD expects (array, index, VECTOR type name)');
+      IF NodeType(ArrItem(call_args, 0)) <> 'Identifier' THEN
+        AbortWith('codegen: VLOAD first argument must be an array variable');
+      IF NodeType(ArrItem(call_args, 2)) <> 'Identifier' THEN
+        AbortWith('codegen: VLOAD third argument must be a VECTOR type name');
+      symi := LookupSym(GetStr(ArrItem(call_args, 0), 'name'));
+      IF symi = 0 THEN
+        AbortWith2('codegen: undefined variable: ', GetStr(ArrItem(call_args, 0), 'name'));
+      result_tid := LookupNamedType(GetStr(ArrItem(call_args, 2), 'name'));
+      IF (result_tid = 0) OR (TypeKind(result_tid) <> TK_VECTOR) THEN
+        AbortWith2('codegen: VLOAD type argument is not a VECTOR type: ', GetStr(ArrItem(call_args, 2), 'name'));
+      vld_idx := CodegenExpr(ArrItem(call_args, 1));
+      vld_idx_tk := last_val_tk;
+      res := CodegenVLoad(symbols[symi].llvm_val, symbols[symi].tk,
+                          vld_idx, vld_idx_tk, result_tid, ArrItem(call_args, 1));
+      last_val_tk := result_tid;
+    END
     ELSE IF (nm = 'EOF') OR (nm = 'EOLN') THEN
     BEGIN
       call_args := AllocPtrArray(1);

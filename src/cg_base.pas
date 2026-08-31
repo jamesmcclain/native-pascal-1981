@@ -7,6 +7,7 @@ IMPLEMENTATION OF cg_base;
 
 VAR
   ctx, modl, builder: ADRMEM;
+  target_cpu_cstr, target_features_cstr: ADRMEM;
   i32ty, i16ty, i8ty, i1ty, i64ty, dblty, f32ty, i8ptrty, voidty: ADRMEM;
   setty: ADRMEM; { the one physical set representation shared by every SET
                    type regardless of declared base range, matching the

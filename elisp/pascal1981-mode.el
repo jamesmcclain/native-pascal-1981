@@ -292,8 +292,11 @@ Highlighting does not wait for the parser."
   "Token kinds treated as keywords.")
 
 (defconst pascal1981--type-kinds
-  '("INTEGER" "REAL" "BOOLEAN" "CHAR" "WORD" "ADRMEM")
-  "Built-in type names, highlighted as types when they appear as lexemes.")
+  '("INTEGER" "REAL" "BOOLEAN" "CHAR" "WORD" "ADRMEM" "VECTOR")
+  "Built-in type names, highlighted as types when they appear as lexemes.
+VECTOR is a contextual keyword (a type only before `['), highlighted here
+by lexeme like the others; using it as an ordinary identifier still shows
+it in the type face, the same minor imprecision the rest of this list has.")
 
 (defun pascal1981--token-face (tok)
   "Return face symbol for token alist TOK, or nil."

@@ -126,6 +126,47 @@ are valid only on exported kernel procedures. Dimensions must be positive
 integer literals. CUDA axis and total-thread limits apply to `MAXNTID` and
 `REQNTID`. A kernel cannot have both attributes.
 
+## Vectors (SIMD) **[extended]**
+
+`VECTOR [n] OF T` is a fixed-width SIMD vector, lowered to an LLVM `<n x T>`.
+It is a first-class type: declare it, assign it whole, pass it to and return
+it from a routine, take its `SIZEOF` / `LOWER` / `UPPER`.
+
+- **`VECTOR` is a contextual keyword.** It is a type only when followed by
+  `[`; anywhere else it is an ordinary identifier and existing code keeps
+  working. `PACKED VECTOR` is rejected.
+- **Lane count `n`** is a constant expression (integer literal or a `CONST`
+  integer identifier — the same two forms a vector's or array's bound
+  accepts) that must fold to a **power of two in 2..64**.
+- **Element type `T`** must be a scalar: an integer-family type,
+  `REAL` / `REAL32`, `BOOLEAN`, or `CHAR`. Not a record, array, or vector.
+- **A `VECTOR [n] OF BOOLEAN` is a mask.** It is stored as `<n x i8>` with
+  one `0`/`1` per lane, not `<n x i1>`. Comparisons (`=`, `<`, …) between two
+  vectors produce a mask; `VSELECT(mask, a, b)` blends lanewise;
+  `VANY(mask)` / `VALL(mask)` reduce it to a `BOOLEAN`.
+- **Operators are elementwise** and require *both* sides to be the identical
+  `VECTOR` type — there is no scalar promotion. Use `VSPLAT(x, V)` to build a
+  vector from a scalar. Arithmetic (`+ - * /`, `DIV`, `MOD`), bitwise on
+  integer vectors (`AND`, `OR`, `XOR`, `NOT`), unary `-`, and the horizontal
+  reductions `VSUM` / `VPROD` / `VMIN` / `VMAX` (to a scalar element) are
+  available. Float `VSUM` / `VPROD` are ordered.
+- **`v[i]`** reads and writes one lane. **`VLOAD(arr, i, V)`** and
+  **`VSTORE(arr, i, v)`** move `n` contiguous elements between an ordinary
+  `ARRAY OF T` and a vector (`T` must match exactly; a `BOOLEAN` mask has no
+  memory form and is rejected).
+- **Bounds are checked only for constant indices** — a constant `v[i]` or a
+  constant `VLOAD` / `VSTORE` offset that runs past the declared range is a
+  compile error; a variable index is unchecked, exactly as for arrays
+  (`$INDEXCK` does not apply).
+- **The type-name argument** (`VSPLAT`, `VLOAD`, `VSTORE`) names a declared
+  `VECTOR` type; it is not an expression.
+- **ISA selection** is `--target-cpu` / `--target-features` on the driver
+  (attached as LLVM function attributes; default is baseline x86-64). No
+  `llvm.x86.*` intrinsics, no runtime CPU detection.
+- **Not usable in the compiler's own sources.** `gen1` is built by the
+  Python reference, which has no `VECTOR`; no file under `src/` may use the
+  syntax. See `tests/README.md` for the matching test-layout rule.
+
 ## Integer widths
 
 `INTEGER` and `WORD` are **[both]**. Every wide type in this table is

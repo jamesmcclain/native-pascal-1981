@@ -28,7 +28,7 @@ STAGE_SRCS := src/jsonutil.pas src/jsonutil.inc scripts/build-stage.sh
 # lowest layer first -- the same order scripts/build-stage.sh compiles and
 # links them in. Attached to the codegen targets alone, below, rather than to
 # every stage.
-CODEGEN_UNITS := argparse features cg_base cg_util cg_types cg_symbols cg_expr_shape cg_expr_sets cg_expr_support cg_expr_literals cg_expr cg_io cg_stmt cg_decl
+CODEGEN_UNITS := argparse features cg_base cg_util cg_types cg_symbols cg_expr_shape cg_expr_sets cg_expr_support cg_expr_literals cg_expr_vector cg_expr cg_io cg_stmt cg_decl
 CODEGEN_SRCS := $(foreach u,$(CODEGEN_UNITS),src/$(u).pas src/$(u).inc)
 # typechecker follows the same separately-compiled unit pattern as codegen.
 # Its list is also lowest layer first and must match scripts/build-stage.sh.

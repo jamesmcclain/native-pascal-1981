@@ -22,6 +22,7 @@ FUNCTION LookupNamedType(name: Str255): INTEGER;
 FUNCTION LookupField(rec_tid: INTEGER; fname: Str255): INTEGER;
 FUNCTION RegisterType(tk, elem_tid: INTEGER; lo, hi: INTEGER32; llvm_ty: ADRMEM): INTEGER;
 FUNCTION EnsureGenericSetType: INTEGER;
+FUNCTION EnsureBoolVectorType(n: INTEGER32): INTEGER;
 FUNCTION PointerSpacesCompatible(from_tid, to_tid: INTEGER): BOOLEAN;
 FUNCTION AggStringTypesInterchangeable(a, b: INTEGER): BOOLEAN;
 FUNCTION TypesCompatibleForAssign(from_tid, to_tid: INTEGER): BOOLEAN;

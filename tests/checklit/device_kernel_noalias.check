@@ -1,4 +1,3 @@
 { CHECK-INPUT: tests/reference/codegen/device_kernel_attrs/kh.ast.json }
-{ CHECK-ENV: PASCAL_DEVICE_TRIPLE=nvptx64-nvidia-cuda }
-{ CHECK-ENV: PASCAL_NOALIAS_KERNEL_PARAMS=1 }
+{ CHECK-FLAGS: --device-triple nvptx64-nvidia-cuda --noalias-kernel-params }
 { CHECK-ANY: define ptx_kernel void @scale(ptr addrspace(1) noalias nocapture readonly align 4 dereferenceable(1024) %0, ptr addrspace(1) noalias align 4 dereferenceable(1024) %1 || define ptx_kernel void @scale(ptr addrspace(1) noalias readonly align 4 captures(none) dereferenceable(1024) %0, ptr addrspace(1) noalias align 4 dereferenceable(1024) %1 }

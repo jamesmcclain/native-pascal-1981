@@ -1,0 +1,3 @@
+Type checking failed:
+VSPLAT type argument is not a VECTOR type
+Error: Failed to parse input AST JSON

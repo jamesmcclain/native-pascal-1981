@@ -19,6 +19,21 @@ IMPLEMENTATION OF cg_decl;
 PROCEDURE CodegenDecl(decl: ADRMEM); FORWARD;
 FUNCTION IsExternDirectiveDecl(decl: ADRMEM): BOOLEAN; FORWARD;
 
+PROCEDURE ApplyTargetAttrs(fn: ADRMEM);
+{ Attach the driver's --target-cpu / --target-features as per-function string
+  attributes, mirroring clang. Inert (both cstrs NIL) unless the options were
+  given. Applied to every function this compiland defines -- `main`, each
+  user PROCEDURE/FUNCTION, and a unit's `pascal_init_<name>` body -- so the
+  backend selects the requested ISA for straight-line and routine code alike.
+  Harmless on a bare [C] EXTERN declaration (LLVM ignores the attribute on a
+  function with no body). }
+BEGIN
+  IF target_cpu_cstr <> NIL THEN
+    LLVMAddTargetDependentFunctionAttr(fn, MakeCStr('target-cpu'), target_cpu_cstr);
+  IF target_features_cstr <> NIL THEN
+    LLVMAddTargetDependentFunctionAttr(fn, MakeCStr('target-features'), target_features_cstr);
+END;
+
 PROCEDURE CodegenDeclList(decls_arr: ADRMEM);
 VAR
   n, i: INTEGER32;
@@ -1155,6 +1170,22 @@ BEGIN
       this pass is itself another body-less declaration -- see above. }
     is_c := routines[ridx].is_c; { source of truth once ridx is known -- see note above }
     is_vararg := routines[ridx].is_vararg; { likewise }
+    IF is_c THEN
+    BEGIN
+      { Mirror of the fresh-declaration guard in the ELSE branch: a bare
+        VECTOR cannot cross a [C] signature (SSEUP vector-register classes
+        are not implemented). A [C] EXTERN is never FORWARD-restated, so
+        this arm is normally unreachable -- kept for symmetry with the
+        other belt-and-braces checks in this branch (duplicate body, EXTERN
+        redefinition). A vector nested in a record/ARRAY param stays legal;
+        ClassifyAggregate routes the whole aggregate MEMORY. }
+      IF is_func THEN
+        IF TypeKind(ret_tk) = TK_VECTOR THEN
+          AbortWith2('codegen: a VECTOR cannot cross a [C] routine signature: ', name);
+      FOR i := 1 TO n DO
+        IF TypeKind(tks[i]) = TK_VECTOR THEN
+          AbortWith2('codegen: a VECTOR cannot cross a [C] routine signature: ', name);
+    END;
     { The already-built fnty is reused verbatim here, so it must already
       reflect the same classification recomputed below -- true as long as
       the placeholder that first declared this name (the fresh-declaration
@@ -1199,6 +1230,22 @@ BEGIN
     BEGIN
       ret_tk := TK_UNKNOWN;
       ret_llvm_ty := voidty;
+    END;
+
+    IF IsCForeignDecl(decl) THEN
+    BEGIN
+      { A bare VECTOR can never cross a [C] signature: the SysV
+        vector-register classes (SSEUP) are not implemented, and silently
+        routing a vector through MEMORY byval would disagree with the ABI
+        clang produces for the same C declaration. Vectors nested inside a
+        record/ARRAY parameter stay legal -- ClassifyAggregate routes the
+        whole aggregate MEMORY. }
+      IF is_func THEN
+        IF TypeKind(ret_tk) = TK_VECTOR THEN
+          AbortWith2('codegen: a VECTOR cannot cross a [C] routine signature: ', name);
+      FOR i := 1 TO n DO
+        IF TypeKind(tks[i]) = TK_VECTOR THEN
+          AbortWith2('codegen: a VECTOR cannot cross a [C] routine signature: ', name);
     END;
 
     { The return has to be classified BEFORE the parameter list is built: a
@@ -1306,6 +1353,7 @@ BEGIN
       IF is_vararg THEN vararg_flag := 1 ELSE vararg_flag := 0;
       fnty := LLVMFunctionType(ret_llvm_ty, param_llvm_types, n_llvm, vararg_flag);
       fn := LLVMAddFunction(modl, MakeCStr(name), fnty);
+      ApplyTargetAttrs(fn);
     END;
 
     { Reusing an init-declared function means the LLVM signature that call

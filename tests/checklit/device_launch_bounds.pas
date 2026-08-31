@@ -1,5 +1,5 @@
 { DIALECT: extended }
-{ CHECK-ENV: PASCAL_DEVICE_TRIPLE=nvptx64-nvidia-cuda }
+{ CHECK-FLAGS: --device-triple nvptx64-nvidia-cuda }
 { CHECK: maxntidx }
 { CHECK: maxntidy }
 { CHECK: minctasm }
