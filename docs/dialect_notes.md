@@ -322,6 +322,24 @@ least once:
   and `BYWORD(hi, lo)` are the only function-shaped forms in the vintage
   `constant` grammar; ordinary calls, including `ORD`, `CHR`, `SUCC`, and
   `PRED`, are not valid `CONST` values.
+- **A `CASE` label range (`1 .. 3:`) is not lowered [both].** The selector
+  itself may be any ordinal — every integer width, `CHAR`, `BOOLEAN`, an
+  enumerated type — and labels of a narrower type than the selector are
+  adapted to it, but each label must still be a single constant. Write the
+  labels out (`1, 2, 3:`) or use `IF`.
+- **`REAL` does not narrow to `REAL32` implicitly [extended].** `f := d` for
+  `f: REAL32; d: REAL` is rejected by both compilers, and there is no
+  narrowing conversion to write instead: keep the value in `REAL32` from the
+  start (a `REAL32` variable assigned a literal, or `REAL32` arithmetic).
+  The native typechecker has no `REAL32` of its own — it models it as `REAL`
+  — so the rejection comes from codegen, as `assignment type mismatch for:
+  <name>` with no line number.
+- **A nested routine cannot read an enclosing routine's local [both].**
+  Neither compiler emits a static link, so an inner `PROCEDURE`/`FUNCTION`
+  reaches only its own parameters and locals and the compiland's file-level
+  variables. Reading an outer local fails in LLVM verification ("Referring
+  to an instruction in another function"), naming neither routine. Pass the
+  value as a parameter, or lift it to a file-level variable.
 - **There is no implicit `INTEGER64` to `REAL` conversion [extended]**, and
   `FLOAT()` accepts only a plain `INTEGER`. The runtime's
   `pas_int64_to_double` exists because there is no way to write that

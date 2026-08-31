@@ -1,0 +1,7 @@
+{ DIALECT: extended }
+PROGRAM DEVICEINDEXHOSTREJECTED;
+VAR
+  n: INTEGER32;
+BEGIN
+  n := threadidx_x
+END.
