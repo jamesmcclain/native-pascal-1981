@@ -18,6 +18,11 @@ FUNCTION LLVMArrayType(elem_ty: ADRMEM; count: CINT): ADRMEM [C];
 FUNCTION LLVMVectorType(elem_ty: ADRMEM; count: CINT): ADRMEM [C];
 FUNCTION LLVMStructTypeInContext(ctx: ADRMEM; elem_tys: ADRMEM; count: CINT; is_packed: CINT): ADRMEM [C];
 FUNCTION LLVMConstNull(ty: ADRMEM): ADRMEM [C];
+FUNCTION LLVMGetUndef(ty: ADRMEM): ADRMEM [C];
+FUNCTION LLVMConstVector(scalar_vals: ADRMEM; count: CINT): ADRMEM [C];
+FUNCTION LLVMBuildInsertElement(b: ADRMEM; vec_val: ADRMEM; elt_val: ADRMEM; index_val: ADRMEM; name: ADRMEM): ADRMEM [C];
+FUNCTION LLVMBuildExtractElement(b: ADRMEM; vec_val: ADRMEM; index_val: ADRMEM; name: ADRMEM): ADRMEM [C];
+FUNCTION LLVMBuildShuffleVector(b: ADRMEM; v1: ADRMEM; v2: ADRMEM; mask: ADRMEM; name: ADRMEM): ADRMEM [C];
 FUNCTION LLVMBuildGEP2(b: ADRMEM; ty: ADRMEM; ptr: ADRMEM; indices: ADRMEM; nindices: CINT; name: ADRMEM): ADRMEM [C];
 FUNCTION LLVMBuildBitCast(b: ADRMEM; val: ADRMEM; destty: ADRMEM; name: ADRMEM): ADRMEM [C];
 FUNCTION LLVMBuildPtrToInt(b: ADRMEM; val: ADRMEM; destty: ADRMEM; name: ADRMEM): ADRMEM [C];
@@ -84,6 +89,7 @@ FUNCTION LLVMBuildFAdd(b: ADRMEM; lhs: ADRMEM; rhs: ADRMEM; name: ADRMEM): ADRME
 FUNCTION LLVMBuildFSub(b: ADRMEM; lhs: ADRMEM; rhs: ADRMEM; name: ADRMEM): ADRMEM [C];
 FUNCTION LLVMBuildFMul(b: ADRMEM; lhs: ADRMEM; rhs: ADRMEM; name: ADRMEM): ADRMEM [C];
 FUNCTION LLVMBuildFDiv(b: ADRMEM; lhs: ADRMEM; rhs: ADRMEM; name: ADRMEM): ADRMEM [C];
+FUNCTION LLVMBuildFNeg(b: ADRMEM; val: ADRMEM; name: ADRMEM): ADRMEM [C];
 FUNCTION LLVMBuildAnd(b: ADRMEM; lhs: ADRMEM; rhs: ADRMEM; name: ADRMEM): ADRMEM [C];
 FUNCTION LLVMBuildOr(b: ADRMEM; lhs: ADRMEM; rhs: ADRMEM; name: ADRMEM): ADRMEM [C];
 FUNCTION LLVMBuildXor(b: ADRMEM; lhs: ADRMEM; rhs: ADRMEM; name: ADRMEM): ADRMEM [C];
@@ -151,11 +157,17 @@ FUNCTION LLVMCreateEnumAttribute(ctx: ADRMEM; kind_id: CINT; val: CLONG): ADRMEM
 FUNCTION LLVMCreateTypeAttribute(ctx: ADRMEM; kind_id: CINT; ty: ADRMEM): ADRMEM [C];
 PROCEDURE LLVMAddCallSiteAttribute(call: ADRMEM; idx: CINT; attr: ADRMEM) [C];
 PROCEDURE LLVMAddAttributeAtIndex(fn: ADRMEM; idx: CINT; attr: ADRMEM) [C];
+{ Attaches a string attribute (`"A"="V"`) to the function itself -- the exact
+  mechanism clang uses for per-function `target-cpu` / `target-features`.
+  Avoids the unsigned function-attribute index (`~0U`), which this dialect's
+  16-bit INTEGER cannot spell as a positive literal. }
+PROCEDURE LLVMAddTargetDependentFunctionAttr(fn: ADRMEM; a: ADRMEM; v: ADRMEM) [C];
 
 CONST
   LLVMAbortProcessAction = 0;
 
   LLVMIntEQ  = 32; LLVMIntNE  = 33;
+  LLVMIntUGT = 34; LLVMIntUGE = 35; LLVMIntULT = 36; LLVMIntULE = 37;
   LLVMIntSGT = 38; LLVMIntSGE = 39; LLVMIntSLT = 40; LLVMIntSLE = 41;
 
   LLVMRealOEQ = 1; LLVMRealOGT = 2; LLVMRealOGE = 3;
@@ -221,6 +233,12 @@ CONST
     ResolveTypeExpr EnumType case). The manual reads enumerated values as
     numbers and writes them that way too by default (13610-13618), so an
     enum participates in I/O exactly like an INTEGER32. }
+  TK_VECTOR = 22; { a CPU SIMD vector type -- always a types[] entry (tid
+    >= 14, never a bare tid; 22 is itself >= 14, so TypeKind/LLVMTypeForTk
+    route it through the table exactly like TK_ARRAY): elem_tid holds the
+    element's scalar tid (TK_BOOLEAN elements are stored as <n x i8>, see
+    ResolveTypeExpr), lo/hi are 0/lanes-1 so LOWER/UPPER read the table
+    unchanged, and llvm_ty is the <n x T> vector type. }
 
   MAX_SYMBOLS = 500;
   MAX_SCOPES = 64;
@@ -399,6 +417,10 @@ TYPE
 
 VAR
   ctx, modl, builder: ADRMEM;
+  { --target-cpu / --target-features, forwarded from the driver as codegen CLI
+    options (never env). NIL when the option was not given. Applied as
+    per-function string attributes to every function this compiland defines. }
+  target_cpu_cstr, target_features_cstr: ADRMEM;
   i32ty, i16ty, i8ty, i1ty, i64ty, dblty, f32ty, i8ptrty, voidty: ADRMEM;
   setty: ADRMEM; { the one physical set representation shared by every SET
                    type regardless of declared base range, matching the

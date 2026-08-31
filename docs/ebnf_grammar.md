@@ -91,11 +91,19 @@ set_element = expression [ ".." expression ] ;
 relation = "=" | "<>" | "<" | "<=" | ">" | ">=" | "IN" ;
 
 type = [ "PACKED" ] ( array_type | record_type ) | set_type | file_type | enum_type | lstring_type
-     | pointer_type | named_type | builtin_type ;
+     | pointer_type | vector_type | named_type | builtin_type ;
 array_type = "ARRAY" "[" fixed_index_range "]" "OF" type
            | "SUPER" "ARRAY" "[" super_index_range "]" "OF" type ;
 fixed_index_range = constant ".." constant ;
 super_index_range = constant ".." "*" ;
+vector_type = "VECTOR" "[" constant "]" "OF" type ;
+(* VECTOR is a contextual keyword, like DEVICE above: recognized in type
+   position by the identifier text plus a one-token look-ahead for "[", so
+   a program that uses VECTOR as an ordinary identifier keeps working. The
+   lane count is a constant expression that must fold to a power of two in
+   2..64; the element type must be a scalar (an integer-family type, REAL,
+   REAL32, BOOLEAN, or CHAR). "PACKED VECTOR" is rejected. Extended dialect
+   only. *)
 record_type = "RECORD" { field_declaration ";" } [ field_declaration ] [ variant_part ] "END" ;
 field_declaration = identifier_list ":" type ;
 variant_part = "CASE" [ identifier ":" ] type "OF" { variant_arm ";" } [ variant_arm ] ;

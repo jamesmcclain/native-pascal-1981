@@ -309,6 +309,8 @@ VAR
   skind, fname: Str255;
   tk, aux, aux2, itk, new_tk, new_aux, current_idx_tk: INTEGER;
   fi: INTEGER32;
+  lane_ct: INTEGER;
+  folded_value: INTEGER64;
 BEGIN
   name := GetStr(node, 'name');
   si := LookupSymbol(name);
@@ -380,6 +382,26 @@ BEGIN
         IF NOT IsOrdinal(itk) AND (itk <> TK_UNKNOWN) THEN
           AddError('String index must be an ordinal type');
         tk := TK_CHAR;
+        aux := 0;
+        aux2 := 0;
+      END
+      ELSE IF tk = TK_VECTOR THEN
+      BEGIN
+        { v[i]: lane access. The VECTOR [n] registration (tc_types) carries
+          the scalar element kind in aux and the lane count in aux2; lanes
+          are 0-based (LOWER is always 0). The result is that scalar, with
+          no further element/aux to thread. A constant index outside
+          0..n-1 is a compile-time error; a variable index is unchecked,
+          matching arrays (no $INDEXCK machinery exists). }
+        lane_ct := aux2;
+        idx_expr := GetObj(sel, 'index_or_field');
+        itk := CheckExpr(idx_expr);
+        IF NOT IsOrdinal(itk) AND (itk <> TK_UNKNOWN) THEN
+          AddError('Vector lane index must be an ordinal type');
+        IF FoldConstInt(idx_expr, folded_value) THEN
+          IF (folded_value < 0) OR (folded_value >= lane_ct) THEN
+            AddError('Vector lane index out of range');
+        tk := aux;
         aux := 0;
         aux2 := 0;
       END
@@ -633,6 +655,117 @@ BEGIN
     CheckFuncCall := TK_BOOLEAN;
     RETURN;
   END;
+  IF (name = 'VSUM') OR (name = 'VPROD') OR (name = 'VMIN') OR (name = 'VMAX')
+     OR (name = 'VANY') OR (name = 'VALL') THEN
+  BEGIN
+    { Horizontal reduction of one VECTOR to a scalar. This stage's coarse
+      model carries no element kind through a call result; recover it only
+      for the common case of a bare vector variable (a plain Identifier
+      does not route through CheckDesignator). Anything fancier yields
+      TK_UNKNOWN and codegen's table is the backstop. VANY/VALL always
+      yield BOOLEAN. }
+    IF nargs <> 1 THEN
+    BEGIN
+      AddError('A vector reduction takes exactly one VECTOR argument');
+      CheckFuncCall := TK_UNKNOWN;
+      RETURN;
+    END;
+    atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
+    IF (atk <> TK_VECTOR) AND (atk <> TK_UNKNOWN) THEN
+      AddError('A vector reduction requires a VECTOR argument');
+    IF (name = 'VANY') OR (name = 'VALL') THEN
+    BEGIN
+      CheckFuncCall := TK_BOOLEAN;
+      RETURN;
+    END;
+    IF NodeType(cJSON_GetArrayItem(args_arr, 0)) = 'Identifier' THEN
+    BEGIN
+      si := LookupSymbol(GetStr(cJSON_GetArrayItem(args_arr, 0), 'name'));
+      IF (si <> 0) AND (symbols[si].tk = TK_VECTOR) THEN
+      BEGIN
+        IF symbols[si].aux = TK_BOOLEAN THEN
+          AddError('VSUM/VPROD/VMIN/VMAX require a numeric VECTOR');
+        CheckFuncCall := symbols[si].aux;
+        RETURN;
+      END;
+    END;
+    CheckFuncCall := TK_UNKNOWN;
+    RETURN;
+  END;
+  IF name = 'VSPLAT' THEN
+  BEGIN
+    { VSPLAT(x, V): x a scalar, V a VECTOR TYPE NAME (a bare Identifier,
+      resolved against the type table -- not CheckExpr'd as a value). This
+      entry is mandatory: an untyped builtin falls through to the
+      'Undefined function' arm below. The result kind is bare TK_VECTOR --
+      this stage's model carries no lane count / element kind through a
+      call result (codegen's table is the backstop, as for SETs). }
+    IF nargs <> 2 THEN
+      AddError('VSPLAT requires exactly two arguments (a scalar and a VECTOR type name)')
+    ELSE
+    BEGIN
+      atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
+      warg := cJSON_GetArrayItem(args_arr, 1);
+      IF NodeType(warg) <> 'Identifier' THEN
+        AddError('VSPLAT second argument must be a VECTOR type name')
+      ELSE
+      BEGIN
+        si := LookupType(GetStr(warg, 'name'));
+        IF (si = 0) OR (types[si].tk <> TK_VECTOR) THEN
+          AddError('VSPLAT type argument is not a VECTOR type')
+        ELSE IF (atk <> TK_UNKNOWN) AND NOT CanAssign(types[si].aux, atk) THEN
+          AddError('VSPLAT scalar argument is not assignable to the vector element type');
+      END;
+    END;
+    CheckFuncCall := TK_VECTOR;
+    RETURN;
+  END;
+  IF name = 'VLOAD' THEN
+  BEGIN
+    { VLOAD(arr, i, V): arr an array, i an integer, V a VECTOR TYPE NAME
+      (a bare Identifier resolved against the type table, like VSPLAT's).
+      Result is bare TK_VECTOR -- codegen's table checks the element-type
+      match and constant-index bounds. }
+    IF nargs <> 3 THEN
+      AddError('VLOAD requires exactly three arguments (an array, an index and a VECTOR type name)')
+    ELSE
+    BEGIN
+      atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
+      IF (atk <> TK_ARRAY) AND (atk <> TK_UNKNOWN) THEN
+        AddError('VLOAD first argument must be an array');
+      atk := CheckExpr(cJSON_GetArrayItem(args_arr, 1));
+      IF NOT IsInteger(atk) AND (atk <> TK_UNKNOWN) THEN
+        AddError('VLOAD index must be an integer type');
+      warg := cJSON_GetArrayItem(args_arr, 2);
+      IF NodeType(warg) <> 'Identifier' THEN
+        AddError('VLOAD third argument must be a VECTOR type name')
+      ELSE
+      BEGIN
+        si := LookupType(GetStr(warg, 'name'));
+        IF (si = 0) OR (types[si].tk <> TK_VECTOR) THEN
+          AddError('VLOAD type argument is not a VECTOR type');
+      END;
+    END;
+    CheckFuncCall := TK_VECTOR;
+    RETURN;
+  END;
+  IF name = 'VSELECT' THEN
+  BEGIN
+    { VSELECT(m, a, b): m a mask VECTOR, a and b VECTORs; result is a's
+      VECTOR type (bare TK_VECTOR in this coarse model -- codegen's table
+      checks lane counts and that a, b agree). }
+    IF nargs <> 3 THEN
+      AddError('VSELECT requires exactly three arguments (a mask VECTOR and two VECTOR branches)')
+    ELSE
+      FOR i := 0 TO 2 DO
+      BEGIN
+        atk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
+        IF (atk <> TK_VECTOR) AND (atk <> TK_UNKNOWN) THEN
+          AddError('VSELECT arguments must all be VECTOR values');
+      END;
+    CheckFuncCall := TK_VECTOR;
+    RETURN;
+  END;
   si := LookupSymbol(name);
   IF si = 0 THEN
   BEGIN
@@ -776,6 +909,29 @@ BEGIN
     op := GetStr(node, 'op');
     IF (lt = TK_UNKNOWN) OR (rt = TK_UNKNOWN) THEN
       CheckExpr := TK_UNKNOWN
+    ELSE IF (lt = TK_VECTOR) OR (rt = TK_VECTOR) THEN
+    BEGIN
+      { Elementwise arithmetic/logic (and, later, comparison) on VECTORs.
+        Both operands must be the same VECTOR type -- there is no
+        scalar-to-vector promotion; write VSPLAT. The coarse tc type model
+        returns a bare TK_VECTOR, so lane-count / element-kind agreement is
+        verified in codegen (same split as SETs). }
+      IF (lt <> TK_VECTOR) OR (rt <> TK_VECTOR) THEN
+      BEGIN
+        AddError('VECTOR operators require both operands to be the same VECTOR type (use VSPLAT for a scalar)');
+        CheckExpr := TK_UNKNOWN;
+      END
+      ELSE IF (op = 'EQ') OR (op = 'NEQ') OR (op = 'LT') OR (op = 'LE') OR
+              (op = 'GT') OR (op = 'GE') OR (op = 'AND') OR (op = 'OR') OR
+              (op = 'XOR') OR (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') OR
+              (op = 'SLASH') OR (op = 'DIV') OR (op = 'MOD') THEN
+        CheckExpr := TK_VECTOR
+      ELSE
+      BEGIN
+        AddError('Unsupported VECTOR operator');
+        CheckExpr := TK_UNKNOWN;
+      END;
+    END
     ELSE IF (op = 'AND') OR (op = 'OR') OR (op = 'AND_THEN') OR (op = 'OR_ELSE') THEN
     BEGIN
       IF (lt <> TK_BOOLEAN) OR (rt <> TK_BOOLEAN) THEN
@@ -854,9 +1010,14 @@ BEGIN
       ot := CheckExpr(operand_node);
     IF op = 'NOT' THEN
     BEGIN
-      IF (ot <> TK_BOOLEAN) AND (ot <> TK_UNKNOWN) THEN
-        AddError('NOT requires a BOOLEAN operand');
-      CheckExpr := TK_BOOLEAN;
+      IF ot = TK_VECTOR THEN
+        CheckExpr := TK_VECTOR
+      ELSE
+      BEGIN
+        IF (ot <> TK_BOOLEAN) AND (ot <> TK_UNKNOWN) THEN
+          AddError('NOT requires a BOOLEAN operand');
+        CheckExpr := TK_BOOLEAN;
+      END;
     END
     ELSE
       CheckExpr := ot;

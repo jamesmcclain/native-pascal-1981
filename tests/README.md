@@ -32,12 +32,13 @@ This directory contains the automated test suites for the native Pascal 1981 com
   PYTHONPATH=. pytest tests/parity/
   ```
 - **Why this stays Python-based**: this suite's job is to diff native output against the Python reference compiler as the correctness oracle. That comparison is a semantic requirement, not a legacy shortcut -- a Python-free tool can't perform it without reimplementing the reference compiler. Contrast with the checklit suite below.
+- **No `VECTOR` here.** The Python reference compiler has no `VECTOR [n] OF ...` construct, so any parity fixture using one diverges by construction (the reference rejects it). `VECTOR` behaviour is covered end-to-end by `tests/golden/` (runtime) and plain-`.pas` checklit fixtures (IR shape) instead. The same rule is why no file under `src/` may use `VECTOR`: `gen1` is built by the reference. See [`docs/dialect_notes.md`](../docs/dialect_notes.md).
 
 ### 4. Checklit Directive Suite (`tests/checklit/)`
 - **Runner**: [`tests/checklit.sh`](./checklit.sh)
 - **Description**: Makes zero-Python assertions on emitted LLVM IR or PTX text. The runner supports required, forbidden, and counted substrings. It does not enforce check order.
-- **Pascal fixture format**: Put directive comments in a `.pas` file. Use `{ CHECK: text }`, `{ CHECK-NOT: text }`, or `{ CHECK-COUNT: N text }`. Use `{ CHECK-ANY: text || alternative }` when LLVM versions use different text for the same contract. Use `{ CHECK-ENV: NAME=value }` to set a codegen environment variable.
-- **Frozen AST format**: A `.check` file can use `{ CHECK-INPUT: path.json }`. The runner sends that typed AST to native codegen. Sources and frozen Python reference ASTs are in `tests/reference/codegen/`.
+- **Pascal fixture format**: Put directive comments in a `.pas` file. Use `{ CHECK: text }`, `{ CHECK-NOT: text }`, or `{ CHECK-COUNT: N text }`. Use `{ CHECK-ANY: text || alternative }` when LLVM versions use different text for the same contract. Use `{ CHECK-FLAGS: --opt val }` to add driver/codegen arguments for the compile (e.g. `--target-cpu x86-64-v3`, `--emit-ptx`, `--device-triple <triple>`). `{ CHECK-ENV: NAME=value }` still sets a codegen environment variable but is rarely needed now that those options are command-line.
+- **Frozen AST format**: A `.check` file can use `{ CHECK-INPUT: path.json }`. The runner sends that typed AST to native codegen. Sources and frozen Python reference ASTs are in `tests/reference/codegen/`. A frozen AST is produced by the Python reference, so it can never contain `VECTOR` -- use a plain `.pas` checklit fixture for any `VECTOR` IR-shape assertion.
 - **Artifact updates**: Run `PYTHONPATH=. ./scripts/update-reference-codegen.sh`. Review all JSON changes before you commit them. Routine tests do not run this Python-based maintenance command.
 - **Running**:
   ```bash

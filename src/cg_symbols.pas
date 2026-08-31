@@ -68,7 +68,8 @@ BEGIN
       IF (TypeKind(tk) = TK_ARRAY) OR (TypeKind(tk) = TK_RECORD) OR
          (TypeKind(tk) = TK_LSTRING) OR (TypeKind(tk) = TK_POINTER) OR
          (TypeKind(tk) = TK_STRING) OR (TypeKind(tk) = TK_SET) OR
-         (TypeKind(tk) = TK_FILE) OR (tk = TK_ADRMEM) THEN
+         (TypeKind(tk) = TK_FILE) OR (TypeKind(tk) = TK_VECTOR) OR
+         (tk = TK_ADRMEM) THEN
         zero := LLVMConstNull(LLVMTypeForTk(tk))
       ELSE IF (tk = TK_REAL) OR (tk = TK_REAL32) THEN zero := LLVMConstReal(LLVMTypeForTk(tk), 0.0)
       ELSE zero := LLVMConstInt(LLVMTypeForTk(tk), 0, 0);
@@ -90,13 +91,20 @@ BEGIN
         IF (TypeKind(tk) = TK_ARRAY) OR (TypeKind(tk) = TK_RECORD) OR
            (TypeKind(tk) = TK_LSTRING) OR (TypeKind(tk) = TK_POINTER) OR
            (TypeKind(tk) = TK_STRING) OR (TypeKind(tk) = TK_SET) OR
-           (TypeKind(tk) = TK_FILE) OR (tk = TK_ADRMEM) THEN
+           (TypeKind(tk) = TK_FILE) OR (TypeKind(tk) = TK_VECTOR) OR
+           (tk = TK_ADRMEM) THEN
           zero := LLVMConstNull(LLVMTypeForTk(tk))
         ELSE IF (tk = TK_REAL) OR (tk = TK_REAL32) THEN zero := LLVMConstReal(LLVMTypeForTk(tk), 0.0)
         ELSE zero := LLVMConstInt(LLVMTypeForTk(tk), 0, 0);
         LLVMSetInitializer(gvar, zero);
       END;
     END;
+    IF TypeKind(tk) = TK_VECTOR THEN
+      { A vector's storage gets LLVM's natural vector ABI alignment
+        (TypeAlignBytes), so the alloca/global and every access through it
+        match what the datalayout gives the type -- the vector_types
+        checklit fixture pins the emitted alloca text. }
+      LLVMSetAlignment(gvar, TypeAlignBytes(tk));
     IF nsymbols >= MAX_SYMBOLS THEN AbortWith('codegen: too many symbols');
     nsymbols := nsymbols + 1;
     symbols[nsymbols].name := name;

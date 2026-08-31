@@ -141,6 +141,7 @@
 (*$INCLUDE:'cg_expr_sets.inc'*)
 (*$INCLUDE:'cg_expr_support.inc'*)
 (*$INCLUDE:'cg_expr_literals.inc'*)
+(*$INCLUDE:'cg_expr_vector.inc'*)
 (*$INCLUDE:'cg_expr.inc'*)
 (*$INCLUDE:'cg_io.inc'*)
 (*$INCLUDE:'cg_stmt.inc'*)
@@ -167,7 +168,7 @@ VAR
   unit_decls, init_body: ADRMEM;
   init_fnty, init_fn, init_bb: ADRMEM;
   init_name, unit_name, device_triple: Str255;
-  device_triple_raw, emit_ptx_raw, ptx_cpu_raw, backend_raw: ADRMEM;
+  device_triple_raw, ptx_cpu_raw, backend_raw: ADRMEM;
   target_out_raw, target_err_out_raw, ptx_err_out_raw, ptx_buffer_out_raw: ADRMEM;
   target_out, target_err_out, ptx_err_out, ptx_buffer_out: PAdr;
   target_ref, target_machine, target_layout, ptx_buffer, ptx_cpu: ADRMEM;
@@ -198,6 +199,18 @@ BEGIN
   ArgBegin('codegen', 'Pascal-1981 code generator stage.');
   ArgString('dialect', ARG_NO_SHORT, 'vintage',
             'Language dialect: vintage or extended.');
+  ArgString('target-cpu', ARG_NO_SHORT, '',
+            'Target CPU for the host object (LLVM target-cpu attribute).');
+  ArgString('target-features', ARG_NO_SHORT, '',
+            'Target features, comma-separated (LLVM target-features attribute).');
+  { Device / PTX options, forwarded from the driver as CLI arguments (never
+    environment). Meaningful only for a DEVICE compiland. }
+  ArgFlag('emit-ptx', ARG_NO_SHORT, 'Emit PTX assembly instead of LLVM IR (DEVICE).');
+  ArgFlag('noalias-kernel-params', ARG_NO_SHORT,
+          'Mark kernel pointer parameters noalias (DEVICE).');
+  ArgString('device-triple', ARG_NO_SHORT, '', 'Device target triple (DEVICE).');
+  ArgString('ptx-cpu', ARG_NO_SHORT, '', 'PTX target CPU, e.g. sm_70 (DEVICE).');
+  ArgString('device-backend', ARG_NO_SHORT, '', 'Device backend, e.g. cuda (DEVICE).');
   IF NOT ArgParse THEN
   BEGIN
     IF ArgHelpWanted THEN exit(0);
@@ -215,6 +228,13 @@ BEGIN
     EPrint('error: invalid dialect; expected ''vintage'' or ''extended''');
     exit(1);
   END;
+  { Raw C strings, handed straight to LLVMAddTargetDependentFunctionAttr. NIL
+    unless the option was given -- an empty value would emit an empty
+    attribute, which is not the same as no attribute. }
+  IF ArgWasGiven('target-cpu') THEN target_cpu_cstr := ArgGetRaw('target-cpu')
+  ELSE target_cpu_cstr := NIL;
+  IF ArgWasGiven('target-features') THEN target_features_cstr := ArgGetRaw('target-features')
+  ELSE target_features_cstr := NIL;
 END;
 
 BEGIN
@@ -234,16 +254,17 @@ BEGIN
   lowering_spliced_interface := FALSE;
   defining_implementation := root_nt = 'ImplementationUnit';
   device_triple_raw := NIL;
-  emit_ptx_raw := getenv(MakeCStr('PASCAL_EMIT_PTX'));
-  emit_ptx := emit_ptx_raw <> NIL;
-  noalias_kernel_params := getenv(MakeCStr('PASCAL_NOALIAS_KERNEL_PARAMS')) <> NIL;
+  emit_ptx := ArgGetFlag('emit-ptx');
+  noalias_kernel_params := ArgGetFlag('noalias-kernel-params');
   device_backend_cuda := FALSE;
-  backend_raw := getenv(MakeCStr('PASCAL_DEVICE_BACKEND'));
+  IF ArgWasGiven('device-backend') THEN backend_raw := ArgGetRaw('device-backend')
+  ELSE backend_raw := NIL;
   IF backend_raw <> NIL THEN
     device_backend_cuda := CStrToStr255(backend_raw) = 'cuda';
   IF is_device_compiland THEN
   BEGIN
-    device_triple_raw := getenv(MakeCStr('PASCAL_DEVICE_TRIPLE'));
+    IF ArgWasGiven('device-triple') THEN device_triple_raw := ArgGetRaw('device-triple')
+    ELSE device_triple_raw := NIL;
     IF device_triple_raw <> NIL THEN
     BEGIN
       device_triple := CStrToStr255(device_triple_raw);
@@ -278,7 +299,7 @@ BEGIN
     LLVMSetDataLayout(modl, MakeCStr('e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128'));
   END;
   IF emit_ptx AND (NOT is_nvptx_device) THEN
-    AbortWith('codegen: PASCAL_EMIT_PTX requires a DEVICE compiland with PASCAL_DEVICE_TRIPLE=nvptx64-nvidia-cuda');
+    AbortWith('codegen: --emit-ptx requires a DEVICE compiland with --device-triple nvptx64-nvidia-cuda');
   i32ty := LLVMInt32TypeInContext(ctx);
   i16ty := LLVMInt16TypeInContext(ctx);
   i8ty := LLVMInt8TypeInContext(ctx);
@@ -319,6 +340,7 @@ BEGIN
     SetPtrArrayElem(param_arr, 1, LLVMPointerType(i8ptrty, 0));
     main_fnty := LLVMFunctionType(i32ty, param_arr, 2, 0);
     main_fn := LLVMAddFunction(modl, MakeCStr('main'), main_fnty);
+    ApplyTargetAttrs(main_fn);
     main_argc_val := LLVMGetParam(main_fn, 0);
     main_argv_val := LLVMGetParam(main_fn, 1);
     entry_bb := LLVMAppendBasicBlockInContext(ctx, main_fn, MakeCStr('entry'));
@@ -814,6 +836,7 @@ BEGIN
       CONCAT(init_name, unit_name);
       init_fnty := LLVMFunctionType(i32ty, NIL, 0, 0);
       init_fn := LLVMAddFunction(modl, MakeCStr(init_name), init_fnty);
+      ApplyTargetAttrs(init_fn);
       init_bb := LLVMAppendBasicBlockInContext(ctx, init_fn, MakeCStr('entry'));
       LLVMPositionBuilderAtEnd(builder, init_bb);
       cur_fn := init_fn;
@@ -873,7 +896,8 @@ BEGIN
       exit(1);
     END;
     target_ref := target_out^;
-    ptx_cpu_raw := getenv(MakeCStr('PASCAL_PTX_CPU'));
+    IF ArgWasGiven('ptx-cpu') THEN ptx_cpu_raw := ArgGetRaw('ptx-cpu')
+    ELSE ptx_cpu_raw := NIL;
     IF ptx_cpu_raw = NIL THEN ptx_cpu := MakeCStr('sm_70')
     ELSE ptx_cpu := ptx_cpu_raw;
     { LLVMCodeGenLevelNone, LLVMRelocDefault, LLVMCodeModelDefault. }

@@ -96,6 +96,26 @@ BEGIN
   EnsureGenericSetType := generic_set_tid;
 END;
 
+FUNCTION EnsureBoolVectorType(n: INTEGER32): INTEGER;
+{ The type of a lanewise VECTOR comparison result: VECTOR [n] OF BOOLEAN,
+  i.e. <n x i8> with 0/1 per lane (M0's mask storage rule). Reuses an
+  existing entry -- a named mask type, or one made by an earlier compare --
+  and registers one only if none has that lane count yet, exactly the
+  lazy-canonical-tid trick EnsureGenericSetType uses for SET binop results. }
+VAR
+  i: INTEGER;
+  found: INTEGER;
+BEGIN
+  found := 0;
+  FOR i := 1 TO ntypes DO
+    IF (types[i].tk = TK_VECTOR) AND (types[i].elem_tid = TK_BOOLEAN)
+       AND (types[i].lo = 0) AND (types[i].hi = n - 1) THEN
+      found := i;
+  IF found = 0 THEN
+    found := RegisterType(TK_VECTOR, TK_BOOLEAN, 0, n - 1, LLVMVectorType(i8ty, n));
+  EnsureBoolVectorType := found;
+END;
+
 FUNCTION PointerSpacesCompatible(from_tid, to_tid: INTEGER): BOOLEAN;
 { Assignment compatibility between two pointer types, mirroring the reference
   type system's PointerType.equivalent_to: a plain `^T` is a wildcard against
@@ -152,7 +172,16 @@ BEGIN
     representation (see LLVMTypeForTk's TK_ADRMEM case). So ADRMEM and any
     POINTER are mutually assignment-compatible here too, matching that
     reference definition rather than inventing a new looseness. }
+  { Two VECTOR types are assignment-compatible when they have the same
+    element kind and lane count, regardless of which TYPE declaration (or
+    none -- a comparison result via EnsureBoolVectorType, a VSPLAT/VSELECT
+    result) produced the tid. Same structural rule as SET just above; every
+    such vector has the identical <n x T> layout. }
   TypesCompatibleForAssign := (from_tid = to_tid) OR
+    ((TypeKind(from_tid) = TK_VECTOR) AND (TypeKind(to_tid) = TK_VECTOR)
+       AND (types[from_tid].elem_tid = types[to_tid].elem_tid)
+       AND (types[from_tid].lo = types[to_tid].lo)
+       AND (types[from_tid].hi = types[to_tid].hi)) OR
     ((TypeKind(from_tid) = TK_SET) AND (TypeKind(to_tid) = TK_SET)) OR
     ((from_tid = TK_INTEGER) AND (to_tid = TK_WORD)) OR
     ((from_tid = TK_ADRMEM) AND (TypeKind(to_tid) = TK_POINTER)) OR
@@ -472,6 +501,29 @@ BEGIN
   ELSE IF TypeKind(tid) = TK_LSTRING THEN TypeAlignBytes := 1
   ELSE IF TypeKind(tid) = TK_STRING THEN TypeAlignBytes := 1
   ELSE IF TypeKind(tid) = TK_SET THEN TypeAlignBytes := 8
+  ELSE IF TypeKind(tid) = TK_VECTOR THEN
+  BEGIN
+    { LLVM's natural vector ABI alignment: the total size rounded up to a
+      power of two, with no upper cap. The x86-64 datalayout carries no `v`
+      spec, so LLVM falls back to PowerOf2Ceil(size) for every vector width;
+      confirmed against clang x86-64 _Alignof for the whole legal range --
+      the small totals (<2 x i8>=2, <4 x i8>=4, <8 x i32>=32) and the
+      largest legal vectors alike (VECTOR [64] OF INTEGER64 = 512 bytes ->
+      align 512, VECTOR [64] OF INTEGER32 = 256 -> 256). Since lane count
+      and element size are both powers of two their product already is one,
+      so the round-up loop below is a no-op in practice; it stays as a
+      guard. The total is rebuilt from the ELEMENT's alignment rather than
+      a TypeSizeBytes call: every
+      scalar's size equals its alignment, and same-unit calls resolve in
+      implementation order under the reference compiler, which
+      TypeSizeBytes's implementation follows this one's (its ARRAY arm
+      calling TypeAlignBytes is the allowed direction). The checklit
+      vector_types fixture pins this against the emitted alloca text. }
+    best := TypeAlignBytes(types[tid].elem_tid) * (types[tid].hi - types[tid].lo + 1);
+    fa := 1;
+    WHILE fa < best DO fa := fa * 2;
+    TypeAlignBytes := fa;
+  END
   ELSE
   BEGIN
     AbortWith('codegen: TypeAlignBytes: unsupported type');
@@ -520,6 +572,12 @@ BEGIN
   ELSE IF TypeKind(tid) = TK_STRING THEN TypeSizeBytes := types[tid].hi
   ELSE IF TypeKind(tid) = TK_SET THEN TypeSizeBytes := 32
   ELSE IF TypeKind(tid) = TK_POINTER THEN TypeSizeBytes := 8
+  ELSE IF TypeKind(tid) = TK_VECTOR THEN
+    { Vector lanes are packed -- no inter-lane padding, unlike an ARRAY's
+      RoundUpBytes stride -- so the size is exactly element-size * lanes.
+      Every legal element size is a power of two, so the ARRAY formula
+      would give the same answer; this spelling documents the intent. }
+    TypeSizeBytes := TypeSizeBytes(types[tid].elem_tid) * (types[tid].hi - types[tid].lo + 1)
   ELSE
   BEGIN
     AbortWith('codegen: TypeSizeBytes: unsupported type');
@@ -534,7 +592,8 @@ FUNCTION IsAggregateTk(tk: INTEGER): BOOLEAN;
   has no needs_copy flag of its own) can never drift apart. }
 BEGIN
   IsAggregateTk := (TypeKind(tk) = TK_ARRAY) OR (TypeKind(tk) = TK_RECORD) OR
-                   (TypeKind(tk) = TK_LSTRING) OR (TypeKind(tk) = TK_STRING);
+                   (TypeKind(tk) = TK_LSTRING) OR (TypeKind(tk) = TK_STRING) OR
+                   (TypeKind(tk) = TK_VECTOR);
 END;
 
 FUNCTION SysVMergeClass(a: INTEGER; b: INTEGER): INTEGER;
@@ -599,6 +658,34 @@ BEGIN
     AbortWith('codegen: WalkTypeLeaves: unsupported type in C aggregate');
 END;
 
+FUNCTION AggregateHasVectorLeaf(tid: INTEGER): BOOLEAN;
+{ TRUE if tid is a VECTOR, or transitively contains one through ARRAY
+  elements or RECORD fields. ClassifyAggregate uses this to force the whole
+  enclosing aggregate to MEMORY class: vector-register ABI classes (SSEUP)
+  are not implemented, and WalkTypeLeaves has no vector arm, so a small
+  (<= 16 byte) aggregate wrapping a vector would otherwise reach the
+  WalkTypeLeaves internal-error above. Same recursion shape as
+  WalkTypeLeaves, implemented ahead of it in file order. }
+VAR
+  i: INTEGER;
+  found: BOOLEAN;
+BEGIN
+  IF TypeKind(tid) = TK_VECTOR THEN
+    AggregateHasVectorLeaf := TRUE
+  ELSE IF TypeKind(tid) = TK_ARRAY THEN
+    AggregateHasVectorLeaf := AggregateHasVectorLeaf(types[tid].elem_tid)
+  ELSE IF TypeKind(tid) = TK_RECORD THEN
+  BEGIN
+    found := FALSE;
+    FOR i := 1 TO nfields DO
+      IF fields[i].rec_tid = tid THEN
+        IF AggregateHasVectorLeaf(fields[i].field_tid) THEN found := TRUE;
+    AggregateHasVectorLeaf := found;
+  END
+  ELSE
+    AggregateHasVectorLeaf := FALSE;
+END;
+
 PROCEDURE ClassifyAggregate(tk: INTEGER; VAR agg_class: INTEGER; VAR n_pieces: INTEGER;
                              VAR piece_kind: SysVPieceArr; VAR piece_bytes: SysVPieceSzArr);
 { The full System V AMD64 aggregate classifier. Splits an aggregate of at most
@@ -630,6 +717,18 @@ VAR
   sse_dbl: SysVFlagArr;
 BEGIN
   n_pieces := 0;
+  IF AggregateHasVectorLeaf(tk) THEN
+  BEGIN
+    { Vector-register ABI classes (SSEUP) are not implemented, so any
+      aggregate that is a vector -- or contains one through a field or
+      element -- is forced MEMORY-class. A bare VECTOR in a [C] routine
+      signature is rejected before this runs (see cg_decl); this arm covers
+      a vector nested inside a [C] record/ARRAY parameter, where classifying
+      the whole aggregate MEMORY is both the correct answer and the only
+      shape WalkTypeLeaves (which has no vector arm) can handle. }
+    agg_class := SYSV_CLASS_MEMORY;
+    RETURN;
+  END;
   size := TypeSizeBytes(tk);
   IF (size = 0) OR (size > 16) THEN
   BEGIN
@@ -908,6 +1007,7 @@ VAR
   variants_arr, arm_node, tag_type_expr: ADRMEM;
   fn2: INTEGER;
   nfd, fi, fni, ai: INTEGER32;
+  pow2: INTEGER32;
   field_tid, tag_tid: INTEGER;
   payload_align, payload_size, arm_off, fixed_off: INTEGER32;
   fname: Str255;
@@ -1036,6 +1136,44 @@ BEGIN
       arr_ty := LLVMArrayType(LLVMTypeForTk(elem_tid), count);
       tid := RegisterType(TK_ARRAY, elem_tid, lo, hi, arr_ty);
     END;
+  END
+  ELSE IF nt = 'VectorType' THEN
+  BEGIN
+    IF GetBool(te, 'packed') THEN
+      AbortWith('codegen: PACKED vectors are not supported');
+    { Lane count and element kind are re-validated here, mirroring the
+      typechecker's VectorType rules exactly: this file also resolves type
+      expressions that never crossed a typechecker (frozen-AST .check
+      inputs, sizeof_synth synthesis), so the rules cannot be skipped.
+      Bare scalar tids are 1..13; 1..12 is the vector-element family
+      (TK_INTEGER..TK_REAL32), which also rejects pointers/ADRMEM and
+      every registered aggregate tid by construction. }
+    { ResolveIntLiteral itself aborts on any node that is not an integer
+      literal or a CONST identifier, but with an array-flavoured message;
+      pre-check the shape here so the diagnostic names the vector lane
+      count. Mirrors the typechecker's VectorType arm. }
+    IF (NodeType(GetObj(te, 'lanes')) <> 'IntLiteral') AND
+       (NodeType(GetObj(te, 'lanes')) <> 'Identifier') THEN
+      AbortWith('codegen: vector lane count must be an integer literal or a CONST integer identifier');
+    count := ResolveIntLiteral(GetObj(te, 'lanes'));
+    elem_tid := ResolveTypeExpr(GetObj(te, 'element_type'));
+    { Power-of-two probe by successive halving -- the source language's AND
+      is boolean-only (no bitwise integer AND), so the classic
+      `count AND (count-1) = 0` idiom is not expressible here. }
+    pow2 := count;
+    WHILE (pow2 > 1) AND ((pow2 MOD 2) = 0) DO pow2 := pow2 DIV 2;
+    IF (count < 2) OR (count > 64) OR (pow2 <> 1) THEN
+      AbortWith('codegen: vector lane count must be a power of two between 2 and 64');
+    IF (elem_tid < TK_INTEGER) OR (elem_tid > TK_REAL32) THEN
+      AbortWith('codegen: vector element type must be a scalar');
+    { BOOLEAN vectors are <n x i8> in memory (0/1 per lane), not <n x i1>:
+      byte-wide storage keeps SIZEOF, alignment and VAR storage uniform
+      with every other type. }
+    IF elem_tid = TK_BOOLEAN THEN
+      arr_ty := LLVMVectorType(i8ty, count)
+    ELSE
+      arr_ty := LLVMVectorType(LLVMTypeForTk(elem_tid), count);
+    tid := RegisterType(TK_VECTOR, elem_tid, 0, count - 1, arr_ty);
   END
   ELSE IF nt = 'RecordType' THEN
   BEGIN
