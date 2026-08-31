@@ -91,6 +91,9 @@ Supported options:
 - `-c`: Compile to object file (`.o`)
 - `-S`: Emit LLVM IR (`.ll`)
 - `-O0`, `-O1`, `-O2`, `-O3`: Set optimization level
+- `--dialect <vintage|extended>`: Select the language dialect (default `vintage`)
+- `--target-cpu <cpu>`: Host target CPU, e.g. `x86-64-v3` (LLVM `target-cpu` attribute; default baseline x86-64)
+- `--target-features <list>`: Host target features, comma-separated, e.g. `+avx2,+fma`
 - `--emit-ptx`: Emit NVPTX assembly for device kernels
 - `-v`: Print pipeline commands
 
