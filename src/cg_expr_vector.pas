@@ -381,5 +381,94 @@ BEGIN
   CodegenVSelect := LLVMBuildSelect(builder, cond, a_val, b_val, MakeCStr(''));
 END;
 
+FUNCTION VecIdxTkOK(idx_tk: INTEGER): BOOLEAN;
+BEGIN
+  VecIdxTkOK := (idx_tk = TK_INTEGER) OR (idx_tk = TK_WORD)
+    OR (idx_tk = TK_INTEGER8) OR (idx_tk = TK_WORD8)
+    OR (idx_tk = TK_INTEGER32) OR (idx_tk = TK_WORD32)
+    OR (idx_tk = TK_INTEGER64) OR (idx_tk = TK_WORD64);
+END;
+
+FUNCTION CodegenVectorEltPtr(arr_ptr: ADRMEM; arr_tid: INTEGER;
+                             idx_val: ADRMEM; idx_tk: INTEGER;
+                             vec_tid: INTEGER; idx_node: ADRMEM): ADRMEM;
+VAR
+  n: INTEGER32;
+  folded: INTEGER64;
+  offset, gep_idx: ADRMEM;
+BEGIN
+  IF TypeKind(arr_tid) <> TK_ARRAY THEN
+    AbortWith('codegen: VLOAD/VSTORE first argument must be an ARRAY variable');
+  IF types[vec_tid].elem_tid = TK_BOOLEAN THEN
+    AbortWith('codegen: VLOAD/VSTORE does not support BOOLEAN vectors (a mask is not a memory format)');
+  IF types[arr_tid].elem_tid <> types[vec_tid].elem_tid THEN
+    AbortWith('codegen: VLOAD/VSTORE array element type must match the vector element type exactly');
+  IF NOT VecIdxTkOK(idx_tk) THEN
+    AbortWith('codegen: VLOAD/VSTORE index must be an integer-family type');
+  n := types[vec_tid].hi - types[vec_tid].lo + 1;
+  { Compile-time bounds check for a constant index only -- there is no
+    $INDEXCK machinery, plain array subscripts are unchecked too. }
+  IF FoldConstInt(idx_node, folded) THEN
+    IF (folded < types[arr_tid].lo) OR (folded + n - 1 > types[arr_tid].hi) THEN
+      AbortWith('codegen: VLOAD/VSTORE runs past the end of the array');
+  offset := LLVMBuildSub(builder, idx_val,
+                         LLVMConstInt(LLVMTypeForTk(idx_tk), types[arr_tid].lo, 1),
+                         MakeCStr(''));
+  IF types[arr_tid].is_super THEN
+  BEGIN
+    gep_idx := AllocPtrArray(1);
+    SetPtrArrayElem(gep_idx, 0, offset);
+    CodegenVectorEltPtr := LLVMBuildGEP2(builder, LLVMTypeForTk(arr_tid), arr_ptr, gep_idx, 1, MakeCStr(''));
+  END
+  ELSE
+  BEGIN
+    gep_idx := AllocPtrArray(2);
+    SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+    SetPtrArrayElem(gep_idx, 1, offset);
+    CodegenVectorEltPtr := LLVMBuildGEP2(builder, LLVMTypeForTk(arr_tid), arr_ptr, gep_idx, 2, MakeCStr(''));
+  END;
+END;
+
+FUNCTION CodegenVLoad(arr_ptr: ADRMEM; arr_tid: INTEGER;
+                      idx_val: ADRMEM; idx_tk: INTEGER;
+                      vec_tid: INTEGER; idx_node: ADRMEM): ADRMEM;
+VAR
+  eltp, ld: ADRMEM;
+BEGIN
+  eltp := CodegenVectorEltPtr(arr_ptr, arr_tid, idx_val, idx_tk, vec_tid, idx_node);
+  ld := LLVMBuildLoad2(builder, LLVMTypeForTk(vec_tid), eltp, MakeCStr(''));
+  { Element (not vector) alignment: the array is only element-aligned and i
+    is arbitrary, so a wider claim would be a lie. }
+  LLVMSetAlignment(ld, TypeAlignBytes(types[vec_tid].elem_tid));
+  CodegenVLoad := ld;
+END;
+
+PROCEDURE CodegenVStore(arr_ptr: ADRMEM; arr_tid: INTEGER;
+                        idx_val: ADRMEM; idx_tk: INTEGER;
+                        vec_val: ADRMEM; vec_tid: INTEGER; idx_node: ADRMEM);
+{ Per-lane extract + scalar store. A single `store <n x T>` would default
+  to the vector's ABI alignment, an over-claim for an element-aligned
+  array, and the [C] binding for LLVMBuildStore discards the instruction
+  ref so its alignment can't be lowered. N element-aligned scalar stores
+  are correct for any index; the backend re-fuses them where it's legal. }
+VAR
+  elem_tid: INTEGER;
+  n, k: INTEGER32;
+  base_eltp, elemty, lane, lanep, kidx: ADRMEM;
+BEGIN
+  elem_tid := types[vec_tid].elem_tid;
+  n := types[vec_tid].hi - types[vec_tid].lo + 1;
+  base_eltp := CodegenVectorEltPtr(arr_ptr, arr_tid, idx_val, idx_tk, vec_tid, idx_node);
+  elemty := LLVMTypeForTk(elem_tid);
+  FOR k := 0 TO n - 1 DO
+  BEGIN
+    kidx := AllocPtrArray(1);
+    SetPtrArrayElem(kidx, 0, LLVMConstInt(i32ty, k, 0));
+    lanep := LLVMBuildGEP2(builder, elemty, base_eltp, kidx, 1, MakeCStr(''));
+    lane := LLVMBuildExtractElement(builder, vec_val, LLVMConstInt(i32ty, k, 0), MakeCStr(''));
+    LLVMBuildStore(builder, lane, lanep);
+  END;
+END;
+
 BEGIN
 END.

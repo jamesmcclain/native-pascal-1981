@@ -720,6 +720,35 @@ BEGIN
     CheckFuncCall := TK_VECTOR;
     RETURN;
   END;
+  IF name = 'VLOAD' THEN
+  BEGIN
+    { VLOAD(arr, i, V): arr an array, i an integer, V a VECTOR TYPE NAME
+      (a bare Identifier resolved against the type table, like VSPLAT's).
+      Result is bare TK_VECTOR -- codegen's table checks the element-type
+      match and constant-index bounds. }
+    IF nargs <> 3 THEN
+      AddError('VLOAD requires exactly three arguments (an array, an index and a VECTOR type name)')
+    ELSE
+    BEGIN
+      atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
+      IF (atk <> TK_ARRAY) AND (atk <> TK_UNKNOWN) THEN
+        AddError('VLOAD first argument must be an array');
+      atk := CheckExpr(cJSON_GetArrayItem(args_arr, 1));
+      IF NOT IsInteger(atk) AND (atk <> TK_UNKNOWN) THEN
+        AddError('VLOAD index must be an integer type');
+      warg := cJSON_GetArrayItem(args_arr, 2);
+      IF NodeType(warg) <> 'Identifier' THEN
+        AddError('VLOAD third argument must be a VECTOR type name')
+      ELSE
+      BEGIN
+        si := LookupType(GetStr(warg, 'name'));
+        IF (si = 0) OR (types[si].tk <> TK_VECTOR) THEN
+          AddError('VLOAD type argument is not a VECTOR type');
+      END;
+    END;
+    CheckFuncCall := TK_VECTOR;
+    RETURN;
+  END;
   IF name = 'VSELECT' THEN
   BEGIN
     { VSELECT(m, a, b): m a mask VECTOR, a and b VECTORs; result is a's

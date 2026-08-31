@@ -326,6 +326,27 @@ BEGIN
         FOR i := 0 TO nargs - 1 DO
           cond_tk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
     END
+    ELSE IF pname = 'VSTORE' THEN
+    BEGIN
+      { VSTORE(arr, i, v): statement-form store of vector v's lanes into
+        arr[i .. i+n-1]. No builtin-procedure table exists -- this is a
+        branch in the same hardcoded chain (cf. NEW/CONCAT above). Element
+        match and constant-index bounds are codegen's job. }
+      IF nargs <> 3 THEN
+        AddError('VSTORE requires exactly three arguments (an array, an index and a VECTOR value)')
+      ELSE
+      BEGIN
+        cond_tk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
+        IF (cond_tk <> TK_ARRAY) AND (cond_tk <> TK_UNKNOWN) THEN
+          AddError('VSTORE first argument must be an array');
+        cond_tk := CheckExpr(cJSON_GetArrayItem(args_arr, 1));
+        IF NOT IsInteger(cond_tk) AND (cond_tk <> TK_UNKNOWN) THEN
+          AddError('VSTORE index must be an integer type');
+        cond_tk := CheckExpr(cJSON_GetArrayItem(args_arr, 2));
+        IF (cond_tk <> TK_VECTOR) AND (cond_tk <> TK_UNKNOWN) THEN
+          AddError('VSTORE third argument must be a VECTOR value');
+      END;
+    END
     ELSE BEGIN
       si := LookupSymbol(pname);
       IF si = 0 THEN

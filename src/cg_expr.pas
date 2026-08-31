@@ -1249,6 +1249,8 @@ VAR
   call_args: ADRMEM;
   vsel_mask, vsel_a, vsel_b: ADRMEM;
   vsel_mask_tid, vsel_a_tid, vsel_b_tid: INTEGER;
+  vld_idx: ADRMEM;
+  vld_idx_tk: INTEGER;
 BEGIN
   EnterExprLevel;
   nt := NodeType(node);
@@ -1637,6 +1639,30 @@ BEGIN
       res := CodegenVSelect(vsel_mask, vsel_a, vsel_b,
                             vsel_mask_tid, vsel_a_tid, vsel_b_tid);
       last_val_tk := vsel_a_tid;
+    END
+    ELSE IF nm = 'VLOAD' THEN
+    BEGIN
+      { VLOAD(arr, i, V): load arr[i .. i+n-1] as a V vector. arr is a bare
+        array variable; V is a VECTOR type NAME (a bare Identifier, resolved
+        against the type table -- the same new pattern as VSPLAT). }
+      call_args := GetObj(node, 'args');
+      IF ArrSize(call_args) <> 3 THEN
+        AbortWith('codegen: VLOAD expects (array, index, VECTOR type name)');
+      IF NodeType(ArrItem(call_args, 0)) <> 'Identifier' THEN
+        AbortWith('codegen: VLOAD first argument must be an array variable');
+      IF NodeType(ArrItem(call_args, 2)) <> 'Identifier' THEN
+        AbortWith('codegen: VLOAD third argument must be a VECTOR type name');
+      symi := LookupSym(GetStr(ArrItem(call_args, 0), 'name'));
+      IF symi = 0 THEN
+        AbortWith2('codegen: undefined variable: ', GetStr(ArrItem(call_args, 0), 'name'));
+      result_tid := LookupNamedType(GetStr(ArrItem(call_args, 2), 'name'));
+      IF (result_tid = 0) OR (TypeKind(result_tid) <> TK_VECTOR) THEN
+        AbortWith2('codegen: VLOAD type argument is not a VECTOR type: ', GetStr(ArrItem(call_args, 2), 'name'));
+      vld_idx := CodegenExpr(ArrItem(call_args, 1));
+      vld_idx_tk := last_val_tk;
+      res := CodegenVLoad(symbols[symi].llvm_val, symbols[symi].tk,
+                          vld_idx, vld_idx_tk, result_tid, ArrItem(call_args, 1));
+      last_val_tk := result_tid;
     END
     ELSE IF (nm = 'EOF') OR (nm = 'EOLN') THEN
     BEGIN

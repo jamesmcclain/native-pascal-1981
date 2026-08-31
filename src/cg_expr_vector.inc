@@ -45,4 +45,25 @@ FUNCTION CodegenVectorCmp(op: Str255; lval, rval: ADRMEM; lvec_tid, rvec_tid: IN
 FUNCTION CodegenVSelect(mask_val, a_val, b_val: ADRMEM;
                         mask_tid, a_tid, b_tid: INTEGER): ADRMEM;
 
+{ Address of element `idx` of an array, for VLOAD/VSTORE. arr_ptr is the
+  array's storage address, arr_tid its TK_ARRAY tid; the result points at
+  a scalar of the array's element type. Aborts unless the array element
+  kind equals the vector's, and -- for a constant idx -- unless
+  idx .. idx+n-1 is within the array's declared bounds. }
+FUNCTION CodegenVectorEltPtr(arr_ptr: ADRMEM; arr_tid: INTEGER;
+                             idx_val: ADRMEM; idx_tk: INTEGER;
+                             vec_tid: INTEGER; idx_node: ADRMEM): ADRMEM;
+
+{ VLOAD(arr, i, V): load lanes arr[i .. i+n-1] as vector type vec_tid, at
+  scalar-element alignment (safe for any i). }
+FUNCTION CodegenVLoad(arr_ptr: ADRMEM; arr_tid: INTEGER;
+                      idx_val: ADRMEM; idx_tk: INTEGER;
+                      vec_tid: INTEGER; idx_node: ADRMEM): ADRMEM;
+
+{ VSTORE(arr, i, v): store vector v's lanes into arr[i .. i+n-1], at
+  scalar-element alignment. }
+PROCEDURE CodegenVStore(arr_ptr: ADRMEM; arr_tid: INTEGER;
+                        idx_val: ADRMEM; idx_tk: INTEGER;
+                        vec_val: ADRMEM; vec_tid: INTEGER; idx_node: ADRMEM);
+
 END;

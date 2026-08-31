@@ -12,6 +12,8 @@ VAR
   m, m2: M4;
   mk: M8;
   d, e, f: V4D;
+  buf: ARRAY [0..63] OF REAL32;
+  ibuf: ARRAY [0..15] OF INTEGER32;
   i: INTEGER;
 BEGIN
   { M0: declare, whole-vector assign, SIZEOF, LOWER/UPPER. }
@@ -137,5 +139,19 @@ BEGIN
   WRITELN;
   d := VSELECT(m, e, f);                { 2 2 2 3 }
   FOR i := 0 TO 3 DO WRITE(d[i]:0:2, ' ');
+  WRITELN;
+
+  { M5: VLOAD / VSTORE round trip through a plain array. VSTORE at 8 and 12,
+    VLOAD straddling both at 10. }
+  VSTORE(buf, 8, VSPLAT(1.5, V4F));      { buf[8..11]  = 1.5 }
+  VSTORE(buf, 12, VSPLAT(2.5, V4F));     { buf[12..15] = 2.5 }
+  b := VLOAD(buf, 10, V4F);              { buf[10 11 12 13] = 1.5 1.5 2.5 2.5 }
+  FOR i := 0 TO 3 DO WRITE(b[i]:0:2, ' ');
+  WRITELN;
+
+  FOR i := 0 TO 15 DO ibuf[i] := i;      { 0 .. 15 }
+  VSTORE(ibuf, 2, VSPLAT(100, V8I));     { ibuf[2..9] = 100 }
+  iv := VLOAD(ibuf, 6, V8I);             { ibuf[6..13] = 100 100 100 100 10 11 12 13 }
+  FOR i := 0 TO 7 DO WRITE(iv[i], ' ');
   WRITELN
 END.
