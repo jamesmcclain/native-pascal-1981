@@ -655,6 +655,43 @@ BEGIN
     CheckFuncCall := TK_BOOLEAN;
     RETURN;
   END;
+  IF (name = 'VSUM') OR (name = 'VPROD') OR (name = 'VMIN') OR (name = 'VMAX')
+     OR (name = 'VANY') OR (name = 'VALL') THEN
+  BEGIN
+    { Horizontal reduction of one VECTOR to a scalar. This stage's coarse
+      model carries no element kind through a call result; recover it only
+      for the common case of a bare vector variable (a plain Identifier
+      does not route through CheckDesignator). Anything fancier yields
+      TK_UNKNOWN and codegen's table is the backstop. VANY/VALL always
+      yield BOOLEAN. }
+    IF nargs <> 1 THEN
+    BEGIN
+      AddError('A vector reduction takes exactly one VECTOR argument');
+      CheckFuncCall := TK_UNKNOWN;
+      RETURN;
+    END;
+    atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
+    IF (atk <> TK_VECTOR) AND (atk <> TK_UNKNOWN) THEN
+      AddError('A vector reduction requires a VECTOR argument');
+    IF (name = 'VANY') OR (name = 'VALL') THEN
+    BEGIN
+      CheckFuncCall := TK_BOOLEAN;
+      RETURN;
+    END;
+    IF NodeType(cJSON_GetArrayItem(args_arr, 0)) = 'Identifier' THEN
+    BEGIN
+      si := LookupSymbol(GetStr(cJSON_GetArrayItem(args_arr, 0), 'name'));
+      IF (si <> 0) AND (symbols[si].tk = TK_VECTOR) THEN
+      BEGIN
+        IF symbols[si].aux = TK_BOOLEAN THEN
+          AddError('VSUM/VPROD/VMIN/VMAX require a numeric VECTOR');
+        CheckFuncCall := symbols[si].aux;
+        RETURN;
+      END;
+    END;
+    CheckFuncCall := TK_UNKNOWN;
+    RETURN;
+  END;
   IF name = 'VSPLAT' THEN
   BEGIN
     { VSPLAT(x, V): x a scalar, V a VECTOR TYPE NAME (a bare Identifier,

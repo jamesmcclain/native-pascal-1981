@@ -1594,6 +1594,19 @@ BEGIN
       res := CodegenVSplat(res, last_val_tk, result_tid, ArrItem(call_args, 0));
       last_val_tk := result_tid;
     END
+    ELSE IF (nm = 'VSUM') OR (nm = 'VPROD') OR (nm = 'VMIN') OR (nm = 'VMAX')
+         OR (nm = 'VANY') OR (nm = 'VALL') THEN
+    BEGIN
+      { Horizontal reduction: one VECTOR argument -> a scalar. CodegenVReduce
+        emits the llvm.vector.reduce.* intrinsic and sets last_val_tk. }
+      call_args := GetObj(node, 'args');
+      IF ArrSize(call_args) <> 1 THEN
+        AbortWith2('codegen: reduction takes exactly one VECTOR argument: ', nm);
+      res := CodegenExpr(ArrItem(call_args, 0));
+      IF TypeKind(last_val_tk) <> TK_VECTOR THEN
+        AbortWith2('codegen: reduction argument is not a VECTOR: ', nm);
+      res := CodegenVReduce(nm, res, last_val_tk);
+    END
     ELSE IF (nm = 'EOF') OR (nm = 'EOLN') THEN
     BEGIN
       call_args := AllocPtrArray(1);

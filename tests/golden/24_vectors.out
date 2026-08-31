@@ -36,3 +36,14 @@ inot -11
 m& F
 m| T
 m! T
+fsum 10.00
+fprod 24.00
+fmin 1.00
+fmax 4.00
+isum 4
+imin -3
+imax 4
+iprod 256
+any T
+all F
+all2 T

@@ -91,5 +91,26 @@ BEGIN
   m := m AND m2;  IF m[0] THEN WRITELN('m& T') ELSE WRITELN('m& F');
   m := VSPLAT(TRUE, M4);
   m := m OR m2;   IF m[0] THEN WRITELN('m| T') ELSE WRITELN('m| F');
-  m := NOT m2;    IF m[0] THEN WRITELN('m! T') ELSE WRITELN('m! F')
+  m := NOT m2;    IF m[0] THEN WRITELN('m! T') ELSE WRITELN('m! F');
+
+  { M3: horizontal reductions. VSUM/VPROD/VMIN/VMAX to a scalar element,
+    VANY/VALL over a mask to a BOOLEAN. Float VSUM/VPROD are ordered. }
+  FOR i := 0 TO 3 DO e[i] := (i + 1) * 1.0;   { 1 2 3 4 }
+  WRITELN('fsum ', VSUM(e):0:2);
+  WRITELN('fprod ', VPROD(e):0:2);
+  WRITELN('fmin ', VMIN(e):0:2);
+  WRITELN('fmax ', VMAX(e):0:2);
+
+  FOR i := 0 TO 7 DO ix[i] := i - 3;          { -3 .. 4 }
+  WRITELN('isum ', VSUM(ix));
+  WRITELN('imin ', VMIN(ix));
+  WRITELN('imax ', VMAX(ix));
+  ix := VSPLAT(2, V8I);
+  WRITELN('iprod ', VPROD(ix));
+
+  m[0] := TRUE; m[1] := FALSE; m[2] := FALSE; m[3] := FALSE;
+  IF VANY(m) THEN WRITELN('any T') ELSE WRITELN('any F');
+  IF VALL(m) THEN WRITELN('all T') ELSE WRITELN('all F');
+  m2 := VSPLAT(TRUE, M4);
+  IF VALL(m2) THEN WRITELN('all2 T') ELSE WRITELN('all2 F')
 END.

@@ -24,4 +24,13 @@ FUNCTION CodegenVectorBinOp(op: Str255; lval, rval: ADRMEM; lvec_tid, rvec_tid: 
 { Elementwise unary `-v` ('MINUS') or `NOT v` ('NOT'). }
 FUNCTION CodegenVectorUnaryOp(op: Str255; v: ADRMEM; vec_tid: INTEGER): ADRMEM;
 
+{ Horizontal reduction of one vector to a scalar: nm is 'VSUM' 'VPROD'
+  'VMIN' 'VMAX' 'VANY' 'VALL'. The caller has already evaluated the operand
+  to vec_val (its tracked tid is vec_tid). Emits an `llvm.vector.reduce.*`
+  intrinsic call (declaration get-or-created in the module, name mangled
+  with the vector type); float VSUM/VPROD are ordered (a start operand,
+  no `reassoc`). Sets last_val_tk (the element kind, or TK_BOOLEAN for
+  VANY/VALL). }
+FUNCTION CodegenVReduce(nm: Str255; vec_val: ADRMEM; vec_tid: INTEGER): ADRMEM;
+
 END;

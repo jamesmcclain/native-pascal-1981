@@ -135,5 +135,170 @@ BEGIN
   CodegenVectorUnaryOp := res;
 END;
 
+FUNCTION UIntStr(n: INTEGER32): Str255;
+{ Decimal text of a small non-negative integer -- no int->string helper
+  exists in a unit this low, and the lane count (2..64) goes into the
+  mangled intrinsic name. Digit-array reverse, mirroring cg_stmt's
+  IntToStr255 (CHR needs a plain INTEGER, hence RETYPE). }
+VAR
+  v, digit: INTEGER32;
+  tmp, res: Str255;
+  len, i, out_i: INTEGER;
+BEGIN
+  v := n;
+  len := 0;
+  IF v = 0 THEN
+  BEGIN
+    len := 1;
+    tmp[1] := '0';
+  END
+  ELSE
+    WHILE v > 0 DO
+    BEGIN
+      len := len + 1;
+      digit := ORD('0') + (v MOD 10);
+      tmp[len] := CHR(RETYPE(INTEGER, digit));
+      v := v DIV 10;
+    END;
+  out_i := 0;
+  FOR i := len DOWNTO 1 DO
+  BEGIN
+    out_i := out_i + 1;
+    res[out_i] := tmp[i];
+  END;
+  res[0] := CHR(out_i);
+  UIntStr := res;
+END;
+
+FUNCTION VecElemLLVMTag(elem: INTEGER): Str255;
+{ The `<width><kind>` token LLVM uses in an overloaded intrinsic's vector
+  suffix -- `i32`, `f64`, etc. BOOLEAN lanes are <n x i8> (M0). }
+BEGIN
+  IF (elem = TK_INTEGER8) OR (elem = TK_WORD8) OR (elem = TK_CHAR) OR (elem = TK_BOOLEAN) THEN
+    VecElemLLVMTag := 'i8'
+  ELSE IF (elem = TK_INTEGER) OR (elem = TK_WORD) THEN
+    VecElemLLVMTag := 'i16'
+  ELSE IF (elem = TK_INTEGER32) OR (elem = TK_WORD32) THEN
+    VecElemLLVMTag := 'i32'
+  ELSE IF (elem = TK_INTEGER64) OR (elem = TK_WORD64) THEN
+    VecElemLLVMTag := 'i64'
+  ELSE IF elem = TK_REAL32 THEN
+    VecElemLLVMTag := 'f32'
+  ELSE IF elem = TK_REAL THEN
+    VecElemLLVMTag := 'f64'
+  ELSE
+  BEGIN
+    AbortWith('codegen: no LLVM vector tag for this element kind');
+    VecElemLLVMTag := 'i8';
+  END;
+END;
+
+FUNCTION CodegenVReduce(nm: Str255; vec_val: ADRMEM; vec_tid: INTEGER): ADRMEM;
+VAR
+  elem: INTEGER;
+  n: INTEGER32;
+  is_float, is_uns, needs_start, is_mask_reduce: BOOLEAN;
+  base, mangled: Str255;
+  scalar_ty, vecty, start_val, fnty, fn, callres: ADRMEM;
+  params, args: ADRMEM;
+BEGIN
+  elem := types[vec_tid].elem_tid;
+  n := types[vec_tid].hi - types[vec_tid].lo + 1;
+  is_float := (elem = TK_REAL) OR (elem = TK_REAL32);
+  is_uns := IsUnsignedWordTk(elem);
+  is_mask_reduce := (nm = 'VANY') OR (nm = 'VALL');
+  needs_start := FALSE;
+
+  IF is_mask_reduce THEN
+  BEGIN
+    IF elem <> TK_BOOLEAN THEN
+      AbortWith2('codegen: reduction requires a VECTOR OF BOOLEAN: ', nm);
+    IF nm = 'VANY' THEN base := 'or' ELSE base := 'and';
+  END
+  ELSE IF (nm = 'VSUM') OR (nm = 'VPROD') THEN
+  BEGIN
+    IF NOT (is_float OR IsIntegerFamilyTk(elem)) THEN
+      AbortWith2('codegen: reduction requires a numeric VECTOR: ', nm);
+    IF is_float THEN
+    BEGIN
+      needs_start := TRUE;
+      IF nm = 'VSUM' THEN base := 'fadd' ELSE base := 'fmul';
+    END
+    ELSE
+      IF nm = 'VSUM' THEN base := 'add' ELSE base := 'mul';
+  END
+  ELSE IF (nm = 'VMIN') OR (nm = 'VMAX') THEN
+  BEGIN
+    IF NOT (is_float OR IsIntegerFamilyTk(elem) OR (elem = TK_CHAR)) THEN
+      AbortWith2('codegen: reduction requires a numeric or CHAR VECTOR: ', nm);
+    IF is_float THEN
+    BEGIN
+      IF nm = 'VMIN' THEN base := 'fmin' ELSE base := 'fmax';
+    END
+    ELSE IF is_uns THEN
+    BEGIN
+      IF nm = 'VMIN' THEN base := 'umin' ELSE base := 'umax';
+    END
+    ELSE
+      IF nm = 'VMIN' THEN base := 'smin' ELSE base := 'smax';
+  END
+  ELSE
+    AbortWith2('codegen: unknown reduction builtin: ', nm);
+
+  { <n x elem> and the scalar result type. }
+  IF elem = TK_BOOLEAN THEN scalar_ty := i8ty
+  ELSE scalar_ty := LLVMTypeForTk(elem);
+  vecty := LLVMTypeForTk(vec_tid);
+
+  mangled := 'llvm.vector.reduce.';
+  CONCAT(mangled, base);
+  CONCAT(mangled, '.v');
+  CONCAT(mangled, UIntStr(n));
+  CONCAT(mangled, VecElemLLVMTag(elem));
+
+  IF needs_start THEN
+  BEGIN
+    params := AllocPtrArray(2);
+    SetPtrArrayElem(params, 0, scalar_ty);
+    SetPtrArrayElem(params, 1, vecty);
+    fnty := LLVMFunctionType(scalar_ty, params, 2, 0);
+    { An ordered reduction: 0.0 start for fadd, 1.0 for fmul, and no
+      `reassoc` flag on the call -- results are deterministic. }
+    IF base = 'fadd' THEN start_val := LLVMConstReal(scalar_ty, 0.0)
+    ELSE start_val := LLVMConstReal(scalar_ty, 1.0);
+    args := AllocPtrArray(2);
+    SetPtrArrayElem(args, 0, start_val);
+    SetPtrArrayElem(args, 1, vec_val);
+  END
+  ELSE
+  BEGIN
+    params := AllocPtrArray(1);
+    SetPtrArrayElem(params, 0, vecty);
+    fnty := LLVMFunctionType(scalar_ty, params, 1, 0);
+    args := AllocPtrArray(1);
+    SetPtrArrayElem(args, 0, vec_val);
+  END;
+
+  fn := LLVMGetNamedFunction(modl, MakeCStr(mangled));
+  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr(mangled), fnty);
+
+  IF needs_start THEN
+    callres := LLVMBuildCall2(builder, fnty, fn, args, 2, MakeCStr(''))
+  ELSE
+    callres := LLVMBuildCall2(builder, fnty, fn, args, 1, MakeCStr(''));
+
+  IF is_mask_reduce THEN
+  BEGIN
+    { or/and over <n x i8> 0/1 lanes -> i8 0/1; narrow to the i1 a scalar
+      BOOLEAN register is. }
+    callres := LLVMBuildTrunc(builder, callres, i1ty, MakeCStr(''));
+    last_val_tk := TK_BOOLEAN;
+  END
+  ELSE
+    last_val_tk := elem;
+
+  CodegenVReduce := callres;
+END;
+
 BEGIN
 END.
