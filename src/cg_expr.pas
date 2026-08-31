@@ -335,7 +335,15 @@ BEGIN
     procedure call with "Undefined procedure: EXIT"), so early-return from
     deep inside nested IFs isn't expressible here regardless. A single
     terminal assignment is the only option. }
-  IF (op = 'AND') OR (op = 'OR') THEN
+  IF (TypeKind(ltk) = TK_VECTOR) OR (TypeKind(rtk) = TK_VECTOR) THEN
+  BEGIN
+    { Elementwise arithmetic/logic. Both operands must be the identical
+      VECTOR type -- CodegenVectorBinOp emits the mixed-type error otherwise
+      (a scalar operand also lands here since its tk is not TK_VECTOR). }
+    res := CodegenVectorBinOp(op, lval, rval, ltk, rtk);
+    last_val_tk := ltk;
+  END
+  ELSE IF (op = 'AND') OR (op = 'OR') THEN
   BEGIN
     IF (ltk <> TK_BOOLEAN) OR (rtk <> TK_BOOLEAN) THEN
       AbortWith('codegen: AND/OR require BOOLEAN operands');
@@ -481,6 +489,13 @@ VAR
 BEGIN
   v := CodegenExpr(operand_node);
   tk := last_val_tk;
+  IF TypeKind(tk) = TK_VECTOR THEN
+  BEGIN
+    res := CodegenVectorUnaryOp(op, v, tk);
+    last_val_tk := tk;
+    CodegenUnaryOp := res;
+    RETURN;
+  END;
   IF op = 'MINUS' THEN
   BEGIN
     IF (tk = TK_INTEGER) OR (tk = TK_WORD) THEN res := LLVMBuildSub(builder, LLVMConstInt(i16ty, 0, 1), v, MakeCStr(''))

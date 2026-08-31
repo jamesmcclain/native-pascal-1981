@@ -18,3 +18,21 @@ T F T F
 3.00 3.00 3.00 3.00 
 9 9
 T T T T 
+f+ 5.00
+f- 1.00
+f* 6.00
+f/ 1.50
+f- -2.00
+i+ 13
+i- 7
+i* 30
+idiv 3
+imod 1
+iand 2
+ior 11
+ixor 9
+ineg -10
+inot -11
+m& F
+m| T
+m! T

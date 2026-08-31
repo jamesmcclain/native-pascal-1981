@@ -826,6 +826,29 @@ BEGIN
     op := GetStr(node, 'op');
     IF (lt = TK_UNKNOWN) OR (rt = TK_UNKNOWN) THEN
       CheckExpr := TK_UNKNOWN
+    ELSE IF (lt = TK_VECTOR) OR (rt = TK_VECTOR) THEN
+    BEGIN
+      { Elementwise arithmetic/logic (and, later, comparison) on VECTORs.
+        Both operands must be the same VECTOR type -- there is no
+        scalar-to-vector promotion; write VSPLAT. The coarse tc type model
+        returns a bare TK_VECTOR, so lane-count / element-kind agreement is
+        verified in codegen (same split as SETs). }
+      IF (lt <> TK_VECTOR) OR (rt <> TK_VECTOR) THEN
+      BEGIN
+        AddError('VECTOR operators require both operands to be the same VECTOR type (use VSPLAT for a scalar)');
+        CheckExpr := TK_UNKNOWN;
+      END
+      ELSE IF (op = 'EQ') OR (op = 'NEQ') OR (op = 'LT') OR (op = 'LE') OR
+              (op = 'GT') OR (op = 'GE') OR (op = 'AND') OR (op = 'OR') OR
+              (op = 'XOR') OR (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') OR
+              (op = 'SLASH') OR (op = 'DIV') OR (op = 'MOD') THEN
+        CheckExpr := TK_VECTOR
+      ELSE
+      BEGIN
+        AddError('Unsupported VECTOR operator');
+        CheckExpr := TK_UNKNOWN;
+      END;
+    END
     ELSE IF (op = 'AND') OR (op = 'OR') OR (op = 'AND_THEN') OR (op = 'OR_ELSE') THEN
     BEGIN
       IF (lt <> TK_BOOLEAN) OR (rt <> TK_BOOLEAN) THEN
@@ -904,9 +927,14 @@ BEGIN
       ot := CheckExpr(operand_node);
     IF op = 'NOT' THEN
     BEGIN
-      IF (ot <> TK_BOOLEAN) AND (ot <> TK_UNKNOWN) THEN
-        AddError('NOT requires a BOOLEAN operand');
-      CheckExpr := TK_BOOLEAN;
+      IF ot = TK_VECTOR THEN
+        CheckExpr := TK_VECTOR
+      ELSE
+      BEGIN
+        IF (ot <> TK_BOOLEAN) AND (ot <> TK_UNKNOWN) THEN
+          AddError('NOT requires a BOOLEAN operand');
+        CheckExpr := TK_BOOLEAN;
+      END;
     END
     ELSE
       CheckExpr := ot;
