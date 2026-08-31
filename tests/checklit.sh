@@ -15,9 +15,11 @@
 #   { CHECK-ANY: <substring> || <alternative substring> }
 #   { CHECK-COUNT: N <substring that must appear exactly N times> }
 #   { CHECK-ENV: NAME=value }   (optional, sets an env var for this fixture's
-#                                 codegen invocation, e.g. PASCAL_EMIT_PTX=1)
-#   { CHECK-FLAGS: --opt val }  (optional, extra driver args for the compile,
-#                                 e.g. --target-cpu x86-64-v3)
+#                                 codegen invocation; rarely needed -- prefer
+#                                 CHECK-FLAGS, options are command line now)
+#   { CHECK-FLAGS: --opt val }  (optional, extra driver/codegen args for the
+#                                 compile, e.g. --target-cpu x86-64-v3,
+#                                 --emit-ptx, --device-triple <triple>)
 #   { CHECK-INPUT: path.json }  (required for .check files; path is relative
 #                                 to the repository root)
 #
@@ -114,7 +116,7 @@ for fixture in "${FIXTURES[@]}"; do
       trap - EXIT
       continue
     fi
-    command=(bin/codegen "${dialect_args[@]}")
+    command=(bin/codegen "${dialect_args[@]}" "${flag_args[@]}")
   fi
 
   status=0

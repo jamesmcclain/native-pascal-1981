@@ -9,7 +9,6 @@ USES argparse, jsonutil;
 FUNCTION pas_arg_count: CINT [C]; EXTERN;
 FUNCTION pas_arg_value(index: CINT): ADRMEM [C]; EXTERN;
 FUNCTION getenv(name: ADRMEM): ADRMEM [C]; EXTERN;
-FUNCTION setenv(name: ADRMEM; new_value: ADRMEM; replace: CINT): CINT [C]; EXTERN;
 FUNCTION pas_toolchain_root: ADRMEM [C]; EXTERN;
 FUNCTION open(path: ADRMEM; flags: CINT; mode: CINT): CINT [C]; EXTERN;
 FUNCTION close(fd: CINT): CINT [C]; EXTERN;
@@ -36,7 +35,7 @@ VAR
   root_dir, lexer_bin, parser_bin, typechecker_bin, codegen_bin: ADRMEM;
   runtime_lib, cc_bin, opt_level, temp_ll, extra_ll, primary_ll, primary_output: ADRMEM;
   primary_compile_only: BOOLEAN;
-  emit_ptx, device_triple, ptx_cpu, device_backend: ADRMEM;
+  emit_ptx, device_triple, ptx_cpu, device_backend, noalias_params: ADRMEM;
   target_cpu, target_features: ADRMEM;
   in_fd, out_fd: CINT;
   p1, p2, p3: ARRAY[0..1] OF CINT;
@@ -128,14 +127,17 @@ BEGIN
 END;
 
 PROCEDURE ExecStage(stage, stage_name, stage_dialect: ADRMEM;
+                    fwd_emit_ptx, fwd_noalias, fwd_device_triple,
+                    fwd_ptx_cpu, fwd_device_backend,
                     fwd_target_cpu, fwd_target_features: ADRMEM;
                     source_fd, destination_fd: CINT);
-{ fwd_target_cpu / fwd_target_features are NIL except on the codegen stage,
-  and even there only when the driver was given the matching option. They are
-  passed as ordinary CLI arguments -- the driver <-> stage interface is CLI
-  only, never environment. }
+{ Every fwd_* is NIL except on the codegen stage, and even there only when the
+  driver was given the matching option. They are passed as ordinary CLI
+  arguments -- the driver <-> stage interface is command line only, never the
+  environment. fwd_emit_ptx / fwd_noalias are bare flags (any non-NIL value
+  means "present"); the rest carry a value. }
 VAR
-  args: ARRAY[0..7] OF ADRMEM;
+  args: ARRAY[0..23] OF ADRMEM;
   n: INTEGER32;
 BEGIN
   dup2(source_fd, 0);
@@ -147,6 +149,25 @@ BEGIN
   IF stage_dialect <> NIL THEN
   BEGIN
     args[n] := MakeCStr('--dialect'); args[n + 1] := stage_dialect;
+    n := n + 2;
+  END;
+  IF fwd_emit_ptx <> NIL THEN
+  BEGIN args[n] := MakeCStr('--emit-ptx'); n := n + 1; END;
+  IF fwd_noalias <> NIL THEN
+  BEGIN args[n] := MakeCStr('--noalias-kernel-params'); n := n + 1; END;
+  IF fwd_device_triple <> NIL THEN
+  BEGIN
+    args[n] := MakeCStr('--device-triple'); args[n + 1] := fwd_device_triple;
+    n := n + 2;
+  END;
+  IF fwd_ptx_cpu <> NIL THEN
+  BEGIN
+    args[n] := MakeCStr('--ptx-cpu'); args[n + 1] := fwd_ptx_cpu;
+    n := n + 2;
+  END;
+  IF fwd_device_backend <> NIL THEN
+  BEGIN
+    args[n] := MakeCStr('--device-backend'); args[n + 1] := fwd_device_backend;
     n := n + 2;
   END;
   IF fwd_target_cpu <> NIL THEN
@@ -180,15 +201,20 @@ BEGIN
       BEGIN
         pid1 := fork;
         IF pid1 = 0 THEN ExecStage(lexer_bin, MakeCStr('lexer'), NIL,
-                                   NIL, NIL, in_fd, p1[1]);
+                                   NIL, NIL, NIL, NIL, NIL, NIL, NIL,
+                                   in_fd, p1[1]);
         pid2 := fork;
         IF pid2 = 0 THEN ExecStage(parser_bin, MakeCStr('parser'), dialect,
-                                   NIL, NIL, p1[0], p2[1]);
+                                   NIL, NIL, NIL, NIL, NIL, NIL, NIL,
+                                   p1[0], p2[1]);
         pid3 := fork;
         IF pid3 = 0 THEN ExecStage(typechecker_bin, MakeCStr('typechecker'), dialect,
-                                   NIL, NIL, p2[0], p3[1]);
+                                   NIL, NIL, NIL, NIL, NIL, NIL, NIL,
+                                   p2[0], p3[1]);
         pid4 := fork;
         IF pid4 = 0 THEN ExecStage(codegen_bin, MakeCStr('codegen'), dialect,
+                                   emit_ptx, noalias_params, device_triple,
+                                   ptx_cpu, device_backend,
                                    target_cpu, target_features, p3[0], out_fd);
         close(in_fd); close(out_fd); ClosePipes;
         waitpid(pid1, ADR status1, 0); waitpid(pid2, ADR status2, 0);
@@ -270,6 +296,8 @@ BEGIN
   ArgString('target-features', ARG_NO_SHORT, '', 'Host target features, e.g. +avx2,+fma');
   ArgString('device-backend', ARG_NO_SHORT, '', 'Select the device code backend');
   ArgFlag('emit-ptx', ARG_NO_SHORT, 'Emit PTX assembly for device code');
+  ArgFlag('noalias-kernel-params', ARG_NO_SHORT,
+          'Mark device kernel pointer parameters noalias');
   ArgPassthrough('-I');
   ArgPassthrough('-L');
   ArgPassthrough('-l');
@@ -312,6 +340,8 @@ BEGIN
 
   IF ArgGetFlag('emit-ptx') THEN emit_ptx := MakeCStr('true')
   ELSE emit_ptx := NIL;
+  IF ArgGetFlag('noalias-kernel-params') THEN noalias_params := MakeCStr('true')
+  ELSE noalias_params := NIL;
   IF ArgWasGiven('device-triple') THEN device_triple := ArgGetRaw('device-triple')
   ELSE device_triple := NIL;
   IF ArgWasGiven('ptx-cpu') THEN ptx_cpu := ArgGetRaw('ptx-cpu')
@@ -364,10 +394,8 @@ BEGIN
   IF parser_bin = NIL THEN parser_bin := MakeCStr(Join(CStrToStr255(root_dir), '/bin/parser'));
   IF typechecker_bin = NIL THEN typechecker_bin := MakeCStr(Join(CStrToStr255(root_dir), '/bin/typechecker'));
   IF codegen_bin = NIL THEN codegen_bin := MakeCStr(Join(CStrToStr255(root_dir), '/bin/codegen'));
-  IF emit_ptx <> NIL THEN setenv(MakeCStr('PASCAL_EMIT_PTX'), emit_ptx, 1);
-  IF device_triple <> NIL THEN setenv(MakeCStr('PASCAL_DEVICE_TRIPLE'), device_triple, 1);
-  IF ptx_cpu <> NIL THEN setenv(MakeCStr('PASCAL_PTX_CPU'), ptx_cpu, 1);
-  IF device_backend <> NIL THEN setenv(MakeCStr('PASCAL_DEVICE_BACKEND'), device_backend, 1);
+  { Device / PTX and host target options are handed to the codegen stage as
+    command-line arguments (see ExecStage), never through the environment. }
   IF ir_only THEN
     temp_ll := output_file
   ELSE

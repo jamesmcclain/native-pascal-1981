@@ -159,9 +159,34 @@ for dialect_arg in implicit vintage extended; do
   check_stage_args "$expected_dialect" "$dialect_arg dialect"
 done
 
-# --target-cpu / --target-features are forwarded (as CLI args, never env) to
-# the codegen stage only, appended after --dialect. The other three stages
-# never see them.
+# The device / PTX and host target options are forwarded (as CLI args, never
+# env) to the codegen stage only, appended after --dialect. --emit-ptx and
+# --noalias-kernel-params forward as bare flags; the rest carry a value.
+rm -f "$record_dir"/*.args
+expect_status 0 env "${record_env[@]}" "$DRIVER" --dialect extended \
+  --emit-ptx --device-triple nvptx64-nvidia-cuda --ptx-cpu sm_80 \
+  --device-backend cuda --noalias-kernel-params \
+  -S "$source_file" -o "$work_dir/device-fwd.ll"
+printf 'argc=10\narg=--dialect\narg=extended\narg=--emit-ptx\narg=--noalias-kernel-params\narg=--device-triple\narg=nvptx64-nvidia-cuda\narg=--ptx-cpu\narg=sm_80\narg=--device-backend\narg=cuda\n' \
+  > "$work_dir/expected-codegen-device-args"
+if cmp -s "$work_dir/expected-codegen-device-args" "$record_dir/codegen.args"; then
+  pass=$((pass + 1))
+else
+  echo "FAIL: device options: unexpected codegen argument array" >&2
+  diff -u "$work_dir/expected-codegen-device-args" "$record_dir/codegen.args" >&2 || true
+  fail=$((fail + 1))
+fi
+printf 'argc=2\narg=--dialect\narg=extended\n' > "$work_dir/expected-device-plain-args"
+for stage in parser typechecker; do
+  if cmp -s "$work_dir/expected-device-plain-args" "$record_dir/$stage.args"; then
+    pass=$((pass + 1))
+  else
+    echo "FAIL: a device option leaked into the $stage stage" >&2
+    diff -u "$work_dir/expected-device-plain-args" "$record_dir/$stage.args" >&2 || true
+    fail=$((fail + 1))
+  fi
+done
+
 rm -f "$record_dir"/*.args
 expect_status 0 env "${record_env[@]}" "$DRIVER" --dialect extended \
   --target-cpu skylake-avx512 --target-features +avx512f,+avx512vl \
