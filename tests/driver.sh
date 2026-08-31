@@ -212,7 +212,37 @@ for stage in parser typechecker; do
 done
 
 expect_status 1 env "${stage_env[@]}" "$DRIVER" -S "$source_file" "$source_file"
-expect_stderr 'error: -c and -S require exactly one input file'
+expect_stderr 'error: -c, -S and --emit-ptx require exactly one input file'
+
+clang_log_ptx="$work_dir/clang-ptx.log"
+# --emit-ptx stops after codegen the way -S does: PTX is the codegen stage's
+# final product, not something clang can be handed. Written any other way,
+# the driver would pass PTX text to clang as if it were LLVM IR.
+: > "$clang_log_ptx"
+expect_status 0 env "${stage_env[@]}" "PASCAL1981_CC=$stage_dir/fake-clang" "PASCAL1981_FAKE_CLANG_LOG=$clang_log_ptx" \
+  "$DRIVER" --emit-ptx "$source_file" -o "$work_dir/device.ptx"
+if ! cmp -s "$source_file" "$work_dir/device.ptx"; then
+  echo 'FAIL: --emit-ptx pipeline did not preserve the stage output' >&2
+  fail=$((fail + 1))
+fi
+if [ -s "$clang_log_ptx" ]; then
+  echo 'FAIL: --emit-ptx invoked clang' >&2
+  cat "$clang_log_ptx" >&2
+  fail=$((fail + 1))
+fi
+
+# ... and names its default output .ptx, not .ll.
+(
+  cd "$work_dir"
+  expect_status 0 env "${stage_env[@]}" "$DRIVER" --emit-ptx "$(basename "$source_file")"
+)
+if [ ! -f "${source_file%.pas}.ptx" ]; then
+  echo 'FAIL: default --emit-ptx output name was not created' >&2
+  fail=$((fail + 1))
+fi
+
+expect_status 1 env "${stage_env[@]}" "$DRIVER" --emit-ptx -c "$source_file" -o "$work_dir/device.o"
+expect_stderr 'error: --emit-ptx and -c cannot be combined'
 
 fail_env=("${stage_env[@]}")
 fail_env[3]="PASCAL1981_CODEGEN=$stage_dir/fail-stage"

@@ -1,0 +1,7 @@
+Type checking failed:
+DEVALLOC is host-only and cannot appear in DEVICE code
+Host-only procedure cannot appear in DEVICE code: DEVCOPYTO
+Host-only procedure cannot appear in DEVICE code: DEVCOPYFROM
+DEVFREE is host-only and cannot appear in DEVICE code
+LAUNCH is host-only and cannot appear in DEVICE code
+Error: Failed to parse input AST JSON

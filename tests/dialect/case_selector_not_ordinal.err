@@ -1,0 +1,3 @@
+Type checking failed:
+CASE selector must be an ordinal type
+Error: Failed to parse input AST JSON

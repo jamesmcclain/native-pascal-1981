@@ -1066,6 +1066,10 @@ VAR
   ret_tk: INTEGER;
   ret_llvm_ty, fnty, fn, entry_bb2: ADRMEM;
   param_val, palloca, ret_load: ADRMEM;
+  saved_fn, saved_bb, saved_ret_slot: ADRMEM;
+  saved_func_name: Str255;
+  saved_ret_tk: INTEGER;
+  saved_in_local_scope: BOOLEAN;
   existing: INTEGER32;
   ridx: INTEGER32;
   has_block_body: BOOLEAN;
@@ -1464,6 +1468,21 @@ BEGIN
     statement/procedure at all, so an early return has to be an IF guard. }
   IF has_block_body THEN
   BEGIN
+    { Save the *enclosing* codegen context rather than assuming it is the
+      program's own main_fn/entry_bb: this routine's declaration list is
+      lowered below (CodegenDeclList), and a nested PROCEDURE/FUNCTION
+      re-enters here, so on the way out the builder has to go back to the
+      routine that contains it. Restoring main_fn unconditionally used to
+      drop the rest of an outer routine's body -- its statements and its
+      closing `ret void` -- into the program's own entry block, leaving the
+      outer function's entry block unterminated and a `ret void` in the i32
+      main: "Broken module found, compilation aborted". }
+    saved_fn := cur_fn;
+    saved_bb := LLVMGetInsertBlock(builder);
+    saved_func_name := cur_func_name;
+    saved_ret_tk := cur_func_ret_tk;
+    saved_ret_slot := cur_func_ret_slot;
+    saved_in_local_scope := in_local_scope;
     entry_bb2 := LLVMAppendBasicBlockInContext(ctx, fn, MakeCStr('entry'));
     LLVMPositionBuilderAtEnd(builder, entry_bb2);
     cur_fn := fn;
@@ -1609,10 +1628,15 @@ BEGIN
       LLVMBuildRetVoid(builder);
 
     PopScope;
-    in_local_scope := FALSE;
-    cur_func_name := '';
-    cur_fn := main_fn;
-    LLVMPositionBuilderAtEnd(builder, entry_bb);
+    in_local_scope := saved_in_local_scope;
+    cur_func_name := saved_func_name;
+    cur_func_ret_tk := saved_ret_tk;
+    cur_func_ret_slot := saved_ret_slot;
+    cur_fn := saved_fn;
+    IF saved_bb = NIL THEN
+      LLVMPositionBuilderAtEnd(builder, entry_bb)
+    ELSE
+      LLVMPositionBuilderAtEnd(builder, saved_bb);
   END;
 END;
 

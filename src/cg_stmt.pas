@@ -319,10 +319,15 @@ PROCEDURE CodegenCaseStmt(stmt: ADRMEM);
   IFs), not a jump table -- simplicity over the optimization the Python
   reference doesn't attempt either at this level (llvmlite's own -O passes
   are what would turn either shape into a real jump table). Scoped to an
-  INTEGER or CHAR selector, with every constant of the selector's own kind:
-  the chain compares the two with a single ICmp, so they must share an LLVM
-  width, and mixing the kinds is a program error rather than something to
-  coerce silently. }
+  ordinal selector -- any integer-family width, CHAR, BOOLEAN or an enum --
+  with every constant assignment-compatible with it: the chain compares the
+  two with a single ICmp, so each constant is first adapted to the
+  selector's own LLVM width by CoerceForAssign (which is what lets a bare
+  INTEGER literal label an INTEGER32 selector), and a constant of an
+  unrelated kind is a program error rather than something to coerce
+  silently. The typechecker (tc_stmt.pas's CheckCaseStmt) enforces the same
+  two rules, so a program that reaches here has normally already been
+  rejected there; these checks are the backstop. }
 VAR
   case_val: ADRMEM;
   case_tk: INTEGER;
@@ -334,8 +339,9 @@ VAR
 BEGIN
   case_val := CodegenExpr(GetObj(stmt, 'expr'));
   case_tk := last_val_tk;
-  IF (case_tk <> TK_INTEGER) AND (case_tk <> TK_CHAR) THEN
-    AbortWith('codegen: a CASE selector must be INTEGER or CHAR');
+  IF NOT (IsIntegerFamilyTk(case_tk) OR (case_tk = TK_CHAR)
+          OR (case_tk = TK_BOOLEAN) OR (TypeKind(case_tk) = TK_ENUM)) THEN
+    AbortWith('codegen: a CASE selector must be an ordinal type');
 
   elements := GetObj(stmt, 'elements');
   n := ArrSize(elements);
@@ -368,8 +374,7 @@ BEGIN
       ELSE
       BEGIN
         cval := CodegenExpr(c);
-        IF last_val_tk <> case_tk THEN
-          AbortWith('codegen: a CASE constant must have the selector''s type');
+        cval := CoerceForAssign(cval, last_val_tk, case_tk, c, 'a CASE label');
         one_cond := LLVMBuildICmp(builder, LLVMIntEQ, case_val, cval, MakeCStr(''));
       END;
       IF cond_val = NIL THEN cond_val := one_cond

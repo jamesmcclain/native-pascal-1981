@@ -18,6 +18,20 @@ FUNCTION CheckExpr(node: ADRMEM): INTEGER; FORWARD;
 VAR
   expr_context_tk: INTEGER;
 
+FUNCTION IsDeviceIndexName(name: Str255): BOOLEAN;
+VAR
+  upper_name: Str255;
+BEGIN
+  upper_name := UpperStr(name);
+  IsDeviceIndexName :=
+    (upper_name = 'THREADIDX_X') OR (upper_name = 'THREADIDX_Y') OR
+    (upper_name = 'THREADIDX_Z') OR (upper_name = 'BLOCKIDX_X') OR
+    (upper_name = 'BLOCKIDX_Y') OR (upper_name = 'BLOCKIDX_Z') OR
+    (upper_name = 'BLOCKDIM_X') OR (upper_name = 'BLOCKDIM_Y') OR
+    (upper_name = 'BLOCKDIM_Z') OR (upper_name = 'GRIDDIM_X') OR
+    (upper_name = 'GRIDDIM_Y') OR (upper_name = 'GRIDDIM_Z');
+END;
+
 { =============================== expressions ============================ }
 
 PROCEDURE TagResolvedType(node: ADRMEM; type_name: Str255);
@@ -491,6 +505,20 @@ BEGIN
   name := UpperStr(orig_name);
   args_arr := GetObj(node, 'args');
   nargs := cJSON_GetArraySize(args_arr);
+  IF name = 'DEVALLOC' THEN
+  BEGIN
+    IF is_device_compiland THEN
+      AddError('DEVALLOC is host-only and cannot appear in DEVICE code');
+    IF nargs <> 1 THEN
+      AddError('DEVALLOC expects exactly one byte-count argument')
+    ELSE BEGIN
+      atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
+      IF NOT IsInteger(atk) AND (atk <> TK_UNKNOWN) THEN
+        AddError('DEVALLOC byte count must be an integer type');
+    END;
+    CheckFuncCall := TK_POINTER;
+    RETURN;
+  END;
   IF name = 'WRD' THEN
   BEGIN
     IF nargs <> 1 THEN
@@ -846,14 +874,27 @@ BEGIN
   ELSE IF nt = 'Identifier' THEN
   BEGIN
     name := GetStr(node, 'name');
-    si := LookupSymbol(name);
-    IF si = 0 THEN
+    IF IsDeviceIndexName(name) THEN
     BEGIN
-      AddError('Undefined identifier');
-      CheckExpr := TK_UNKNOWN;
+      IF NOT is_device_compiland THEN
+      BEGIN
+        AddError2('Device index builtin requires DEVICE code: ', name);
+        CheckExpr := TK_UNKNOWN;
+      END
+      ELSE
+        CheckExpr := TK_INTEGER32;
     END
     ELSE
-      CheckExpr := symbols[si].tk;
+    BEGIN
+      si := LookupSymbol(name);
+      IF si = 0 THEN
+      BEGIN
+        AddError('Undefined identifier');
+        CheckExpr := TK_UNKNOWN;
+      END
+      ELSE
+        CheckExpr := symbols[si].tk;
+    END;
   END
   ELSE IF nt = 'SetConstructor' THEN
   BEGIN

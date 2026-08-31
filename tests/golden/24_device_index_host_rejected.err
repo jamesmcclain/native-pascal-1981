@@ -1,0 +1,3 @@
+Type checking failed:
+Device index builtin requires DEVICE code: threadidx_x
+Error: Failed to parse input AST JSON
