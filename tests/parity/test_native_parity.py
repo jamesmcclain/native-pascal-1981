@@ -180,6 +180,12 @@ class TestNativeFixtureParity(unittest.TestCase):
                                         stages=3,
                                         normalizer=_without_resolved_type)
 
+    def test_typecheck_success_fixture_preserves_real32_literal_tag(self):
+        self._assert_json_equal(
+            FIXTURES / "typecheck" / "should_pass" / "real32_semantics.pas",
+            stages=3,
+        )
+
     def test_typecheck_failure_fixtures_have_same_acceptance(self):
         for source in sorted(
             (FIXTURES / "typecheck" / "should_fail").glob("*.pas")):

@@ -250,7 +250,10 @@ BEGIN
     CanAssign := TRUE
   ELSE IF target_tk = expr_tk THEN
     CanAssign := TRUE
-  ELSE IF (target_tk = TK_REAL) AND IsSignedInteger(expr_tk) THEN
+  ELSE IF (target_tk = TK_REAL) AND
+          (IsSignedInteger(expr_tk) OR (expr_tk = TK_REAL32)) THEN
+    CanAssign := TRUE
+  ELSE IF (target_tk = TK_REAL32) AND IsInteger(expr_tk) THEN
     CanAssign := TRUE
   ELSE IF IsInteger(target_tk) AND IsInteger(expr_tk) THEN
   BEGIN
@@ -288,7 +291,8 @@ VAR
   errors_before: INTEGER32;
 BEGIN
   saved_context := expr_context_tk;
-  IF IsInteger(target_tk) THEN expr_context_tk := target_tk
+  IF IsInteger(target_tk) OR (target_tk = TK_REAL32) THEN
+    expr_context_tk := target_tk
   ELSE expr_context_tk := TK_UNKNOWN;
   errors_before := nerrors;
   result_tk := CheckExpr(node);
@@ -575,7 +579,7 @@ BEGIN
       AddError('TRUNC/ROUND requires exactly one argument')
     ELSE BEGIN
       atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
-      IF (atk <> TK_REAL) AND (atk <> TK_UNKNOWN) THEN
+      IF NOT IsReal(atk) AND (atk <> TK_UNKNOWN) THEN
         AddError('TRUNC/ROUND argument must be REAL');
     END;
     CheckFuncCall := TK_INTEGER;
@@ -732,17 +736,25 @@ BEGIN
       AddError('VSPLAT requires exactly two arguments (a scalar and a VECTOR type name)')
     ELSE
     BEGIN
-      atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
       warg := cJSON_GetArrayItem(args_arr, 1);
       IF NodeType(warg) <> 'Identifier' THEN
-        AddError('VSPLAT second argument must be a VECTOR type name')
+      BEGIN
+        AddError('VSPLAT second argument must be a VECTOR type name');
+        atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
+      END
       ELSE
       BEGIN
         si := LookupType(GetStr(warg, 'name'));
         IF (si = 0) OR (types[si].tk <> TK_VECTOR) THEN
-          AddError('VSPLAT type argument is not a VECTOR type')
-        ELSE IF (atk <> TK_UNKNOWN) AND NOT CanAssign(types[si].aux, atk) THEN
-          AddError('VSPLAT scalar argument is not assignable to the vector element type');
+        BEGIN
+          AddError('VSPLAT type argument is not a VECTOR type');
+          atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
+        END
+        ELSE BEGIN
+          atk := CheckExprForTarget(cJSON_GetArrayItem(args_arr, 0), types[si].aux);
+          IF (atk <> TK_UNKNOWN) AND NOT CanAssign(types[si].aux, atk) THEN
+            AddError('VSPLAT scalar argument is not assignable to the vector element type');
+        END;
       END;
     END;
     CheckFuncCall := TK_VECTOR;
@@ -848,8 +860,15 @@ BEGIN
     CheckExpr := CheckIntegerConstant(node, JsonIntegerValue(node))
   ELSE IF nt = 'RealLiteral' THEN
   BEGIN
-    TagResolvedType(node, 'RealType');
-    CheckExpr := TK_REAL;
+    IF expr_context_tk = TK_REAL32 THEN
+    BEGIN
+      TagResolvedType(node, 'Real32Type');
+      CheckExpr := TK_REAL32;
+    END
+    ELSE BEGIN
+      TagResolvedType(node, 'RealType');
+      CheckExpr := TK_REAL;
+    END;
   END
   ELSE IF nt = 'BoolLiteral' THEN CheckExpr := TK_BOOLEAN
   ELSE IF nt = 'CharLiteral' THEN CheckExpr := TK_CHAR
@@ -1033,6 +1052,11 @@ BEGIN
       END
       ELSE IF (lt = TK_REAL) OR (rt = TK_REAL) THEN
         CheckExpr := TK_REAL
+      ELSE IF (lt = TK_REAL32) OR (rt = TK_REAL32) THEN
+      BEGIN
+        CheckExpr := TK_REAL32;
+        TagResolvedType(node, 'Real32Type');
+      END
       ELSE
         CheckExpr := IntegerResultType(lt, rt);
     END;

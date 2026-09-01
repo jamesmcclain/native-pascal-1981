@@ -26,6 +26,8 @@ CONST
   TK_WORD32 = 18;
   TK_WORD64 = 19;
   TK_VECTOR = 20;
+  { Keep this appended: stage-local ids are mirrored in codegen. }
+  TK_REAL32 = 21;
 
   MAX_SYMBOLS = 2000;
   MAX_TYPES = 500;
@@ -108,5 +110,6 @@ FUNCTION IsUnsignedInteger(tk: INTEGER): BOOLEAN;
 FUNCTION IntegerBits(tk: INTEGER): INTEGER;
 FUNCTION IsOrdinal(tk: INTEGER): BOOLEAN;
 FUNCTION IsNumeric(tk: INTEGER): BOOLEAN;
+FUNCTION IsReal(tk: INTEGER): BOOLEAN;
 
 END;
