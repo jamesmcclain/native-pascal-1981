@@ -385,14 +385,6 @@ BEGIN
   ELSE IF (from_tid = TK_REAL32) AND (to_tid = TK_REAL) THEN
     { REAL32 widens implicitly into REAL, matching the reference. }
     CoerceForAssign := LLVMBuildFPExt(builder, v, dblty, MakeCStr(''))
-  ELSE IF (from_tid = TK_REAL) AND (to_tid = TK_REAL32) AND (NodeType(expr_node) = 'RealLiteral') THEN
-    { Narrowing REAL->REAL32 is not implicit in the reference either, but a
-      bare REAL32-context literal there resolves as REAL32 from the start
-      (context-typed literal codegen); this file's RealLiteral codegen has
-      no such context threading, so it always produces a REAL constant --
-      allow that literal (only) to narrow here, the same documented
-      looseness INTEGER8 already gets above. }
-    CoerceForAssign := LLVMBuildFPTrunc(builder, v, f32ty, MakeCStr(''))
   ELSE IF ((from_tid = TK_INTEGER) OR (from_tid = TK_WORD) OR (from_tid = TK_INTEGER8) OR (from_tid = TK_WORD8)
       OR (from_tid = TK_INTEGER32) OR (from_tid = TK_WORD32) OR (from_tid = TK_INTEGER64) OR (from_tid = TK_WORD64))
       AND ((to_tid = TK_REAL) OR (to_tid = TK_REAL32)) THEN

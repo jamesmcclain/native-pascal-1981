@@ -1261,8 +1261,17 @@ BEGIN
   END
   ELSE IF nt = 'RealLiteral' THEN
   BEGIN
-    res := LLVMConstReal(dblty, GetReal(node, 'value'));
-    last_val_tk := TK_REAL;
+    target_item := GetObjOrNil(node, 'resolved_type');
+    IF (target_item <> NIL) AND
+       (GetStr(target_item, '__type_system__') = 'Real32Type') THEN
+    BEGIN
+      res := LLVMConstReal(f32ty, GetReal(node, 'value'));
+      last_val_tk := TK_REAL32;
+    END
+    ELSE BEGIN
+      res := LLVMConstReal(dblty, GetReal(node, 'value'));
+      last_val_tk := TK_REAL;
+    END;
   END
   ELSE IF nt = 'CharLiteral' THEN
   BEGIN
