@@ -30,7 +30,7 @@ Assumed to be on `exec-path' / PATH."
   "Executable for the Pascal 1981 parser stage."
   :type 'string :group 'pascal1981)
 
-(defcustom pascal1981-driver-program "pascal1981"
+(defcustom pascal1981-driver-program "pascal1981-native"
   "Executable for the Pascal 1981 compiler driver.
 Used by `pascal1981-format-buffer' to run pretty81 via the driver's
 `--pretty-print' flag.  Assumed to be on `exec-path' / PATH."
