@@ -13,16 +13,15 @@ FUNCTION cJSON_GetStringValue(item: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION VectorScalarElemTk(tk: INTEGER): BOOLEAN;
 { The element kinds a VECTOR may hold: the integer family, REAL, BOOLEAN,
   CHAR. Pointers, strings, arrays, records, sets, files, enums and other
-  vectors are diagnostics. This stage has no separate REAL32 tag -- REAL32
-  resolves to TK_REAL here (see the NamedType arm) -- so that spelling is
-  covered by the TK_REAL case, and the vintage 16-bit INTEGER/WORD pair is
-  deliberately included: vectors of the dialect's default width are exactly
-  representable. }
+  vectors are diagnostics. REAL32 keeps its own tag so f32 vector lanes do
+  not become indistinguishable from REAL's f64 lanes. The vintage 16-bit
+  INTEGER/WORD pair is deliberately included: vectors of the dialect's
+  default width are exactly representable. }
 BEGIN
   VectorScalarElemTk := (tk = TK_INTEGER) OR (tk = TK_WORD) OR
     (tk = TK_INTEGER8) OR (tk = TK_WORD8) OR (tk = TK_INTEGER32) OR
     (tk = TK_WORD32) OR (tk = TK_INTEGER64) OR (tk = TK_WORD64) OR
-    (tk = TK_REAL) OR (tk = TK_BOOLEAN) OR (tk = TK_CHAR);
+    (tk = TK_REAL) OR (tk = TK_REAL32) OR (tk = TK_BOOLEAN) OR (tk = TK_CHAR);
 END;
 
 FUNCTION FoldVectorLanes(node: ADRMEM): INTEGER;
@@ -149,7 +148,10 @@ BEGIN
     ELSE IF (uname = 'REAL32') OR (uname = 'REAL64') THEN
     BEGIN
       IF active_features.wide_reals OR is_device_compiland THEN
-        tk := TK_REAL
+      BEGIN
+        IF uname = 'REAL32' THEN tk := TK_REAL32
+        ELSE tk := TK_REAL; { REAL64 is a synonym for REAL. }
+      END
       ELSE BEGIN
         AddError2('Type requires the extended dialect: ', name);
         tk := TK_UNKNOWN;

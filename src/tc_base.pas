@@ -41,6 +41,7 @@ CONST
   TK_WORD8     = 17;
   TK_WORD32    = 18;
   TK_WORD64    = 19;
+  TK_REAL32    = 21;
 
   MAX_SYMBOLS = 2000;
   MAX_TYPES   = 500;
@@ -339,9 +340,14 @@ BEGIN
   IsOrdinal := IsInteger(tk) OR (tk = TK_CHAR) OR (tk = TK_BOOLEAN) OR (tk = TK_ENUM);
 END;
 
+FUNCTION IsReal(tk: INTEGER): BOOLEAN;
+BEGIN
+  IsReal := (tk = TK_REAL) OR (tk = TK_REAL32);
+END;
+
 FUNCTION IsNumeric(tk: INTEGER): BOOLEAN;
 BEGIN
-  IsNumeric := IsInteger(tk) OR (tk = TK_REAL);
+  IsNumeric := IsInteger(tk) OR IsReal(tk);
 END;
 
 PROCEDURE TcInit(VAR requested_features: FeatureSet);
