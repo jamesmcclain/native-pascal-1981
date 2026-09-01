@@ -5,15 +5,16 @@
 #
 #   make -C elisp test
 #
-# The tests need the stage binaries `lexer` and `parser` on PATH.  Most
-# of them carry `skip-unless`, so a run without those binaries reports
-# success while it exercises almost nothing.  The test target fails
-# instead, and names the missing binary.
+# The tests need the stage binaries `lexer` and `parser`, plus the
+# driver (`pascal1981`), on PATH.  Most of them carry `skip-unless`, so
+# a run without those binaries reports success while it exercises
+# almost nothing.  The test target fails instead, and names the
+# missing binary.
 
 EMACS   ?= emacs
 ROOT    := $(abspath $(dir $(abspath $(lastword $(MAKEFILE_LIST))))..)
 BIN_DIR := $(ROOT)/bin
-STAGES  := lexer parser
+STAGES  := lexer parser pascal1981
 TESTS   := pascal1981-mode-tests.el
 
 .PHONY: all test check-binaries compile clean

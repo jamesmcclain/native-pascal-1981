@@ -23,10 +23,10 @@ BEGIN
   IF (CurKind = 'READONLY') OR (CurKind = 'PUBLIC') OR (CurKind = 'STATIC') OR
      (CurKind = 'EXTERNAL') OR (CurKind = 'EXTERN') OR (CurKind = 'PURE') THEN
   BEGIN
-    node := CreateNode('Attribute');
+    node := CreateTriviaNode('Attribute');
     AddStringField(node, 'name', CurKind);
     AddNullField(node, 'arg');
-    pos := pos + 1;
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
     ParseAttributeItem := node;
   END
   ELSE IF CurKind = 'IDENTIFIER' THEN
@@ -34,9 +34,9 @@ BEGIN
     up := UpperStr(CurLex);
     IF StringEqual(up, 'SPACE') THEN
     BEGIN
-      pos := pos + 1;
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
       Expect('LPAREN');
-      node := CreateNode('Attribute');
+      node := CreateTriviaNode('Attribute');
       AddStringField(node, 'name', 'SPACE');
       AddField(node, 'arg', ParseExpression());
       Expect('RPAREN');
@@ -44,30 +44,30 @@ BEGIN
     END
     ELSE IF ((ORD(up[0]) = 1) AND (up[1] = 'C')) OR StringEqual(up, 'CDECL') THEN
     BEGIN
-      pos := pos + 1;
-      node := CreateNode('Attribute');
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
+      node := CreateTriviaNode('Attribute');
       AddStringField(node, 'name', c_str);
       AddNullField(node, 'arg');
       ParseAttributeItem := node;
     END
     ELSE IF StringEqual(up, 'VARARGS') THEN
     BEGIN
-      pos := pos + 1;
-      node := CreateNode('Attribute');
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
+      node := CreateTriviaNode('Attribute');
       AddStringField(node, 'name', 'VARARGS');
       AddNullField(node, 'arg');
       ParseAttributeItem := node;
     END
     ELSE IF StringEqual(up, 'MAXNTID') OR StringEqual(up, 'REQNTID') OR StringEqual(up, 'MINCTASM') THEN
     BEGIN
-      pos := pos + 1;
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
       Expect('LPAREN');
       tuning_args := cJSON_CreateArray;
       cJSON_AddItemToArray(tuning_args, ParseExpression());
       WHILE Match('COMMA') DO
         cJSON_AddItemToArray(tuning_args, ParseExpression());
       Expect('RPAREN');
-      node := CreateNode('Attribute');
+      node := CreateTriviaNode('Attribute');
       AddStringField(node, 'name', up);
       AddField(node, 'arg', tuning_args);
       ParseAttributeItem := node;
@@ -114,12 +114,12 @@ BEGIN
   BEGIN
     mode_str := CurKind;
     has_mode := TRUE;
-    pos := pos + 1;
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
   END;
   names_arr := ParseIdentListArr;
   Expect('COLON');
   type_expr := ParseType;
-  node := CreateNode('Param');
+  node := CreateTriviaNode('Param');
   IF has_mode THEN
     AddStringField(node, 'mode', mode_str)
   ELSE
@@ -154,9 +154,10 @@ BEGIN
     nm := CurLex;
     Expect('IDENTIFIER');
     Expect('EQ');
-    node := CreateNode('ConstDecl');
+    node := CreateTriviaNode('ConstDecl');
     AddStringField(node, 'name', nm);
     AddField(node, 'value', ParseConstant);
+    PinTrailingCommentTarget(node);
     Expect('SEMICOLON');
     cJSON_AddItemToArray(decls_arr, node);
   END;
@@ -173,9 +174,10 @@ BEGIN
     nm := CurLex;
     Expect('IDENTIFIER');
     Expect('EQ');
-    node := CreateNode('TypeDecl');
+    node := CreateTriviaNode('TypeDecl');
     AddStringField(node, 'name', nm);
     AddField(node, 'type_expr', ParseType);
+    PinTrailingCommentTarget(node);
     Expect('SEMICOLON');
     cJSON_AddItemToArray(decls_arr, node);
   END;
@@ -191,10 +193,11 @@ BEGIN
     attrs_arr := ParseAttributeSectionOptional;
     names_arr := ParseIdentListArr;
     Expect('COLON');
-    node := CreateNode('VarDecl');
+    node := CreateTriviaNode('VarDecl');
     AddField(node, 'names', names_arr);
     AddField(node, 'type_expr', ParseType);
     AddField(node, 'attributes', attrs_arr);
+    PinTrailingCommentTarget(node);
     Expect('SEMICOLON');
     AddField(node, 'meta_flags', BuildMetaFlagsNode());
     cJSON_AddItemToArray(decls_arr, node);
@@ -206,20 +209,20 @@ VAR
   node, labels_arr: ADRMEM;
 BEGIN
   Expect('LABEL');
-  node := CreateNode('LabelDecl');
+  node := CreateTriviaNode('LabelDecl');
   labels_arr := cJSON_CreateArray;
   IF CurKind = 'INTEGER_LITERAL' THEN
     cJSON_AddItemToArray(labels_arr, cJSON_CreateNumber(StrToIntVal(CurLex)))
   ELSE
     cJSON_AddItemToArray(labels_arr, cJSON_CreateString(MakeCStr(CurLex)));
-  pos := pos + 1;
+  BEGIN RelayTokenTrivia; pos := pos + 1; END;
   WHILE Match('COMMA') DO
   BEGIN
     IF CurKind = 'INTEGER_LITERAL' THEN
       cJSON_AddItemToArray(labels_arr, cJSON_CreateNumber(StrToIntVal(CurLex)))
     ELSE
       cJSON_AddItemToArray(labels_arr, cJSON_CreateString(MakeCStr(CurLex)));
-    pos := pos + 1;
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
   END;
   Expect('SEMICOLON');
   AddField(node, 'labels', labels_arr);
@@ -244,7 +247,7 @@ BEGIN
   attrs_arr := ParseAttributeSectionOptional;
   Expect('SEMICOLON');
   has_directive := FALSE;
-  node := CreateNode('ProcDecl');
+  node := CreateTriviaNode('ProcDecl');
   AddStringField(node, 'name', nm);
   AddField(node, 'params', params_arr);
   AddField(node, 'attributes', attrs_arr);
@@ -252,7 +255,7 @@ BEGIN
   BEGIN
     directive_str := CurKind;
     has_directive := TRUE;
-    pos := pos + 1;
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
     Expect('SEMICOLON');
     AddNullField(node, 'body');
   END
@@ -290,7 +293,7 @@ BEGIN
   attrs_arr := ParseAttributeSectionOptional;
   Expect('SEMICOLON');
   has_directive := FALSE;
-  node := CreateNode('FuncDecl');
+  node := CreateTriviaNode('FuncDecl');
   AddStringField(node, 'name', nm);
   AddField(node, 'params', params_arr);
   AddField(node, 'return_type', ret_type);
@@ -299,7 +302,7 @@ BEGIN
   BEGIN
     directive_str := CurKind;
     has_directive := TRUE;
-    pos := pos + 1;
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
     Expect('SEMICOLON');
     AddNullField(node, 'body');
   END
@@ -356,7 +359,7 @@ BEGIN
   BEGIN
     directive_str := CurKind;
     has_directive := TRUE;
-    pos := pos + 1;
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
     Expect('SEMICOLON');
   END;
   IF has_directive THEN
@@ -381,7 +384,7 @@ BEGIN
   END;
   attrs_arr := ParseAttributeSectionOptional;
   Expect('SEMICOLON');
-  node := CreateNode('ProcDecl');
+  node := CreateTriviaNode('ProcDecl');
   AddStringField(node, 'name', nm);
   AddField(node, 'params', params_arr);
   AddField(node, 'attributes', attrs_arr);
@@ -409,7 +412,7 @@ BEGIN
   ret_type := ParseType;
   attrs_arr := ParseAttributeSectionOptional;
   Expect('SEMICOLON');
-  node := CreateNode('FuncDecl');
+  node := CreateTriviaNode('FuncDecl');
   AddStringField(node, 'name', nm);
   AddField(node, 'params', params_arr);
   AddField(node, 'return_type', ret_type);
@@ -447,7 +450,7 @@ VAR
 BEGIN
   nm := CurLex;
   Expect('IDENTIFIER');
-  node := CreateNode('UseClause');
+  node := CreateTriviaNode('UseClause');
   AddStringField(node, 'name', nm);
   IF Match('LPAREN') THEN
   BEGIN
@@ -466,7 +469,7 @@ BEGIN
   cJSON_AddItemToArray(arr, ParseUsesImport);
   WHILE Match('COMMA') DO
     cJSON_AddItemToArray(arr, ParseUsesImport);
-  IF CurKind = 'SEMICOLON' THEN pos := pos + 1;
+  IF CurKind = 'SEMICOLON' THEN BEGIN RelayTokenTrivia; pos := pos + 1; END;
 END;
 
 FUNCTION IsAtDevicePrefix(target_kind: Str255): BOOLEAN;
@@ -485,7 +488,7 @@ BEGIN
   nm := CurLex;
   Expect('IDENTIFIER');
   Expect('SEMICOLON');
-  node := CreateNode('ModuleUnit');
+  node := CreateTriviaNode('ModuleUnit');
   AddStringField(node, 'name', nm);
   uses_arr := cJSON_CreateArray;
   WHILE CurKind = 'USES' DO
@@ -524,7 +527,7 @@ BEGIN
     Expect('RPAREN');
   END;
   Expect('SEMICOLON');
-  node := CreateNode('InterfaceUnit');
+  node := CreateTriviaNode('InterfaceUnit');
   AddStringField(node, 'name', nm);
   AddField(node, 'params', params_arr);
   uses_arr := cJSON_CreateArray;
@@ -539,6 +542,17 @@ BEGIN
   BEGIN
     has_init := TRUE;
     discard_node := ParseCompoundStmt;
+    { An INTERFACE unit carries no runtime -- BEGIN..END here is only the
+      1981-manual's alternate terminator spelling for "the interface
+      section is done" (docs/ebnf_grammar.md), not an executable block, so
+      its statements are never stored. Reject a non-empty one outright
+      rather than silently discarding code a caller might expect to run;
+      put executable init logic in the IMPLEMENTATION's init block instead. }
+    IF ArrSize(GetObj(discard_node, 'stmts')) > 0 THEN
+    BEGIN
+      EPrint('Parser Error: an INTERFACE unit''s BEGIN..END block must be empty -- put executable init code in the IMPLEMENTATION''s init block instead');
+      exit(1);
+    END;
     Expect('SEMICOLON');
   END
   ELSE
@@ -561,7 +575,7 @@ BEGIN
   nm := CurLex;
   Expect('IDENTIFIER');
   Expect('SEMICOLON');
-  node := CreateNode('ImplementationUnit');
+  node := CreateTriviaNode('ImplementationUnit');
   AddStringField(node, 'name', nm);
   uses_arr := cJSON_CreateArray;
   WHILE CurKind = 'USES' DO
@@ -585,7 +599,7 @@ FUNCTION ParseBlock: ADRMEM;
 VAR
   node, decls_arr: ADRMEM;
 BEGIN
-  node := CreateNode('Block');
+  node := CreateTriviaNode('Block');
   decls_arr := cJSON_CreateArray;
   ParseDeclSectionsInto(decls_arr);
   AddField(node, 'decls', decls_arr);
@@ -608,7 +622,7 @@ BEGIN
   name := CurLex;
   Expect('IDENTIFIER');
 
-  node := CreateNode('ProgramUnit');
+  node := CreateTriviaNode('ProgramUnit');
   AddStringField(node, 'name', name);
 
   params_arr := cJSON_CreateArray;

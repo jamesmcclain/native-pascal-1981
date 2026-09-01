@@ -212,7 +212,7 @@ for stage in parser typechecker; do
 done
 
 expect_status 1 env "${stage_env[@]}" "$DRIVER" -S "$source_file" "$source_file"
-expect_stderr 'error: -c, -S and --emit-ptx require exactly one input file'
+expect_stderr 'error: -c, -S, --emit-ptx and --pretty-print require exactly one input file'
 
 clang_log_ptx="$work_dir/clang-ptx.log"
 # --emit-ptx stops after codegen the way -S does: PTX is the codegen stage's
