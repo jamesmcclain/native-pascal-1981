@@ -30,6 +30,17 @@ Assumed to be on `exec-path' / PATH."
   "Executable for the Pascal 1981 parser stage."
   :type 'string :group 'pascal1981)
 
+(defcustom pascal1981-driver-program "pascal1981-native"
+  "Executable for the Pascal 1981 compiler driver.
+Used by `pascal1981-format-buffer' to run pretty81 via the driver's
+`--pretty-print' flag.  Assumed to be on `exec-path' / PATH."
+  :type 'string :group 'pascal1981)
+
+(defcustom pascal1981-format-buffer-extra-args nil
+  "Extra command-line arguments spliced into every `pascal1981-format-buffer'
+driver invocation, e.g. (\"--dialect\" \"extended\")."
+  :type '(repeat string) :group 'pascal1981)
+
 (defcustom pascal1981-idle-delay 0.4
   "Seconds to debounce highlighting / indentation refreshes."
   :type 'number :group 'pascal1981)
@@ -1443,6 +1454,86 @@ index covers the top-level block only."
         (nreverse entries)))))
 
 ;; -------------------------------------------------------------------
+;; Reformat  (pretty81, via the driver's --pretty-print)
+;; -------------------------------------------------------------------
+
+(defun pascal1981--format-string (source)
+  "Run SOURCE through the driver's --pretty-print pipeline.
+Return (ok . TEXT) or (error . MESSAGE).
+
+Unlike `pascal1981-lex-string'/`pascal1981-parse-string', which pipe
+text on stdin/stdout to the lexer/parser stage binaries directly,
+this shells out to the *driver*: pretty81 is a fourth pipeline stage
+(lexer -> parser -> typechecker -> pretty81) that only the driver
+knows how to chain, and the driver's `-o' flag writes to a real file
+-- it does not accept `-o -' for stdout -- so both sides of the
+round trip go through temp files rather than process buffers."
+  (let* ((in-file (make-temp-file "pascal1981-fmt-in" nil ".pas"))
+         (out-file (make-temp-file "pascal1981-fmt-out" nil ".pas"))
+         (err-file (make-temp-file "pascal1981-fmt-err")))
+    (unwind-protect
+        (progn
+          (with-temp-file in-file (insert source))
+          (let ((exit-code
+                 (condition-case err
+                     (apply #'call-process pascal1981-driver-program nil
+                            (list nil err-file) nil
+                            "--pretty-print" in-file "-o" out-file
+                            pascal1981-format-buffer-extra-args)
+                   (error (format "could not run %s: %s"
+                                   pascal1981-driver-program
+                                   (error-message-string err))))))
+            (cond
+             ((stringp exit-code) (cons 'error exit-code))
+             ((zerop exit-code)
+              (cons 'ok (with-temp-buffer
+                          (insert-file-contents out-file)
+                          (buffer-string))))
+             (t
+              (cons 'error
+                    (let ((stderr (with-temp-buffer
+                                    (insert-file-contents err-file)
+                                    (buffer-string))))
+                      (if (string-empty-p stderr)
+                          (format "%s exited %d" pascal1981-driver-program exit-code)
+                        stderr)))))))
+      (ignore-errors (delete-file in-file))
+      (ignore-errors (delete-file out-file))
+      (ignore-errors (delete-file err-file)))))
+
+(defun pascal1981-format-buffer ()
+  "Reformat the current buffer with pretty81.
+
+This requires the whole buffer to lex, parse, *and* typecheck --
+unlike `pascal1981-indent-line', which is built on the lexer's token
+stream alone specifically so it keeps working on partial or invalid
+buffers while you are still typing, this replaces the entire buffer
+and so needs a syntactically and semantically complete program to
+run at all.  Reach for `pascal1981-indent-line' (bound to TAB)
+while editing, and this command only when the buffer already
+compiles, e.g. on save.
+
+On failure the buffer is left completely untouched and the error is
+shown in the echo area, the same way `pascal1981-check-buffer'
+reports one."
+  (interactive)
+  (let* ((source (buffer-substring-no-properties (point-min) (point-max)))
+         (res (pascal1981--format-string source)))
+    (if (eq (car res) 'error)
+        (progn (message "pascal1981-format-buffer: %s" (cdr res)) nil)
+      (let ((formatted (cdr res)))
+        (if (string= formatted source)
+            (progn (message "pascal1981-format-buffer: already formatted") t)
+          (let ((new-buf (generate-new-buffer " *pascal1981-fmt-new*")))
+            (unwind-protect
+                (progn
+                  (with-current-buffer new-buf (insert formatted))
+                  (replace-buffer-contents new-buf))
+              (kill-buffer new-buf)))
+          (message "pascal1981-format-buffer: reformatted")
+          t)))))
+
+;; -------------------------------------------------------------------
 ;; Diagnostics  (flycheck / flymake friendly)
 ;; -------------------------------------------------------------------
 
@@ -1509,6 +1600,7 @@ CHECKER and CALLBACK are the flycheck start-function arguments."
 ;; remap has to be installed after that map exists.
 (define-key pascal1981-mode-map [remap indent-for-tab-command]
             #'pascal1981-indent-or-complete)
+(define-key pascal1981-mode-map (kbd "C-c C-f") #'pascal1981-format-buffer)
 
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.pas\\'" . pascal1981-mode))

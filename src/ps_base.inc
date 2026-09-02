@@ -19,6 +19,7 @@ PROCEDURE cJSON_AddItemToObject(obj: ADRMEM; key: ADRMEM; item: ADRMEM) [C];
 PROCEDURE cJSON_AddItemToArray(arr: ADRMEM; item: ADRMEM) [C];
 FUNCTION cJSON_Print(item: ADRMEM): ADRMEM [C];
 PROCEDURE cJSON_Delete(item: ADRMEM) [C];
+PROCEDURE cJSON_DeleteItemFromObject(obj: ADRMEM; key: ADRMEM) [C];
 FUNCTION cJSON_Duplicate(item: ADRMEM; recurse: CINT): ADRMEM [C];
 FUNCTION cJSON_DetachItemFromArray(arr: ADRMEM; which: CINT): ADRMEM [C];
 FUNCTION cJSON_ReplaceItemInObject(obj: ADRMEM; key: ADRMEM; newitem: ADRMEM): CINT [C];
@@ -55,6 +56,13 @@ TYPE
     f_warn: BOOLEAN;
     has_unroll: BOOLEAN;
     unroll_val: INTEGER;
+    { Trivia-attachment state for pretty81 (see lexer.pas): comments
+      captured by the lexer and carried on tokens as optional JSON fields,
+      read back here so CreateTriviaNode can relay them onto AST nodes. }
+    has_leading_comment: BOOLEAN;
+    leading_comment: Str255;
+    has_trailing_comment: BOOLEAN;
+    trailing_comment: Str255;
   END;
   PToken = ^Token;
   TokenBufArray = ARRAY [0..32000] OF Token;
@@ -77,6 +85,9 @@ FUNCTION CurRangeCk: BOOLEAN;
 FUNCTION CurHasUnroll: BOOLEAN;
 FUNCTION CurUnrollVal: INTEGER;
 FUNCTION BuildMetaFlagsNode: ADRMEM;
+PROCEDURE RelayTokenTrivia;
+FUNCTION CreateTriviaNode(type_name: Str255): ADRMEM;
+PROCEDURE PinTrailingCommentTarget(node: ADRMEM);
 FUNCTION StrToIntVal(s: Str255): INTEGER;
 FUNCTION StrToRealVal(s: Str255): REAL;
 FUNCTION StringEqual(s1, s2: Str255): BOOLEAN;
