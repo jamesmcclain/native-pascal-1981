@@ -56,6 +56,7 @@ FUNCTION LLVMConstInt(ty: ADRMEM; n: CLONG; signext: CINT): ADRMEM [C];
 FUNCTION pas_double_to_int64(val: REAL): CLONG [C];
 FUNCTION LLVMConstReal(ty: ADRMEM; n: REAL): ADRMEM [C];
 FUNCTION LLVMAddGlobal(m: ADRMEM; ty: ADRMEM; name: ADRMEM): ADRMEM [C];
+FUNCTION LLVMAddGlobalInAddressSpace(m: ADRMEM; ty: ADRMEM; name: ADRMEM; address_space: CINT): ADRMEM [C];
 PROCEDURE LLVMSetInitializer(gvar: ADRMEM; val: ADRMEM) [C];
 { Constant-expression and global-variable shaping, used by the kernel launch
   registry: parallel name/entry tables and the i8**/i8**/i64 struct
@@ -608,6 +609,10 @@ VAR
   const_tbl: ARRAY [1..MAX_CONSTS] OF ConstRec;
   nconsts: INTEGER32;
 
+  cur_routine_name: Str255; { source name of the PROCEDURE/FUNCTION whose
+                              body is currently being lowered; used to give
+                              routine-local device-residence globals stable,
+                              module-unique names. }
   cur_func_name: Str255; { '' unless codegen'ing a FUNCTION body, in which
                            case it is that function's own name -- mirrors
                            typechecker.pas's cur_func_name: `Name := expr`
