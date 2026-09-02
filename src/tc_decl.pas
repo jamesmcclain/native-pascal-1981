@@ -252,6 +252,39 @@ END;
 
 PROCEDURE CheckBlock(block: ADRMEM); FORWARD;
 
+PROCEDURE CheckVarSpaceAttrs(decl: ADRMEM);
+{ [SPACE(...)] is a storage-residence contract, not decorative metadata.
+  Validate it here so an invalid or host-side use cannot reach codegen and be
+  silently lowered as ordinary address-space-zero storage. The AST itself is
+  re-emitted unchanged; codegen consumes the validated attribute. }
+VAR
+  attrs, attr, arg: ADRMEM;
+  i, nattrs: INTEGER32;
+  attr_name, space_name: Str255;
+BEGIN
+  attrs := GetObj(decl, 'attributes');
+  nattrs := cJSON_GetArraySize(attrs);
+  FOR i := 0 TO nattrs - 1 DO
+  BEGIN
+    attr := cJSON_GetArrayItem(attrs, i);
+    attr_name := UpperStr(GetStr(attr, 'name'));
+    IF attr_name = 'SPACE' THEN
+    BEGIN
+      arg := GetObjOrNil(attr, 'arg');
+      space_name := '';
+      IF arg <> NIL THEN
+        IF NodeType(arg) = 'Identifier' THEN
+          space_name := UpperStr(GetStr(arg, 'name'));
+      IF (space_name <> 'HOST') AND (space_name <> 'GLOBAL') AND
+         (space_name <> 'SHARED') AND (space_name <> 'CONSTANT') AND
+         (space_name <> 'LOCAL') THEN
+        AddError('Invalid address space in [SPACE(...)] attribute')
+      ELSE IF NOT is_device_compiland THEN
+        AddError('Address spaces require DEVICE code');
+    END;
+  END;
+END;
+
 FUNCTION HasExtendedConstIntrinsic(node: ADRMEM): BOOLEAN;
 VAR
   nm: Str255;
@@ -331,6 +364,7 @@ BEGIN
   nt := NodeType(decl);
   IF nt = 'VarDecl' THEN
   BEGIN
+    CheckVarSpaceAttrs(decl);
     names_arr := GetObj(decl, 'names');
     type_expr := GetObj(decl, 'type_expr');
     ResolveTypeExpr(type_expr, tk, aux, aux2, idx_tk);

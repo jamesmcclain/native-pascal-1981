@@ -195,6 +195,10 @@ VAR
   const_tbl: ARRAY [1..MAX_CONSTS] OF ConstRec;
   nconsts: INTEGER32;
 
+  cur_routine_name: Str255; { source name of the PROCEDURE/FUNCTION whose
+                              body is currently being lowered; used to give
+                              routine-local device-residence globals stable,
+                              module-unique names. }
   cur_func_name: Str255; { '' unless codegen'ing a FUNCTION body, in which
                            case it is that function's own name -- mirrors
                            typechecker.pas's cur_func_name: `Name := expr`

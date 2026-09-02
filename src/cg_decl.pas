@@ -443,20 +443,62 @@ BEGIN
   END;
 END;
 
+FUNCTION VarResidenceAddressSpace(decl: ADRMEM): INTEGER;
+{ Map a validated [SPACE(...)] residence to LLVM's NVPTX address-space
+  numbers. CPU-device compilands deliberately collapse every residence to
+  zero, matching their flat-memory execution model. }
+VAR
+  attrs, attr, arg: ADRMEM;
+  i: INTEGER32;
+  attr_name, space_name: Str255;
+  address_space: INTEGER;
+BEGIN
+  address_space := 0;
+  attrs := GetObj(decl, 'attributes');
+  FOR i := 0 TO ArrSize(attrs) - 1 DO
+  BEGIN
+    attr := ArrItem(attrs, i);
+    attr_name := UpperStr(GetStr(attr, 'name'));
+    IF attr_name = 'SPACE' THEN
+    BEGIN
+      IF NOT is_device_compiland THEN
+        AbortWith('codegen: [SPACE(...)] requires DEVICE code');
+      arg := GetObj(attr, 'arg');
+      IF NodeType(arg) <> 'Identifier' THEN
+        AbortWith('codegen: invalid address space in [SPACE(...)] attribute');
+      space_name := UpperStr(GetStr(arg, 'name'));
+      IF (space_name <> 'HOST') AND (space_name <> 'GLOBAL') AND
+         (space_name <> 'SHARED') AND (space_name <> 'CONSTANT') AND
+         (space_name <> 'LOCAL') THEN
+        AbortWith('codegen: invalid address space in [SPACE(...)] attribute');
+      IF is_nvptx_device THEN
+      BEGIN
+        IF space_name = 'GLOBAL' THEN address_space := 1
+        ELSE IF space_name = 'SHARED' THEN address_space := 3
+        ELSE IF space_name = 'CONSTANT' THEN address_space := 4
+        ELSE IF space_name = 'LOCAL' THEN address_space := 5
+        ELSE address_space := 0;
+      END;
+    END;
+  END;
+  VarResidenceAddressSpace := address_space;
+END;
+
 PROCEDURE CodegenVarDecl(decl: ADRMEM);
 VAR
   names: ADRMEM;
-  tk: INTEGER;
+  tk, address_space: INTEGER;
   n, i: INTEGER32;
   vname: Str255;
 BEGIN
   tk := ResolveTypeExpr(GetObj(decl, 'type_expr'));
+  address_space := VarResidenceAddressSpace(decl);
   names := GetObj(decl, 'names');
   n := ArrSize(names);
   FOR i := 0 TO n - 1 DO
   BEGIN
     vname := CStrToStr255(cJSON_GetStringValue(ArrItem(names, i)));
-    DeclareVar(vname, tk);
+    DeclareVarInSpace(vname, tk, address_space);
     IF TypeKind(tk) = TK_FILE THEN
       InitFileStorage(symbols[nsymbols].llvm_val, types[tk].elem_tid, types[tk].hi, vname);
   END;
@@ -1067,7 +1109,7 @@ VAR
   ret_llvm_ty, fnty, fn, entry_bb2: ADRMEM;
   param_val, palloca, ret_load: ADRMEM;
   saved_fn, saved_bb, saved_ret_slot: ADRMEM;
-  saved_func_name: Str255;
+  saved_func_name, saved_routine_name: Str255;
   saved_ret_tk: INTEGER;
   saved_in_local_scope: BOOLEAN;
   existing: INTEGER32;
@@ -1480,6 +1522,7 @@ BEGIN
     saved_fn := cur_fn;
     saved_bb := LLVMGetInsertBlock(builder);
     saved_func_name := cur_func_name;
+    saved_routine_name := cur_routine_name;
     saved_ret_tk := cur_func_ret_tk;
     saved_ret_slot := cur_func_ret_slot;
     saved_in_local_scope := in_local_scope;
@@ -1488,6 +1531,7 @@ BEGIN
     cur_fn := fn;
     PushScope;
     in_local_scope := TRUE;
+    cur_routine_name := name;
 
     IF is_func THEN
     BEGIN
@@ -1629,6 +1673,7 @@ BEGIN
 
     PopScope;
     in_local_scope := saved_in_local_scope;
+    cur_routine_name := saved_routine_name;
     cur_func_name := saved_func_name;
     cur_func_ret_tk := saved_ret_tk;
     cur_func_ret_slot := saved_ret_slot;
