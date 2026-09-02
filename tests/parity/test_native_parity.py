@@ -104,8 +104,30 @@ def _native_pipeline(source, stages, cwd=ROOT):
     return result
 
 
+_TRIVIA_KEYS = frozenset(("leading_comments", "trailing_comment"))
+
+
+def _without_trivia(value):
+    """Remove pretty81's comment-trivia fields recursively.
+
+    The native lexer/parser attach these to tokens/AST nodes so pretty81 can
+    reconstruct comments; the Python reference pipeline never emits them, so
+    every native/Python JSON comparison must ignore them or every fixture
+    with a comment in it looks like a genuine divergence.
+    """
+    if isinstance(value, list):
+        return [_without_trivia(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _without_trivia(item)
+            for key, item in value.items() if key not in _TRIVIA_KEYS
+        }
+    return value
+
+
 def _without_resolved_type(value):
     """Remove the known non-semantic typed-AST annotation recursively."""
+    value = _without_trivia(value)
     if isinstance(value, list):
         return [_without_resolved_type(item) for item in value]
     if isinstance(value, dict):
@@ -126,7 +148,7 @@ class TestNativeFixtureParity(unittest.TestCase):
     def _assert_json_equal(self,
                            source,
                            stages,
-                           normalizer=lambda value: value,
+                           normalizer=_without_trivia,
                            cwd=ROOT):
         python = _python_pipeline(source, stages, cwd)
         native = _native_pipeline(source, stages, cwd)

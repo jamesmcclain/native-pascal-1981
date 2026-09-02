@@ -17,6 +17,7 @@ DRIVER_BIN := $(BIN_DIR)/pascal1981-native
 DRIVER_ALIAS := $(BIN_DIR)/pascal1981
 ASTCOMPARE_BIN := $(BIN_DIR)/astcompare
 PROXY_BIN := $(BIN_DIR)/pascal1981-proxy
+PRETTY81_BIN := $(BIN_DIR)/pretty81
 RUNTIME_LIB := runtime/build/libpascalrt.a
 RUNTIME_SRCS := $(wildcard runtime/*.c runtime/*.h) runtime/Makefile
 STAGES := lexer parser typechecker codegen
@@ -49,7 +50,7 @@ FIXED_POINT := $(BUILD_DIR)/.fixed-point-verified
 
 .PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-driver test-native test-sysutil test-proxy test-gpu test-reference-parity test-elisp test-bootstrap
 
-all: runtime driver bootstrap $(PROXY_BIN)
+all: runtime driver bootstrap $(PROXY_BIN) $(PRETTY81_BIN)
 
 runtime: $(RUNTIME_LIB)
 
@@ -69,6 +70,13 @@ $(ASTCOMPARE_BIN): src/astcompare.pas $(STAGE_SRCS) $(GEN4_BINS) $(FIXED_POINT) 
 # gen4 fixed point rather than a bootstrap stage, so it is free to use units
 # the reference compiler has never seen.
 $(PROXY_BIN): src/proxy.pas src/bytebuf.pas src/bytebuf.inc src/argparse.pas src/argparse.inc src/jsonx.pas src/jsonx.inc src/netsock.pas src/netsock.inc src/httpio.pas src/httpio.inc src/proxycore.pas src/proxycore.inc $(STAGE_SRCS) $(GEN4_BINS) $(FIXED_POINT) $(RUNTIME_LIB) | $(BIN_DIR)
+	NATIVE_LEXER="$(abspath $(BUILD_DIR)/gen4/lexer)" NATIVE_PARSER="$(abspath $(BUILD_DIR)/gen4/parser)" NATIVE_TYPECHECKER="$(abspath $(BUILD_DIR)/gen4/typechecker)" NATIVE_CODEGEN="$(abspath $(BUILD_DIR)/gen4/codegen)" ./scripts/build-stage.sh $< $@
+
+# pretty81: a Pascal formatter, standing outside the self-hosting core the
+# same way astcompare/proxy do -- built once by the gen4 fixed point rather
+# than a bootstrap stage. It reads the typechecked JSON AST and emits
+# formatted Pascal source; wired into the driver as `--pretty-print`.
+$(PRETTY81_BIN): src/pretty81.pas $(STAGE_SRCS) $(GEN4_BINS) $(FIXED_POINT) $(RUNTIME_LIB) | $(BIN_DIR)
 	NATIVE_LEXER="$(abspath $(BUILD_DIR)/gen4/lexer)" NATIVE_PARSER="$(abspath $(BUILD_DIR)/gen4/parser)" NATIVE_TYPECHECKER="$(abspath $(BUILD_DIR)/gen4/typechecker)" NATIVE_CODEGEN="$(abspath $(BUILD_DIR)/gen4/codegen)" ./scripts/build-stage.sh $< $@
 
 $(BIN_DIR):
@@ -117,7 +125,7 @@ clean:
 	rm -rf build
 
 cleaner: clean
-	rm -rf bin/lexer bin/parser bin/typechecker bin/codegen bin/astcompare bin/pascal1981-proxy bin/pascal1981-native bin/pascal1981
+	rm -rf bin/lexer bin/parser bin/typechecker bin/codegen bin/astcompare bin/pascal1981-proxy bin/pascal1981-native bin/pascal1981 bin/pretty81
 	$(MAKE) -C runtime cleaner
 
 cleanest: cleaner

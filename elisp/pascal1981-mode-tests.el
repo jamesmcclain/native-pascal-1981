@@ -47,6 +47,10 @@ reliably stay current through real command dispatch in batch mode."
   (and (executable-find pascal1981-lexer-program)
        (executable-find pascal1981-parser-program)))
 
+(defun pascal1981-tests--have-driver ()
+  "Non-nil when the driver binary resolves on `exec-path'."
+  (executable-find pascal1981-driver-program))
+
 (defmacro pascal1981-tests--with-pas (text &rest body)
   "Insert TEXT in a temp buffer, enable `pascal1981-mode', then run BODY."
   (declare (indent 1))
@@ -95,12 +99,31 @@ reliably stay current through real command dispatch in batch mode."
     (insert "PROGRAM P; BEGIN")
     (should (stringp (pascal1981-check-buffer)))))
 
+(ert-deftest pascal1981-tests-format-buffer-reformats-valid-source ()
+  "`pascal1981-format-buffer' rewrites a valid but ugly buffer."
+  (skip-unless (pascal1981-tests--have-driver))
+  (with-temp-buffer
+    (insert "PROGRAM   P;\nBEGIN\nEND        .\n")
+    (should (pascal1981-format-buffer))
+    (should (string-match-p "\\`PROGRAM P(input, output);" (buffer-string)))))
+
+(ert-deftest pascal1981-tests-format-buffer-leaves-bad-source-untouched ()
+  "`pascal1981-format-buffer' returns nil and does not touch an invalid buffer."
+  (skip-unless (pascal1981-tests--have-driver))
+  (with-temp-buffer
+    (let ((text "PROGRAM P; BEGIN"))
+      (insert text)
+      (should-not (pascal1981-format-buffer))
+      (should (equal (buffer-string) text)))))
+
 (ert-deftest pascal1981-tests-commands-are-interactive ()
   "Public entry points are M-x commands."
   (should (commandp 'pascal1981-refresh))
   (should (commandp 'pascal1981-check-buffer))
   (should (commandp 'pascal1981-indent-line))
-  (should-not (commandp 'pascal1981--refresh-caches)))
+  (should (commandp 'pascal1981-format-buffer))
+  (should-not (commandp 'pascal1981--refresh-caches))
+  (should-not (commandp 'pascal1981--format-string)))
 
 (ert-deftest pascal1981-tests-auto-mode ()
   "`.pas' files map to `pascal1981-mode'."

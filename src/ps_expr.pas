@@ -21,7 +21,7 @@ VAR
   node: ADRMEM;
   name: Str255;
 BEGIN
-  node := CreateNode('Identifier');
+  node := CreateTriviaNode('Identifier');
   name := CurLex;
   Expect('IDENTIFIER');
   AddStringField(node, 'name', name);
@@ -41,14 +41,14 @@ BEGIN
     has_sel := TRUE;
     IF CurKind = 'LBRACKET' THEN
     BEGIN
-      pos := pos + 1;
-      sel_obj := CreateNode('Selector');
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
+      sel_obj := CreateTriviaNode('Selector');
       AddStringField(sel_obj, 'kind', 'INDEX');
       AddField(sel_obj, 'index_or_field', ParseExpression);
       WHILE Match('COMMA') DO
       BEGIN
         cJSON_AddItemToArray(selectors_arr, sel_obj);
-        sel_obj := CreateNode('Selector');
+        sel_obj := CreateTriviaNode('Selector');
         AddStringField(sel_obj, 'kind', 'INDEX');
         AddField(sel_obj, 'index_or_field', ParseExpression);
       END;
@@ -57,8 +57,8 @@ BEGIN
     END
     ELSE IF CurKind = 'DOT' THEN
     BEGIN
-      pos := pos + 1;
-      sel_obj := CreateNode('Selector');
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
+      sel_obj := CreateTriviaNode('Selector');
       AddStringField(sel_obj, 'kind', 'FIELD');
       AddStringField(sel_obj, 'index_or_field', CurLex);
       Expect('IDENTIFIER');
@@ -66,8 +66,8 @@ BEGIN
     END
     ELSE IF CurKind = 'POINTER' THEN
     BEGIN
-      pos := pos + 1;
-      sel_obj := CreateNode('Selector');
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
+      sel_obj := CreateTriviaNode('Selector');
       AddStringField(sel_obj, 'kind', 'DEREF');
       AddNullField(sel_obj, 'index_or_field');
       cJSON_AddItemToArray(selectors_arr, sel_obj);
@@ -76,14 +76,14 @@ BEGIN
 
   IF has_sel THEN
   BEGIN
-    node := CreateNode('Designator');
+    node := CreateTriviaNode('Designator');
     AddStringField(node, 'name', name);
     AddField(node, 'selectors', selectors_arr);
     ParseDesignatorRest := node;
   END
   ELSE
   BEGIN
-    node := CreateNode('Identifier');
+    node := CreateTriviaNode('Identifier');
     AddStringField(node, 'name', name);
     ParseDesignatorRest := node;
   END;
@@ -94,7 +94,7 @@ VAR
   node, selectors_arr, sel_obj: ADRMEM;
   name: Str255;
 BEGIN
-  node := CreateNode('Designator');
+  node := CreateTriviaNode('Designator');
   name := CurLex;
   Expect('IDENTIFIER');
   AddStringField(node, 'name', name);
@@ -104,14 +104,14 @@ BEGIN
   BEGIN
     IF CurKind = 'LBRACKET' THEN
     BEGIN
-      pos := pos + 1;
-      sel_obj := CreateNode('Selector');
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
+      sel_obj := CreateTriviaNode('Selector');
       AddStringField(sel_obj, 'kind', 'INDEX');
       AddField(sel_obj, 'index_or_field', ParseExpression);
       WHILE Match('COMMA') DO
       BEGIN
         cJSON_AddItemToArray(selectors_arr, sel_obj);
-        sel_obj := CreateNode('Selector');
+        sel_obj := CreateTriviaNode('Selector');
         AddStringField(sel_obj, 'kind', 'INDEX');
         AddField(sel_obj, 'index_or_field', ParseExpression);
       END;
@@ -120,8 +120,8 @@ BEGIN
     END
     ELSE IF CurKind = 'DOT' THEN
     BEGIN
-      pos := pos + 1;
-      sel_obj := CreateNode('Selector');
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
+      sel_obj := CreateTriviaNode('Selector');
       AddStringField(sel_obj, 'kind', 'FIELD');
       AddStringField(sel_obj, 'index_or_field', CurLex);
       Expect('IDENTIFIER');
@@ -129,8 +129,8 @@ BEGIN
     END
     ELSE IF CurKind = 'POINTER' THEN
     BEGIN
-      pos := pos + 1;
-      sel_obj := CreateNode('Selector');
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
+      sel_obj := CreateTriviaNode('Selector');
       AddStringField(sel_obj, 'kind', 'DEREF');
       AddNullField(sel_obj, 'index_or_field');
       cJSON_AddItemToArray(selectors_arr, sel_obj);
@@ -155,7 +155,7 @@ FUNCTION MakeBinOp(op_str: Str255; left, right: ADRMEM): ADRMEM;
 VAR
   node: ADRMEM;
 BEGIN
-  node := CreateNode('BinOp');
+  node := CreateTriviaNode('BinOp');
   AddStringField(node, 'op', op_str);
   AddField(node, 'left', left);
   AddField(node, 'right', right);
@@ -204,14 +204,14 @@ BEGIN
     e.g. -'A' must be rejected, not silently accepted. }
   IF CurKind = 'INTEGER_LITERAL' THEN
   BEGIN
-    node := CreateNode('IntLiteral');
+    node := CreateTriviaNode('IntLiteral');
     AddIntField(node, 'value', CurValueInt());
     Expect('INTEGER_LITERAL');
     ParseConstant := node;
   END
   ELSE IF CurKind = 'REAL_LITERAL' THEN
   BEGIN
-    node := CreateNode('RealLiteral');
+    node := CreateTriviaNode('RealLiteral');
     val_str := CurLex;
     Expect('REAL_LITERAL');
     AddRealField(node, 'value', StrToRealVal(val_str));
@@ -219,7 +219,7 @@ BEGIN
   END
   ELSE IF CurKind = 'CHAR_LITERAL' THEN
   BEGIN
-    node := CreateNode('CharLiteral');
+    node := CreateTriviaNode('CharLiteral');
     val_str := CurValueStr;
     Expect('CHAR_LITERAL');
     AddStringField(node, 'value', val_str);
@@ -227,7 +227,7 @@ BEGIN
   END
   ELSE IF CurKind = 'STRING_LITERAL' THEN
   BEGIN
-    node := CreateNode('StringLiteral');
+    node := CreateTriviaNode('StringLiteral');
     val_str := CurLex;
     Expect('STRING_LITERAL');
     AddStringField(node, 'value', val_str);
@@ -235,7 +235,7 @@ BEGIN
   END
   ELSE IF CurKind = 'BOOLEAN_LITERAL' THEN
   BEGIN
-    node := CreateNode('BoolLiteral');
+    node := CreateTriviaNode('BoolLiteral');
     val_str := CurLex;
     Expect('BOOLEAN_LITERAL');
     AddBoolField(node, 'value', StringEqual(UpperStr(val_str), 'TRUE'));
@@ -243,8 +243,8 @@ BEGIN
   END
   ELSE IF CurKind = 'NIL' THEN
   BEGIN
-    pos := pos + 1;
-    ParseConstant := CreateNode('NilLiteral');
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
+    ParseConstant := CreateTriviaNode('NilLiteral');
   END
   ELSE IF CurKind = 'IDENTIFIER' THEN
   BEGIN
@@ -255,14 +255,14 @@ BEGIN
         StringEqual(UpperStr(val_str), 'SUCC') OR StringEqual(UpperStr(val_str), 'PRED')) AND
        (CurKind = 'LPAREN') THEN
     BEGIN
-      pos := pos + 1;
-      node := CreateNode('FuncCall');
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
+      node := CreateTriviaNode('FuncCall');
       AddStringField(node, 'name', val_str);
       args_arr_const := cJSON_CreateArray;
       cJSON_AddItemToArray(args_arr_const, ParseConstant());
       WHILE CurKind = 'COMMA' DO
       BEGIN
-        pos := pos + 1;
+        BEGIN RelayTokenTrivia; pos := pos + 1; END;
         cJSON_AddItemToArray(args_arr_const, ParseConstant());
       END;
       Expect('RPAREN');
@@ -271,7 +271,7 @@ BEGIN
     END
     ELSE
     BEGIN
-      node := CreateNode('Identifier');
+      node := CreateTriviaNode('Identifier');
       AddStringField(node, 'name', val_str);
       ParseConstant := node;
     END;
@@ -279,10 +279,10 @@ BEGIN
   ELSE IF (CurKind = 'PLUS') OR (CurKind = 'MINUS') THEN
   BEGIN
     sign_neg := (CurKind = 'MINUS');
-    pos := pos + 1;
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
     IF CurKind = 'INTEGER_LITERAL' THEN
     BEGIN
-      node := CreateNode('IntLiteral');
+      node := CreateTriviaNode('IntLiteral');
       IF sign_neg THEN
         AddIntField(node, 'value', -CurValueInt())
       ELSE
@@ -292,7 +292,7 @@ BEGIN
     END
     ELSE IF CurKind = 'REAL_LITERAL' THEN
     BEGIN
-      node := CreateNode('RealLiteral');
+      node := CreateTriviaNode('RealLiteral');
       val_str := CurLex;
       Expect('REAL_LITERAL');
       IF sign_neg THEN
@@ -322,7 +322,7 @@ BEGIN
   IF Match('RANGE') THEN
   BEGIN
     high := ParseExpression;
-    node := CreateNode('RangeExpr');
+    node := CreateTriviaNode('RangeExpr');
     AddField(node, 'low', e);
     AddField(node, 'high', high);
     ParseSetElement := node;
@@ -339,22 +339,22 @@ VAR
 BEGIN
   IF CurKind = 'NOT' THEN
   BEGIN
-    pos := pos + 1;
-    node := CreateNode('UnaryOp');
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
+    node := CreateTriviaNode('UnaryOp');
     AddStringField(node, 'op', 'NOT');
     AddField(node, 'operand', ParseFactor);
     ParseFactor := node;
   END
   ELSE IF CurKind = 'INTEGER_LITERAL' THEN
   BEGIN
-    node := CreateNode('IntLiteral');
+    node := CreateTriviaNode('IntLiteral');
     AddIntField(node, 'value', CurValueInt());
     Expect('INTEGER_LITERAL');
     ParseFactor := node;
   END
   ELSE IF CurKind = 'REAL_LITERAL' THEN
   BEGIN
-    node := CreateNode('RealLiteral');
+    node := CreateTriviaNode('RealLiteral');
     val_str := CurLex;
     Expect('REAL_LITERAL');
     AddRealField(node, 'value', StrToRealVal(val_str));
@@ -362,7 +362,7 @@ BEGIN
   END
   ELSE IF CurKind = 'CHAR_LITERAL' THEN
   BEGIN
-    node := CreateNode('CharLiteral');
+    node := CreateTriviaNode('CharLiteral');
     val_str := CurValueStr;
     Expect('CHAR_LITERAL');
     AddStringField(node, 'value', val_str);
@@ -370,7 +370,7 @@ BEGIN
   END
   ELSE IF CurKind = 'STRING_LITERAL' THEN
   BEGIN
-    node := CreateNode('StringLiteral');
+    node := CreateTriviaNode('StringLiteral');
     val_str := CurLex;
     Expect('STRING_LITERAL');
     AddStringField(node, 'value', val_str);
@@ -378,7 +378,7 @@ BEGIN
   END
   ELSE IF CurKind = 'BOOLEAN_LITERAL' THEN
   BEGIN
-    node := CreateNode('BoolLiteral');
+    node := CreateTriviaNode('BoolLiteral');
     val_str := CurLex;
     Expect('BOOLEAN_LITERAL');
     AddBoolField(node, 'value', StringEqual(val_str, 'TRUE') OR StringEqual(val_str, 'true'));
@@ -386,8 +386,8 @@ BEGIN
   END
   ELSE IF CurKind = 'NIL' THEN
   BEGIN
-    pos := pos + 1;
-    node := CreateNode('NilLiteral');
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
+    node := CreateTriviaNode('NilLiteral');
     ParseFactor := node;
   END
   ELSE IF CurKind = 'IDENTIFIER' THEN
@@ -401,7 +401,7 @@ BEGIN
       Expect('COMMA');
       expr := ParseExpression;
       Expect('RPAREN');
-      node := CreateNode('RetypeExpr');
+      node := CreateTriviaNode('RetypeExpr');
       AddStringField(node, 'type_id', val_str);
       AddField(node, 'expr', expr);
       AddField(node, 'selectors', cJSON_CreateArray);
@@ -415,14 +415,14 @@ BEGIN
       ELSE
         args_arr := cJSON_CreateArray;
       Expect('RPAREN');
-      node := CreateNode('FuncCall');
+      node := CreateTriviaNode('FuncCall');
       AddStringField(node, 'name', name);
       AddField(node, 'args', args_arr);
       ParseFactor := node;
     END
     ELSE
     BEGIN
-      pos := pos + 1;
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
       ParseFactor := ParseDesignatorRest(name);
     END;
   END
@@ -435,7 +435,7 @@ BEGIN
   END
   ELSE IF CurKind = 'LBRACKET' THEN
   BEGIN
-    pos := pos + 1;
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
     elements_arr := cJSON_CreateArray;
     IF CurKind <> 'RBRACKET' THEN
     BEGIN
@@ -444,7 +444,7 @@ BEGIN
         cJSON_AddItemToArray(elements_arr, ParseSetElement);
     END;
     Expect('RBRACKET');
-    node := CreateNode('SetConstructor');
+    node := CreateTriviaNode('SetConstructor');
     AddField(node, 'elements', elements_arr);
     AddNullField(node, 'type_name');
     ParseFactor := node;
@@ -456,22 +456,22 @@ BEGIN
       is the value-producing expression form -- the grammar takes only a
       bare identifier, no selector chain (matches the Python reference's
       AdrExpr AST node, which likewise carries just a name). }
-    pos := pos + 1;
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
     name := CurLex;
     Expect('IDENTIFIER');
-    node := CreateNode('AdrExpr');
+    node := CreateTriviaNode('AdrExpr');
     AddStringField(node, 'name', name);
     ParseFactor := node;
   END
   ELSE IF CurKind = 'SIZEOF' THEN
   BEGIN
-    pos := pos + 1;
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
     Expect('LPAREN');
-    node := CreateNode('SizeofExpr');
+    node := CreateTriviaNode('SizeofExpr');
     IF CurKind = 'IDENTIFIER' THEN
     BEGIN
       name := CurLex;
-      pos := pos + 1;
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
       AddStringField(node, 'target', name);
     END
     ELSE
@@ -481,11 +481,11 @@ BEGIN
   END
   ELSE IF CurKind = 'UPPER' THEN
   BEGIN
-    pos := pos + 1;
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
     Expect('LPAREN');
     name := CurLex;
     Expect('IDENTIFIER');
-    node := CreateNode('UpperExpr');
+    node := CreateTriviaNode('UpperExpr');
     AddStringField(node, 'name', name);
     { UPPER(p^): bound of the pointee -- for a heap super array this is the
       dynamic upper bound recorded by long-form NEW. Native codegen.pas
@@ -497,11 +497,11 @@ BEGIN
   END
   ELSE IF CurKind = 'LOWER' THEN
   BEGIN
-    pos := pos + 1;
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
     Expect('LPAREN');
     name := CurLex;
     Expect('IDENTIFIER');
-    node := CreateNode('LowerExpr');
+    node := CreateTriviaNode('LowerExpr');
     AddStringField(node, 'name', name);
     AddBoolField(node, 'deref', Match('POINTER'));
     Expect('RPAREN');
@@ -530,7 +530,7 @@ BEGIN
     ELSE
     BEGIN
       op_str := k;
-      pos := pos + 1;
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
       left := MakeBinOp(op_str, left, ParseFactor);
       k := CurKind;
     END;
@@ -549,14 +549,14 @@ BEGIN
   IF CurKind = 'MINUS' THEN
   BEGIN
     sign_minus := TRUE;
-    pos := pos + 1;
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
   END
   ELSE IF CurKind = 'PLUS' THEN
-    pos := pos + 1;
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
   left := ParseTerm;
   IF sign_minus THEN
   BEGIN
-    un := CreateNode('UnaryOp');
+    un := CreateTriviaNode('UnaryOp');
     AddStringField(un, 'op', 'MINUS');
     AddField(un, 'operand', left);
     left := un;
@@ -569,7 +569,7 @@ BEGIN
     ELSE
     BEGIN
       op_str := k;
-      pos := pos + 1;
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
       left := MakeBinOp(op_str, left, ParseTerm);
       k := CurKind;
     END;
@@ -588,7 +588,7 @@ BEGIN
   IF (k = 'EQ') OR (k = 'NEQ') OR (k = 'LT') OR (k = 'LE') OR (k = 'GT') OR (k = 'GE') OR (k = 'IN') THEN
   BEGIN
     op_str := k;
-    pos := pos + 1;
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
     ParseExpression := MakeBinOp(op_str, left, ParseSimpleExpression);
   END
   ELSE
@@ -622,7 +622,7 @@ BEGIN
   IF Match('RANGE') THEN
   BEGIN
     high := ParseConstant;
-    node := CreateNode('RangeExpr');
+    node := CreateTriviaNode('RangeExpr');
     AddField(node, 'low', e);
     AddField(node, 'high', high);
     ParseCaseConstant := node;
@@ -646,7 +646,7 @@ FUNCTION ParseIndexRange(allow_star: BOOLEAN): ADRMEM;
 VAR
   node: ADRMEM;
 BEGIN
-  node := CreateNode('IndexRange');
+  node := CreateTriviaNode('IndexRange');
   AddField(node, 'low', ParseConstant);
   Expect('RANGE');
   IF allow_star THEN
@@ -672,7 +672,7 @@ BEGIN
       low_e := ParseConstant;
       Expect('RANGE');
       high_e := ParseConstant;
-      node := CreateNode('SubrangeType');
+      node := CreateTriviaNode('SubrangeType');
       AddField(node, 'low', low_e);
       AddField(node, 'high', high_e);
       AddNullField(node, 'host');
@@ -682,7 +682,7 @@ BEGIN
     BEGIN
       nm := CurLex;
       Expect('IDENTIFIER');
-      node := CreateNode('NamedType');
+      node := CreateTriviaNode('NamedType');
       AddStringField(node, 'name', nm);
       AddNullField(node, 'param');
       ParseSetBase := node;
@@ -694,9 +694,9 @@ BEGIN
     low_e := ParseConstant;
     IF CurKind = 'RANGE' THEN
     BEGIN
-      pos := pos + 1;
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
       high_e := ParseConstant;
-      node := CreateNode('SubrangeType');
+      node := CreateTriviaNode('SubrangeType');
       AddField(node, 'low', low_e);
       AddField(node, 'high', high_e);
       AddNullField(node, 'host');
@@ -704,7 +704,7 @@ BEGIN
     END
     ELSE
     BEGIN
-      node := CreateNode('BuiltinType');
+      node := CreateTriviaNode('BuiltinType');
       AddStringField(node, 'name', 'INTEGER');
       ParseSetBase := node;
     END;
@@ -712,9 +712,9 @@ BEGIN
   ELSE IF (CurKind = 'INTEGER') OR (CurKind = 'REAL') OR (CurKind = 'BOOLEAN') OR
           (CurKind = 'CHAR') OR (CurKind = 'WORD') OR (CurKind = 'ADRMEM') THEN
   BEGIN
-    node := CreateNode('BuiltinType');
+    node := CreateTriviaNode('BuiltinType');
     AddStringField(node, 'name', CurKind);
-    pos := pos + 1;
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
     ParseSetBase := node;
   END
   ELSE
@@ -725,6 +725,13 @@ BEGIN
 END;
 
 FUNCTION MakeTupleNode(item1, item2: ADRMEM): ADRMEM;
+{ Built with a bare cJSON_CreateObject, not CreateTriviaNode -- a tuple
+  built here (a RECORD field, a VariantArm field) has no leading_comments
+  or trailing_comment slot, and its callers in ParseType's RECORD branch
+  consume the field-separator SEMICOLON with a raw pos := pos + 1 that
+  never calls RelayTokenTrivia. A comment on a record field is therefore
+  silently dropped by the parser today, not merely misattached -- see the
+  matching note on PrintRecordFields in pretty81.pas. }
 VAR
   node, items_arr: ADRMEM;
 BEGIN
@@ -765,13 +772,13 @@ BEGIN
       EPrint('Parser Error: PACKED VECTOR is not supported');
       exit(1);
     END;
-    pos := pos + 1;
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
     Expect('LBRACKET');
     idx_range := ParseConstant;
     Expect('RBRACKET');
     Expect('OF');
     elem_type := ParseType;
-    node := CreateNode('VectorType');
+    node := CreateTriviaNode('VectorType');
     AddField(node, 'lanes', idx_range);
     AddField(node, 'element_type', elem_type);
     AddBoolField(node, 'packed', FALSE);
@@ -782,17 +789,17 @@ BEGIN
     is_super := (CurKind = 'SUPER');
     IF is_super THEN
     BEGIN
-      pos := pos + 1;
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
       Expect('ARRAY');
     END
     ELSE
-      pos := pos + 1;
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
     Expect('LBRACKET');
     idx_range := ParseIndexRange(is_super);
     Expect('RBRACKET');
     Expect('OF');
     elem_type := ParseType;
-    node := CreateNode('ArrayType');
+    node := CreateTriviaNode('ArrayType');
     AddField(node, 'index_range', idx_range);
     AddField(node, 'element_type', elem_type);
     AddBoolField(node, 'packed', packed_flag);
@@ -801,7 +808,7 @@ BEGIN
   END
   ELSE IF CurKind = 'RECORD' THEN
   BEGIN
-    pos := pos + 1;
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
     fields_arr := cJSON_CreateArray;
     { The fixed part ends at CASE, if there is a variant part. }
     WHILE (CurKind <> 'END') AND (CurKind <> 'CASE') DO
@@ -821,14 +828,14 @@ BEGIN
     tag_name := '';
     IF CurKind = 'CASE' THEN
     BEGIN
-      pos := pos + 1;
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
       { A discriminant identifier is optional: CASE kind: INTEGER OF, or
         CASE INTEGER OF. }
       IF (CurKind = 'IDENTIFIER') AND (NextKind = 'COLON') THEN
       BEGIN
         has_tag := TRUE;
         tag_name := CurLex;
-        pos := pos + 1;
+        BEGIN RelayTokenTrivia; pos := pos + 1; END;
         Expect('COLON');
       END;
       tag_type := ParseType;
@@ -851,7 +858,7 @@ BEGIN
             BREAK;
         END;
         Expect('RPAREN');
-        arm_node := CreateNode('VariantArm');
+        arm_node := CreateTriviaNode('VariantArm');
         AddField(arm_node, 'labels', labels_arr);
         AddField(arm_node, 'fields', arm_fields_arr);
         cJSON_AddItemToArray(variants_arr, arm_node);
@@ -862,7 +869,7 @@ BEGIN
       END;
     END;
     Expect('END');
-    node := CreateNode('RecordType');
+    node := CreateTriviaNode('RecordType');
     AddField(node, 'fields', fields_arr);
     { Preserve the established RecordType JSON shape for ordinary records;
       native/Python typed-AST parity relies on it.  These fields are native
@@ -879,37 +886,37 @@ BEGIN
   END
   ELSE IF CurKind = 'SET' THEN
   BEGIN
-    pos := pos + 1;
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
     Expect('OF');
     base_type := ParseSetBase;
-    node := CreateNode('SetType');
+    node := CreateTriviaNode('SetType');
     AddField(node, 'base', base_type);
     ParseType := node;
   END
   ELSE IF CurKind = 'FILE' THEN
   BEGIN
-    pos := pos + 1;
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
     Expect('OF');
     elem_type := ParseType;
-    node := CreateNode('FileType');
+    node := CreateTriviaNode('FileType');
     AddField(node, 'element_type', elem_type);
     AddStringField(node, 'structure', 'BINARY');
     ParseType := node;
   END
   ELSE IF CurKind = 'LPAREN' THEN
   BEGIN
-    pos := pos + 1;
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
     values_arr := ParseIdentListArr;
     Expect('RPAREN');
-    node := CreateNode('EnumType');
+    node := CreateTriviaNode('EnumType');
     AddField(node, 'values', values_arr);
     ParseType := node;
   END
   ELSE IF CurKind = 'POINTER' THEN
   BEGIN
-    pos := pos + 1;
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
     base_type := ParseType;
-    node := CreateNode('PointerType');
+    node := CreateTriviaNode('PointerType');
     AddField(node, 'base', base_type);
     AddStringField(node, 'flavor', 'POINTER');
     AddNullField(node, 'space');
@@ -917,10 +924,10 @@ BEGIN
   END
   ELSE IF CurKind = 'ADR' THEN
   BEGIN
-    pos := pos + 1;
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
     Expect('OF');
     base_type := ParseType;
-    node := CreateNode('PointerType');
+    node := CreateTriviaNode('PointerType');
     AddField(node, 'base', base_type);
     AddStringField(node, 'flavor', 'ADR');
     AddNullField(node, 'space');
@@ -928,8 +935,8 @@ BEGIN
   END
   ELSE IF CurKind = 'ADS' THEN
   BEGIN
-    pos := pos + 1;
-    node := CreateNode('PointerType');
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
+    node := CreateTriviaNode('PointerType');
     IF Match('LPAREN') THEN
     BEGIN
       space_expr := ParseExpression;
@@ -947,8 +954,8 @@ BEGIN
   ELSE IF CurKind = 'IDENTIFIER' THEN
   BEGIN
     nm := CurLex;
-    pos := pos + 1;
-    node := CreateNode('NamedType');
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
+    node := CreateTriviaNode('NamedType');
     AddStringField(node, 'name', nm);
     IF Match('LPAREN') THEN
     BEGIN
@@ -975,9 +982,9 @@ BEGIN
   ELSE IF (CurKind = 'INTEGER') OR (CurKind = 'REAL') OR (CurKind = 'BOOLEAN') OR
           (CurKind = 'CHAR') OR (CurKind = 'WORD') OR (CurKind = 'ADRMEM') THEN
   BEGIN
-    node := CreateNode('BuiltinType');
+    node := CreateTriviaNode('BuiltinType');
     AddStringField(node, 'name', CurKind);
-    pos := pos + 1;
+    BEGIN RelayTokenTrivia; pos := pos + 1; END;
     ParseType := node;
   END
   ELSE

@@ -90,7 +90,8 @@ check_frozen_ast() {
   local actual_typed="$work_dir/$name.typed.json"
 
   if bin/lexer < "$reference.pas" | bin/parser > "$actual_ast" &&
-     bin/astcompare "$reference.ast.json" "$actual_ast"; then
+     bin/astcompare --ignore-key leading_comments --ignore-key trailing_comment \
+       "$reference.ast.json" "$actual_ast"; then
     pass "native parser matches the frozen $label AST"
   else
     fail "native parser matches the frozen $label AST"
@@ -98,6 +99,7 @@ check_frozen_ast() {
 
   if bin/typechecker < "$actual_ast" > "$actual_typed" &&
      bin/astcompare --ignore-key resolved_type \
+       --ignore-key leading_comments --ignore-key trailing_comment \
        "$reference.typed.json" "$actual_typed"; then
     pass "native typechecker matches the frozen $label AST"
   else

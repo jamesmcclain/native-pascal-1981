@@ -37,7 +37,8 @@ CONST
   MAX_COMPARE_DEPTH = 512;
 
 VAR
-  ignore_key: ADRMEM;
+  ignore_keys: ARRAY [1..8] OF ADRMEM;
+  ignore_key_count: INTEGER;
   compare_depth: INTEGER;
 
 FUNCTION Join(left, right: Str255): Str255;
@@ -104,9 +105,12 @@ BEGIN
 END;
 
 FUNCTION IsIgnored(key: ADRMEM): BOOLEAN;
+VAR
+  i: INTEGER;
 BEGIN
-  IF ignore_key = NIL THEN IsIgnored := FALSE
-  ELSE IsIgnored := strcmp(key, ignore_key) = 0;
+  IsIgnored := FALSE;
+  FOR i := 1 TO ignore_key_count DO
+    IF strcmp(key, ignore_keys[i]) = 0 THEN IsIgnored := TRUE;
 END;
 
 FUNCTION CompareNodes(expected, actual: ADRMEM; path: Str255): BOOLEAN;
@@ -224,38 +228,38 @@ END;
 
 PROCEDURE Usage;
 BEGIN
-  EPrint('Usage: astcompare [--ignore-key KEY] EXPECTED.json ACTUAL.json');
+  EPrint('Usage: astcompare [--ignore-key KEY]... EXPECTED.json ACTUAL.json');
 END;
 
 VAR
   argc: CINT;
+  idx: CINT;
   expected_path, actual_path: ADRMEM;
   expected_root, actual_root: ADRMEM;
+  ignore_key_flag: ADRMEM;
 
 BEGIN
   argc := pas_arg_count;
-  ignore_key := NIL;
+  ignore_key_count := 0;
   compare_depth := 0;
-  IF argc = 3 THEN
+  ignore_key_flag := MakeCStr('--ignore-key');
+  idx := 1;
+  WHILE (idx + 1 < argc) AND (strcmp(pas_arg_value(idx), ignore_key_flag) = 0) DO
   BEGIN
-    expected_path := pas_arg_value(1);
-    actual_path := pas_arg_value(2);
-  END
-  ELSE IF argc = 5 THEN
-  BEGIN
-    IF strcmp(pas_arg_value(1), MakeCStr('--ignore-key')) <> 0 THEN
+    IF ignore_key_count < 8 THEN
     BEGIN
-      Usage;
-      exit(1);
+      ignore_key_count := ignore_key_count + 1;
+      ignore_keys[ignore_key_count] := pas_arg_value(idx + 1);
     END;
-    ignore_key := pas_arg_value(2);
-    expected_path := pas_arg_value(3);
-    actual_path := pas_arg_value(4);
-  END
-  ELSE BEGIN
+    idx := idx + 2;
+  END;
+  IF idx <> argc - 2 THEN
+  BEGIN
     Usage;
     exit(1);
   END;
+  expected_path := pas_arg_value(idx);
+  actual_path := pas_arg_value(idx + 1);
 
   expected_root := ReadJson(expected_path, 'expected file');
   actual_root := ReadJson(actual_path, 'actual file');

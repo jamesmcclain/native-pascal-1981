@@ -32,7 +32,7 @@ VAR
   input_count, extra_clang_argc, extra_object_count, i: CINT;
   ii, opt_num: INTEGER32;
   output_file, dialect: ADRMEM;
-  root_dir, lexer_bin, parser_bin, typechecker_bin, codegen_bin: ADRMEM;
+  root_dir, lexer_bin, parser_bin, typechecker_bin, codegen_bin, pretty_bin, stage4_bin: ADRMEM;
   runtime_lib, cc_bin, opt_level, temp_ll, extra_ll, primary_ll, primary_output: ADRMEM;
   primary_compile_only: BOOLEAN;
   emit_ptx, device_triple, ptx_cpu, device_backend, noalias_params: ADRMEM;
@@ -43,7 +43,7 @@ VAR
   status1, status2, status3, status4, clang_status, fail_code: CINT;
   option, opt_str: Str255;
   arg_error: ArgStr;
-  compile_only, ir_only, verbose, ptx_only: BOOLEAN;
+  compile_only, ir_only, verbose, ptx_only, pretty_print: BOOLEAN;
 
 PROCEDURE Usage;
 BEGIN
@@ -52,6 +52,7 @@ BEGIN
   WRITELN('  -c                      Compile to object file only (.o)');
   WRITELN('  -S                      Compile to LLVM IR (.ll) only');
   WRITELN('  --emit-ptx              Emit PTX assembly (.ptx) for device code');
+  WRITELN('  --pretty-print          Emit formatted Pascal source (pretty81)');
   WRITELN('  -O0, -O1, -O2, -O3      Optimization level (default: -O1)');
   WRITELN('  --dialect <name>        Language dialect: vintage or extended');
   WRITELN('  --target-cpu <cpu>      Host target CPU (LLVM target-cpu attribute)');
@@ -213,10 +214,17 @@ BEGIN
                                    NIL, NIL, NIL, NIL, NIL, NIL, NIL,
                                    p2[0], p3[1]);
         pid4 := fork;
-        IF pid4 = 0 THEN ExecStage(codegen_bin, MakeCStr('codegen'), dialect,
-                                   emit_ptx, noalias_params, device_triple,
-                                   ptx_cpu, device_backend,
-                                   target_cpu, target_features, p3[0], out_fd);
+        IF pid4 = 0 THEN
+        BEGIN
+          IF pretty_print THEN
+            ExecStage(stage4_bin, MakeCStr('pretty81'), dialect,
+                      NIL, NIL, NIL, NIL, NIL, NIL, NIL, p3[0], out_fd)
+          ELSE
+            ExecStage(stage4_bin, MakeCStr('codegen'), dialect,
+                      emit_ptx, noalias_params, device_triple,
+                      ptx_cpu, device_backend,
+                      target_cpu, target_features, p3[0], out_fd);
+        END;
         close(in_fd); close(out_fd); ClosePipes;
         waitpid(pid1, ADR status1, 0); waitpid(pid2, ADR status2, 0);
         waitpid(pid3, ADR status3, 0); waitpid(pid4, ADR status4, 0);
@@ -297,6 +305,8 @@ BEGIN
   ArgString('target-features', ARG_NO_SHORT, '', 'Host target features, e.g. +avx2,+fma');
   ArgString('device-backend', ARG_NO_SHORT, '', 'Select the device code backend');
   ArgFlag('emit-ptx', ARG_NO_SHORT, 'Emit PTX assembly (.ptx) for device code');
+  ArgFlag('pretty-print', ARG_NO_SHORT,
+          'Emit formatted Pascal source instead of compiling (pretty81)');
   ArgFlag('noalias-kernel-params', ARG_NO_SHORT,
           'Mark device kernel pointer parameters noalias');
   ArgPassthrough('-I');
@@ -387,12 +397,16 @@ BEGIN
     Usage;
     exit(1);
   END;
-  IF (input_count > 1) AND (compile_only OR ir_only) THEN
-    Fail('error: -c, -S and --emit-ptx require exactly one input file');
+  pretty_print := ArgGetFlag('pretty-print');
+  IF pretty_print AND (compile_only OR ir_only) THEN
+    Fail('error: --pretty-print cannot be combined with -c, -S, or --emit-ptx');
+  IF (input_count > 1) AND (compile_only OR ir_only OR pretty_print) THEN
+    Fail('error: -c, -S, --emit-ptx and --pretty-print require exactly one input file');
   IF output_file = NIL THEN
   BEGIN
     IF ptx_only THEN output_file := DefaultOutput(inputs[0], '.ptx')
     ELSE IF ir_only THEN output_file := DefaultOutput(inputs[0], '.ll')
+    ELSE IF pretty_print THEN output_file := DefaultOutput(inputs[0], '.pas')
     ELSE IF compile_only THEN output_file := DefaultOutput(inputs[0], '.o')
     ELSE output_file := DefaultOutput(inputs[0], '');
   END;
@@ -401,13 +415,16 @@ BEGIN
   parser_bin := getenv(MakeCStr('PASCAL1981_PARSER'));
   typechecker_bin := getenv(MakeCStr('PASCAL1981_TYPECHECKER'));
   codegen_bin := getenv(MakeCStr('PASCAL1981_CODEGEN'));
+  pretty_bin := getenv(MakeCStr('PASCAL1981_PRETTY81'));
   IF lexer_bin = NIL THEN lexer_bin := MakeCStr(Join(CStrToStr255(root_dir), '/bin/lexer'));
   IF parser_bin = NIL THEN parser_bin := MakeCStr(Join(CStrToStr255(root_dir), '/bin/parser'));
   IF typechecker_bin = NIL THEN typechecker_bin := MakeCStr(Join(CStrToStr255(root_dir), '/bin/typechecker'));
   IF codegen_bin = NIL THEN codegen_bin := MakeCStr(Join(CStrToStr255(root_dir), '/bin/codegen'));
+  IF pretty_bin = NIL THEN pretty_bin := MakeCStr(Join(CStrToStr255(root_dir), '/bin/pretty81'));
+  IF pretty_print THEN stage4_bin := pretty_bin ELSE stage4_bin := codegen_bin;
   { Device / PTX and host target options are handed to the codegen stage as
     command-line arguments (see ExecStage), never through the environment. }
-  IF ir_only THEN
+  IF ir_only OR pretty_print THEN
     temp_ll := output_file
   ELSE
   BEGIN
@@ -419,13 +436,14 @@ BEGIN
   fail_code := RunPipeline(inputs[0], temp_ll);
   IF fail_code <> 0 THEN
   BEGIN
-    IF NOT ir_only THEN unlink(temp_ll);
+    IF NOT (ir_only OR pretty_print) THEN unlink(temp_ll);
     exit(fail_code);
   END;
-  IF ir_only THEN
+  IF ir_only OR pretty_print THEN
   BEGIN
     IF verbose THEN
       IF ptx_only THEN EPrint('[driver] Emitted PTX')
+      ELSE IF pretty_print THEN EPrint('[driver] Emitted formatted source')
       ELSE EPrint('[driver] Emitted IR');
   END
   ELSE

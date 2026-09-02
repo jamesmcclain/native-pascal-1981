@@ -16,6 +16,8 @@ FUNCTION cJSON_CreateBool(b: CINT): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateNull: ADRMEM [C]; EXTERN;
 PROCEDURE cJSON_AddItemToArray(arr: ADRMEM; item: ADRMEM) [C]; EXTERN;
 PROCEDURE cJSON_AddItemToObject(obj: ADRMEM; key: ADRMEM; item: ADRMEM) [C]; EXTERN;
+FUNCTION cJSON_GetArraySize(arr: ADRMEM): CINT [C]; EXTERN;
+FUNCTION cJSON_GetArrayItem(arr: ADRMEM; index: CINT): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_Print(item: ADRMEM): ADRMEM [C]; EXTERN;
 PROCEDURE cJSON_Delete(item: ADRMEM) [C]; EXTERN;
 PROCEDURE puts(str: ADRMEM) [C]; EXTERN;
@@ -90,6 +92,17 @@ VAR
     string is needed. }
   brace_str: Str255;
 
+  { Trivia-attachment state for pretty81 (see docs on 'leading_comments'/
+    'trailing_comment' below): ordinary comments are captured instead of
+    discarded, and queued here until the next real token is emitted. A
+    comment on the same source line as the token just emitted, with nothing
+    already queued, attaches as that token's trailing_comment instead of
+    becoming leading trivia for whatever follows. }
+  pending_leading: ARRAY [1..32] OF Str255;
+  pending_leading_count: INTEGER;
+  last_token_line: INTEGER;
+  has_last_token: BOOLEAN;
+
 PROCEDURE InitFlags(VAR f: MetacmdFlags);
 BEGIN
   f.Brave := TRUE;
@@ -148,9 +161,10 @@ END;
 
 PROCEDURE AddToken(kind: Str255; code: INTEGER; lexeme: Str255; val_type: INTEGER; int_val: INTEGER64; real_val: REAL; str_val: Str255; line, col: INTEGER);
 VAR
-  tok_obj, val_item, flags_obj: ADRMEM;
+  tok_obj, val_item, flags_obj, comments_arr: ADRMEM;
   kind_ptr, lex_ptr, str_ptr, key_ptr: ADRMEM;
   fieldName: Str255;
+  i: INTEGER;
 BEGIN
   tok_obj := cJSON_CreateObject;
   
@@ -199,6 +213,18 @@ BEGIN
   END;
   fieldName := 'flags'; key_ptr := MakeCStr(fieldName);
   cJSON_AddItemToObject(tok_obj, key_ptr, flags_obj);
+
+  IF pending_leading_count > 0 THEN
+  BEGIN
+    comments_arr := cJSON_CreateArray;
+    FOR i := 1 TO pending_leading_count DO
+      cJSON_AddItemToArray(comments_arr, cJSON_CreateString(MakeCStr(pending_leading[i])));
+    fieldName := 'leading_comments'; key_ptr := MakeCStr(fieldName);
+    cJSON_AddItemToObject(tok_obj, key_ptr, comments_arr);
+    pending_leading_count := 0;
+  END;
+  last_token_line := line;
+  has_last_token := TRUE;
 
   cJSON_AddItemToArray(root_array, tok_obj);
 END;
@@ -465,6 +491,55 @@ BEGIN
   WHILE (src_pos < src_len) AND NOT StartsWithLit(lit) DO
     AdvancePos(1);
   IF src_pos < src_len THEN AdvancePos(ORD(lit[0]));
+END;
+
+FUNCTION CaptureToLit(lit: Str255): Str255;
+{ Like ConsumeToLit, but returns the text consumed (capped at 255 chars,
+  the same convention ScanIdentifier uses) instead of discarding it. Used
+  to capture ordinary comment bodies for pretty81's trivia-attachment. }
+VAR
+  start_pos: INTEGER32;
+  len: INTEGER;
+  text: Str255;
+  i: INTEGER;
+BEGIN
+  start_pos := src_pos;
+  len := 0;
+  WHILE (src_pos < src_len) AND NOT StartsWithLit(lit) DO
+  BEGIN
+    IF len < 255 THEN len := len + 1;
+    AdvancePos(1);
+  END;
+  text[0] := CHR(len);
+  FOR i := 1 TO len DO
+    text[i] := ReadBufChar(start_pos + i - 1);
+  IF src_pos < src_len THEN AdvancePos(ORD(lit[0]));
+  CaptureToLit := text;
+END;
+
+PROCEDURE RecordComment(text: Str255; start_line: INTEGER);
+{ Queues a captured ordinary-comment body as trivia. A comment that starts
+  on the same source line as the most recently emitted token, with nothing
+  already queued as leading trivia, attaches directly to that token as its
+  trailing_comment; every other comment queues as leading trivia for
+  whatever real token comes next (drained in AddToken). }
+VAR
+  last_obj: ADRMEM;
+  key_ptr, str_ptr: ADRMEM;
+  fieldName: Str255;
+BEGIN
+  IF (pending_leading_count = 0) AND has_last_token AND (start_line = last_token_line) THEN
+  BEGIN
+    last_obj := cJSON_GetArrayItem(root_array, cJSON_GetArraySize(root_array) - 1);
+    str_ptr := MakeCStr(text);
+    fieldName := 'trailing_comment'; key_ptr := MakeCStr(fieldName);
+    cJSON_AddItemToObject(last_obj, key_ptr, cJSON_CreateString(str_ptr));
+  END
+  ELSE IF pending_leading_count < 32 THEN
+  BEGIN
+    pending_leading_count := pending_leading_count + 1;
+    pending_leading[pending_leading_count] := text;
+  END;
 END;
 
 FUNCTION ReadMetaName: Str255;
@@ -1127,6 +1202,7 @@ PROCEDURE SkipComments;
   try_include_directive()/skip_comment() calls. }
 VAR
   keep_going: BOOLEAN;
+  comment_line: INTEGER;
 BEGIN
   keep_going := TRUE;
   WHILE keep_going DO
@@ -1139,20 +1215,22 @@ BEGIN
         keep_going := TRUE
       ELSE IF (ReadBufChar(src_pos) = '(') AND (ReadBufChar(src_pos + 1) = '*') THEN
       BEGIN
+        comment_line := cur_line;
         AdvancePos(2);
         IF ReadBufChar(src_pos) = '$' THEN
           ParseMetacommandComment('*)')
         ELSE
-          ConsumeToLit('*)');
+          RecordComment(CaptureToLit('*)'), comment_line);
         keep_going := TRUE;
       END
       ELSE IF ReadBufChar(src_pos) = '{' THEN
       BEGIN
+        comment_line := cur_line;
         AdvancePos(1);
         IF ReadBufChar(src_pos) = '$' THEN
           ParseMetacommandComment(brace_str)
         ELSE
-          ConsumeToLit(brace_str);
+          RecordComment(CaptureToLit(brace_str), comment_line);
         keep_going := TRUE;
       END;
     END;
@@ -1565,6 +1643,8 @@ BEGIN
   flag_stack_top := 0;
   meta_const_count := 0;
   pending_unroll_set := FALSE;
+  pending_leading_count := 0;
+  has_last_token := FALSE;
   brace_str[0] := CHR(1);
   brace_str[1] := '}';
   root_array := cJSON_CreateArray;

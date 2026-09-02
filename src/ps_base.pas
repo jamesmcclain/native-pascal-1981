@@ -19,6 +19,7 @@ PROCEDURE cJSON_AddItemToObject(obj: ADRMEM; key: ADRMEM; item: ADRMEM) [C]; EXT
 PROCEDURE cJSON_AddItemToArray(arr: ADRMEM; item: ADRMEM) [C]; EXTERN;
 FUNCTION cJSON_Print(item: ADRMEM): ADRMEM [C]; EXTERN;
 PROCEDURE cJSON_Delete(item: ADRMEM) [C]; EXTERN;
+PROCEDURE cJSON_DeleteItemFromObject(obj: ADRMEM; key: ADRMEM) [C]; EXTERN;
 FUNCTION cJSON_Duplicate(item: ADRMEM; recurse: CINT): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_DetachItemFromArray(arr: ADRMEM; which: CINT): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_ReplaceItemInObject(obj: ADRMEM; key: ADRMEM; newitem: ADRMEM): CINT [C]; EXTERN;
@@ -54,6 +55,10 @@ TYPE
       token following the metacommand comment (see lexer.pas). }
     has_unroll: BOOLEAN;
     unroll_val: INTEGER;
+    has_leading_comment: BOOLEAN;
+    leading_comment: Str255;
+    has_trailing_comment: BOOLEAN;
+    trailing_comment: Str255;
   END;
 
   PToken = ^Token;
@@ -63,6 +68,23 @@ TYPE
 VAR
   tokens_buf: ADRMEM; { heap allocated array of Token }
   num_tokens, pos: INTEGER32;
+
+  { Trivia-relay state for pretty81, private to this unit. A comment queued
+    here rides on whichever AST node CreateTriviaNode builds next; a comment
+    that was a token's trailing_comment attaches straight onto the most
+    recently created node instead, mirroring how the lexer attaches a
+    trailing comment straight onto the most recently emitted token
+    (lexer.pas RecordComment). }
+  pending_leading: ARRAY [1..32] OF Str255;
+  pending_leading_count: INTEGER;
+  last_created_node: ADRMEM;
+  { The node RelayTokenTrivia most recently wrote a trailing_comment onto,
+    or NIL. PinTrailingCommentTarget moves the field from here to its own
+    argument, since RelayTokenTrivia commits a trailing comment onto
+    whatever leaf node was current at token-consumption time -- often
+    deep inside an item still being parsed -- not onto the item as a
+    whole. }
+  last_trailing_target: ADRMEM;
 
 { ===================== recursion-depth ceilings ======================
 
@@ -135,7 +157,7 @@ VAR
   p_in, p_out, p_in_base, p_out_base: ^CHAR;
   json_root, item, field, val_obj, val_str_ptr, base_ptr, val_ptr: ADRMEM;
   k_kind, k_code, k_lex, k_val, k_line, k_col, k_flags: ADRMEM;
-  k_val_type, k_unroll: ADRMEM;
+  k_val_type, k_unroll, k_leading, k_trailing: ADRMEM;
   flags_obj: ADRMEM;
   empty_s, fieldName, kind_val: Str255;
   out_i: INTEGER32;
@@ -144,7 +166,14 @@ VAR
   tok_elem: ADRMEM;
   p_adrmem_off: ^ADRMEM;
   p_real_off: ^REAL;
+  comments_arr, comment_item: ADRMEM;
+  comments_n, ci: INTEGER32;
+  joined, one_comment: Str255;
+  jlen, olen, jc: INTEGER;
 BEGIN
+  pending_leading_count := 0;
+  last_created_node := NIL;
+  last_trailing_target := NIL;
   cap := 32000;
   raw_input := malloc(cap);
   len := 0;
@@ -203,6 +232,8 @@ BEGIN
   fieldName := 'column'; k_col := MakeCStr(fieldName);
   fieldName := 'flags'; k_flags := MakeCStr(fieldName);
   fieldName := 'UNROLL'; k_unroll := MakeCStr(fieldName);
+  fieldName := 'leading_comments'; k_leading := MakeCStr(fieldName);
+  fieldName := 'trailing_comment'; k_trailing := MakeCStr(fieldName);
 
   empty_s := '';
   out_i := 0;
@@ -315,6 +346,46 @@ BEGIN
       p_tok^.has_unroll := FALSE;
       p_tok^.unroll_val := 0;
     END;
+
+    { leading_comments: join multiple entries with CHR(10) so pretty81 can
+      re-split them into separate comment lines; capped at 255 chars total
+      like every other Str255 here. }
+    comments_arr := cJSON_GetObjectItem(item, k_leading);
+    comments_n := 0;
+    jlen := 0;
+    IF comments_arr <> NIL THEN
+    BEGIN
+      comments_n := cJSON_GetArraySize(comments_arr);
+      FOR ci := 0 TO comments_n - 1 DO
+      BEGIN
+        comment_item := cJSON_GetArrayItem(comments_arr, ci);
+        one_comment := CStrToStr255(cJSON_GetStringValue(comment_item));
+        olen := ORD(one_comment[0]);
+        IF (ci > 0) AND (jlen < 255) THEN
+        BEGIN
+          jlen := jlen + 1;
+          joined[jlen] := CHR(10);
+        END;
+        FOR jc := 1 TO olen DO
+          IF jlen < 255 THEN
+          BEGIN
+            jlen := jlen + 1;
+            joined[jlen] := one_comment[jc];
+          END;
+      END;
+    END;
+    joined[0] := CHR(jlen);
+    p_tok^.has_leading_comment := comments_n > 0;
+    p_tok^.leading_comment := joined;
+
+    field := cJSON_GetObjectItem(item, k_trailing);
+    IF field <> NIL THEN
+    BEGIN
+      p_tok^.has_trailing_comment := TRUE;
+      p_tok^.trailing_comment := CStrToStr255(cJSON_GetStringValue(field));
+    END
+    ELSE
+      p_tok^.has_trailing_comment := FALSE;
 
     out_i := out_i + 1;
   END;
@@ -548,6 +619,42 @@ BEGIN
   UpperStr := res;
 END;
 
+PROCEDURE RelayTokenTrivia;
+{ Called just before the cursor steps past the current token (from Expect
+  and Match, the only two places pos advances), so every token's trivia is
+  relayed exactly once regardless of which of the two consumed it. A
+  leading comment queues for whichever node CreateTriviaNode builds next; a
+  trailing comment attaches straight onto the most recently created node
+  when nothing is already queued (mirroring lexer.pas RecordComment), and
+  falls back to queuing itself otherwise so it is never silently dropped. }
+VAR
+  pt: PToken;
+  key_ptr, str_ptr: ADRMEM;
+  fieldName: Str255;
+BEGIN
+  pt := GetTok(0);
+  IF pt^.has_leading_comment AND (pending_leading_count < 32) THEN
+  BEGIN
+    pending_leading_count := pending_leading_count + 1;
+    pending_leading[pending_leading_count] := pt^.leading_comment;
+  END;
+  IF pt^.has_trailing_comment THEN
+  BEGIN
+    IF (pending_leading_count = 0) AND (last_created_node <> NIL) THEN
+    BEGIN
+      str_ptr := MakeCStr(pt^.trailing_comment);
+      fieldName := 'trailing_comment'; key_ptr := MakeCStr(fieldName);
+      cJSON_AddItemToObject(last_created_node, key_ptr, cJSON_CreateString(str_ptr));
+      last_trailing_target := last_created_node;
+    END
+    ELSE IF pending_leading_count < 32 THEN
+    BEGIN
+      pending_leading_count := pending_leading_count + 1;
+      pending_leading[pending_leading_count] := pt^.trailing_comment;
+    END;
+  END;
+END;
+
 PROCEDURE Expect(k: Str255);
 VAR
   err_msg, ck, target_k: Str255;
@@ -557,6 +664,7 @@ BEGIN
   ck := CurKind;
   IF StringEqual(ck, target_k) THEN
   BEGIN
+    RelayTokenTrivia;
     pos := pos + 1;
   END
   ELSE
@@ -576,11 +684,60 @@ BEGIN
   target_k := k;
   IF StringEqual(CurKind, target_k) THEN
   BEGIN
+    RelayTokenTrivia;
     pos := pos + 1;
     Match := TRUE;
   END
   ELSE
     Match := FALSE;
+END;
+
+FUNCTION CreateTriviaNode(type_name: Str255): ADRMEM;
+VAR
+  node, comments_arr: ADRMEM;
+  key_ptr: ADRMEM;
+  fieldName: Str255;
+  i: INTEGER;
+BEGIN
+  node := CreateNode(type_name);
+  IF pending_leading_count > 0 THEN
+  BEGIN
+    comments_arr := cJSON_CreateArray;
+    FOR i := 1 TO pending_leading_count DO
+      cJSON_AddItemToArray(comments_arr, cJSON_CreateString(MakeCStr(pending_leading[i])));
+    fieldName := 'leading_comments'; key_ptr := MakeCStr(fieldName);
+    cJSON_AddItemToObject(node, key_ptr, comments_arr);
+    pending_leading_count := 0;
+  END;
+  last_created_node := node;
+  CreateTriviaNode := node;
+END;
+
+{ Re-point trailing-comment attachment at an enclosing node whose children
+  are already fully parsed. Called by a list-parsing loop (statement list,
+  decl section, case element, ...) right after it finishes one item and
+  before it checks for a following separator: without this, a comment
+  trailing the whole item -- e.g. an assignment followed by a same-line
+  remark -- would attach to whatever inner node, like a call expression on
+  the right-hand side, happened to be built last during that item's own
+  parsing, instead of to the item itself. }
+PROCEDURE PinTrailingCommentTarget(node: ADRMEM);
+VAR
+  text_item: ADRMEM;
+  comment_text: Str255;
+BEGIN
+  IF (last_trailing_target <> NIL) AND (last_trailing_target <> node) THEN
+  BEGIN
+    text_item := cJSON_GetObjectItem(last_trailing_target, MakeCStr('trailing_comment'));
+    IF text_item <> NIL THEN
+    BEGIN
+      comment_text := CStrToStr255(cJSON_GetStringValue(text_item));
+      cJSON_DeleteItemFromObject(last_trailing_target, MakeCStr('trailing_comment'));
+      cJSON_AddItemToObject(node, MakeCStr('trailing_comment'), cJSON_CreateString(MakeCStr(comment_text)));
+      last_trailing_target := node;
+    END;
+  END;
+  last_created_node := node;
 END;
 
 { Enter/leave one level of the expression recursion cycle. Every increment
