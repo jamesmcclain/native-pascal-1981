@@ -173,7 +173,7 @@ test-reference-parity:
 
 # Run the Emacs major-mode ERT suite. Kept separate from `test` because Emacs
 # is not a dependency of the compiler toolchain.
-test-elisp: bootstrap
+test-elisp: bootstrap $(PRETTY81_BIN)
 	$(MAKE) -C elisp test
 
 # Full fixed-point regression: force a clean gen1->gen4 rebuild (not reusing
