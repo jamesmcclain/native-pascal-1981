@@ -41,12 +41,17 @@ BEGIN
   ELSE CurScopeBase := scope_stack[scope_top];
 END;
 
-PROCEDURE DeclareVar(name: Str255; tk: INTEGER);
+PROCEDURE DeclareVarInSpace(name: Str255; tk, address_space: INTEGER);
+{ Declare ordinary storage in address space zero, or statically allocated
+  NVPTX storage in the requested concrete device address space. A nonzero
+  residence is a global even when its Pascal declaration is routine-local:
+  CUDA shared/local/global/constant storage cannot be represented by a host
+  stack alloca. }
 VAR
   gvar, zero: ADRMEM;
   i, base: INTEGER32;
   dup, reuse_decl: BOOLEAN;
-  uname: Str255;
+  uname, global_name: Str255;
 BEGIN
   uname := UpperStr(name);
   { Only the current scope's own slice of the symbol table can collide --
@@ -81,11 +86,23 @@ BEGIN
   END;
   IF NOT reuse_decl THEN
   BEGIN
-    IF in_local_scope THEN
+    IF in_local_scope AND (address_space = 0) THEN
       gvar := EntryAlloca(LLVMTypeForTk(tk), name)
     ELSE
     BEGIN
-      gvar := LLVMAddGlobal(modl, LLVMTypeForTk(tk), MakeCStr(name));
+      global_name := name;
+      IF in_local_scope THEN
+      BEGIN
+        global_name := cur_routine_name;
+        global_name[0] := CHR(ORD(global_name[0]) + 1);
+        global_name[ORD(global_name[0])] := '.';
+        CONCAT(global_name, name);
+      END;
+      IF address_space = 0 THEN
+        gvar := LLVMAddGlobal(modl, LLVMTypeForTk(tk), MakeCStr(global_name))
+      ELSE
+        gvar := LLVMAddGlobalInAddressSpace(modl, LLVMTypeForTk(tk),
+                                            MakeCStr(global_name), address_space);
       IF NOT lowering_spliced_interface THEN
       BEGIN
         IF (TypeKind(tk) = TK_ARRAY) OR (TypeKind(tk) = TK_RECORD) OR
@@ -111,6 +128,11 @@ BEGIN
     symbols[nsymbols].tk := tk;
     symbols[nsymbols].llvm_val := gvar;
   END;
+END;
+
+PROCEDURE DeclareVar(name: Str255; tk: INTEGER);
+BEGIN
+  DeclareVarInSpace(name, tk, 0);
 END;
 
 FUNCTION LoadFileFcbPtr(name: Str255): ADRMEM;
