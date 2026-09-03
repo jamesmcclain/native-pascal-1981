@@ -1,0 +1,3 @@
+Type checking failed:
+Device synchronization builtin requires DEVICE code: SYNCTHREADS
+Error: Failed to parse input AST JSON
