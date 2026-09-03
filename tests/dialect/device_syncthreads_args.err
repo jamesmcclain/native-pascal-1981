@@ -1,0 +1,3 @@
+Type checking failed:
+Procedure expects no arguments: SYNCTHREADS
+Error: Failed to parse input AST JSON

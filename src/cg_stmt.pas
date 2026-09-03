@@ -1169,19 +1169,50 @@ END;
 
 PROCEDURE CodegenDeviceSync(name: Str255);
 { DEVICE synchronization. CPU-device execution is serial, so SYNCTHREADS is
-  a no-op there; NVPTX lowers it to the hardware block barrier. }
+  a no-op there; NVPTX lowers it to the hardware block barrier.
+
+  The barrier's intrinsic spelling was renamed between LLVM releases:
+  LLVM <= 20 recognizes the zero-argument `llvm.nvvm.barrier0`; LLVM >= 21
+  dropped it in favor of `llvm.nvvm.barrier.cta.sync.aligned.all(i32 0)`
+  (same hardware op, now takes an explicit barrier-resource id). A name
+  the linked LLVM doesn't recognize as an intrinsic just falls through
+  NVPTX ISel as an ordinary unresolved extern call instead of `bar.sync` --
+  no error, silently wrong codegen -- so resolve which spelling this
+  codegen is actually linked against via LLVMLookupIntrinsicID rather than
+  hardcoding one. }
 VAR
   fnty, fn: ADRMEM;
   discard: ADRMEM;
+  old_name, new_name: Str255;
+  new_id: CINT;
+  call_args: ADRMEM;
+  param_tys: ADRMEM;
 BEGIN
   IF name <> 'SYNCTHREADS' THEN
     AbortWith2('codegen: unknown device synchronization builtin: ', name);
   IF is_nvptx_device THEN
   BEGIN
-    fnty := LLVMFunctionType(voidty, NIL, 0, 0);
-    fn := LLVMGetNamedFunction(modl, MakeCStr('llvm.nvvm.barrier0'));
-    IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr('llvm.nvvm.barrier0'), fnty);
-    discard := LLVMBuildCall2(builder, fnty, fn, NIL, 0, MakeCStr(''));
+    new_name := 'llvm.nvvm.barrier.cta.sync.aligned.all';
+    new_id := LLVMLookupIntrinsicID(MakeCStr(new_name), RETYPE(CSIZE_T, ORD(new_name[0])));
+    IF new_id <> 0 THEN
+    BEGIN
+      param_tys := AllocPtrArray(1);
+      SetPtrArrayElem(param_tys, 0, i32ty);
+      fnty := LLVMFunctionType(voidty, param_tys, 1, 0);
+      fn := LLVMGetNamedFunction(modl, MakeCStr(new_name));
+      IF fn = NIL THEN fn := LLVMGetIntrinsicDeclaration(modl, new_id, NIL, 0);
+      call_args := AllocPtrArray(1);
+      SetPtrArrayElem(call_args, 0, LLVMConstInt(i32ty, 0, 0));
+      discard := LLVMBuildCall2(builder, fnty, fn, call_args, 1, MakeCStr(''));
+    END
+    ELSE
+    BEGIN
+      old_name := 'llvm.nvvm.barrier0';
+      fnty := LLVMFunctionType(voidty, NIL, 0, 0);
+      fn := LLVMGetNamedFunction(modl, MakeCStr(old_name));
+      IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr(old_name), fnty);
+      discard := LLVMBuildCall2(builder, fnty, fn, NIL, 0, MakeCStr(''));
+    END;
   END;
 END;
 
@@ -1272,7 +1303,13 @@ BEGIN
   name := GetStr(stmt, 'name');
   IF name = 'LAUNCH' THEN
     CodegenLaunch(GetObj(stmt, 'args'))
-  ELSE IF is_device_compiland AND (name = 'SYNCTHREADS') THEN
+  ELSE IF is_device_compiland AND (name = 'SYNCTHREADS') AND
+          (LookupRoutine(name) = 0) THEN
+    { Case-sensitive, matching every other name in this dispatch chain --
+      see IsDeviceSyncIntrinsic's comment in tc_stmt.pas. Also mirrors
+      tc_stmt.pas's CheckStmt precedence: a user-declared routine named
+      SYNCTHREADS must reach CodegenCallCommon below, not be replaced by
+      the barrier intrinsic. }
     CodegenDeviceSync(name)
   ELSE IF (name = 'DEVCOPYTO') OR (name = 'DEVCOPYFROM') OR (name = 'DEVFREE') THEN
     CodegenDeviceOrchestration(name, GetObj(stmt, 'args'))
