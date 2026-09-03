@@ -154,6 +154,31 @@ BEGIN
   END;
 END;
 
+FUNCTION IsDeviceSyncIntrinsic(name: Str255): BOOLEAN;
+{ Case-sensitive, matching every other name in this ProcCallStmt dispatch
+  chain (WRITELN, NEW, IsHostDeviceIntrinsic's DEVCOPYTO/LAUNCH/etc.) --
+  a deliberate deviation from the manual's general case-insensitivity for
+  predeclared identifiers, not a gap to close against the reference. }
+BEGIN
+  IsDeviceSyncIntrinsic := (name = 'SYNCTHREADS');
+END;
+
+PROCEDURE CheckDeviceSyncIntrinsic(node: ADRMEM; pname: Str255);
+VAR
+  args_arr: ADRMEM;
+  nargs, i: INTEGER32;
+  cond_tk: INTEGER;
+BEGIN
+  args_arr := GetObj(node, 'args');
+  nargs := cJSON_GetArraySize(args_arr);
+  IF NOT is_device_compiland THEN
+    AddError2('Device synchronization builtin requires DEVICE code: ', pname)
+  ELSE IF nargs <> 0 THEN
+    AddError2('Procedure expects no arguments: ', pname);
+  FOR i := 0 TO nargs - 1 DO
+    cond_tk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
+END;
+
 PROCEDURE CheckCaseLabel(label_node: ADRMEM; sel_tk: INTEGER);
 { One CASE label constant, checked against the selector the same way a FOR
   bound is checked against the loop variable: CheckExprForTarget gives a
@@ -486,6 +511,14 @@ BEGIN
     END
     ELSE IF IsHostDeviceIntrinsic(pname) THEN
       CheckHostDeviceIntrinsic(node, pname)
+    ELSE IF IsDeviceSyncIntrinsic(pname) AND (LookupSymbol(pname) = 0) THEN
+      { A user declaration of this name takes precedence over the builtin
+        (IBM Pascal, Aug 1981, p.3-7: predeclared identifiers "can be
+        re-defined by the programmer" -- see
+        tests/fixtures/typecheck/should_pass/builtin_type_shadowing.pas).
+        Only dispatch to the intrinsic when no such declaration is visible;
+        otherwise fall through to the ordinary call below. }
+      CheckDeviceSyncIntrinsic(node, pname)
     ELSE IF pname = 'VSTORE' THEN
     BEGIN
       { VSTORE(arr, i, v): statement-form store of vector v's lanes into

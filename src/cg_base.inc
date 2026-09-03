@@ -32,6 +32,11 @@ FUNCTION LLVMBuildTrunc(b: ADRMEM; val: ADRMEM; destty: ADRMEM; name: ADRMEM): A
 FUNCTION LLVMFunctionType(ret_ty: ADRMEM; params: ADRMEM; pcount: CINT; vararg: CINT): ADRMEM [C];
 FUNCTION LLVMAddFunction(m: ADRMEM; name: ADRMEM; fty: ADRMEM): ADRMEM [C];
 FUNCTION LLVMGetNamedFunction(m: ADRMEM; name: ADRMEM): ADRMEM [C];
+FUNCTION LLVMLookupIntrinsicID(name: ADRMEM; namelen: CSIZE_T): CINT [C]; { 0
+  means "not a known intrinsic name" (LLVM's Intrinsic::not_intrinsic) --
+  used to pick between an LLVM release's alternate spellings for the same
+  intrinsic (see CodegenDeviceSync's barrier lookup in cg_stmt.pas). }
+FUNCTION LLVMGetIntrinsicDeclaration(m: ADRMEM; id: CINT; param_tys: ADRMEM; param_count: CSIZE_T): ADRMEM [C];
 FUNCTION LLVMAppendBasicBlockInContext(ctx: ADRMEM; fn: ADRMEM; name: ADRMEM): ADRMEM [C];
 FUNCTION LLVMCreateBuilderInContext(ctx: ADRMEM): ADRMEM [C];
 PROCEDURE LLVMPositionBuilderAtEnd(b: ADRMEM; bb: ADRMEM) [C];

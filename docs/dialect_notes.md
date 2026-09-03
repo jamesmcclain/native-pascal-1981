@@ -126,6 +126,18 @@ are valid only on exported kernel procedures. Dimensions must be positive
 integer literals. CUDA axis and total-thread limits apply to `MAXNTID` and
 `REQNTID`. A kernel cannot have both attributes.
 
+`SYNCTHREADS` is a zero-argument synchronization intrinsic available only in
+DEVICE code. In NVPTX compilation it lowers to the block-level hardware barrier
+(`bar.sync 0;`), while under host or serial device execution it is a no-op.
+Calling `SYNCTHREADS` outside a DEVICE compiland or passing arguments to it is
+rejected at typechecking. A user declaration named `SYNCTHREADS` (exact case)
+shadows the intrinsic, per the general rule that predeclared identifiers may
+be redefined (IBM Pascal, Aug. 1981, p.3-7). The name is matched
+case-sensitively, like every other builtin in this dialect's statement
+dispatch (`WRITELN`, `NEW`, `LAUNCH`, etc.) -- a deliberate deviation from
+the manual's general case-insensitivity for predeclared identifiers, not a
+gap against the reference.
+
 ## Vectors (SIMD) **[extended]**
 
 `VECTOR [n] OF T` is a fixed-width SIMD vector, lowered to an LLVM `<n x T>`.
