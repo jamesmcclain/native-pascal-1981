@@ -4,6 +4,7 @@ Set NATIVE_CODEGEN to a native codegen.pas executable.  The Python front end
 supplies the normal typed-AST JSON protocol; this test isolates native lowering.
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -69,6 +70,134 @@ class NativeDeviceUnitTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("llvm.nvvm.read.ptx.sreg.tid.x1", result.stdout)
         return result.stdout
+
+    def test_codegen_rejects_device_transcendental_math(self):
+        functions = ("SQRT", "SIN", "COS", "LN", "EXP", "ARCTAN")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for function in functions:
+                with self.subTest(function=function):
+                    source = root / f"{function.lower()}.pas"
+                    source.write_text(f"""DEVICE MODULE {function}Device;
+VAR x: REAL;
+PROCEDURE go;
+BEGIN x := {function}(x) END;
+.
+""")
+                    result = subprocess.run(
+                        [
+                            NATIVE_CODEGEN, "--dialect", "extended",
+                            "--device-triple", GPU_TRIPLE, "--emit-ptx"
+                        ],
+                        cwd=ROOT,
+                        input=_typed_ast(source),
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(
+                        "codegen: transcendental math function is not supported "
+                        f"in DEVICE code: {function}", result.stderr)
+
+    def test_codegen_accepts_cpu_device_transcendental_math(self):
+        # Without --device-triple a DEVICE compiland is an ordinary host
+        # module and links libm, so the NVPTX-only ban must not apply.  The
+        # reference accepts these in DEVICE code too, so gating this on
+        # device-ness rather than on the target broke acceptance parity.
+        libm_names = {
+            "SQRT": "sqrt",
+            "SIN": "sin",
+            "COS": "cos",
+            "LN": "log",
+            "EXP": "exp",
+            "ARCTAN": "atan",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for function, libm_name in libm_names.items():
+                with self.subTest(function=function):
+                    source = root / f"cpu_{function.lower()}.pas"
+                    source.write_text(f"""DEVICE MODULE {function}CpuDevice;
+VAR x: REAL;
+PROCEDURE go;
+BEGIN x := {function}(x) END;
+.
+""")
+                    result = subprocess.run(
+                        [NATIVE_CODEGEN, "--dialect", "extended"],
+                        cwd=ROOT,
+                        input=_typed_ast(source),
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn(f"@{libm_name}(", result.stdout)
+
+    def test_codegen_rejects_device_transcendental_math_any_case(self):
+        # The builtin dispatch chain compares spellings exactly, so a
+        # JSON-only caller writing `sqrt' skips it and reaches the generic
+        # call path.  With a [C]; EXTERN declaration of that name in the
+        # compiland, that path would emit into PTX the very `call @sqrt' the
+        # guard exists to prevent.
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "extern_sqrt.pas"
+            source.write_text("""DEVICE MODULE ExternSqrtDevice;
+VAR x: REAL;
+FUNCTION MYSQRT(v: REAL): REAL [C]; EXTERN;
+PROCEDURE go;
+BEGIN x := MYSQRT(x) END;
+.
+""")
+            typed_ast = json.loads(_typed_ast(source))
+            renamed = json.dumps(typed_ast).replace("MYSQRT", "sqrt")
+            result = subprocess.run(
+                [
+                    NATIVE_CODEGEN, "--dialect", "extended", "--device-triple",
+                    GPU_TRIPLE, "--emit-ptx"
+                ],
+                cwd=ROOT,
+                input=renamed,
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "codegen: transcendental math function is not supported "
+                "in DEVICE code: sqrt", result.stderr)
+
+    def test_codegen_rejects_device_dynamic_allocation(self):
+        operations = ("NEW", "DISPOSE")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for operation in operations:
+                with self.subTest(operation=operation):
+                    source = root / f"{operation.lower()}.pas"
+                    source.write_text(f"""MODULE {operation}Host;
+TYPE PINT = ^INTEGER32;
+VAR p: PINT;
+PROCEDURE go;
+BEGIN {operation}(p) END;
+.
+""")
+                    # The reference rejects allocation in DEVICE code. Mark a
+                    # valid host-module AST as DEVICE to exercise the native
+                    # codegen guard that protects JSON-only callers.
+                    typed_ast = json.loads(_typed_ast(source))
+                    typed_ast["is_device"] = True
+                    result = subprocess.run(
+                        [
+                            NATIVE_CODEGEN, "--dialect", "extended",
+                            "--device-triple", GPU_TRIPLE, "--emit-ptx"
+                        ],
+                        cwd=ROOT,
+                        input=json.dumps(typed_ast),
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(
+                        "codegen: dynamic memory allocation is not supported "
+                        f"in DEVICE code: {operation}", result.stderr)
 
     def test_module_interface_and_implementation_emit_nvptx(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -138,6 +138,29 @@ dispatch (`WRITELN`, `NEW`, `LAUNCH`, etc.) -- a deliberate deviation from
 the manual's general case-insensitivity for predeclared identifiers, not a
 gap against the reference.
 
+`SQRT`, `SIN`, `COS`, `LN`, `EXP`, and `ARCTAN` are not available in DEVICE
+code compiled for NVPTX. That path does not link the host `libm` functions that
+implement these builtins, so codegen rejects each one before it emits invalid
+PTX. The restriction is keyed on the target, not on DEVICE context: under host
+or serial device execution the compiland is an ordinary module in address space
+0, links `libm` like any other, and these builtins work normally. `ABS`, `SQR`,
+and `FLOAT` remain available everywhere because they use inline operations.
+
+The rejection happens at codegen, not at typechecking, because the typechecker
+never receives `--device-triple` and so cannot tell the two device targets
+apart. Codegen matches the name case-insensitively, unlike the builtin dispatch
+it guards, and applies the same test to a call that resolves to a body-less
+`[C]; EXTERN` declaration -- otherwise a lowercase spelling would reach the
+generic call path and emit the `libm` call anyway. A routine with a body is a
+real definition in the module and stays callable, per the general rule that
+predeclared identifiers may be redefined. This is a gap against the reference,
+which accepts these builtins in DEVICE code and lowers them to `libm` calls;
+it applies only when the NVPTX triple is passed.
+
+`NEW` and `DISPOSE` are not available in DEVICE code. The NVPTX path cannot
+link the host `malloc` and `free` functions that implement these operations.
+The compiler rejects both operations before it emits invalid PTX.
+
 ## Vectors (SIMD) **[extended]**
 
 `VECTOR [n] OF T` is a fixed-width SIMD vector, lowered to an LLVM `<n x T>`.

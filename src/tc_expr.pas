@@ -630,6 +630,13 @@ BEGIN
   IF (name = 'SQRT') OR (name = 'SIN') OR (name = 'COS') OR (name = 'LN') OR
      (name = 'EXP') OR (name = 'ARCTAN') OR (name = 'FLOAT') THEN
   BEGIN
+    { No DEVICE restriction here. These builtins are unavailable only on the
+      NVPTX path, which does not link the host libm, and the typechecker is
+      target-independent: it never sees --device-triple, so it cannot tell an
+      NVPTX compiland from a serial/CPU DEVICE one, which links libm normally.
+      Codegen owns the gate (CodegenSimpleBuiltin, keyed on is_nvptx_device).
+      Rejecting here would also break acceptance parity -- the reference
+      accepts these in DEVICE code (pascal1981/codegen/exprs.py). }
     IF nargs <> 1 THEN
       AddError('SQRT/SIN/COS/LN/EXP/ARCTAN/FLOAT requires exactly one argument')
     ELSE BEGIN
