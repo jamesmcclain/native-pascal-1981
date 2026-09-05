@@ -473,6 +473,8 @@ BEGIN
         has no is_super concept -- so it's checked leniently, same as
         CONCAT below: codegen itself decides whether a second argument is
         actually required or accepted for a given pointee type. }
+      IF is_device_compiland THEN
+        AddError2('Dynamic memory allocation is not supported in DEVICE code: ', pname);
       IF ((pname = 'DISPOSE') AND (nargs <> 1)) OR
          ((pname = 'NEW') AND (nargs <> 1) AND (nargs <> 2)) THEN
         AddError('Argument count mismatch')

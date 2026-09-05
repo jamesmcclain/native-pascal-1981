@@ -1038,6 +1038,21 @@ BEGIN
   ComputeDesignatorAddress := base_ptr;
 END;
 
+FUNCTION IsDeviceUnsupportedTranscendental(nm: Str255): BOOLEAN;
+{ The libm-backed builtins that the NVPTX path cannot provide. Matched
+  case-insensitively, unlike the builtin dispatch chain in CodegenExpr,
+  which compares spellings exactly: a JSON-only caller writing `sqrt'
+  misses that chain entirely and lands in the generic call path, so the
+  guard has to recognize the name however it is spelled. }
+VAR
+  u: Str255;
+BEGIN
+  u := UpperStr(nm);
+  IsDeviceUnsupportedTranscendental :=
+    (u = 'SQRT') OR (u = 'SIN') OR (u = 'COS') OR (u = 'LN') OR
+    (u = 'EXP') OR (u = 'ARCTAN');
+END;
+
 FUNCTION CodegenSimpleBuiltin(nm: Str255; args: ADRMEM): ADRMEM;
 { The math/ordinal builtins that need no libpascalrt support: pure inline
   LLVM IR (CHR/ORD/ODD/SUCC/PRED/ABS/SQR), or a single libm call
@@ -1051,6 +1066,11 @@ VAR
   v, v2, is_neg, neg, half, res, hi16, lo16: ADRMEM;
   argtk, argtk2: INTEGER;
 BEGIN
+  { NVPTX only: a serial/CPU DEVICE compiland is an ordinary host module in
+    address space 0 and links libm like any other, so is_device_compiland is
+    the wrong key here. }
+  IF is_nvptx_device AND IsDeviceUnsupportedTranscendental(nm) THEN
+    AbortWith2('codegen: transcendental math function is not supported in DEVICE code: ', nm);
   v := CodegenExpr(ArrItem(args, 0));
   argtk := last_val_tk;
   IF nm = 'CHR' THEN
@@ -1695,6 +1715,17 @@ BEGIN
       ELSE IF NOT routines[symi].is_func THEN
       BEGIN
         AbortWith2('codegen: called as a function but is a PROCEDURE: ', nm);
+        res := NIL;
+      END
+      ELSE IF is_nvptx_device AND IsDeviceUnsupportedTranscendental(nm)
+              AND NOT routines[symi].has_body THEN
+      BEGIN
+        { A spelling the dispatch chain above did not recognize, resolving to
+          a body-less declaration -- an EXTERN libm import under another
+          case. Emitting it would put the very `call @sqrt' into PTX that the
+          builtin guard exists to prevent. A routine with a body is a real
+          definition in this module and stays callable. }
+        AbortWith2('codegen: transcendental math function is not supported in DEVICE code: ', nm);
         res := NIL;
       END
       ELSE

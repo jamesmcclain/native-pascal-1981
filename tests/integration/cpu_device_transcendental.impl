@@ -1,0 +1,12 @@
+(*$INCLUDE:'cpu_device_transcendental.inc'*)
+DEVICE IMPLEMENTATION OF ACCUMULATEU;
+PROCEDURE ACCUMULATE(cell: ADS(GLOBAL) OF REAL);
+BEGIN
+  { SQRT(16)=4, SIN(0)=0, COS(0)=1, LN(1)=0, EXP(0)=1, ARCTAN(0)=0, so each
+    call adds exactly 6. A serial/CPU DEVICE compiland lowers to an ordinary
+    host module and links libm, so the transcendentals are available here --
+    the NVPTX path is the only one that cannot provide them. }
+  cell^ := cell^ + SQRT(16.0) + SIN(0.0) + COS(0.0) +
+           LN(1.0) + EXP(0.0) + ARCTAN(0.0)
+END;
+.

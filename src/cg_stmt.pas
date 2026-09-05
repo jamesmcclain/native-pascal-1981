@@ -1380,6 +1380,8 @@ BEGIN
     discard := CodegenDecode(GetObj(stmt, 'args'))
   ELSE IF (name = 'NEW') OR (name = 'DISPOSE') THEN
   BEGIN
+    IF is_device_compiland THEN
+      AbortWith2('codegen: dynamic memory allocation is not supported in DEVICE code: ', name);
     args := GetObj(stmt, 'args');
     narg := ArrSize(args);
     IF ((name = 'DISPOSE') AND (narg <> 1)) OR
