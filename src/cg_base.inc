@@ -405,6 +405,13 @@ TYPE
                           distinguish it from -- a later Block-bodied
                           declaration of the same name is an error rather
                           than the completion of the placeholder. }
+    is_forward: BOOLEAN; { TRUE when this routine was declared with the
+                           FORWARD directive -- it promises a Block-bodied
+                           definition later in THIS compiland, which is the
+                           distinction has_body=FALSE alone cannot draw (see
+                           is_extern above). Read by the NVPTX transcendental
+                           guard, which must reject only a body-less import
+                           that nothing here will ever define. }
     is_vararg: BOOLEAN; { TRUE for a [C] EXTERN routine carrying the
                           [VARARGS] attribute -- see IsVarargsDecl. nparams
                           is then only the FIXED prefix: the LLVM function

@@ -1615,11 +1615,16 @@ BEGIN
         res := NIL;
       END
       ELSE IF is_nvptx_device AND IsDeviceUnsupportedTranscendental(nm_raw)
-              AND NOT routines[symi].has_body THEN
+              AND NOT routines[symi].has_body
+              AND NOT routines[symi].is_forward THEN
       BEGIN
         { A body-less declaration is an EXTERN libm import.  Emitting it
           would leave an unresolved transcendental call in PTX; a user
-          routine with a body remains callable. }
+          routine with a body remains callable.  A FORWARD placeholder is
+          neither: its body arrives later in this same compiland, so
+          has_body is still FALSE at every call sited between the header and
+          the definition -- rejecting those would contradict the shadowing
+          rule docs/dialect_notes.md states. }
         AbortWith2('codegen: transcendental math function is not supported in DEVICE code: ', nm_raw);
         res := NIL;
       END

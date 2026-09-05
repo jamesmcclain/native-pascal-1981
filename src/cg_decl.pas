@@ -18,6 +18,7 @@ IMPLEMENTATION OF cg_decl;
 
 PROCEDURE CodegenDecl(decl: ADRMEM); FORWARD;
 FUNCTION IsExternDirectiveDecl(decl: ADRMEM): BOOLEAN; FORWARD;
+FUNCTION IsForwardDirectiveDecl(decl: ADRMEM): BOOLEAN; FORWARD;
 
 PROCEDURE ApplyTargetAttrs(fn: ADRMEM);
 { Attach the driver's --target-cpu / --target-features as per-function string
@@ -257,6 +258,7 @@ BEGIN
     routines[nroutines].has_body := routines[ri].has_body;
     routines[nroutines].is_c := routines[ri].is_c;
     routines[nroutines].is_extern := routines[ri].is_extern;
+    routines[nroutines].is_forward := routines[ri].is_forward;
     routines[nroutines].is_vararg := routines[ri].is_vararg;
   END
   ELSE
@@ -1214,6 +1216,9 @@ BEGIN
       AbortWith2('codegen: redeclaration does not match the earlier declaration: ', name);
     routines[ridx].has_body := has_block_body; { still a placeholder when
       this pass is itself another body-less declaration -- see above. }
+    { Latch, never clear: a second FORWARD restating the same heading keeps
+      the promise alive, and once has_body is TRUE the flag is moot anyway. }
+    IF IsForwardDirectiveDecl(decl) THEN routines[ridx].is_forward := TRUE;
     is_c := routines[ridx].is_c; { source of truth once ridx is known -- see note above }
     is_vararg := routines[ridx].is_vararg; { likewise }
     IF is_c THEN
@@ -1434,6 +1439,7 @@ BEGIN
     routines[ridx].has_body := has_block_body;
     routines[ridx].is_c := is_c;
     routines[ridx].is_extern := IsExternDirectiveDecl(decl) OR IsCForeignDecl(decl);
+    routines[ridx].is_forward := IsForwardDirectiveDecl(decl);
     routines[ridx].is_vararg := is_vararg;
 
     { Attach byval(ty)/align (and sret(ty)/noalias/align for a MEMORY-class
@@ -1683,6 +1689,15 @@ BEGIN
     ELSE
       LLVMPositionBuilderAtEnd(builder, saved_bb);
   END;
+END;
+
+FUNCTION IsForwardDirectiveDecl(decl: ADRMEM): BOOLEAN;
+{ True when this declaration carries the FORWARD directive -- a promise of a
+  Block-bodied definition later in this same compiland, as opposed to the
+  EXTERN/EXTERNAL directive IsExternDirectiveDecl looks at, which promises
+  one in another. }
+BEGIN
+  IsForwardDirectiveDecl := GetStr(decl, 'directive') = 'FORWARD';
 END;
 
 FUNCTION IsExternDirectiveDecl(decl: ADRMEM): BOOLEAN;
