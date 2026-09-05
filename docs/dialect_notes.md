@@ -130,16 +130,42 @@ integer literals. CUDA axis and total-thread limits apply to `MAXNTID` and
 DEVICE code. In NVPTX compilation it lowers to the block-level hardware barrier
 (`bar.sync 0;`), while under host or serial device execution it is a no-op.
 Calling `SYNCTHREADS` outside a DEVICE compiland or passing arguments to it is
-rejected at typechecking. A user declaration named `SYNCTHREADS` (exact case)
-shadows the intrinsic, per the general rule that predeclared identifiers may
-be redefined (IBM Pascal, Aug. 1981, p.3-7). The name is matched
-case-sensitively, like every other builtin in this dialect's statement
-dispatch (`WRITELN`, `NEW`, `LAUNCH`, etc.) -- a deliberate deviation from
-the manual's general case-insensitivity for predeclared identifiers, not a
-gap against the reference.
+rejected at typechecking.
+
+A visible user declaration of any predeclared routine name shadows the builtin
+in both typechecking and code generation (IBM Pascal, Aug. 1981, p.3-7). The
+builtin is only the fallback for an unbound name. Declaration lookup is
+case-insensitive, and function-position builtin spellings are also matched
+case-insensitively. The statement builtin dispatch remains case-sensitive
+(`WRITELN`, `NEW`, `LAUNCH`, and so on), a deliberate deviation from the
+manual's general case-insensitivity rather than a gap against the reference.
+
+"Visible" means lexically visible at the call, not merely declared somewhere in
+the compiland: a routine nested inside another stops shadowing once its parent's
+body ends, and both stages trim their tables at scope exit so they agree on it.
+
+A declaration of any kind shadows, not only a routine. A variable, a parameter,
+or a record field a `WITH` statement brings into scope all take the name over,
+and calling it is then an error (`Not a function: ORD`) rather than a silent
+fall-through to the builtin — the reference rejects the same programs. Only the
+statement and expression call paths consult this; the shadowed name remains
+usable as the variable or field it is.
+
+Shadowing does not reach a constant expression. `ParseConstant` admits
+`WRD`, `BYWORD`, `ORD`, `CHR`, `SUCC`, and `PRED` followed by `(` by name and
+nothing else can appear in that position, so `CONST K = ORD('a')` is the
+intrinsic whatever else is in scope, matching the reference. A call in ordinary
+expression position is not a constant expression and does honor shadowing, so
+the same call text can mean the intrinsic in a `CONST` and the user's routine
+in a statement.
+
+`VECTOR` types are not available in DEVICE code compiled for NVPTX. Use
+scalar kernel code instead. This restriction does not apply to host code or
+serial device execution.
 
 `SQRT`, `SIN`, `COS`, `LN`, `EXP`, and `ARCTAN` are not available in DEVICE
-code compiled for NVPTX. That path does not link the host `libm` functions that
+code compiled for NVPTX unless the compiland declares its own routine of that
+name. That path does not link the host `libm` functions that
 implement these builtins, so codegen rejects each one before it emits invalid
 PTX. The restriction is keyed on the target, not on DEVICE context: under host
 or serial device execution the compiland is an ordinary module in address space
@@ -148,14 +174,12 @@ and `FLOAT` remain available everywhere because they use inline operations.
 
 The rejection happens at codegen, not at typechecking, because the typechecker
 never receives `--device-triple` and so cannot tell the two device targets
-apart. Codegen matches the name case-insensitively, unlike the builtin dispatch
-it guards, and applies the same test to a call that resolves to a body-less
-`[C]; EXTERN` declaration -- otherwise a lowercase spelling would reach the
-generic call path and emit the `libm` call anyway. A routine with a body is a
-real definition in the module and stays callable, per the general rule that
-predeclared identifiers may be redefined. This is a gap against the reference,
-which accepts these builtins in DEVICE code and lowers them to `libm` calls;
-it applies only when the NVPTX triple is passed.
+apart. The check applies both to builtin calls and to calls that resolve to a
+body-less `[C]; EXTERN` declaration, preventing unresolved `libm` references in
+PTX. A user-defined routine with a body shadows the builtin and remains
+callable. This is a gap against the reference, which accepts these builtins in
+DEVICE code and lowers them to `libm` calls; it applies only when the NVPTX
+triple is passed.
 
 `NEW` and `DISPOSE` are not available in DEVICE code. The NVPTX path cannot
 link the host `malloc` and `free` functions that implement these operations.
@@ -167,6 +191,10 @@ The compiler rejects both operations before it emits invalid PTX.
 It is a first-class type: declare it, assign it whole, pass it to and return
 it from a routine, take its `SIZEOF` / `LOWER` / `UPPER`.
 
+- **Host and serial-device only.** The compiler rejects `VECTOR` in a compiland
+  that targets NVPTX. NVPTX is SIMT, so vector arithmetic becomes one scalar
+  operation per lane and consumes registers without providing SIMD execution.
+  Use scalar code in NVPTX kernels.
 - **`VECTOR` is a contextual keyword.** It is a type only when followed by
   `[`; anywhere else it is an ordinary identifier and existing code keeps
   working. `PACKED VECTOR` is rejected.

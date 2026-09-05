@@ -96,6 +96,12 @@ BEGIN
   EnsureGenericSetType := generic_set_tid;
 END;
 
+PROCEDURE RejectNvptxVector;
+BEGIN
+  IF is_nvptx_device THEN
+    AbortWith('codegen: VECTOR types are not supported in DEVICE code compiled for NVPTX; NVPTX is SIMT and scalarizes vector arithmetic 1:1');
+END;
+
 FUNCTION EnsureBoolVectorType(n: INTEGER32): INTEGER;
 { The type of a lanewise VECTOR comparison result: VECTOR [n] OF BOOLEAN,
   i.e. <n x i8> with 0/1 per lane (M0's mask storage rule). Reuses an
@@ -106,6 +112,7 @@ VAR
   i: INTEGER;
   found: INTEGER;
 BEGIN
+  RejectNvptxVector;
   found := 0;
   FOR i := 1 TO ntypes DO
     IF (types[i].tk = TK_VECTOR) AND (types[i].elem_tid = TK_BOOLEAN)
@@ -307,12 +314,54 @@ BEGIN
   END;
 END;
 
+FUNCTION FoldsThroughShadowedRoutine(expr_node: ADRMEM): BOOLEAN;
+{ TRUE when FoldConstInt would reach its value through a spelling that a
+  visible user routine has taken over.  FoldConstInt itself folds ORD/CHR/
+  SUCC/PRED by name, deliberately: ps_expr.pas's ParseConstant admits exactly
+  those names in a constant expression and nothing else can appear there, so
+  a CONST value is the intrinsic whatever else is in scope -- which is also
+  what the Python reference's eval_const_expr/_fold_const_int do.  A general
+  expression is the opposite case: `y := ORD(''a'')' with a user ORD in scope
+  is an ordinary call, and folding it substitutes the builtin's value for the
+  callee the typechecker resolved. }
+VAR
+  nt: Str255;
+  args: ADRMEM;
+  i, n: INTEGER32;
+  found: BOOLEAN;
+BEGIN
+  found := FALSE;
+  nt := NodeType(expr_node);
+  IF nt = 'FuncCall' THEN
+  BEGIN
+    IF UserRoutineShadows(GetStr(expr_node, 'name')) THEN found := TRUE;
+    args := GetObj(expr_node, 'args');
+    n := ArrSize(args);
+    FOR i := 0 TO n - 1 DO
+      IF FoldsThroughShadowedRoutine(ArrItem(args, i)) THEN found := TRUE;
+  END
+  ELSE IF nt = 'UnaryOp' THEN
+    found := FoldsThroughShadowedRoutine(GetObj(expr_node, 'operand'))
+  ELSE IF nt = 'BinOp' THEN
+  BEGIN
+    IF FoldsThroughShadowedRoutine(GetObj(expr_node, 'left')) THEN found := TRUE;
+    IF FoldsThroughShadowedRoutine(GetObj(expr_node, 'right')) THEN found := TRUE;
+  END;
+  FoldsThroughShadowedRoutine := found;
+END;
+
 FUNCTION IsIntLiteralLike(expr_node: ADRMEM): BOOLEAN;
-{ True when FoldConstInt can produce a compile-time INTEGER value. }
+{ True when FoldConstInt can produce a compile-time INTEGER value.  Every
+  caller is a general-expression coercion (CoerceForAssign's narrowing arms,
+  cg_expr's mixed-width binop widening), never a constant declaration, so a
+  shadowed spelling must not fold here -- see FoldsThroughShadowedRoutine. }
 VAR
   folded: INTEGER64;
 BEGIN
-  IsIntLiteralLike := FoldConstInt(expr_node, folded);
+  IF FoldsThroughShadowedRoutine(expr_node) THEN
+    IsIntLiteralLike := FALSE
+  ELSE
+    IsIntLiteralLike := FoldConstInt(expr_node, folded);
 END;
 
 
@@ -680,8 +729,13 @@ END;
 
 PROCEDURE ClassifyAggregate(tk: INTEGER; VAR agg_class: INTEGER; VAR n_pieces: INTEGER;
                              VAR piece_kind: SysVPieceArr; VAR piece_bytes: SysVPieceSzArr);
-{ The full System V AMD64 aggregate classifier. Splits an aggregate of at most
-  16 bytes into one or two eightbytes, merges every scalar leaf's class into
+{ The full System V AMD64 aggregate classifier. NVPTX currently also uses this
+  host classifier and produces correct, host-shaped parameter buffers. Any
+  device-specific aggregate lowering must branch on is_nvptx_device at the
+  cg_decl and cg_expr call sites, not inside this classifier.
+
+  Splits an aggregate of at most 16 bytes into one or two eightbytes, merges
+  every scalar leaf's class into
   the eightbyte it lands in, and reports either MEMORY (passed in memory) or
   COERCED plus the register piece each eightbyte is passed in.
 
@@ -1131,6 +1185,7 @@ BEGIN
   END
   ELSE IF nt = 'VectorType' THEN
   BEGIN
+    RejectNvptxVector;
     IF GetBool(te, 'packed') THEN
       AbortWith('codegen: PACKED vectors are not supported');
     { Lane count and element kind are re-validated here, mirroring the

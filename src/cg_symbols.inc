@@ -11,7 +11,6 @@ PROCEDURE PopScope;
 FUNCTION CurScopeBase: INTEGER32;
 PROCEDURE DeclareVar(name: Str255; tk: INTEGER);
 PROCEDURE DeclareVarInSpace(name: Str255; tk, address_space: INTEGER);
-FUNCTION LookupRoutine(name: Str255): INTEGER32;
 FUNCTION RoutineIsFunc(routi: INTEGER32): BOOLEAN;
 FUNCTION FuncRetAggClass(routi: INTEGER32): INTEGER;
 

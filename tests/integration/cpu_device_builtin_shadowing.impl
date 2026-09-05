@@ -1,0 +1,11 @@
+(*$INCLUDE:'cpu_device_builtin_shadowing.inc'*)
+DEVICE IMPLEMENTATION OF ACCUMULATEU;
+FUNCTION SQRT(v: REAL): REAL;
+BEGIN
+  SQRT := v * 2.0
+END;
+PROCEDURE ACCUMULATE(cell: ADS(GLOBAL) OF REAL);
+BEGIN
+  cell^ := SQRT(16.0)
+END;
+.
