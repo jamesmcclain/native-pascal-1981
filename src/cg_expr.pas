@@ -539,6 +539,25 @@ BEGIN
 END;
 
 
+FUNCTION ShadowedWriteArg(arg: ADRMEM; name: Str255): ADRMEM;
+{ ps_stmt.pas wraps the actual arguments of anything spelled WRITE/WRITELN in
+  WriteArg nodes, case-insensitively and without consulting any declaration.
+  A call to a user-declared WRITELN therefore reaches this generic path
+  wrapped, and CodegenExpr has no WriteArg case. Mirrors tc_stmt.pas's own
+  ShadowedWriteArg, including its rejection of a `:width:precision' suffix --
+  which the typechecker reports first, this being the belt-and-braces half
+  for a stage driven directly. }
+BEGIN
+  IF NodeType(arg) = 'WriteArg' THEN
+  BEGIN
+    IF (GetObjOrNil(arg, 'width') <> NIL) OR (GetObjOrNil(arg, 'precision') <> NIL) THEN
+      AbortWith2('codegen: field width specifier is not allowed in a call to the user-declared ', name);
+    ShadowedWriteArg := GetObj(arg, 'expr');
+  END
+  ELSE
+    ShadowedWriteArg := arg;
+END;
+
 FUNCTION CodegenCallCommon(name: Str255; args_arr: ADRMEM): ADRMEM;
 { Shared by a FuncCall expression and a bare ProcCallStmt that isn't
   WRITE/WRITELN: look up a user-declared routine, marshal its arguments
@@ -609,7 +628,7 @@ BEGIN
     FOR i := 0 TO nargs - 1 DO
     BEGIN
       pieces_emitted := FALSE;
-      arg_node := ArrItem(args_arr, i);
+      arg_node := ShadowedWriteArg(ArrItem(args_arr, i), name);
       IF i >= routines[ri].nparams THEN
       BEGIN
         { Variadic tail argument: there is no formal parameter at all, so
@@ -1039,11 +1058,8 @@ BEGIN
 END;
 
 FUNCTION IsDeviceUnsupportedTranscendental(nm: Str255): BOOLEAN;
-{ The libm-backed builtins that the NVPTX path cannot provide. Matched
-  case-insensitively, unlike the builtin dispatch chain in CodegenExpr,
-  which compares spellings exactly: a JSON-only caller writing `sqrt'
-  misses that chain entirely and lands in the generic call path, so the
-  guard has to recognize the name however it is spelled. }
+{ The libm-backed builtins that the NVPTX path cannot provide.  Keep this
+  case-insensitive for the generic body-less EXTERN path. }
 VAR
   u: Str255;
 BEGIN
@@ -1256,7 +1272,7 @@ END;
 FUNCTION CodegenExpr(node: ADRMEM): ADRMEM;
 VAR
   nt: Str255;
-  nm: Str255;
+  nm, nm_raw: Str255;
   nmu: Str255;
   symi: INTEGER32;
   consti: INTEGER32;
@@ -1588,8 +1604,34 @@ BEGIN
   END
   ELSE IF nt = 'FuncCall' THEN
   BEGIN
-    nm := GetStr(node, 'name');
-    IF nm = 'POSITN' THEN
+    nm_raw := GetStr(node, 'name');
+    nm := UpperStr(nm_raw);
+    IF UserRoutineShadows(nm_raw) THEN
+    BEGIN
+      symi := LookupRoutine(nm_raw);
+      IF NOT routines[symi].is_func THEN
+      BEGIN
+        AbortWith2('codegen: called as a function but is a PROCEDURE: ', nm_raw);
+        res := NIL;
+      END
+      ELSE IF is_nvptx_device AND IsDeviceUnsupportedTranscendental(nm_raw)
+              AND NOT routines[symi].has_body
+              AND NOT routines[symi].is_forward THEN
+      BEGIN
+        { A body-less declaration is an EXTERN libm import.  Emitting it
+          would leave an unresolved transcendental call in PTX; a user
+          routine with a body remains callable.  A FORWARD placeholder is
+          neither: its body arrives later in this same compiland, so
+          has_body is still FALSE at every call sited between the header and
+          the definition -- rejecting those would contradict the shadowing
+          rule docs/dialect_notes.md states. }
+        AbortWith2('codegen: transcendental math function is not supported in DEVICE code: ', nm_raw);
+        res := NIL;
+      END
+      ELSE
+        res := CodegenCallCommon(nm_raw, GetObj(node, 'args'));
+    END
+    ELSE IF nm = 'POSITN' THEN
     BEGIN
       res := CodegenPositn(GetObj(node, 'args'));
       last_val_tk := TK_INTEGER;
@@ -1706,30 +1748,8 @@ BEGIN
     END
     ELSE
     BEGIN
-      symi := LookupRoutine(nm);
-      IF symi = 0 THEN
-      BEGIN
-        AbortWith2('codegen: undefined function: ', nm);
-        res := NIL;
-      END
-      ELSE IF NOT routines[symi].is_func THEN
-      BEGIN
-        AbortWith2('codegen: called as a function but is a PROCEDURE: ', nm);
-        res := NIL;
-      END
-      ELSE IF is_nvptx_device AND IsDeviceUnsupportedTranscendental(nm)
-              AND NOT routines[symi].has_body THEN
-      BEGIN
-        { A spelling the dispatch chain above did not recognize, resolving to
-          a body-less declaration -- an EXTERN libm import under another
-          case. Emitting it would put the very `call @sqrt' into PTX that the
-          builtin guard exists to prevent. A routine with a body is a real
-          definition in this module and stays callable. }
-        AbortWith2('codegen: transcendental math function is not supported in DEVICE code: ', nm);
-        res := NIL;
-      END
-      ELSE
-        res := CodegenCallCommon(nm, GetObj(node, 'args'));
+      AbortWith2('codegen: undefined function: ', nm_raw);
+      res := NIL;
     END;
   END
   ELSE

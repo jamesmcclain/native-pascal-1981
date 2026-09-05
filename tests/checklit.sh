@@ -14,6 +14,7 @@
 #   { CHECK-NOT: <substring that must not appear> }
 #   { CHECK-ANY: <substring> || <alternative substring> }
 #   { CHECK-COUNT: N <substring that must appear exactly N times> }
+#   { CHECK-FAIL: <substring that must appear in stderr on compile failure> }
 #   { CHECK-ENV: NAME=value }   (optional, sets an env var for this fixture's
 #                                 codegen invocation; rarely needed -- prefer
 #                                 CHECK-FLAGS, options are command line now)
@@ -76,8 +77,15 @@ for fixture in "${FIXTURES[@]}"; do
   done < <(grep -E '\{ *CHECK-COUNT: *[0-9]+ +' "$fixture" \
               | sed -E 's/^.*\{ *CHECK-COUNT: *//; s/ *\}[[:space:]]*$//')
 
+  checks_fail=()
+  while IFS= read -r line; do
+    checks_fail+=("$line")
+  done < <(grep -E '\{ *CHECK-FAIL: *' "$fixture" \
+              | sed -E 's/^.*\{ *CHECK-FAIL: *//; s/ *\}[[:space:]]*$//')
+
   if [ ${#checks[@]} -eq 0 ] && [ ${#checks_not[@]} -eq 0 ] &&
-     [ ${#checks_any[@]} -eq 0 ] && [ ${#checks_count[@]} -eq 0 ]; then
+     [ ${#checks_any[@]} -eq 0 ] && [ ${#checks_count[@]} -eq 0 ] &&
+     [ ${#checks_fail[@]} -eq 0 ]; then
     echo "FAIL: $fixture (no CHECK directives found)" >&2
     FAILED=$((FAILED + 1))
     continue
@@ -128,7 +136,27 @@ for fixture in "${FIXTURES[@]}"; do
       2> "$work_dir/compile.err" || status=$?
   fi
 
-  if [ "$status" -eq 0 ]; then
+  if [ ${#checks_fail[@]} -gt 0 ]; then
+    if [ "$status" -eq 0 ]; then
+      echo "FAIL: $fixture (expected compilation failure, but succeeded)" >&2
+      FAILED=$((FAILED + 1))
+    else
+      ok=1
+      for pattern in "${checks_fail[@]}"; do
+        if ! grep -qF -- "$pattern" "$work_dir/compile.err"; then
+          echo "FAIL: $fixture (missing CHECK-FAIL: $pattern)" >&2
+          ok=0
+        fi
+      done
+      if [ "$ok" -eq 1 ]; then
+        echo "PASS: $fixture"
+        PASSED=$((PASSED + 1))
+      else
+        cat "$work_dir/compile.err" >&2
+        FAILED=$((FAILED + 1))
+      fi
+    fi
+  elif [ "$status" -eq 0 ]; then
     ok=1
     for pattern in "${checks[@]}"; do
       if ! grep -qF -- "$pattern" "$out_ll"; then

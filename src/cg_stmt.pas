@@ -1301,15 +1301,11 @@ VAR
   fcb_ptr, assign_chars, assign_len: ADRMEM;
 BEGIN
   name := GetStr(stmt, 'name');
-  IF name = 'LAUNCH' THEN
+  IF UserRoutineShadows(name) THEN
+    discard := CodegenCallCommon(name, GetObj(stmt, 'args'))
+  ELSE IF name = 'LAUNCH' THEN
     CodegenLaunch(GetObj(stmt, 'args'))
-  ELSE IF is_device_compiland AND (name = 'SYNCTHREADS') AND
-          (LookupRoutine(name) = 0) THEN
-    { Case-sensitive, matching every other name in this dispatch chain --
-      see IsDeviceSyncIntrinsic's comment in tc_stmt.pas. Also mirrors
-      tc_stmt.pas's CheckStmt precedence: a user-declared routine named
-      SYNCTHREADS must reach CodegenCallCommon below, not be replaced by
-      the barrier intrinsic. }
+  ELSE IF is_device_compiland AND (name = 'SYNCTHREADS') THEN
     CodegenDeviceSync(name)
   ELSE IF (name = 'DEVCOPYTO') OR (name = 'DEVCOPYFROM') OR (name = 'DEVFREE') THEN
     CodegenDeviceOrchestration(name, GetObj(stmt, 'args'))

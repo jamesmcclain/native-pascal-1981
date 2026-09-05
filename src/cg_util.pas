@@ -187,6 +187,35 @@ BEGIN
   UpperStr := res;
 END;
 
+{ ============================ routine table =============================== }
+{ These two live here rather than in cg_symbols beside the rest of the routine
+  table because cg_types needs UserRoutineShadows -- see IsIntLiteralLike --
+  and sits below cg_symbols.  cg_util is the lowest unit that has both the
+  cg_base table and UpperStr. }
+
+FUNCTION LookupRoutine(name: Str255): INTEGER32;
+VAR
+  i: INTEGER32;
+  found: INTEGER32;
+  uname: Str255;
+BEGIN
+  uname := UpperStr(name);
+  found := 0;
+  FOR i := 1 TO nroutines DO
+    IF UpperStr(routines[i].name) = uname THEN found := i;
+  LookupRoutine := found;
+END;
+
+FUNCTION UserRoutineShadows(name: Str255): BOOLEAN;
+{ "Is a user routine of this name visible here" -- the codegen counterpart of
+  tc_base.pas's UserDeclarationShadows, and it has to answer the same way, or
+  a call the typechecker bound to a builtin is lowered as a user call (or the
+  reverse). LookupRoutine only searches live scopes because PopScope trims
+  the table, so a nested routine cannot answer for an outer-level call. }
+BEGIN
+  UserRoutineShadows := LookupRoutine(name) <> 0;
+END;
+
 FUNCTION AllocPtrArray(n: INTEGER32): ADRMEM;
 { The N-element generalization of the malloc-and-cast idiom jsonutil.pas
   already uses for C strings: llvm-c takes LLVMTypeRef*/LLVMValueRef*
