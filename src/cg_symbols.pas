@@ -157,29 +157,6 @@ END;
 
 { ============================ routine table =============================== }
 
-FUNCTION LookupRoutine(name: Str255): INTEGER32;
-VAR
-  i: INTEGER32;
-  found: INTEGER32;
-  uname: Str255;
-BEGIN
-  uname := UpperStr(name);
-  found := 0;
-  FOR i := 1 TO nroutines DO
-    IF UpperStr(routines[i].name) = uname THEN found := i;
-  LookupRoutine := found;
-END;
-
-FUNCTION UserRoutineShadows(name: Str255): BOOLEAN;
-{ "Is a user routine of this name visible here" -- the codegen counterpart of
-  tc_base.pas's UserDeclarationShadows, and it has to answer the same way, or
-  a call the typechecker bound to a builtin is lowered as a user call (or the
-  reverse). LookupRoutine only searches live scopes because PopScope trims
-  the table, so a nested routine cannot answer for an outer-level call. }
-BEGIN
-  UserRoutineShadows := LookupRoutine(name) <> 0;
-END;
-
 FUNCTION RoutineIsFunc(routi: INTEGER32): BOOLEAN;
 { Guards the routines[routi] index itself (routi = 0 means "not found"),
   since plain AND is not short-circuit in this dialect -- a single

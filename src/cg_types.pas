@@ -314,12 +314,54 @@ BEGIN
   END;
 END;
 
+FUNCTION FoldsThroughShadowedRoutine(expr_node: ADRMEM): BOOLEAN;
+{ TRUE when FoldConstInt would reach its value through a spelling that a
+  visible user routine has taken over.  FoldConstInt itself folds ORD/CHR/
+  SUCC/PRED by name, deliberately: ps_expr.pas's ParseConstant admits exactly
+  those names in a constant expression and nothing else can appear there, so
+  a CONST value is the intrinsic whatever else is in scope -- which is also
+  what the Python reference's eval_const_expr/_fold_const_int do.  A general
+  expression is the opposite case: `y := ORD(''a'')' with a user ORD in scope
+  is an ordinary call, and folding it substitutes the builtin's value for the
+  callee the typechecker resolved. }
+VAR
+  nt: Str255;
+  args: ADRMEM;
+  i, n: INTEGER32;
+  found: BOOLEAN;
+BEGIN
+  found := FALSE;
+  nt := NodeType(expr_node);
+  IF nt = 'FuncCall' THEN
+  BEGIN
+    IF UserRoutineShadows(GetStr(expr_node, 'name')) THEN found := TRUE;
+    args := GetObj(expr_node, 'args');
+    n := ArrSize(args);
+    FOR i := 0 TO n - 1 DO
+      IF FoldsThroughShadowedRoutine(ArrItem(args, i)) THEN found := TRUE;
+  END
+  ELSE IF nt = 'UnaryOp' THEN
+    found := FoldsThroughShadowedRoutine(GetObj(expr_node, 'operand'))
+  ELSE IF nt = 'BinOp' THEN
+  BEGIN
+    IF FoldsThroughShadowedRoutine(GetObj(expr_node, 'left')) THEN found := TRUE;
+    IF FoldsThroughShadowedRoutine(GetObj(expr_node, 'right')) THEN found := TRUE;
+  END;
+  FoldsThroughShadowedRoutine := found;
+END;
+
 FUNCTION IsIntLiteralLike(expr_node: ADRMEM): BOOLEAN;
-{ True when FoldConstInt can produce a compile-time INTEGER value. }
+{ True when FoldConstInt can produce a compile-time INTEGER value.  Every
+  caller is a general-expression coercion (CoerceForAssign's narrowing arms,
+  cg_expr's mixed-width binop widening), never a constant declaration, so a
+  shadowed spelling must not fold here -- see FoldsThroughShadowedRoutine. }
 VAR
   folded: INTEGER64;
 BEGIN
-  IsIntLiteralLike := FoldConstInt(expr_node, folded);
+  IF FoldsThroughShadowedRoutine(expr_node) THEN
+    IsIntLiteralLike := FALSE
+  ELSE
+    IsIntLiteralLike := FoldConstInt(expr_node, folded);
 END;
 
 
