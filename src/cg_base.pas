@@ -191,6 +191,13 @@ VAR
 
   routines: ARRAY [1..MAX_ROUTINES] OF RoutineRec;
   nroutines: INTEGER32;
+  routine_scope_stack: ARRAY [1..MAX_SCOPES] OF INTEGER32;
+  { The routine table's own high-water mark per scope, kept in lockstep with
+    scope_stack by PushScope/PopScope. Without it the table is flat and
+    permanent, so a nested routine stays reachable after its parent's body
+    ends -- and UserRoutineShadows, which asks "is a user routine visible
+    here", would answer for the whole compiland instead of the current
+    scope, diverging from the typechecker's own scoped answer. }
 
   const_tbl: ARRAY [1..MAX_CONSTS] OF ConstRec;
   nconsts: INTEGER32;
