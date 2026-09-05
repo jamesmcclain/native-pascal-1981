@@ -97,6 +97,7 @@ FUNCTION UpperStr(s: Str255): Str255;
 PROCEDURE PushScope;
 PROCEDURE PopScope;
 FUNCTION LookupSymbol(name: Str255): INTEGER32;
+FUNCTION UserDeclarationShadows(name: Str255): BOOLEAN;
 FUNCTION LookupSymbolInScope(name: Str255): INTEGER32;
 FUNCTION DefineSymbol(name: Str255; kind: Str255; tk, aux, aux2, idx_tk: INTEGER): INTEGER32;
 FUNCTION LookupType(name: Str255): INTEGER32;

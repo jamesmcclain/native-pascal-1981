@@ -339,7 +339,31 @@ BEGIN
     pname := GetStr(node, 'name');
     args_arr := GetObj(node, 'args');
     nargs := cJSON_GetArraySize(args_arr);
-    IF (pname = 'WRITELN') OR (pname = 'WRITE') OR (pname = 'READLN') OR (pname = 'READ') THEN
+    IF UserDeclarationShadows(pname) THEN
+    BEGIN
+      si := LookupSymbol(pname);
+      IF (symbols[si].kind <> 'PROC') AND (symbols[si].kind <> 'FUNC') THEN
+        AddError2('Not a procedure or function: ', pname)
+      ELSE BEGIN
+        { Same [VARARGS] arity relaxation as CheckFuncCall. }
+        IF (nargs <> symbols[si].nparams)
+           AND NOT (symbols[si].is_vararg AND (nargs > symbols[si].nparams)) THEN
+          AddError('Argument count mismatch')
+        ELSE
+          FOR i := 0 TO nargs - 1 DO
+          BEGIN
+            IF i < symbols[si].nparams THEN
+              expr_tk := CheckExprForTarget(cJSON_GetArrayItem(args_arr, i),
+                                            symbols[si].param_tk[i + 1])
+            ELSE
+              expr_tk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
+            IF i < symbols[si].nparams THEN
+              IF NOT CanAssign(symbols[si].param_tk[i + 1], expr_tk) THEN
+                AddError2('Argument type mismatch or implicit narrowing in call to ', pname);
+          END;
+      END;
+    END
+    ELSE IF (pname = 'WRITELN') OR (pname = 'WRITE') OR (pname = 'READLN') OR (pname = 'READ') THEN
     BEGIN
       { A leading file-variable argument (WRITE(F, ...) / READ(F, ...))
         selects the destination/source file instead of being a data
@@ -513,13 +537,7 @@ BEGIN
     END
     ELSE IF IsHostDeviceIntrinsic(pname) THEN
       CheckHostDeviceIntrinsic(node, pname)
-    ELSE IF IsDeviceSyncIntrinsic(pname) AND (LookupSymbol(pname) = 0) THEN
-      { A user declaration of this name takes precedence over the builtin
-        (IBM Pascal, Aug 1981, p.3-7: predeclared identifiers "can be
-        re-defined by the programmer" -- see
-        tests/fixtures/typecheck/should_pass/builtin_type_shadowing.pas).
-        Only dispatch to the intrinsic when no such declaration is visible;
-        otherwise fall through to the ordinary call below. }
+    ELSE IF IsDeviceSyncIntrinsic(pname) THEN
       CheckDeviceSyncIntrinsic(node, pname)
     ELSE IF pname = 'VSTORE' THEN
     BEGIN
@@ -550,6 +568,8 @@ BEGIN
         FOR i := 0 TO nargs - 1 DO
           cond_tk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
       END
+      ELSE IF (symbols[si].kind <> 'PROC') AND (symbols[si].kind <> 'FUNC') THEN
+        AddError2('Not a procedure or function: ', pname)
       ELSE BEGIN
         { Same [VARARGS] arity relaxation as CheckFuncCall above. }
         IF (nargs <> symbols[si].nparams)

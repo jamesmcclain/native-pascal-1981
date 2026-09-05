@@ -120,7 +120,8 @@ BEGIN
   BEGIN
     name := UpperStr(GetStr(node, 'name'));
     args := GetObj(node, 'args');
-    IF ((name = 'ORD') OR (name = 'CHR') OR (name = 'SUCC') OR (name = 'PRED')) AND
+    IF NOT UserDeclarationShadows(name) AND
+       ((name = 'ORD') OR (name = 'CHR') OR (name = 'SUCC') OR (name = 'PRED')) AND
        (cJSON_GetArraySize(args) = 1) AND
        FoldConstInt(cJSON_GetArrayItem(args, 0), folded_value) THEN
     BEGIN
@@ -509,6 +510,8 @@ BEGIN
   name := UpperStr(orig_name);
   args_arr := GetObj(node, 'args');
   nargs := cJSON_GetArraySize(args_arr);
+  IF NOT UserDeclarationShadows(name) THEN
+  BEGIN
   IF name = 'DEVALLOC' THEN
   BEGIN
     IF is_device_compiland THEN
@@ -813,12 +816,19 @@ BEGIN
     CheckFuncCall := TK_VECTOR;
     RETURN;
   END;
+  END;
   si := LookupSymbol(name);
   IF si = 0 THEN
   BEGIN
     AddError('Undefined function');
     FOR i := 0 TO nargs - 1 DO
       atk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
+    CheckFuncCall := TK_UNKNOWN;
+    RETURN;
+  END;
+  IF symbols[si].kind <> 'FUNC' THEN
+  BEGIN
+    AddError2('Not a function: ', orig_name);
     CheckFuncCall := TK_UNKNOWN;
     RETURN;
   END;

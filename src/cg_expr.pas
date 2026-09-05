@@ -1039,11 +1039,8 @@ BEGIN
 END;
 
 FUNCTION IsDeviceUnsupportedTranscendental(nm: Str255): BOOLEAN;
-{ The libm-backed builtins that the NVPTX path cannot provide. Matched
-  case-insensitively, unlike the builtin dispatch chain in CodegenExpr,
-  which compares spellings exactly: a JSON-only caller writing `sqrt'
-  misses that chain entirely and lands in the generic call path, so the
-  guard has to recognize the name however it is spelled. }
+{ The libm-backed builtins that the NVPTX path cannot provide.  Keep this
+  case-insensitive for the generic body-less EXTERN path. }
 VAR
   u: Str255;
 BEGIN
@@ -1256,7 +1253,7 @@ END;
 FUNCTION CodegenExpr(node: ADRMEM): ADRMEM;
 VAR
   nt: Str255;
-  nm: Str255;
+  nm, nm_raw: Str255;
   nmu: Str255;
   symi: INTEGER32;
   consti: INTEGER32;
@@ -1588,8 +1585,29 @@ BEGIN
   END
   ELSE IF nt = 'FuncCall' THEN
   BEGIN
-    nm := GetStr(node, 'name');
-    IF nm = 'POSITN' THEN
+    nm_raw := GetStr(node, 'name');
+    nm := UpperStr(nm_raw);
+    IF UserRoutineShadows(nm_raw) THEN
+    BEGIN
+      symi := LookupRoutine(nm_raw);
+      IF NOT routines[symi].is_func THEN
+      BEGIN
+        AbortWith2('codegen: called as a function but is a PROCEDURE: ', nm_raw);
+        res := NIL;
+      END
+      ELSE IF is_nvptx_device AND IsDeviceUnsupportedTranscendental(nm_raw)
+              AND NOT routines[symi].has_body THEN
+      BEGIN
+        { A body-less declaration is an EXTERN libm import.  Emitting it
+          would leave an unresolved transcendental call in PTX; a user
+          routine with a body remains callable. }
+        AbortWith2('codegen: transcendental math function is not supported in DEVICE code: ', nm_raw);
+        res := NIL;
+      END
+      ELSE
+        res := CodegenCallCommon(nm_raw, GetObj(node, 'args'));
+    END
+    ELSE IF nm = 'POSITN' THEN
     BEGIN
       res := CodegenPositn(GetObj(node, 'args'));
       last_val_tk := TK_INTEGER;
@@ -1706,30 +1724,8 @@ BEGIN
     END
     ELSE
     BEGIN
-      symi := LookupRoutine(nm);
-      IF symi = 0 THEN
-      BEGIN
-        AbortWith2('codegen: undefined function: ', nm);
-        res := NIL;
-      END
-      ELSE IF NOT routines[symi].is_func THEN
-      BEGIN
-        AbortWith2('codegen: called as a function but is a PROCEDURE: ', nm);
-        res := NIL;
-      END
-      ELSE IF is_nvptx_device AND IsDeviceUnsupportedTranscendental(nm)
-              AND NOT routines[symi].has_body THEN
-      BEGIN
-        { A spelling the dispatch chain above did not recognize, resolving to
-          a body-less declaration -- an EXTERN libm import under another
-          case. Emitting it would put the very `call @sqrt' into PTX that the
-          builtin guard exists to prevent. A routine with a body is a real
-          definition in this module and stays callable. }
-        AbortWith2('codegen: transcendental math function is not supported in DEVICE code: ', nm);
-        res := NIL;
-      END
-      ELSE
-        res := CodegenCallCommon(nm, GetObj(node, 'args'));
+      AbortWith2('codegen: undefined function: ', nm_raw);
+      res := NIL;
     END;
   END
   ELSE

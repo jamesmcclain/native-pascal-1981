@@ -257,8 +257,10 @@ BEGIN
       .LEN marker), idx_tk unused. Validation happens here, not at the use
       sites, exactly as for ArrayType bounds. }
     { VECTOR is an extended-dialect construct, gated the same way as the wide
-      integer/real and C-ABI type names above. A DEVICE compiland is always
-      extended in practice, so it is admitted here too. }
+      integer/real and C-ABI type names above. A DEVICE compiland is admitted
+      here because the typechecker does not receive --device-triple and cannot
+      distinguish NVPTX from a serial CPU device; codegen rejects VECTOR for
+      NVPTX when is_nvptx_device is TRUE. }
     IF NOT (FeaturesAreExtended(active_features) OR is_device_compiland) THEN
     BEGIN
       AddError('VECTOR types require the extended dialect');

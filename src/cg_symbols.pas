@@ -164,6 +164,11 @@ BEGIN
   LookupRoutine := found;
 END;
 
+FUNCTION UserRoutineShadows(name: Str255): BOOLEAN;
+BEGIN
+  UserRoutineShadows := LookupRoutine(name) <> 0;
+END;
+
 FUNCTION RoutineIsFunc(routi: INTEGER32): BOOLEAN;
 { Guards the routines[routi] index itself (routi = 0 means "not found"),
   since plain AND is not short-circuit in this dialect -- a single

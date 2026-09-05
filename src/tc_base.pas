@@ -212,6 +212,14 @@ BEGIN
   LookupSymbol := i;
 END;
 
+FUNCTION UserDeclarationShadows(name: Str255): BOOLEAN;
+{ Builtins are not registered in this stage's symbol table.  Any visible
+  declaration therefore takes precedence over spelling-based builtin dispatch
+  (IBM Pascal, Aug. 1981, p.3-7). }
+BEGIN
+  UserDeclarationShadows := LookupSymbol(name) <> 0;
+END;
+
 FUNCTION LookupSymbolInScope(name: Str255): INTEGER32;
 { LookupSymbol above searches every live scope, answering "is this name
   visible". This one stops at the current scope's low-water mark, answering

@@ -96,6 +96,12 @@ BEGIN
   EnsureGenericSetType := generic_set_tid;
 END;
 
+PROCEDURE RejectNvptxVector;
+BEGIN
+  IF is_nvptx_device THEN
+    AbortWith('codegen: VECTOR types are not supported in DEVICE code compiled for NVPTX; NVPTX is SIMT and scalarizes vector arithmetic 1:1');
+END;
+
 FUNCTION EnsureBoolVectorType(n: INTEGER32): INTEGER;
 { The type of a lanewise VECTOR comparison result: VECTOR [n] OF BOOLEAN,
   i.e. <n x i8> with 0/1 per lane (M0's mask storage rule). Reuses an
@@ -106,6 +112,7 @@ VAR
   i: INTEGER;
   found: INTEGER;
 BEGIN
+  RejectNvptxVector;
   found := 0;
   FOR i := 1 TO ntypes DO
     IF (types[i].tk = TK_VECTOR) AND (types[i].elem_tid = TK_BOOLEAN)
@@ -680,8 +687,13 @@ END;
 
 PROCEDURE ClassifyAggregate(tk: INTEGER; VAR agg_class: INTEGER; VAR n_pieces: INTEGER;
                              VAR piece_kind: SysVPieceArr; VAR piece_bytes: SysVPieceSzArr);
-{ The full System V AMD64 aggregate classifier. Splits an aggregate of at most
-  16 bytes into one or two eightbytes, merges every scalar leaf's class into
+{ The full System V AMD64 aggregate classifier. NVPTX currently also uses this
+  host classifier and produces correct, host-shaped parameter buffers. Any
+  device-specific aggregate lowering must branch on is_nvptx_device at the
+  cg_decl and cg_expr call sites, not inside this classifier.
+
+  Splits an aggregate of at most 16 bytes into one or two eightbytes, merges
+  every scalar leaf's class into
   the eightbyte it lands in, and reports either MEMORY (passed in memory) or
   COERCED plus the register piece each eightbyte is passed in.
 
@@ -1131,6 +1143,7 @@ BEGIN
   END
   ELSE IF nt = 'VectorType' THEN
   BEGIN
+    RejectNvptxVector;
     IF GetBool(te, 'packed') THEN
       AbortWith('codegen: PACKED vectors are not supported');
     { Lane count and element kind are re-validated here, mirroring the
