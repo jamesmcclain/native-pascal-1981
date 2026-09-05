@@ -539,6 +539,25 @@ BEGIN
 END;
 
 
+FUNCTION ShadowedWriteArg(arg: ADRMEM; name: Str255): ADRMEM;
+{ ps_stmt.pas wraps the actual arguments of anything spelled WRITE/WRITELN in
+  WriteArg nodes, case-insensitively and without consulting any declaration.
+  A call to a user-declared WRITELN therefore reaches this generic path
+  wrapped, and CodegenExpr has no WriteArg case. Mirrors tc_stmt.pas's own
+  ShadowedWriteArg, including its rejection of a `:width:precision' suffix --
+  which the typechecker reports first, this being the belt-and-braces half
+  for a stage driven directly. }
+BEGIN
+  IF NodeType(arg) = 'WriteArg' THEN
+  BEGIN
+    IF (GetObjOrNil(arg, 'width') <> NIL) OR (GetObjOrNil(arg, 'precision') <> NIL) THEN
+      AbortWith2('codegen: field width specifier is not allowed in a call to the user-declared ', name);
+    ShadowedWriteArg := GetObj(arg, 'expr');
+  END
+  ELSE
+    ShadowedWriteArg := arg;
+END;
+
 FUNCTION CodegenCallCommon(name: Str255; args_arr: ADRMEM): ADRMEM;
 { Shared by a FuncCall expression and a bare ProcCallStmt that isn't
   WRITE/WRITELN: look up a user-declared routine, marshal its arguments
@@ -609,7 +628,7 @@ BEGIN
     FOR i := 0 TO nargs - 1 DO
     BEGIN
       pieces_emitted := FALSE;
-      arg_node := ArrItem(args_arr, i);
+      arg_node := ShadowedWriteArg(ArrItem(args_arr, i), name);
       IF i >= routines[ri].nparams THEN
       BEGIN
         { Variadic tail argument: there is no formal parameter at all, so
