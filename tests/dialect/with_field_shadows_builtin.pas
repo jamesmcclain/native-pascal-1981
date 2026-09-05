@@ -1,0 +1,11 @@
+PROGRAM WITHFIELDSHADOWSBUILTIN;
+TYPE rec = RECORD
+  ord: INTEGER
+END;
+VAR
+  r: rec;
+  x: INTEGER;
+BEGIN
+  WITH r DO
+    x := ORD('a')
+END.

@@ -140,6 +140,25 @@ case-insensitively. The statement builtin dispatch remains case-sensitive
 (`WRITELN`, `NEW`, `LAUNCH`, and so on), a deliberate deviation from the
 manual's general case-insensitivity rather than a gap against the reference.
 
+"Visible" means lexically visible at the call, not merely declared somewhere in
+the compiland: a routine nested inside another stops shadowing once its parent's
+body ends, and both stages trim their tables at scope exit so they agree on it.
+
+A declaration of any kind shadows, not only a routine. A variable, a parameter,
+or a record field a `WITH` statement brings into scope all take the name over,
+and calling it is then an error (`Not a function: ORD`) rather than a silent
+fall-through to the builtin — the reference rejects the same programs. Only the
+statement and expression call paths consult this; the shadowed name remains
+usable as the variable or field it is.
+
+Shadowing does not reach a constant expression. `ParseConstant` admits
+`WRD`, `BYWORD`, `ORD`, `CHR`, `SUCC`, and `PRED` followed by `(` by name and
+nothing else can appear in that position, so `CONST K = ORD('a')` is the
+intrinsic whatever else is in scope, matching the reference. A call in ordinary
+expression position is not a constant expression and does honor shadowing, so
+the same call text can mean the intrinsic in a `CONST` and the user's routine
+in a statement.
+
 `VECTOR` types are not available in DEVICE code compiled for NVPTX. Use
 scalar kernel code instead. This restriction does not apply to host code or
 serial device execution.
