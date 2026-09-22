@@ -1261,9 +1261,12 @@ BEGIN
           AbortWith2('codegen: [C] EXTERN routine with an aggregate return cannot be defined here: ', name)
         ELSE
         BEGIN
-          ClassifyAggregate(ret_tk, ret_class, ret_npieces, ret_pk, ret_pb);
-          IF ret_class = SYSV_CLASS_MEMORY THEN ret_llvm_ty := voidty
-          ELSE ret_llvm_ty := SysVCoercedRetType(ret_npieces, ret_pk, ret_pb);
+          IF NOT is_nvptx_device THEN
+          BEGIN
+            ClassifyAggregate(ret_tk, ret_class, ret_npieces, ret_pk, ret_pb);
+            IF ret_class = SYSV_CLASS_MEMORY THEN ret_llvm_ty := voidty
+            ELSE ret_llvm_ty := SysVCoercedRetType(ret_npieces, ret_pk, ret_pb);
+          END;
         END;
       END;
   END
@@ -1312,9 +1315,12 @@ BEGIN
     IF is_func THEN
       IF IsAggregateTk(ret_tk) THEN
       BEGIN
-        ClassifyAggregate(ret_tk, ret_class, ret_npieces, ret_pk, ret_pb);
-        IF ret_class = SYSV_CLASS_MEMORY THEN ret_llvm_ty := voidty
-        ELSE ret_llvm_ty := SysVCoercedRetType(ret_npieces, ret_pk, ret_pb);
+        IF NOT is_nvptx_device THEN
+        BEGIN
+          ClassifyAggregate(ret_tk, ret_class, ret_npieces, ret_pk, ret_pb);
+          IF ret_class = SYSV_CLASS_MEMORY THEN ret_llvm_ty := voidty
+          ELSE ret_llvm_ty := SysVCoercedRetType(ret_npieces, ret_pk, ret_pb);
+        END;
       END;
 
     { A COERCED-class [C] aggregate parameter is passed as one LLVM
@@ -1346,19 +1352,30 @@ BEGIN
           attached below once `fn` exists; COERCED class (<=16 bytes, all
           eightbytes INTEGER/SSE) is flattened into its register pieces
           instead, and gets no parameter attribute at all. }
-        ClassifyAggregate(tks[i], agg_class, n_pieces, piece_kind, piece_bytes);
-        IF agg_class = SYSV_CLASS_MEMORY THEN
+        IF is_nvptx_device THEN
         BEGIN
-          SetPtrArrayElem(param_llvm_types, llvm_idx, LLVMPointerType(LLVMTypeForTk(tks[i]), 0));
+          { NVPTX passes a value aggregate as one aligned parameter buffer.
+            Keep it as its LLVM aggregate type; the NVPTX backend emits the
+            PTX .param .b8 form CUDA/NVVM uses, rather than host SysV pieces. }
+          SetPtrArrayElem(param_llvm_types, llvm_idx, LLVMTypeForTk(tks[i]));
           llvm_idx := llvm_idx + 1;
         END
         ELSE
-          FOR eb := 1 TO n_pieces DO
+        BEGIN
+          ClassifyAggregate(tks[i], agg_class, n_pieces, piece_kind, piece_bytes);
+          IF agg_class = SYSV_CLASS_MEMORY THEN
           BEGIN
-            SetPtrArrayElem(param_llvm_types, llvm_idx,
-                            SysVPieceLLVMType(piece_kind[eb], piece_bytes[eb]));
+            SetPtrArrayElem(param_llvm_types, llvm_idx, LLVMPointerType(LLVMTypeForTk(tks[i]), 0));
             llvm_idx := llvm_idx + 1;
-          END;
+          END
+          ELSE
+            FOR eb := 1 TO n_pieces DO
+            BEGIN
+              SetPtrArrayElem(param_llvm_types, llvm_idx,
+                              SysVPieceLLVMType(piece_kind[eb], piece_bytes[eb]));
+              llvm_idx := llvm_idx + 1;
+            END;
+        END;
       END
       ELSE
       BEGIN
@@ -1481,18 +1498,23 @@ BEGIN
     BEGIN
       IF needs_copy[i] THEN
       BEGIN
-        ClassifyAggregate(tks[i], agg_class, n_pieces, piece_kind, piece_bytes);
-        IF agg_class = SYSV_CLASS_MEMORY THEN
-        BEGIN
-          agg_llvm_ty := LLVMTypeForTk(tks[i]);
-          byval_attr := LLVMCreateTypeAttribute(ctx, byval_kind_id, agg_llvm_ty);
-          align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, SysVByvalAlign(tks[i]));
-          LLVMAddAttributeAtIndex(fn, llvm_idx + 1, byval_attr);
-          LLVMAddAttributeAtIndex(fn, llvm_idx + 1, align_attr);
-          llvm_idx := llvm_idx + 1;
-        END
+        IF is_nvptx_device THEN
+          llvm_idx := llvm_idx + 1
         ELSE
-          llvm_idx := llvm_idx + n_pieces;
+        BEGIN
+          ClassifyAggregate(tks[i], agg_class, n_pieces, piece_kind, piece_bytes);
+          IF agg_class = SYSV_CLASS_MEMORY THEN
+          BEGIN
+            agg_llvm_ty := LLVMTypeForTk(tks[i]);
+            byval_attr := LLVMCreateTypeAttribute(ctx, byval_kind_id, agg_llvm_ty);
+            align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, SysVByvalAlign(tks[i]));
+            LLVMAddAttributeAtIndex(fn, llvm_idx + 1, byval_attr);
+            LLVMAddAttributeAtIndex(fn, llvm_idx + 1, align_attr);
+            llvm_idx := llvm_idx + 1;
+          END
+          ELSE
+            llvm_idx := llvm_idx + n_pieces;
+        END;
       END
       ELSE
         llvm_idx := llvm_idx + 1;
@@ -1595,9 +1617,17 @@ BEGIN
         palloca := param_val { the incoming pointer already IS the storage }
       ELSE IF needs_copy[i] THEN
       BEGIN
-        { Value-mode aggregate param, plain Pascal and [C] FOREIGN alike. }
-        ClassifyAggregate(tks[i], agg_class, n_pieces, piece_kind, piece_bytes);
-        IF agg_class = SYSV_CLASS_MEMORY THEN
+        { Value-mode aggregate parameter. NVPTX receives one aggregate
+          parameter buffer; the host path below retains its SysV lowering. }
+        IF is_nvptx_device THEN
+        BEGIN
+          palloca := EntryAlloca(LLVMTypeForTk(tks[i]), names[i]);
+          LLVMBuildStore(builder, param_val, palloca);
+        END
+        ELSE
+        BEGIN
+          ClassifyAggregate(tks[i], agg_class, n_pieces, piece_kind, piece_bytes);
+          IF agg_class = SYSV_CLASS_MEMORY THEN
           { SysV byval: the incoming pointer already refers to a private
             per-call copy the caller made (see the byval caller-side temp in
             CodegenCallCommon) -- use it directly as storage, exactly like
@@ -1629,6 +1659,7 @@ BEGIN
             END;
             LLVMBuildStore(builder, param_val, SysVCoercedPiecePtr(cptr, cstruct_ty, eb));
           END;
+        END;
         END;
       END
       ELSE
