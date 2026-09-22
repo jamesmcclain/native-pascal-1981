@@ -1,9 +1,7 @@
 { DIALECT: extended }
 { CHECK-FLAGS: --emit-ptx --device-triple nvptx64-nvidia-cuda }
-{ Gap 6 characterization: a 20-byte aggregate return currently uses a
-  pointer-sized hidden NVPTX parameter. This is a baseline, not ABI proof. }
-{ CHECK: .func MakeLarge( }
-{ CHECK: .param .b64 MakeLarge_param_0 }
+{ Gap 6: NVPTX returns the complete aggregate through one CUDA ABI buffer. }
+{ CHECK: .func  (.param .align 4 .b8 func_retval0[20]) MakeLarge() }
 DEVICE MODULE DeviceAggregateLargeReturn;
 TYPE
   TRec = RECORD

@@ -1,9 +1,8 @@
 { DIALECT: extended }
 { CHECK-FLAGS: --emit-ptx --device-triple nvptx64-nvidia-cuda }
-{ Gap 6 characterization: an 8-byte aggregate return currently uses a
-  64-bit NVPTX return parameter. This is a baseline, not an ABI endorsement. }
-{ CHECK: .func  (.param .b64 func_retval0) MakeSmall() }
-{ CHECK: st.param.b64 }
+{ Gap 6: NVPTX returns the complete aggregate through one CUDA ABI buffer. }
+{ CHECK: .func  (.param .align 4 .b8 func_retval0[8]) MakeSmall() }
+{ CHECK: st.param.b32 }
 { CHECK: [func_retval0] }
 DEVICE MODULE DeviceAggregateSmallReturn;
 TYPE

@@ -1,9 +1,7 @@
 { DIALECT: extended }
 { CHECK-FLAGS: --emit-ptx --device-triple nvptx64-nvidia-cuda }
-{ Gap 6 characterization: a 16-byte aggregate currently becomes two
-  coerced 64-bit NVPTX parameters. }
-{ CHECK: .param .b64 Sum16_param_0 }
-{ CHECK: .param .b64 Sum16_param_1 }
+{ Gap 6: a 16-byte NVPTX value aggregate is one CUDA ABI parameter buffer. }
+{ CHECK: .param .align 4 .b8 Sum16_param_0[16] }
 DEVICE MODULE DeviceAggregate16ByteParam;
 TYPE
   TRec = RECORD
