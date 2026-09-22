@@ -610,9 +610,13 @@ BEGIN
       prepends -- which is also why the array is sized nargs * 2 + 1 rather
       than nargs * 2 (an sret call with no real arguments at all still needs
       one slot). }
-    ret_class := FuncRetAggClass(ri);
-    IF ret_class <> 0 THEN
-      ClassifyAggregate(routines[ri].ret_tk, ret_class, ret_npieces, ret_pk, ret_pb);
+    IF is_nvptx_device THEN ret_class := 0
+    ELSE
+    BEGIN
+      ret_class := FuncRetAggClass(ri);
+      IF ret_class <> 0 THEN
+        ClassifyAggregate(routines[ri].ret_tk, ret_class, ret_npieces, ret_pk, ret_pb);
+    END;
     call_args := AllocPtrArray(nargs * 2 + 1);
     llvm_ai := 0;
     IF ret_class = SYSV_CLASS_MEMORY THEN
@@ -688,7 +692,15 @@ BEGIN
       END
       ELSE IF routines[ri].param_needs_copy[i + 1] THEN
       BEGIN
-        { Value-mode aggregate param, plain Pascal and [C] FOREIGN alike:
+        IF is_nvptx_device THEN
+        BEGIN
+          { Device value aggregates travel as one LLVM aggregate value. }
+          v := CodegenExpr(arg_node);
+          v := CoerceForAssign(v, last_val_tk, routines[ri].param_tk[i + 1], arg_node, name);
+        END
+        ELSE
+        BEGIN
+          { Value-mode aggregate param, plain Pascal and [C] FOREIGN alike:
           SysV MEMORY-class byval -- compute the source's address, then
           ALWAYS copy it into a fresh per-call temp via EmitBlockCopy and
           pass that temp's address. Never pass caller storage raw: even
@@ -793,6 +805,7 @@ BEGIN
           END;
           pieces_emitted := TRUE;
         END;
+        END;
       END
       ELSE
       BEGIN
@@ -847,17 +860,22 @@ BEGIN
         llvm_ai := llvm_ai + 1
       ELSE IF routines[ri].param_needs_copy[i + 1] THEN
       BEGIN
-        ClassifyAggregate(routines[ri].param_tk[i + 1], agg_class, n_pieces, piece_kind, piece_bytes);
-        IF agg_class = SYSV_CLASS_MEMORY THEN
-        BEGIN
-          byval_attr := LLVMCreateTypeAttribute(ctx, byval_kind_id, LLVMTypeForTk(routines[ri].param_tk[i + 1]));
-          align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, SysVByvalAlign(routines[ri].param_tk[i + 1]));
-          LLVMAddCallSiteAttribute(res, llvm_ai + 1, byval_attr);
-          LLVMAddCallSiteAttribute(res, llvm_ai + 1, align_attr);
-          llvm_ai := llvm_ai + 1;
-        END
+        IF is_nvptx_device THEN
+          llvm_ai := llvm_ai + 1
         ELSE
-          llvm_ai := llvm_ai + n_pieces;
+        BEGIN
+          ClassifyAggregate(routines[ri].param_tk[i + 1], agg_class, n_pieces, piece_kind, piece_bytes);
+          IF agg_class = SYSV_CLASS_MEMORY THEN
+          BEGIN
+            byval_attr := LLVMCreateTypeAttribute(ctx, byval_kind_id, LLVMTypeForTk(routines[ri].param_tk[i + 1]));
+            align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, SysVByvalAlign(routines[ri].param_tk[i + 1]));
+            LLVMAddCallSiteAttribute(res, llvm_ai + 1, byval_attr);
+            LLVMAddCallSiteAttribute(res, llvm_ai + 1, align_attr);
+            llvm_ai := llvm_ai + 1;
+          END
+          ELSE
+            llvm_ai := llvm_ai + n_pieces;
+        END;
       END
       ELSE
         llvm_ai := llvm_ai + 1;
