@@ -140,8 +140,12 @@ BEGIN
   ArgString('fixtures', ARG_NO_SHORT, 'tests/proxy/conformance_cases.json', 'fixture JSON file');
   ArgFlag('health-unreachable', ARG_NO_SHORT, 'run the dead-upstream /health check only');
   ArgInt('timeout', 't', 30, 'request timeout in seconds');
-  IF NOT ArgParse THEN BEGIN ArgUsage; NetExit(2); END;
-  IF ArgHelpWanted THEN BEGIN ArgUsage; NetExit(0); END;
+  IF NOT ArgParse THEN
+  BEGIN
+    IF ArgHelpWanted THEN NetExit(0);
+    ArgUsage;
+    NetExit(2);
+  END;
   ArgGetStr('host', arg); ToByteStr(arg, host);
   ArgGetStr('fixtures', arg); ToByteStr(arg, fixture_short);
   ArgGetStr('upstream-url', arg); ToByteStr(arg, upstream_url);
