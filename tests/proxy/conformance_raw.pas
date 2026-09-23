@@ -35,8 +35,12 @@ BEGIN
   ArgInt('port', ARG_NO_SHORT, 8790, 'proxy port');
   ArgString('request', 'r', '', 'file containing raw request bytes');
   ArgInt('timeout', 't', 30, 'connect and read timeout in seconds');
-  IF NOT ArgParse THEN BEGIN ArgUsage; NetExit(2); END;
-  IF ArgHelpWanted THEN BEGIN ArgUsage; NetExit(0); END;
+  IF NOT ArgParse THEN
+  BEGIN
+    IF ArgHelpWanted THEN NetExit(0);
+    ArgUsage;
+    NetExit(2);
+  END;
   ArgGetStr('host', arg); ToByteStr(arg, host);
   ArgGetStr('request', arg); ToByteStr(arg, short_arg);
   BufInit(request_path, 0); BufAppendStr(request_path, short_arg);
