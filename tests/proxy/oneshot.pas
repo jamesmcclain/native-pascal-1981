@@ -111,15 +111,11 @@ BEGIN
 
   IF NOT ArgParse THEN
   BEGIN
+    IF ArgHelpWanted THEN NetExit(0);
     ArgError(astr);
     WRITELN('oneshot: ', astr);
     ArgUsage;
     NetExit(2);
-  END;
-  IF ArgHelpWanted THEN
-  BEGIN
-    ArgUsage;
-    NetExit(0);
   END;
 
   NetInit;

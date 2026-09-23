@@ -59,8 +59,12 @@ BEGIN
   ArgString('compiler', ARG_NO_SHORT, '', 'compiler for completion checks');
   ArgInt('limit', ARG_NO_SHORT, 0, 'maximum corpus items (zero means all)');
   ArgInt('timeout', 't', 60, 'request and compiler timeout in seconds');
-  IF NOT ArgParse THEN BEGIN ArgUsage; NetExit(2); END;
-  IF ArgHelpWanted THEN BEGIN ArgUsage; NetExit(0); END;
+  IF NOT ArgParse THEN
+  BEGIN
+    IF ArgHelpWanted THEN NetExit(0);
+    ArgUsage;
+    NetExit(2);
+  END;
 
   BufInit(corpus_dir, 0); BufInit(host_buf, 0); BufInit(path, 0);
   BufInit(name, 0); BufInit(source, 0); BufInit(payload_buf, 0);
