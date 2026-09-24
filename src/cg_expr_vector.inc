@@ -49,21 +49,28 @@ FUNCTION CodegenVSelect(mask_val, a_val, b_val: ADRMEM;
   array's storage address, arr_tid its TK_ARRAY tid; the result points at
   a scalar of the array's element type. Aborts unless the array element
   kind equals the vector's, and -- for a constant idx -- unless
-  idx .. idx+n-1 is within the array's declared bounds. }
+  idx .. idx+n-1 is within the array's declared bounds. A SUPER ARRAY is
+  accepted only when has_bound_hdr (arr_ptr is a NEW-allocated p^ pointee
+  with the i64 upper-bound header at arr_ptr-8); the whole lane range is
+  then checked at run time, once, before the returned pointer is used.
+  is_store only selects the runtime diagnostic's wording. }
 FUNCTION CodegenVectorEltPtr(arr_ptr: ADRMEM; arr_tid: INTEGER;
                              idx_val: ADRMEM; idx_tk: INTEGER;
-                             vec_tid: INTEGER; idx_node: ADRMEM): ADRMEM;
+                             vec_tid: INTEGER; idx_node: ADRMEM;
+                             has_bound_hdr: BOOLEAN; is_store: BOOLEAN): ADRMEM;
 
 { VLOAD(arr, i, V): load lanes arr[i .. i+n-1] as vector type vec_tid, at
   scalar-element alignment (safe for any i). }
 FUNCTION CodegenVLoad(arr_ptr: ADRMEM; arr_tid: INTEGER;
                       idx_val: ADRMEM; idx_tk: INTEGER;
-                      vec_tid: INTEGER; idx_node: ADRMEM): ADRMEM;
+                      vec_tid: INTEGER; idx_node: ADRMEM;
+                      has_bound_hdr: BOOLEAN): ADRMEM;
 
 { VSTORE(arr, i, v): store vector v's lanes into arr[i .. i+n-1], at
   scalar-element alignment. }
 PROCEDURE CodegenVStore(arr_ptr: ADRMEM; arr_tid: INTEGER;
                         idx_val: ADRMEM; idx_tk: INTEGER;
-                        vec_val: ADRMEM; vec_tid: INTEGER; idx_node: ADRMEM);
+                        vec_val: ADRMEM; vec_tid: INTEGER; idx_node: ADRMEM;
+                        has_bound_hdr: BOOLEAN);
 
 END;

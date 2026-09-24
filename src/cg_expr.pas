@@ -932,7 +932,10 @@ VAR
   fi: INTEGER;
   file_handle, file_fcb, file_call_args, file_raw_buf, discard: ADRMEM;
   folded: INTEGER64;
+  deref_ptr_tid: INTEGER; { committed to last_desig_deref_ptr_tid only at
+    the end, since index expressions below recurse through here }
 BEGIN
+  deref_ptr_tid := 0;
   nm := GetStr(node, 'name');
   symi := LookupSym(nm);
   selectors := GetObj(node, 'selectors');
@@ -961,6 +964,7 @@ BEGIN
   BEGIN
     sel := ArrItem(selectors, si);
     kind := GetStr(sel, 'kind');
+    deref_ptr_tid := 0;
     IF kind = 'INDEX' THEN
     BEGIN
       IF (TypeKind(cur_tid) <> TK_ARRAY) AND (TypeKind(cur_tid) <> TK_LSTRING)
@@ -1024,6 +1028,7 @@ BEGIN
         IF TypeKind(cur_tid) <> TK_POINTER THEN
           AbortWith('codegen: a DEREF selector was applied to a non-pointer');
         base_ptr := LLVMBuildLoad2(builder, LLVMTypeForTk(cur_tid), base_ptr, MakeCStr(''));
+        deref_ptr_tid := cur_tid;
         cur_tid := types[cur_tid].elem_tid;
       END;
     END
@@ -1072,7 +1077,40 @@ BEGIN
   END;
 
   last_val_tk := cur_tid;
+  last_desig_deref_ptr_tid := deref_ptr_tid;
   ComputeDesignatorAddress := base_ptr;
+END;
+
+FUNCTION VectorArrayOperand(node: ADRMEM; VAR arr_tid: INTEGER;
+                            VAR has_bound_hdr: BOOLEAN): ADRMEM;
+VAR
+  symi: INTEGER32;
+  ptr_tid: INTEGER;
+  res: ADRMEM;
+BEGIN
+  has_bound_hdr := FALSE;
+  res := NIL;
+  arr_tid := 0;
+  IF NodeType(node) = 'Identifier' THEN
+  BEGIN
+    symi := LookupSym(GetStr(node, 'name'));
+    IF symi = 0 THEN
+      AbortWith2('codegen: undefined variable: ', GetStr(node, 'name'));
+    res := symbols[symi].llvm_val;
+    arr_tid := symbols[symi].tk;
+  END
+  ELSE IF NodeType(node) = 'Designator' THEN
+  BEGIN
+    res := ComputeDesignatorAddress(node);
+    arr_tid := last_val_tk;
+    ptr_tid := last_desig_deref_ptr_tid;
+    IF ptr_tid <> 0 THEN
+      IF (types[ptr_tid].ptr_space = PTR_SPACE_PLAIN) AND (NOT is_device_compiland) THEN
+        has_bound_hdr := TRUE;
+  END
+  ELSE
+    AbortWith('codegen: VLOAD/VSTORE first argument must be an array variable or designator');
+  VectorArrayOperand := res;
 END;
 
 FUNCTION IsDeviceUnsupportedTranscendental(nm: Str255): BOOLEAN;
@@ -1303,8 +1341,9 @@ VAR
   call_args: ADRMEM;
   vsel_mask, vsel_a, vsel_b: ADRMEM;
   vsel_mask_tid, vsel_a_tid, vsel_b_tid: INTEGER;
-  vld_idx: ADRMEM;
-  vld_idx_tk: INTEGER;
+  vld_idx, vld_arr: ADRMEM;
+  vld_idx_tk, vld_arr_tid: INTEGER;
+  vld_hdr: BOOLEAN;
 BEGIN
   EnterExprLevel;
   nt := NodeType(node);
@@ -1731,26 +1770,24 @@ BEGIN
     END
     ELSE IF nm = 'VLOAD' THEN
     BEGIN
-      { VLOAD(arr, i, V): load arr[i .. i+n-1] as a V vector. arr is a bare
-        array variable; V is a VECTOR type NAME (a bare Identifier, resolved
+      { VLOAD(arr, i, V): load arr[i .. i+n-1] as a V vector. arr is an
+        array variable or designator (see VectorArrayOperand); V is a VECTOR type NAME (a bare Identifier, resolved
         against the type table -- the same new pattern as VSPLAT). }
       call_args := GetObj(node, 'args');
       IF ArrSize(call_args) <> 3 THEN
         AbortWith('codegen: VLOAD expects (array, index, VECTOR type name)');
-      IF NodeType(ArrItem(call_args, 0)) <> 'Identifier' THEN
-        AbortWith('codegen: VLOAD first argument must be an array variable');
       IF NodeType(ArrItem(call_args, 2)) <> 'Identifier' THEN
         AbortWith('codegen: VLOAD third argument must be a VECTOR type name');
-      symi := LookupSym(GetStr(ArrItem(call_args, 0), 'name'));
-      IF symi = 0 THEN
-        AbortWith2('codegen: undefined variable: ', GetStr(ArrItem(call_args, 0), 'name'));
       result_tid := LookupNamedType(GetStr(ArrItem(call_args, 2), 'name'));
       IF (result_tid = 0) OR (TypeKind(result_tid) <> TK_VECTOR) THEN
         AbortWith2('codegen: VLOAD type argument is not a VECTOR type: ', GetStr(ArrItem(call_args, 2), 'name'));
+      { Evaluation order: array address, then index, then the check. }
+      vld_arr := VectorArrayOperand(ArrItem(call_args, 0), vld_arr_tid, vld_hdr);
       vld_idx := CodegenExpr(ArrItem(call_args, 1));
       vld_idx_tk := last_val_tk;
-      res := CodegenVLoad(symbols[symi].llvm_val, symbols[symi].tk,
-                          vld_idx, vld_idx_tk, result_tid, ArrItem(call_args, 1));
+      res := CodegenVLoad(vld_arr, vld_arr_tid,
+                          vld_idx, vld_idx_tk, result_tid, ArrItem(call_args, 1),
+                          vld_hdr);
       last_val_tk := result_tid;
     END
     ELSE IF (nm = 'EOF') OR (nm = 'EOLN') THEN

@@ -127,6 +127,7 @@ PROCEDURE LLVMPositionBuilderBefore(b: ADRMEM; instr: ADRMEM) [C];
 FUNCTION LLVMBuildCall2(b: ADRMEM; fty: ADRMEM; fn: ADRMEM; args: ADRMEM; nargs: CINT; name: ADRMEM): ADRMEM [C];
 FUNCTION LLVMBuildRet(b: ADRMEM; v: ADRMEM): ADRMEM [C];
 PROCEDURE LLVMBuildRetVoid(b: ADRMEM) [C];
+FUNCTION LLVMBuildUnreachable(b: ADRMEM): ADRMEM [C];
 FUNCTION LLVMBuildAlloca(b: ADRMEM; ty: ADRMEM; name: ADRMEM): ADRMEM [C];
 FUNCTION LLVMGetParam(fn: ADRMEM; idx: CINT): ADRMEM [C];
 FUNCTION LLVMVoidTypeInContext(ctx: ADRMEM): ADRMEM [C];
@@ -678,6 +679,13 @@ VAR
                           recently codegen'd expression is communicated back
                           through this global rather than threaded as a var
                           parameter through every call site. }
+  last_desig_deref_ptr_tid: INTEGER; { side-channel result of
+                          ComputeDesignatorAddress: the POINTER type id
+                          dereferenced by the designator's final selector
+                          (`p^`), or 0 when the final selector is not a
+                          pointer DEREF. VLOAD/VSTORE use it to decide
+                          whether a SUPER ARRAY operand has NEW's runtime
+                          upper-bound header in front of it. }
 
   { Unit dependency graph: built once per compiland by BuildUnitInitOrder
     from local_interfaces (each spliced INTERFACE header's own 'uses'
