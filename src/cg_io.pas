@@ -705,6 +705,38 @@ BEGIN
       loaded := LLVMBuildTrunc(builder, loaded, i16ty, MakeCStr(''));
       LLVMBuildStore(builder, loaded, addr);
     END
+    ELSE IF TypeKind(tid) = TK_INTEGER32 THEN
+    BEGIN
+      IF using_file THEN
+      BEGIN
+        call_args := AllocPtrArray(2);
+        SetPtrArrayElem(call_args, 0, fcb_ptr);
+        SetPtrArrayElem(call_args, 1, addr);
+        loaded := LLVMBuildCall2(builder, fread_int32_fnty, fread_int32_fn, call_args, 2, MakeCStr(''));
+      END
+      ELSE
+      BEGIN
+        call_args := AllocPtrArray(1);
+        SetPtrArrayElem(call_args, 0, addr);
+        loaded := LLVMBuildCall2(builder, read_int32_fnty, read_int32_fn, call_args, 1, MakeCStr(''));
+      END;
+    END
+    ELSE IF TypeKind(tid) = TK_INTEGER64 THEN
+    BEGIN
+      IF using_file THEN
+      BEGIN
+        call_args := AllocPtrArray(2);
+        SetPtrArrayElem(call_args, 0, fcb_ptr);
+        SetPtrArrayElem(call_args, 1, addr);
+        loaded := LLVMBuildCall2(builder, fread_int64_fnty, fread_int64_fn, call_args, 2, MakeCStr(''));
+      END
+      ELSE
+      BEGIN
+        call_args := AllocPtrArray(1);
+        SetPtrArrayElem(call_args, 0, addr);
+        loaded := LLVMBuildCall2(builder, read_int64_fnty, read_int64_fn, call_args, 1, MakeCStr(''));
+      END;
+    END
     ELSE IF TypeKind(tid) = TK_WORD THEN
     BEGIN
       IF using_file THEN

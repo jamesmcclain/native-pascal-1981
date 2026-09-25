@@ -1,4 +1,6 @@
 #include <ctype.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -576,6 +578,55 @@ int pas_fread_int(struct pas_file_fcb *f, int32_t *out)
     }
     *out = (int32_t) v;
     return 0;
+}
+
+/* Parse through the FCB character source, including RESET's buffered first
+ * character. Do not touch the destination when a trapped read fails. */
+static int fread_wide_decimal(struct pas_file_fcb *f, int bits, int64_t *out)
+{
+    FILE *h = stream_for(f, 0);
+    int ch = fcb_skip_ws_except_nl(f, h);
+    if (ch == EOF)
+        die("runtime error: unexpected EOF while reading integer");
+    char token[32];
+    int n = 0, overflow = 0;
+    if (ch == '+' || ch == '-') {
+        token[n++] = (char) ch;
+        ch = fcb_next_char(f, h);
+    }
+    if (ch == EOF || !isdigit((unsigned char) ch)) {
+        fcb_unget_char(f, h, ch);
+        return io_error(f, 14, "runtime error: malformed integer input") ? -1 : 0;
+    }
+    do {
+        if (n < (int) sizeof(token) - 1)
+            token[n++] = (char) ch;
+        else
+            overflow = 1;
+        ch = fcb_next_char(f, h);
+    } while (ch != EOF && isdigit((unsigned char) ch));
+    fcb_unget_char(f, h, ch);
+    token[n] = '\0';
+    errno = 0;
+    long long value = strtoll(token, NULL, 10);
+    if (overflow || errno == ERANGE || (bits == 32 && (value < INT32_MIN || value > INT32_MAX)))
+        return io_error(f, 14, "runtime error: integer out of range") ? -1 : 0;
+    *out = (int64_t) value;
+    return 0;
+}
+
+int pas_fread_int32(struct pas_file_fcb *f, int32_t *out)
+{
+    int64_t value;
+    if (fread_wide_decimal(f, 32, &value) != 0)
+        return -1;
+    *out = (int32_t) value;
+    return 0;
+}
+
+int pas_fread_int64(struct pas_file_fcb *f, int64_t *out)
+{
+    return fread_wide_decimal(f, 64, out);
 }
 
 int pas_fread_word(struct pas_file_fcb *f, uint16_t *out)

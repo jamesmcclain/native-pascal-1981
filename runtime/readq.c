@@ -1,4 +1,6 @@
 #include <ctype.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -114,6 +116,51 @@ int pas_read_int(int32_t *out)
     if (scanf("%ld", &v) != 1)
         die("malformed integer input");
     *out = (int32_t) v;
+    return 0;
+}
+
+/* Decimal prefix reader: unlike the vintage int reader, never narrows a
+ * long value before checking its range. Keep the following delimiter. */
+static int64_t read_wide_decimal(int bits)
+{
+    int ch = skip_ws_except_nl();
+    if (ch == EOF)
+        die("unexpected EOF while reading integer");
+    char token[32];
+    int n = 0, overflow = 0;
+    if (ch == '+' || ch == '-') {
+        token[n++] = (char) ch;
+        ch = getchar();
+    }
+    if (ch == EOF || !isdigit((unsigned char) ch)) {
+        unread(ch);
+        die("malformed integer input");
+    }
+    do {
+        if (n < (int) sizeof(token) - 1)
+            token[n++] = (char) ch;
+        else
+            overflow = 1;
+        ch = getchar();
+    } while (ch != EOF && isdigit((unsigned char) ch));
+    unread(ch);
+    token[n] = '\0';
+    errno = 0;
+    long long value = strtoll(token, NULL, 10);
+    if (overflow || errno == ERANGE || (bits == 32 && (value < INT32_MIN || value > INT32_MAX)))
+        die("integer out of range");
+    return (int64_t) value;
+}
+
+int pas_read_int32(int32_t *out)
+{
+    *out = (int32_t) read_wide_decimal(32);
+    return 0;
+}
+
+int pas_read_int64(int64_t *out)
+{
+    *out = read_wide_decimal(64);
     return 0;
 }
 

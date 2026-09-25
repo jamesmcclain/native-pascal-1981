@@ -100,6 +100,32 @@ and to explicit text files.
 `TRUE` or `FALSE`. Input accepts those names without regard to letter case and
 also accepts the numeric ordinals `1` and `0`.
 
+## Wide signed integer input **[extended]**
+
+`READ` and `READLN` accept `INTEGER32` and `INTEGER64` destinations from
+standard input or an explicit `TEXT` file. They read signed decimal values
+(including an optional `+` or `-`) at their full width; overflow of either
+width is a runtime error, never a truncation through vintage `INTEGER` or a
+32-bit intermediate. `READLN` first reads its arguments, then consumes through
+the next newline. Vintage `INTEGER` and `WORD` readers are unchanged.
+
+The local whitespace rule for numeric reads skips leading spaces and other
+whitespace **except** newline. A leading newline is malformed input; a newline
+after a number remains for `READLN` to consume. This differs from the 1981
+manual and ISO texts, which skip leading line markers. The wide readers
+inherit the existing local rule rather than silently changing old readers;
+a change to that rule needs a separate contract decision.
+
+At stdin, EOF aborts with `runtime error: unexpected EOF while reading
+integer`; a malformed number or out-of-range value aborts with `runtime
+error: malformed integer input` or `runtime error: integer out of range`.
+For explicit files, malformed input and overflow set `F.ERRS` to 14 when
+`F.TRAP` is set (leaving the destination unchanged); without a trap they
+abort with the same `runtime error:` messages. EOF aborts in either case,
+as in the existing formatted integer reader. Input consumes a decimal prefix
+and leaves the following non-digit delimiter for the next read, like the
+existing formatted numeric readers.
+
 ## String precision
 
 In vintage mode, `::precision` does not limit string output. A string literal,

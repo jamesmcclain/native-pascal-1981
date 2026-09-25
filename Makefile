@@ -163,6 +163,8 @@ test-driver: $(DRIVER_BIN)
 	./tests/driver.sh
 
 test-native: test-driver test-sysutil $(ASTCOMPARE_BIN) $(PROXY_BIN)
+	$(CC) -o $(BUILD_DIR)/read_wide_runtime tests/read_wide_runtime.c $(RUNTIME_LIB)
+	$(BUILD_DIR)/read_wide_runtime
 	./tests/run.sh
 	./tests/checklit.sh
 	./tests/depth.sh

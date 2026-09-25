@@ -496,6 +496,8 @@ VAR
     the file-targeted counterpart of printf_fn above, same varargs shape. }
   enum_write_token_fnty, enum_write_token_fn: ADRMEM;
   fread_int_fnty, fread_int_fn: ADRMEM;
+  fread_int32_fnty, fread_int32_fn: ADRMEM;
+  fread_int64_fnty, fread_int64_fn: ADRMEM;
   fread_word_fnty, fread_word_fn: ADRMEM;
   fread_ptr_fnty, fread_ptr_fn: ADRMEM; { pointer-as-number READ, the manual's
     implementation-defined round-trip format (13620-13623). }
@@ -508,6 +510,8 @@ VAR
   freadln_skip_fnty, freadln_skip_fn: ADRMEM;
   freadset_fnty, freadset_fn: ADRMEM; { pas_freadset(fcb*, lstr*, cap, set_words*) }
   file_attach_std_fnty, file_attach_std_fn: ADRMEM; { pas_file_attach_std(in_fcb*, out_fcb*) }
+  read_int32_fnty, read_int32_fn: ADRMEM;
+  read_int64_fnty, read_int64_fn: ADRMEM;
   read_int_fnty, read_int_fn: ADRMEM; { stdin counterparts (readq.c), used by
     a bare READ/READLN with no leading file argument. }
   read_word_fnty, read_word_fn: ADRMEM;

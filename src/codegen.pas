@@ -446,6 +446,13 @@ BEGIN
   SetPtrArrayElem(param_arr, 1, LLVMPointerType(i32ty, 0));
   fread_int_fnty := LLVMFunctionType(i32ty, param_arr, 2, 0);
   fread_int_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_int'), fread_int_fnty);
+  fread_int32_fnty := fread_int_fnty;
+  fread_int32_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_int32'), fread_int32_fnty);
+  param_arr := AllocPtrArray(2);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  SetPtrArrayElem(param_arr, 1, LLVMPointerType(i64ty, 0));
+  fread_int64_fnty := LLVMFunctionType(i32ty, param_arr, 2, 0);
+  fread_int64_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_int64'), fread_int64_fnty);
 
   param_arr := AllocPtrArray(2);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
@@ -516,6 +523,12 @@ BEGIN
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(i32ty, 0));
   read_int_fnty := LLVMFunctionType(i32ty, param_arr, 1, 0);
   read_int_fn := LLVMAddFunction(modl, MakeCStr('pas_read_int'), read_int_fnty);
+  read_int32_fnty := read_int_fnty;
+  read_int32_fn := LLVMAddFunction(modl, MakeCStr('pas_read_int32'), read_int32_fnty);
+  param_arr := AllocPtrArray(1);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(i64ty, 0));
+  read_int64_fnty := LLVMFunctionType(i32ty, param_arr, 1, 0);
+  read_int64_fn := LLVMAddFunction(modl, MakeCStr('pas_read_int64'), read_int64_fnty);
 
   param_arr := AllocPtrArray(1);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(i16ty, 0));
