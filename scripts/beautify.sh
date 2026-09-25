@@ -39,8 +39,9 @@ fi
 # snippet through stdin/stdout, which does exit 0 on a working install.
 printf 'int f(void){return 1;}\n' | indent >/dev/null 2>&1 || fail_broken indent "$indent_hint"
 
-# Format C runtime sources. The compiler driver is Pascal.
-VERSION_CONTROL=none find runtime -name '*.c' -exec indent -kr -nut -l180 {} +
+# Format C runtime and bootstrap-translator sources. The compiler driver is
+# Pascal.
+VERSION_CONTROL=none find runtime bootstrap -maxdepth 1 -name '*.c' -exec indent -kr -nut -l180 {} +
 
 # Format Python test files if present
 if find tests -name '*.py' 2>/dev/null | grep -q .; then
