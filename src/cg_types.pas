@@ -1028,6 +1028,24 @@ BEGIN
   END;
 END;
 
+FUNCTION BoundHostTid(node: ADRMEM): INTEGER;
+{ The host type of a subrange or array index bound: CHAR, BOOLEAN, an
+  enumeration, or INTEGER. A named constant has the type of its value. }
+VAR
+  ci: INTEGER32;
+BEGIN
+  BoundHostTid := TK_INTEGER;
+  IF NodeType(node) = 'CharLiteral' THEN BoundHostTid := TK_CHAR
+  ELSE IF NodeType(node) = 'BoolLiteral' THEN BoundHostTid := TK_BOOLEAN
+  ELSE IF NodeType(node) = 'Identifier' THEN
+  BEGIN
+    ci := LookupConst(GetStr(node, 'name'));
+    IF ci <> 0 THEN
+      IF const_tbl[ci].enum_tid <> 0 THEN BoundHostTid := const_tbl[ci].enum_tid
+      ELSE IF const_tbl[ci].is_char THEN BoundHostTid := TK_CHAR;
+  END;
+END;
+
 FUNCTION TypeNameStrToTk(nm: Str255): INTEGER;
 { Maps a RetypeExpr node's bare type_id string (e.g. 'INTEGER') to a tk.
   Only the scalar integer-family names RETYPE is actually used with across
@@ -1092,7 +1110,6 @@ VAR
   values_arr: ADRMEM; { EnumType's member identifier list }
   mi: INTEGER32;
   named_tid: INTEGER;
-  ci: INTEGER32;
 BEGIN
   nt := NodeType(te);
   IF nt = 'NamedType' THEN
@@ -1210,18 +1227,12 @@ BEGIN
       count := hi - lo + 1;
       arr_ty := LLVMArrayType(LLVMTypeForTk(elem_tid), count);
       tid := RegisterType(TK_ARRAY, elem_tid, lo, hi, arr_ty);
-      IF NodeType(GetObj(GetObj(te, 'index_range'), 'low')) = 'CharLiteral' THEN
-        types[tid].index_tid := TK_CHAR
-      ELSE IF NodeType(GetObj(GetObj(te, 'index_range'), 'low')) = 'BoolLiteral' THEN
-        types[tid].index_tid := TK_BOOLEAN
-      ELSE IF NodeType(GetObj(GetObj(te, 'index_range'), 'low')) = 'Identifier' THEN
-      BEGIN
-        ci := LookupConst(GetStr(GetObj(GetObj(te, 'index_range'), 'low'), 'name'));
-        IF ci <> 0 THEN
-          IF const_tbl[ci].enum_tid <> 0 THEN
-            types[tid].index_tid := const_tbl[ci].enum_tid;
-      END
-      ELSE IF hi > 32767 THEN types[tid].index_tid := TK_WORD;
+      elem_tid := BoundHostTid(GetObj(GetObj(te, 'index_range'), 'low'));
+      IF elem_tid <> TK_INTEGER THEN
+        types[tid].index_tid := elem_tid
+      ELSE IF (NodeType(GetObj(GetObj(te, 'index_range'), 'low')) <> 'Identifier')
+              AND (hi > 32767) THEN
+        types[tid].index_tid := TK_WORD;
     END;
   END
   ELSE IF nt = 'VectorType' THEN
@@ -1401,21 +1412,17 @@ BEGIN
     lo := ResolveIntLiteral(GetObj(te, 'low'));
     hi := ResolveIntLiteral(GetObj(te, 'high'));
     IF lo > hi THEN AbortWith('codegen: subrange lower bound exceeds upper bound');
-    IF NodeType(GetObj(te, 'low')) = 'CharLiteral' THEN
+    elem_tid := BoundHostTid(GetObj(te, 'low'));
+    IF elem_tid = TK_CHAR THEN
       tid := RegisterType(TK_CHAR, TK_CHAR, lo, hi, i8ty)
-    ELSE IF NodeType(GetObj(te, 'low')) = 'Identifier' THEN
+    ELSE IF elem_tid >= 14 THEN
     BEGIN
-      ci := LookupConst(GetStr(GetObj(te, 'low'), 'name'));
-      IF ci = 0 THEN AbortWith('codegen: subrange lower bound must be a constant');
-      elem_tid := const_tbl[ci].enum_tid;
-      ci := LookupConst(GetStr(GetObj(te, 'high'), 'name'));
-      IF ci = 0 THEN AbortWith('codegen: subrange upper bound must be a constant');
-      IF (elem_tid = 0) OR (elem_tid <> const_tbl[ci].enum_tid) THEN
+      IF BoundHostTid(GetObj(te, 'high')) <> elem_tid THEN
         AbortWith('codegen: subrange enum bounds must share a type');
       tid := RegisterType(TK_ENUM, elem_tid, lo, hi, i32ty);
       types[tid].enum_values := types[elem_tid].enum_values;
     END
-    ELSE IF NodeType(GetObj(te, 'low')) = 'BoolLiteral' THEN
+    ELSE IF elem_tid = TK_BOOLEAN THEN
       tid := RegisterType(TK_BOOLEAN, TK_BOOLEAN, lo, hi, i1ty)
     ELSE BEGIN
       IF (lo < -32767) OR (hi > 32767) THEN
