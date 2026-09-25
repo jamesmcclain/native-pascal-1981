@@ -994,12 +994,23 @@ BEGIN
         lower bound using a constant of the index's own LLVM type and lets
         GEP take an index of whatever width it is, not just a plain
         16-bit INTEGER. Match that here instead of requiring TK_INTEGER. }
-      IF (last_val_tk <> TK_INTEGER) AND (last_val_tk <> TK_WORD)
+      IF (last_val_tk = TK_CHAR) OR (last_val_tk = TK_BOOLEAN) OR
+         (TypeKind(last_val_tk) = TK_ENUM) THEN
+      BEGIN
+        { A CHAR (i8), BOOLEAN (i1) or enumeration (i32) index is unsigned:
+          zero-extend it to i32 before subtracting the low bound, so CHAR
+          values past 127 and TRUE do not become negative offsets. }
+        IF TypeKind(last_val_tk) <> TK_ENUM THEN
+          idx_val := LLVMBuildZExt(builder, idx_val, i32ty, MakeCStr(''));
+        offset := LLVMBuildSub(builder, idx_val, LLVMConstInt(i32ty, types[cur_tid].lo, 1), MakeCStr(''));
+      END
+      ELSE IF (last_val_tk <> TK_INTEGER) AND (last_val_tk <> TK_WORD)
         AND (last_val_tk <> TK_INTEGER8) AND (last_val_tk <> TK_WORD8)
         AND (last_val_tk <> TK_INTEGER32) AND (last_val_tk <> TK_WORD32)
         AND (last_val_tk <> TK_INTEGER64) AND (last_val_tk <> TK_WORD64) THEN
-        AbortWith('codegen: an array index must be an integer-family type');
-      offset := LLVMBuildSub(builder, idx_val, LLVMConstInt(LLVMTypeForTk(last_val_tk), types[cur_tid].lo, 1), MakeCStr(''));
+        AbortWith('codegen: an array index must be an ordinal type')
+      ELSE
+        offset := LLVMBuildSub(builder, idx_val, LLVMConstInt(LLVMTypeForTk(last_val_tk), types[cur_tid].lo, 1), MakeCStr(''));
       IF types[cur_tid].is_super THEN
       BEGIN
         gep_idx := AllocPtrArray(1);
