@@ -72,6 +72,47 @@ BEGIN
   END;
 END;
 
+FUNCTION SubrangeEndpointClass(node: ADRMEM): INTEGER;
+{ The ordinal kind of a subrange endpoint that is a literal or a named
+  constant or enumeration member: TK_INTEGER for any integer, else TK_CHAR,
+  TK_BOOLEAN or TK_ENUM. Anything else (a constant expression) is
+  TK_UNKNOWN, so it is not compared. }
+VAR
+  nt: Str255;
+  si: INTEGER32;
+BEGIN
+  SubrangeEndpointClass := TK_UNKNOWN;
+  nt := NodeType(node);
+  IF nt = 'IntLiteral' THEN SubrangeEndpointClass := TK_INTEGER
+  ELSE IF nt = 'CharLiteral' THEN SubrangeEndpointClass := TK_CHAR
+  ELSE IF nt = 'BoolLiteral' THEN SubrangeEndpointClass := TK_BOOLEAN
+  ELSE IF nt = 'Identifier' THEN
+  BEGIN
+    si := LookupSymbol(GetStr(node, 'name'));
+    IF si <> 0 THEN
+      IF IsInteger(symbols[si].tk) THEN SubrangeEndpointClass := TK_INTEGER
+      ELSE IF (symbols[si].tk = TK_CHAR) OR (symbols[si].tk = TK_BOOLEAN) OR
+              (symbols[si].tk = TK_ENUM) THEN
+        SubrangeEndpointClass := symbols[si].tk;
+  END;
+END;
+
+PROCEDURE CheckSubrangeEndpoints(range_node: ADRMEM);
+{ Both ends of a subrange must be the same ordinal type: FALSE..2 or
+  'a'..150 used to be accepted, with the type (and storage) taken from the
+  low end alone, so the high bound was silently narrowed. }
+VAR
+  high_node: ADRMEM;
+  lo_class, hi_class: INTEGER;
+BEGIN
+  high_node := GetObjOrNil(range_node, 'high');
+  IF high_node = NIL THEN RETURN;
+  lo_class := SubrangeEndpointClass(GetObj(range_node, 'low'));
+  hi_class := SubrangeEndpointClass(high_node);
+  IF (lo_class <> TK_UNKNOWN) AND (hi_class <> TK_UNKNOWN) AND (lo_class <> hi_class) THEN
+    AddError('Subrange bounds must be of the same ordinal type');
+END;
+
 PROCEDURE ResolveTypeExpr(node: ADRMEM; VAR tk, aux, aux2, aux3, idx_tk: INTEGER);
 VAR
   nt, name, uname: Str255;
@@ -255,6 +296,7 @@ BEGIN
     aux3 := inner_aux2;
     idx_tk := TK_INTEGER;
     index_node := GetObj(node, 'index_range');
+    CheckSubrangeEndpoints(index_node);
     bound_node := GetObj(index_node, 'low');
     IF NodeType(bound_node) = 'CharLiteral' THEN idx_tk := TK_CHAR
     ELSE IF NodeType(bound_node) = 'BoolLiteral' THEN idx_tk := TK_BOOLEAN
@@ -396,6 +438,7 @@ BEGIN
       a BuiltinType base is a reserved-word ordinal type name. }
     IF nt = 'SubrangeType' THEN
     BEGIN
+      CheckSubrangeEndpoints(node);
       IF NodeType(GetObj(node, 'low')) = 'CharLiteral' THEN tk := TK_CHAR
       ELSE IF NodeType(GetObj(node, 'low')) = 'BoolLiteral' THEN tk := TK_BOOLEAN
       ELSE IF NodeType(GetObj(node, 'low')) = 'Identifier' THEN
