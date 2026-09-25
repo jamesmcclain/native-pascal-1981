@@ -272,6 +272,29 @@ struct Sym {
     int prototyped;             /* a C prototype has been emitted */
 };
 
+/* sem.c: the type model, scopes, constants, and C type spellings. */
+extern Type *t_integer, *t_int32, *t_cint, *t_int64, *t_clong, *t_csize;
+extern Type *t_real, *t_bool, *t_char, *t_adrmem, *t_nil, *t_strlit, *t_void;
+extern Buf types_buf;           /* C type definitions, written on demand */
+
+void sem_init(void);
+void scope_push(void);
+void scope_pop(void);
+int scope_depth(void);
+Sym *new_sym(const char *name, int kind, Loc loc);
+Sym *lookup(const char *name);
+Sym *lookup_innermost(const char *name);
+void define(Sym * s);
+Type *resolve_type(TypeExpr * te);
+void resolve_pending_pointers(void);
+Sym *const_eval(Expr * e);
+Type *int_type_for(int64_t v);
+int is_int(Type * t);
+int is_ptr(Type * t);           /* ^T, ADRMEM or NIL */
+int same_type(Type * a, Type * b);
+const char *type_name(Type * t);
+const char *ctype(Type * t);
+
 /* Translate one parsed compiland to C. Returns 0 on success. When
  * check_only is set, nothing is written. */
 int translate(Compiland * c, FILE * out, int check_only);
