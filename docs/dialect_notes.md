@@ -109,12 +109,11 @@ width is a runtime error, never a truncation through vintage `INTEGER` or a
 32-bit intermediate. `READLN` first reads its arguments, then consumes through
 the next newline. Vintage `INTEGER` and `WORD` readers are unchanged.
 
-The local whitespace rule for numeric reads skips leading spaces and other
-whitespace **except** newline. A leading newline is malformed input; a newline
-after a number remains for `READLN` to consume. This differs from the 1981
-manual and ISO texts, which skip leading line markers. The wide readers
-inherit the existing local rule rather than silently changing old readers;
-a change to that rule needs a separate contract decision.
+Leading whitespace, newlines included, is skipped before the number, as the
+vintage `INTEGER` reader does (and as the 1981 manual and ISO texts do with
+leading line markers). A newline after a number remains for `READLN` to
+consume. Leading zeros are accepted in any number and do not count toward
+the length of the number.
 
 At stdin, EOF aborts with `runtime error: unexpected EOF while reading
 integer`; a malformed number or out-of-range value aborts with `runtime

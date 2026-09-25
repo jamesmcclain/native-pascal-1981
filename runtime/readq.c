@@ -120,10 +120,15 @@ int pas_read_int(int32_t *out)
 }
 
 /* Decimal prefix reader: unlike the vintage int reader, never narrows a
- * long value before checking its range. Keep the following delimiter. */
+ * long value before checking its range. Keep the following delimiter.
+ * Leading whitespace, newlines included, is skipped the way the vintage
+ * reader's scanf("%ld") skips it. */
 static int64_t read_wide_decimal(int bits)
 {
-    int ch = skip_ws_except_nl();
+    int ch;
+    do
+        ch = getchar();
+    while (ch != EOF && isspace((unsigned char) ch));
     if (ch == EOF)
         die("unexpected EOF while reading integer");
     char token[32];
@@ -136,14 +141,19 @@ static int64_t read_wide_decimal(int bits)
         unread(ch);
         die("malformed integer input");
     }
+    /* Leading zeros do not count toward the token's length limit. */
+    int sign_len = n;
     do {
-        if (n < (int) sizeof(token) - 1)
+        if (n == sign_len && ch == '0');
+        else if (n < (int) sizeof(token) - 1)
             token[n++] = (char) ch;
         else
             overflow = 1;
         ch = getchar();
     } while (ch != EOF && isdigit((unsigned char) ch));
     unread(ch);
+    if (n == sign_len)
+        token[n++] = '0';
     token[n] = '\0';
     errno = 0;
     long long value = strtoll(token, NULL, 10);

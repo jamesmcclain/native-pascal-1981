@@ -585,7 +585,11 @@ int pas_fread_int(struct pas_file_fcb *f, int32_t *out)
 static int fread_wide_decimal(struct pas_file_fcb *f, int bits, int64_t *out)
 {
     FILE *h = stream_for(f, 0);
-    int ch = fcb_skip_ws_except_nl(f, h);
+    int ch;
+    /* Skip newlines too, as the vintage reader's fscanf("%ld") does. */
+    do
+        ch = fcb_next_char(f, h);
+    while (ch != EOF && isspace((unsigned char) ch));
     if (ch == EOF)
         die("runtime error: unexpected EOF while reading integer");
     char token[32];
@@ -598,14 +602,19 @@ static int fread_wide_decimal(struct pas_file_fcb *f, int bits, int64_t *out)
         fcb_unget_char(f, h, ch);
         return io_error(f, 14, "runtime error: malformed integer input") ? -1 : 0;
     }
+    /* Leading zeros do not count toward the token's length limit. */
+    int sign_len = n;
     do {
-        if (n < (int) sizeof(token) - 1)
+        if (n == sign_len && ch == '0');
+        else if (n < (int) sizeof(token) - 1)
             token[n++] = (char) ch;
         else
             overflow = 1;
         ch = fcb_next_char(f, h);
     } while (ch != EOF && isdigit((unsigned char) ch));
     fcb_unget_char(f, h, ch);
+    if (n == sign_len)
+        token[n++] = '0';
     token[n] = '\0';
     errno = 0;
     long long value = strtoll(token, NULL, 10);
