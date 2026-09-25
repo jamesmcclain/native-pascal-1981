@@ -5,11 +5,12 @@ cd "$(dirname "$0")/.."
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 bin/pascal1981 --dialect extended -S tests/fixtures/indexck_guard_ir.pas -o "$work/guard.ll"
-# Two checked selectors (including dead a[0]), one unchecked constant a[3].
-# A bad constant is compiled, not rejected, and its guard runs only if reached.
-[ "$(grep -Ec '^index\.bad[0-9]*:' "$work/guard.ll")" -eq 2 ]
-[ "$(grep -Ec '^index\.ok[0-9]*:' "$work/guard.ll")" -eq 2 ]
-[ "$(grep -c 'call void @pas_array_index_error(' "$work/guard.ll")" -eq 2 ]
+# Four checked selectors (including dead a[0] and both restored flags inside
+# expression-bearing statements), two unchecked selectors inside expressions,
+# plus unchecked constant a[3]. Never execute the unchecked out-of-range store.
+[ "$(grep -Ec '^index\.bad[0-9]*:' "$work/guard.ll")" -eq 4 ]
+[ "$(grep -Ec '^index\.ok[0-9]*:' "$work/guard.ll")" -eq 4 ]
+[ "$(grep -c 'call void @pas_array_index_error(' "$work/guard.ll")" -eq 4 ]
 ! grep -q 'call void @abort()' "$work/guard.ll"
 grep -Eq 'br i1 false, label %index\.ok[0-9]*, label %index\.bad[0-9]*' "$work/guard.ll"
 # Compare full-width typed values before computing a signed GEP offset.
@@ -25,4 +26,14 @@ bin/pascal1981 --dialect extended -S tests/golden/indexck_word64_bad.pas -o "$wo
 grep -Eq 'zext i64 .* to i128' "$work/word64.ll"
 bin/pascal1981 --dialect extended -S tests/golden/indexck_int64_bad.pas -o "$work/int64.ll"
 grep -Eq 'sext i64 .* to i128' "$work/int64.ll"
-echo 'PASS: fixed-array INDEXCK guards only enabled selectors and preserve ordinal width'
+# Compile-only exclusion probes: SUPER ARRAY, STRING/LSTRING, VECTOR lanes,
+# and variable VLOAD/VSTORE do not gain fixed-array host diagnostic calls.
+bin/pascal1981 --dialect extended -S tests/fixtures/indexck_exclusions_ir.pas -o "$work/exclusions.ll"
+! grep -q 'pas_array_index_error' "$work/exclusions.ll"
+# DEVICE code, even when lowered for the host, must not reference host INDEXCK.
+bin/pascal1981 --dialect extended -S tests/fixtures/indexck_device.pas -o "$work/device-host.ll"
+! grep -q 'pas_array_index_error' "$work/device-host.ll"
+bin/pascal1981 --dialect extended --device-triple nvptx64-nvidia-cuda -S \
+  tests/fixtures/indexck_device.pas -o "$work/device-nvptx.ll"
+! grep -q 'pas_array_index_error' "$work/device-nvptx.ll"
+echo 'PASS: fixed-array INDEXCK guards only enabled host selectors; preserve ordinal width and exclusions'

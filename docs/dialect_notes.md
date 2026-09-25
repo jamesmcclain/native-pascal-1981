@@ -368,25 +368,53 @@ procedure calls and `CASE` statements. A statement that does not record it,
 such as a `FOR` loop or a function call in an `IF` condition, uses the
 setting of the last assignment, call or `CASE` compiled before it. Array
 indexes are not checked by `$RANGECK` (see `$INDEXCK` below); string
-capacities are still unchecked, and `DEVICE` code is never checked.
+capacities are still unchecked. NVPTX `DEVICE` code has no host-runtime
+subrange check; a `DEVICE` compiland targeting the CPU follows the host
+`$RANGECK` path.
 
-### Fixed-array index checks (`$INDEXCK`, partial)
+### Fixed-array index checks (`$INDEXCK`) **[native]**
 
-The native parser records `indexck` on each INDEX selector from the first
-source token of that index expression (after `[` or a dimension comma).
-The snapshot survives typechecking and is read locally by codegen; a legacy
-AST without it defaults to on. `{$INDEXCK-}` and `{$INDEXCK+}` affect subsequent
-snapshots independently of `$RANGECK`. A directive later within an index
-expression does not change that index's snapshot, but does affect subsequent
-indexes, including nested ones. Enabled checks guard each fixed `ARRAY`
-selector's declared bounds before forming its offset or address, for both
-reads and writes (including nested arrays, fields, and pointer selections).
-The index expression is evaluated once. `$INDEXCK-` suppresses these guards;
-`$RANGECK` does not control them. For now, a failed guard aborts without an
-index-specific diagnostic; that runtime error is pending. SUPER ARRAY dynamic
-bounds, STRING/LSTRING subscripts, VECTOR indexing and DEVICE code remain
-unchanged and are not covered by these guards. The Python reference AST does
-not carry this native field.
+`$INDEXCK` defaults to on. The native parser snapshots it at the first token
+of **each** index expression (after `[` or a dimension comma), including indexes
+in assignments, calls, conditions, loops and nested selectors. The snapshot
+survives typechecking and a legacy AST without it defaults to on. `{$INDEXCK-}`
+disables subsequent snapshots and `{$INDEXCK+}` restores them, independently of
+`$RANGECK`; a directive later within an index expression does not change that
+index's snapshot, but does affect subsequent indexes.
+
+On host programs, an enabled snapshot guards a fixed `ARRAY [lo..hi] OF T`
+selector before computing its offset/address or accessing memory. This covers
+reads and writes through ordinary arrays, nested dimensions, record fields and
+pointers. Each index expression runs once. A checked out-of-range index,
+including a constant, fails **when the access runs**, not at compile time: the
+runtime flushes stdout, prints
+
+    runtime error: array index V is outside bounds LO..HI
+
+to stderr using the original signed or unsigned index value (including 64-bit
+values) and the declared bounds, flushes stderr, then aborts (normally status
+134 on Linux). An unchecked constant or variable index emits no fixed-array
+guard; this does not make an out-of-bounds access safe. `$RANGECK` does not
+control array indexes.
+
+This slice does **not** add checks to `SUPER ARRAY` dynamic-bound subscripts
+(the type table's high bound is a placeholder), `STRING`/`LSTRING` subscripts,
+or the capacities of `CONCAT`, `COPYLST`, `COPYSTR` and `INSERT`. Nor does it
+change `VECTOR` lane indexing or `VLOAD`/`VSTORE`: constant out-of-range vector
+lanes and fixed-array vector transfers retain their compile-time diagnostics;
+variable vector lanes and fixed-array transfer offsets do not use `$INDEXCK`.
+`VLOAD`/`VSTORE` through a `NEW`-allocated super-array pointer retain their
+separate whole-lane-range runtime check (see [Vectors (SIMD)](#vectors-simd-extended)).
+`DEVICE` compilands, whether CPU-targeted or NVPTX, do not get this host
+fixed-array runtime guard. The Python reference AST does not carry the native
+`indexck` snapshot.
+
+This is a deliberate **local fixed-array subset**, not exact IBM parity. The
+[IBM PC Pascal Compiler (August 1981)](https://www.bitsavers.org/pdf/ibm/pc/languages/IBM_Pascal_Compiler_Aug81.pdf)
+uses `$INDEXCK` for super arrays too and diagnoses a constant out-of-range
+array index at compile time (error 198). [Pascal/VS](https://www.bitsavers.org/pdf/ibm/370/pascal/SH20-6168-1_Pascal_VS_198112.pdf)
+uses `%CHECK SUBSCRIPT` instead and includes string subscripts. Neither
+historical contract implies that the unchecked cases above are safe.
 
 ## Integer widths
 

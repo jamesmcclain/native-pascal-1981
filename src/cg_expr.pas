@@ -1003,7 +1003,7 @@ BEGIN
         not a runtime upper bound; string and vector selectors retain their
         existing behavior. Compare the original index before narrowing or
         subtracting lo, once per selector. }
-      IF indexck AND (NOT is_nvptx_device) AND
+      IF indexck AND (NOT is_device_compiland) AND
          (TypeKind(cur_tid) = TK_ARRAY) AND (NOT types[cur_tid].is_super) THEN
       BEGIN
         unsigned_idx := (last_val_tk = TK_CHAR) OR
@@ -1035,8 +1035,8 @@ BEGIN
         LLVMPositionBuilderAtEnd(builder, bad_bb);
         { Diagnose the original, full-width index before forming any GEP.
           Pass its low 64 bits and signedness separately so WORD64 prints
-          as unsigned, just as the i128 guard compares it. DEVICE NVPTX
-          never enters this host-only path. }
+          as unsigned, just as the i128 guard compares it. DEVICE
+          compilands never enter this host-only path. }
         error_params := AllocPtrArray(4);
         SetPtrArrayElem(error_params, 0, i64ty);
         SetPtrArrayElem(error_params, 1, i32ty);
@@ -1063,7 +1063,7 @@ BEGIN
         lower bound using a constant of the index's own LLVM type and lets
         GEP take an index of whatever width it is, not just a plain
         16-bit INTEGER. Match that here instead of requiring TK_INTEGER. }
-      IF indexck AND (NOT is_nvptx_device) AND
+      IF indexck AND (NOT is_device_compiland) AND
          (TypeKind(cur_tid) = TK_ARRAY) AND (NOT types[cur_tid].is_super) THEN
       BEGIN
         { A checked fixed-array offset is nonnegative and at most 65535.
