@@ -933,7 +933,9 @@ VAR
   fi: INTEGER;
   file_handle, file_fcb, file_call_args, file_raw_buf, discard: ADRMEM;
   folded: INTEGER64;
-  indexck: BOOLEAN;
+  indexck, unsigned_idx: BOOLEAN;
+  idx128, i128ty, in_bounds, upper_ok, bad_bb, ok_bb: ADRMEM;
+  abort_fn, abort_fnty, discard_call: ADRMEM;
   deref_ptr_tid: INTEGER; { committed to last_desig_deref_ptr_tid only at
     the end, since index expressions below recurse through here }
 BEGIN
@@ -982,21 +984,61 @@ BEGIN
         AbortWith('codegen: an INDEX selector was applied to a non-array');
       { Per-selector state, never inherited from CodegenStmt. Keep this
         local across recursive CodegenExpr calls. Legacy ASTs omit the
-        snapshot and use the language default (on). Fixed-array guards
-        will consume this setting in the next implementation slice. }
+        snapshot and use the language default (on). }
       indexck := TRUE;
       IF HasKey(sel, 'indexck') THEN indexck := GetBool(sel, 'indexck');
       idx_expr := GetObj(sel, 'index_or_field');
       { A vector lane index is 0-based (types[].lo = 0). A constant lane
         index outside 0..lanes-1 is a compile-time error -- the same
         re-validation M0 does for the type itself, since this file also
-        lowers frozen ASTs the typechecker never saw. A variable index is
-        not range-checked; the INDEXCK snapshot does not yet emit guards
-        for arrays either. }
+        lowers frozen ASTs the typechecker never saw. A variable vector
+        index is not range-checked. }
       IF (TypeKind(cur_tid) = TK_VECTOR) AND FoldConstInt(idx_expr, folded) THEN
         IF (folded < 0) OR (folded > types[cur_tid].hi) THEN
           AbortWith('codegen: vector lane index out of range');
       idx_val := CodegenExpr(idx_expr);
+      { Only fixed ARRAY selectors are guarded. A SUPER ARRAY's stored hi
+        is a placeholder, not a runtime upper bound; string and vector
+        selectors retain their existing behavior. Compare the original
+        index before narrowing or subtracting lo, once per selector. }
+      IF indexck AND (NOT is_nvptx_device) AND
+         (TypeKind(cur_tid) = TK_ARRAY) AND (NOT types[cur_tid].is_super) THEN
+      BEGIN
+        unsigned_idx := (last_val_tk = TK_CHAR) OR
+          (last_val_tk = TK_BOOLEAN) OR (TypeKind(last_val_tk) = TK_ENUM) OR
+          IsUnsignedWordTk(last_val_tk);
+        IF NOT (unsigned_idx OR IsIntegerFamilyTk(last_val_tk)) THEN
+          AbortWith('codegen: an array index must be an ordinal type');
+        i128ty := LLVMIntTypeInContext(ctx, 128);
+        { Numeric literals can exceed vintage INTEGER's 16-bit width
+          while denoting legal WORD bounds (e.g. ARRAY[32768..32769]).
+          CodegenExpr has already evaluated the expression once; use its
+          mathematical constant value for the comparison when available. }
+        IF FoldConstInt(idx_expr, folded) THEN
+          idx128 := LLVMConstInt(i128ty, folded, 1)
+        ELSE IF unsigned_idx THEN
+          idx128 := LLVMBuildZExt(builder, idx_val, i128ty, MakeCStr(''))
+        ELSE
+          idx128 := LLVMBuildSExt(builder, idx_val, i128ty, MakeCStr(''));
+        in_bounds := LLVMBuildICmp(builder, LLVMIntSGE, idx128,
+          LLVMConstInt(i128ty, types[cur_tid].lo, 1), MakeCStr(''));
+        upper_ok := LLVMBuildICmp(builder, LLVMIntSLE, idx128,
+          LLVMConstInt(i128ty, types[cur_tid].hi, 1), MakeCStr(''));
+        in_bounds := LLVMBuildAnd(builder, in_bounds, upper_ok, MakeCStr(''));
+        bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('index.bad'));
+        ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('index.ok'));
+        LLVMBuildCondBr(builder, in_bounds, ok_bb, bad_bb);
+        LLVMPositionBuilderAtEnd(builder, bad_bb);
+        { The dedicated diagnostic belongs to the runtime-error slice.
+          For now abort without ever forming an out-of-bounds address. }
+        abort_fnty := LLVMFunctionType(voidty, NIL, 0, 0);
+        abort_fn := LLVMGetNamedFunction(modl, MakeCStr('abort'));
+        IF abort_fn = NIL THEN
+          abort_fn := LLVMAddFunction(modl, MakeCStr('abort'), abort_fnty);
+        discard_call := LLVMBuildCall2(builder, abort_fnty, abort_fn, NIL, 0, MakeCStr(''));
+        discard_call := LLVMBuildUnreachable(builder);
+        LLVMPositionBuilderAtEnd(builder, ok_bb);
+      END;
       { The reference codegen (resolve_designator_ptr_typed, types_map.py)
         accepts any integer-family index width -- it just subtracts the
         lower bound using a constant of the index's own LLVM type and lets

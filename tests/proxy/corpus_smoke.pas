@@ -97,7 +97,10 @@ BEGIN
   SysDirClose(dir);
   FOR i := 1 TO name_count - 1 DO BEGIN
     j := i;
-    WHILE (j > 0) AND StrLess(names[j], names[j - 1]) DO BEGIN swapped := names[j]; names[j] := names[j - 1]; names[j - 1] := swapped; j := j - 1; END;
+    WHILE j > 0 DO BEGIN
+      IF NOT StrLess(names[j], names[j - 1]) THEN BREAK;
+      swapped := names[j]; names[j] := names[j - 1]; names[j - 1] := swapped; j := j - 1;
+    END;
   END;
   IF (limit > 0) AND (limit < name_count) THEN name_count := limit;
 

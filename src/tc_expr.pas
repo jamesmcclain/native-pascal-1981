@@ -112,11 +112,12 @@ BEGIN
     BEGIN
       name := GetStr(node, 'name');
       si := LookupSymbol(name);
-      IF (si <> 0) AND symbols[si].has_const_int THEN
-      BEGIN
-        folded_value := symbols[si].const_int;
-        FoldConstInt := TRUE;
-      END;
+      IF si <> 0 THEN
+        IF symbols[si].has_const_int THEN
+        BEGIN
+          folded_value := symbols[si].const_int;
+          FoldConstInt := TRUE;
+        END;
     END;
   END
   ELSE IF nt = 'FuncCall' THEN
@@ -552,6 +553,7 @@ VAR
   args_arr, warg: ADRMEM;
   nargs, i, si: INTEGER32;
   atk: INTEGER;
+  valid_vec: BOOLEAN;
 BEGIN
   orig_name := GetStr(node, 'name');
   name := UpperStr(orig_name);
@@ -805,7 +807,9 @@ BEGIN
       ELSE
       BEGIN
         si := LookupType(GetStr(warg, 'name'));
-        IF (si = 0) OR (types[si].tk <> TK_VECTOR) THEN
+        valid_vec := FALSE;
+        IF si <> 0 THEN valid_vec := types[si].tk = TK_VECTOR;
+        IF NOT valid_vec THEN
         BEGIN
           AddError('VSPLAT type argument is not a VECTOR type');
           atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
@@ -842,7 +846,9 @@ BEGIN
       ELSE
       BEGIN
         si := LookupType(GetStr(warg, 'name'));
-        IF (si = 0) OR (types[si].tk <> TK_VECTOR) THEN
+        valid_vec := FALSE;
+        IF si <> 0 THEN valid_vec := types[si].tk = TK_VECTOR;
+        IF NOT valid_vec THEN
           AddError('VLOAD type argument is not a VECTOR type');
       END;
     END;

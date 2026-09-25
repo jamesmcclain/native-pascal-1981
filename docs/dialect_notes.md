@@ -367,10 +367,10 @@ when it is stored.
 procedure calls and `CASE` statements. A statement that does not record it,
 such as a `FOR` loop or a function call in an `IF` condition, uses the
 setting of the last assignment, call or `CASE` compiled before it. Array
-indexes and string capacities are still not range-checked, and `DEVICE`
-code is never checked.
+indexes are not checked by `$RANGECK` (see `$INDEXCK` below); string
+capacities are still unchecked, and `DEVICE` code is never checked.
 
-### Index-check metadata (guard implementation pending)
+### Fixed-array index checks (`$INDEXCK`, partial)
 
 The native parser records `indexck` on each INDEX selector from the first
 source token of that index expression (after `[` or a dimension comma).
@@ -378,9 +378,15 @@ The snapshot survives typechecking and is read locally by codegen; a legacy
 AST without it defaults to on. `{$INDEXCK-}` and `{$INDEXCK+}` affect subsequent
 snapshots independently of `$RANGECK`. A directive later within an index
 expression does not change that index's snapshot, but does affect subsequent
-indexes, including nested ones. No index guards are emitted yet: this is
-metadata plumbing only, not a change to array, string, vector or DEVICE
-runtime behavior. The Python reference AST does not carry this native field.
+indexes, including nested ones. Enabled checks guard each fixed `ARRAY`
+selector's declared bounds before forming its offset or address, for both
+reads and writes (including nested arrays, fields, and pointer selections).
+The index expression is evaluated once. `$INDEXCK-` suppresses these guards;
+`$RANGECK` does not control them. For now, a failed guard aborts without an
+index-specific diagnostic; that runtime error is pending. SUPER ARRAY dynamic
+bounds, STRING/LSTRING subscripts, VECTOR indexing and DEVICE code remain
+unchanged and are not covered by these guards. The Python reference AST does
+not carry this native field.
 
 ## Integer widths
 

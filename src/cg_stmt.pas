@@ -97,8 +97,12 @@ VAR
   i: INTEGER32;
 BEGIN
   i := nlabels;
-  WHILE (i >= 1) AND (labels[i].name <> name) DO
+  { Native AND is eager: do not read labels[0] when no label matches. }
+  WHILE i >= 1 DO
+  BEGIN
+    IF labels[i].name = name THEN BREAK;
     i := i - 1;
+  END;
   LookupLabel := i;
 END;
 
