@@ -389,12 +389,121 @@ BEGIN
     OR (idx_tk = TK_INTEGER64) OR (idx_tk = TK_WORD64);
 END;
 
+FUNCTION VecRuntimeErrFnTy(nparams: INTEGER): ADRMEM;
+VAR
+  ps: ADRMEM;
+BEGIN
+  IF nparams = 1 THEN
+  BEGIN
+    ps := AllocPtrArray(1);
+    SetPtrArrayElem(ps, 0, i32ty);
+    VecRuntimeErrFnTy := LLVMFunctionType(voidty, ps, 1, 0);
+  END
+  ELSE
+  BEGIN
+    ps := AllocPtrArray(6);
+    SetPtrArrayElem(ps, 0, i32ty);
+    SetPtrArrayElem(ps, 1, i64ty);
+    SetPtrArrayElem(ps, 2, i32ty);
+    SetPtrArrayElem(ps, 3, i32ty);
+    SetPtrArrayElem(ps, 4, i64ty);
+    SetPtrArrayElem(ps, 5, i64ty);
+    VecRuntimeErrFnTy := LLVMFunctionType(voidty, ps, 6, 0);
+  END;
+END;
+
+FUNCTION VecRuntimeErrFn(nm: Str255; nparams: INTEGER): ADRMEM;
+{ Lazily declared libpascalrt noreturn diagnostics (vector_bounds.c).
+  pas_vector_nil_error(i32 is_store) /
+  pas_vector_range_error(i32 is_store, i64 idx, i32 idx_unsigned,
+                         i32 lanes, i64 lo, i64 hi). }
+VAR
+  fn: ADRMEM;
+BEGIN
+  fn := LLVMGetNamedFunction(modl, MakeCStr(nm));
+  IF fn = NIL THEN
+    fn := LLVMAddFunction(modl, MakeCStr(nm), VecRuntimeErrFnTy(nparams));
+  VecRuntimeErrFn := fn;
+END;
+
+FUNCTION SuperLaneRangeCheck(arr_ptr: ADRMEM; arr_tid: INTEGER;
+                             idx_val: ADRMEM; idx_tk: INTEGER;
+                             n: INTEGER32; is_store: BOOLEAN): ADRMEM;
+{ Whole-lane-range check for a NEW-allocated SUPER ARRAY, emitted once
+  before any lane is touched: arr_ptr must be non-NIL, and
+  lo <= idx AND idx + (n-1) <= hi, where hi is the i64 upper bound NEW
+  stored 8 bytes in front of the data. The arithmetic is done in i128 so no
+  index width (WORD64 included) or bound can overflow the comparison. On
+  failure a cold block calls a noreturn runtime diagnostic. Returns the
+  i64 element offset idx - lo for the GEP. }
+VAR
+  i128ty, idx128, lo128, hi128, last128, bytep, hdrp, hi64: ADRMEM;
+  isnull, ok, okhi, nil_bb, hdr_bb, oob_bb, ok_bb, args, discard: ADRMEM;
+  op_code: INTEGER;
+BEGIN
+  IF is_store THEN op_code := 1 ELSE op_code := 0;
+  i128ty := LLVMIntTypeInContext(ctx, 128);
+  IF IsUnsignedWordTk(idx_tk) THEN
+    idx128 := LLVMBuildZExt(builder, idx_val, i128ty, MakeCStr(''))
+  ELSE
+    idx128 := LLVMBuildSExt(builder, idx_val, i128ty, MakeCStr(''));
+  lo128 := LLVMConstInt(i128ty, types[arr_tid].lo, 1);
+
+  bytep := LLVMBuildBitCast(builder, arr_ptr, i8ptrty, MakeCStr(''));
+  nil_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('vec.nil'));
+  hdr_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('vec.hdr'));
+  oob_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('vec.oob'));
+  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('vec.ok'));
+  isnull := LLVMBuildICmp(builder, LLVMIntEQ, bytep, LLVMConstPointerNull(i8ptrty), MakeCStr(''));
+  LLVMBuildCondBr(builder, isnull, nil_bb, hdr_bb);
+
+  LLVMPositionBuilderAtEnd(builder, nil_bb);
+  args := AllocPtrArray(1);
+  SetPtrArrayElem(args, 0, LLVMConstInt(i32ty, op_code, 0));
+  discard := LLVMBuildCall2(builder, VecRuntimeErrFnTy(1),
+                            VecRuntimeErrFn('pas_vector_nil_error', 1), args, 1, MakeCStr(''));
+  discard := LLVMBuildUnreachable(builder);
+
+  LLVMPositionBuilderAtEnd(builder, hdr_bb);
+  args := AllocPtrArray(1);
+  SetPtrArrayElem(args, 0, LLVMConstInt(i64ty, -8, 1));
+  hdrp := LLVMBuildGEP2(builder, i8ty, bytep, args, 1, MakeCStr(''));
+  hdrp := LLVMBuildBitCast(builder, hdrp, LLVMPointerType(i64ty, 0), MakeCStr(''));
+  hi64 := LLVMBuildLoad2(builder, i64ty, hdrp, MakeCStr(''));
+  hi128 := LLVMBuildSExt(builder, hi64, i128ty, MakeCStr(''));
+  last128 := LLVMBuildAdd(builder, idx128, LLVMConstInt(i128ty, n - 1, 0), MakeCStr(''));
+  ok := LLVMBuildICmp(builder, LLVMIntSGE, idx128, lo128, MakeCStr(''));
+  okhi := LLVMBuildICmp(builder, LLVMIntSLE, last128, hi128, MakeCStr(''));
+  ok := LLVMBuildAnd(builder, ok, okhi, MakeCStr(''));
+  LLVMBuildCondBr(builder, ok, ok_bb, oob_bb);
+
+  LLVMPositionBuilderAtEnd(builder, oob_bb);
+  args := AllocPtrArray(6);
+  SetPtrArrayElem(args, 0, LLVMConstInt(i32ty, op_code, 0));
+  SetPtrArrayElem(args, 1, LLVMBuildTrunc(builder, idx128, i64ty, MakeCStr('')));
+  IF IsUnsignedWordTk(idx_tk) THEN
+    SetPtrArrayElem(args, 2, LLVMConstInt(i32ty, 1, 0))
+  ELSE
+    SetPtrArrayElem(args, 2, LLVMConstInt(i32ty, 0, 0));
+  SetPtrArrayElem(args, 3, LLVMConstInt(i32ty, n, 0));
+  SetPtrArrayElem(args, 4, LLVMConstInt(i64ty, types[arr_tid].lo, 1));
+  SetPtrArrayElem(args, 5, hi64);
+  discard := LLVMBuildCall2(builder, VecRuntimeErrFnTy(6),
+                            VecRuntimeErrFn('pas_vector_range_error', 6), args, 6, MakeCStr(''));
+  discard := LLVMBuildUnreachable(builder);
+
+  LLVMPositionBuilderAtEnd(builder, ok_bb);
+  SuperLaneRangeCheck := LLVMBuildTrunc(builder,
+    LLVMBuildSub(builder, idx128, lo128, MakeCStr('')), i64ty, MakeCStr(''));
+END;
+
 FUNCTION CodegenVectorEltPtr(arr_ptr: ADRMEM; arr_tid: INTEGER;
                              idx_val: ADRMEM; idx_tk: INTEGER;
-                             vec_tid: INTEGER; idx_node: ADRMEM): ADRMEM;
+                             vec_tid: INTEGER; idx_node: ADRMEM;
+                             has_bound_hdr: BOOLEAN; is_store: BOOLEAN): ADRMEM;
 VAR
   n: INTEGER32;
-  folded: INTEGER64;
+  folded, lo64, last_ok: INTEGER64;
   offset, gep_idx: ADRMEM;
 BEGIN
   IF TypeKind(arr_tid) <> TK_ARRAY THEN
@@ -406,22 +515,36 @@ BEGIN
   IF NOT VecIdxTkOK(idx_tk) THEN
     AbortWith('codegen: VLOAD/VSTORE index must be an integer-family type');
   n := types[vec_tid].hi - types[vec_tid].lo + 1;
-  { Compile-time bounds check for a constant index only -- there is no
-    $INDEXCK machinery, plain array subscripts are unchecked too. }
-  IF FoldConstInt(idx_node, folded) THEN
-    IF (folded < types[arr_tid].lo) OR (folded + n - 1 > types[arr_tid].hi) THEN
-      AbortWith('codegen: VLOAD/VSTORE runs past the end of the array');
-  offset := LLVMBuildSub(builder, idx_val,
-                         LLVMConstInt(LLVMTypeForTk(idx_tk), types[arr_tid].lo, 1),
-                         MakeCStr(''));
+  lo64 := types[arr_tid].lo;
   IF types[arr_tid].is_super THEN
   BEGIN
+    { A SUPER ARRAY's upper bound exists only at run time, and only in
+      NEW's header in front of a p^ pointee. Anything else (a bare SUPER
+      variable, a VAR parameter, an ADS pointee, DEVICE code) has no bound
+      to check against, so it is rejected rather than lowered unchecked. }
+    IF NOT has_bound_hdr THEN
+      AbortWith('codegen: VLOAD/VSTORE of a SUPER ARRAY has no runtime bound; use a NEW-allocated pointer dereference (p^)');
+    IF FoldConstInt(idx_node, folded) THEN
+      IF folded < lo64 THEN
+        AbortWith('codegen: VLOAD/VSTORE index is below the array lower bound');
+    offset := SuperLaneRangeCheck(arr_ptr, arr_tid, idx_val, idx_tk, n, is_store);
     gep_idx := AllocPtrArray(1);
     SetPtrArrayElem(gep_idx, 0, offset);
     CodegenVectorEltPtr := LLVMBuildGEP2(builder, LLVMTypeForTk(arr_tid), arr_ptr, gep_idx, 1, MakeCStr(''));
   END
   ELSE
   BEGIN
+    { Compile-time bounds check for a constant index only -- there is no
+      $INDEXCK machinery, plain array subscripts are unchecked too. Written
+      as folded > hi - (n-1) so a huge constant cannot overflow. }
+    last_ok := types[arr_tid].hi;
+    last_ok := last_ok - (n - 1);
+    IF FoldConstInt(idx_node, folded) THEN
+      IF (folded < lo64) OR (folded > last_ok) THEN
+        AbortWith('codegen: VLOAD/VSTORE runs past the end of the array');
+    offset := LLVMBuildSub(builder, idx_val,
+                           LLVMConstInt(LLVMTypeForTk(idx_tk), types[arr_tid].lo, 1),
+                           MakeCStr(''));
     gep_idx := AllocPtrArray(2);
     SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
     SetPtrArrayElem(gep_idx, 1, offset);
@@ -431,11 +554,13 @@ END;
 
 FUNCTION CodegenVLoad(arr_ptr: ADRMEM; arr_tid: INTEGER;
                       idx_val: ADRMEM; idx_tk: INTEGER;
-                      vec_tid: INTEGER; idx_node: ADRMEM): ADRMEM;
+                      vec_tid: INTEGER; idx_node: ADRMEM;
+                      has_bound_hdr: BOOLEAN): ADRMEM;
 VAR
   eltp, ld: ADRMEM;
 BEGIN
-  eltp := CodegenVectorEltPtr(arr_ptr, arr_tid, idx_val, idx_tk, vec_tid, idx_node);
+  eltp := CodegenVectorEltPtr(arr_ptr, arr_tid, idx_val, idx_tk, vec_tid, idx_node,
+                              has_bound_hdr, FALSE);
   ld := LLVMBuildLoad2(builder, LLVMTypeForTk(vec_tid), eltp, MakeCStr(''));
   { Element (not vector) alignment: the array is only element-aligned and i
     is arbitrary, so a wider claim would be a lie. }
@@ -445,7 +570,8 @@ END;
 
 PROCEDURE CodegenVStore(arr_ptr: ADRMEM; arr_tid: INTEGER;
                         idx_val: ADRMEM; idx_tk: INTEGER;
-                        vec_val: ADRMEM; vec_tid: INTEGER; idx_node: ADRMEM);
+                        vec_val: ADRMEM; vec_tid: INTEGER; idx_node: ADRMEM;
+                        has_bound_hdr: BOOLEAN);
 { Per-lane extract + scalar store. A single `store <n x T>` would default
   to the vector's ABI alignment, an over-claim for an element-aligned
   array, and the [C] binding for LLVMBuildStore discards the instruction
@@ -458,7 +584,8 @@ VAR
 BEGIN
   elem_tid := types[vec_tid].elem_tid;
   n := types[vec_tid].hi - types[vec_tid].lo + 1;
-  base_eltp := CodegenVectorEltPtr(arr_ptr, arr_tid, idx_val, idx_tk, vec_tid, idx_node);
+  base_eltp := CodegenVectorEltPtr(arr_ptr, arr_tid, idx_val, idx_tk, vec_tid, idx_node,
+                                   has_bound_hdr, TRUE);
   elemty := LLVMTypeForTk(elem_tid);
   FOR k := 0 TO n - 1 DO
   BEGIN

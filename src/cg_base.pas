@@ -252,6 +252,7 @@ VAR
                           recently codegen'd expression is communicated back
                           through this global rather than threaded as a var
                           parameter through every call site. }
+  last_desig_deref_ptr_tid: INTEGER;
 
   { Unit dependency graph: built once per compiland by BuildUnitInitOrder
     from local_interfaces (each spliced INTERFACE header's own 'uses'

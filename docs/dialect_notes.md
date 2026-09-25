@@ -214,13 +214,29 @@ it from a routine, take its `SIZEOF` / `LOWER` / `UPPER`.
   reductions `VSUM` / `VPROD` / `VMIN` / `VMAX` (to a scalar element) are
   available. Float `VSUM` / `VPROD` are ordered.
 - **`v[i]`** reads and writes one lane. **`VLOAD(arr, i, V)`** and
-  **`VSTORE(arr, i, v)`** move `n` contiguous elements between an ordinary
-  `ARRAY OF T` and a vector (`T` must match exactly; a `BOOLEAN` mask has no
-  memory form and is rejected).
-- **Bounds are checked only for constant indices** — a constant `v[i]` or a
-  constant `VLOAD` / `VSTORE` offset that runs past the declared range is a
-  compile error; a variable index is unchecked, exactly as for arrays
+  **`VSTORE(arr, i, v)`** move `n` contiguous elements `arr[i .. i+n-1]`
+  between an `ARRAY OF T` and a vector (`T` must match exactly; a `BOOLEAN`
+  mask has no memory form and is rejected). `arr` is an array variable or
+  any array-typed designator — `p^`, `r.buf^`, `r.fixed_arr` — addressed in
+  place, never copied. Evaluation order is array address, index, (for
+  `VSTORE`) value, then the bounds check, then the memory access.
+- **Fixed-bound arrays: constant indices only.** A constant `v[i]` or a
+  constant `VLOAD` / `VSTORE` offset whose lanes leave the declared range
+  is a compile error; a variable index is unchecked, exactly as for arrays
   (`$INDEXCK` does not apply).
+- **`SUPER ARRAY`: whole-lane-range run-time check.** The operand must be
+  the pointee of a `NEW(p, ub)`-allocated plain `^` pointer (`p^`), whose
+  upper bound `NEW` stores in front of the data (the value `UPPER(p^)`
+  reads). Once, before any lane is loaded or stored, the compiler checks
+  `p <> NIL`, `i >= LOWER(p^)` and `i + n - 1 <= UPPER(p^)` in 128-bit
+  arithmetic (a `WORD` index is unsigned), and on failure prints
+  `runtime error: VLOAD|VSTORE index I with N lanes is outside array bounds
+  LO..HI` (or `... through a NIL pointer`) to stderr and calls `abort()`.
+  A constant index below the static lower bound is still a compile error.
+  A bare `SUPER ARRAY` variable, a VAR parameter, an `ADS` pointee, or any
+  DEVICE-code operand has no run-time bound and is rejected at compile
+  time. Not detected: a dangling pointer after `DISPOSE`, or any other
+  pointer not produced by `NEW`.
 - **The type-name argument** (`VSPLAT`, `VLOAD`, `VSTORE`) names a declared
   `VECTOR` type; it is not an expression.
 - **ISA selection** is `--target-cpu` / `--target-features` on the driver

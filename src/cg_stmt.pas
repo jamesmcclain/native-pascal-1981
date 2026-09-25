@@ -1267,26 +1267,22 @@ END;
 PROCEDURE CodegenVStoreStmt(args: ADRMEM);
 { VSTORE(arr, i, v): store v's lanes into arr[i .. i+n-1]. Statement form
   (like SYNCTHREADS / DEVCOPYTO); the wide store itself is in
-  cg_expr_vector. arr must be a bare array variable. }
+  cg_expr_vector. arr is an array variable or designator (see
+  VectorArrayOperand). Evaluation order: array address, index, value, then
+  the (single, whole-range) bounds check, then the lane stores. }
 VAR
-  a0, idx_v, vec_v: ADRMEM;
-  symi: INTEGER32;
-  idx_tk, vec_tk: INTEGER;
+  arr_v, idx_v, vec_v: ADRMEM;
+  arr_tid, idx_tk, vec_tk: INTEGER;
+  has_hdr: BOOLEAN;
 BEGIN
   IF ArrSize(args) <> 3 THEN
     AbortWith('codegen: VSTORE expects (array, index, vector)');
-  a0 := ArrItem(args, 0);
-  IF NodeType(a0) <> 'Identifier' THEN
-    AbortWith('codegen: VSTORE first argument must be an array variable');
-  symi := LookupSym(GetStr(a0, 'name'));
-  IF symi = 0 THEN
-    AbortWith2('codegen: undefined variable: ', GetStr(a0, 'name'));
+  arr_v := VectorArrayOperand(ArrItem(args, 0), arr_tid, has_hdr);
   idx_v := CodegenExpr(ArrItem(args, 1)); idx_tk := last_val_tk;
   vec_v := CodegenExpr(ArrItem(args, 2)); vec_tk := last_val_tk;
   IF TypeKind(vec_tk) <> TK_VECTOR THEN
     AbortWith('codegen: VSTORE third argument must be a VECTOR value');
-  CodegenVStore(symbols[symi].llvm_val, symbols[symi].tk,
-                idx_v, idx_tk, vec_v, vec_tk, ArrItem(args, 1));
+  CodegenVStore(arr_v, arr_tid, idx_v, idx_tk, vec_v, vec_tk, ArrItem(args, 1), has_hdr);
 END;
 
 PROCEDURE CodegenProcCallStmt(stmt: ADRMEM);
