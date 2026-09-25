@@ -358,12 +358,27 @@ BEGIN
       CheckDesignator := TK_UNKNOWN;
       RETURN;
     END;
-    tk := symbols[si].tk;
-    aux := symbols[si].aux;
-    aux2 := symbols[si].aux2;
-    aux3 := symbols[si].aux3;
-    current_idx_tk := symbols[si].idx_tk;
-    super_value := symbols[si].is_super;
+    IF symbols[si].kind = 'FUNC' THEN
+    BEGIN
+      { A function named without an argument list stands for its call's
+        result (the symbol's own tk is TK_UNKNOWN). Assignment to the
+        result inside the function's body never reaches here: AssignStmt
+        handles that through cur_func_ret_tk. }
+      tk := symbols[si].ret_tk;
+      aux := symbols[si].ret_aux;
+      aux2 := symbols[si].ret_aux2;
+      aux3 := symbols[si].ret_aux3;
+      current_idx_tk := symbols[si].ret_idx_tk;
+      super_value := symbols[si].ret_is_super;
+    END
+    ELSE BEGIN
+      tk := symbols[si].tk;
+      aux := symbols[si].aux;
+      aux2 := symbols[si].aux2;
+      aux3 := symbols[si].aux3;
+      current_idx_tk := symbols[si].idx_tk;
+      super_value := symbols[si].is_super;
+    END;
   END;
   sel_arr := GetObj(node, 'selectors');
   nsel := cJSON_GetArraySize(sel_arr);
@@ -992,6 +1007,8 @@ BEGIN
         AddError('Undefined identifier');
         CheckExpr := TK_UNKNOWN;
       END
+      ELSE IF symbols[si].kind = 'FUNC' THEN
+        CheckExpr := symbols[si].ret_tk
       ELSE
         CheckExpr := symbols[si].tk;
     END;
@@ -1082,9 +1099,6 @@ BEGIN
       IF si <> 0 THEN
         IF symbols[si].kind = 'FUNC' THEN
         BEGIN
-          { A bare function name checks as TK_UNKNOWN; here it stands for
-            the call's result. }
-          IF ot = TK_UNKNOWN THEN ot := symbols[si].ret_tk;
           bound_subrange := symbols[si].ret_aux = -1;
           bound_super := symbols[si].ret_is_super;
           IF ot = TK_SET THEN bound_base_tk := symbols[si].ret_aux
