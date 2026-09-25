@@ -267,6 +267,22 @@ if [ -e "$work_dir/aborted.ll" ]; then
   echo 'FAIL: a -S compile whose stage aborted left its output file' >&2
   fail=$((fail + 1))
 fi
+# A failed stage removes only an output that this run created. A path that
+# already existed (the user's file, a symlink, or a device such as
+# /dev/null) stays.
+printf 'old\n' > "$work_dir/existing.ll"
+expect_status 23 env "${fail_env[@]}" "$DRIVER" -S "$source_file" -o "$work_dir/existing.ll"
+if [ ! -e "$work_dir/existing.ll" ]; then
+  echo 'FAIL: a failed -S compile removed an output file that already existed' >&2
+  fail=$((fail + 1))
+fi
+: > "$work_dir/link-target.ll"
+ln -s "$work_dir/link-target.ll" "$work_dir/link.ll"
+expect_status 23 env "${fail_env[@]}" "$DRIVER" -S "$source_file" -o "$work_dir/link.ll"
+if [ ! -L "$work_dir/link.ll" ] || [ ! -e "$work_dir/link-target.ll" ]; then
+  echo 'FAIL: a failed -S compile removed a symlink output or its target' >&2
+  fail=$((fail + 1))
+fi
 expect_status 134 env "${abort_env[@]}" "PASCAL1981_CC=$stage_dir/fake-clang" "PASCAL1981_FAKE_CLANG_LOG=$work_dir/abort-clang.log" "$DRIVER" -c "$source_file" -o "$work_dir/aborted.o"
 if [ -e "$work_dir/abort-clang.log" ]; then
   echo 'FAIL: the driver ran clang after a stage aborted' >&2

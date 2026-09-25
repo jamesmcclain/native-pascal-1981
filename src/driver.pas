@@ -226,14 +226,26 @@ END;
 FUNCTION RunPipeline(source_name, ir_name: ADRMEM): CINT;
 VAR
   rc: CINT;
+  created: BOOLEAN;
 BEGIN
   in_fd := open(source_name, 0, 0);
   IF in_fd < 0 THEN BEGIN RunPipeline := 1; END
   ELSE
   BEGIN
-    { A NIL ir_name means standard output (--pretty-print without -o). }
+    { A NIL ir_name means standard output (--pretty-print without -o).
+      Otherwise try O_WRONLY|O_CREAT|O_EXCL first, so that a failed run
+      removes the output only when this run created it. A path that already
+      exists (a device such as /dev/null, a symlink, the user's own file,
+      or a mkstemps temporary) is opened with O_WRONLY|O_CREAT|O_TRUNC and
+      left in place. }
+    created := FALSE;
     IF ir_name = NIL THEN out_fd := dup(1)
-    ELSE out_fd := open(ir_name, 577, 420);
+    ELSE
+    BEGIN
+      out_fd := open(ir_name, 193, 420);
+      IF out_fd >= 0 THEN created := TRUE
+      ELSE out_fd := open(ir_name, 577, 420);
+    END;
     IF out_fd < 0 THEN BEGIN close(in_fd); RunPipeline := 1; END
     ELSE
     BEGIN
@@ -272,10 +284,9 @@ BEGIN
         IF rc = 0 THEN rc := ExitCodeOf(status2);
         IF rc = 0 THEN rc := ExitCodeOf(status3);
         IF rc = 0 THEN rc := ExitCodeOf(status4);
-        { The output was opened and truncated above, so a failed stage leaves
-          a partial or empty file there. Remove it: with -S, --emit-ptx, or
-          --pretty it is the user's output file. }
-        IF (rc <> 0) AND (ir_name <> NIL) THEN unlink(ir_name);
+        { A failed stage leaves a partial or empty file. Remove it only if
+          this run created it; see the open above. }
+        IF (rc <> 0) AND created THEN unlink(ir_name);
         RunPipeline := rc;
       END;
     END;
