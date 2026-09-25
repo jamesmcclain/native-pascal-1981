@@ -1010,11 +1010,13 @@ BEGIN
         IF NOT (unsigned_idx OR IsIntegerFamilyTk(last_val_tk)) THEN
           AbortWith('codegen: an array index must be an ordinal type');
         i128ty := LLVMIntTypeInContext(ctx, 128);
-        { Numeric literals can exceed vintage INTEGER's 16-bit width
-          while denoting legal WORD bounds (e.g. ARRAY[32768..32769]).
-          CodegenExpr has already evaluated the expression once; use its
-          mathematical constant value for the comparison when available. }
-        IF FoldConstInt(idx_expr, folded) THEN
+        { Only an INTEGER constant expression may have lost its mathematical
+          value when CodegenExpr materialized it as vintage i16 (e.g. 40000).
+          Never substitute a signed INTEGER64 fold for a typed WORD/CHAR/enum
+          value: in particular MAXWORD64 must zero-extend its live i64 bits.
+          The expression itself was evaluated exactly once above. }
+        IF (last_val_tk = TK_INTEGER) AND FoldConstInt(idx_expr, folded) AND
+           ((folded < -32768) OR (folded > 32767)) THEN
           idx128 := LLVMConstInt(i128ty, folded, 1)
         ELSE IF unsigned_idx THEN
           idx128 := LLVMBuildZExt(builder, idx_val, i128ty, MakeCStr(''))
@@ -1044,7 +1046,18 @@ BEGIN
         lower bound using a constant of the index's own LLVM type and lets
         GEP take an index of whatever width it is, not just a plain
         16-bit INTEGER. Match that here instead of requiring TK_INTEGER. }
-      IF (last_val_tk = TK_CHAR) OR (last_val_tk = TK_BOOLEAN) OR
+      IF indexck AND (NOT is_nvptx_device) AND
+         (TypeKind(cur_tid) = TK_ARRAY) AND (NOT types[cur_tid].is_super) THEN
+      BEGIN
+        { A checked fixed-array offset is nonnegative and at most 65535.
+          Reuse the already-checked full value: GEP treats its index as
+          signed, so subtracting in i8/i16 would turn a legal WORD8/WORD
+          offset (e.g. 255) into a negative address. }
+        offset := LLVMBuildSub(builder,
+          LLVMBuildTrunc(builder, idx128, i64ty, MakeCStr('')),
+          LLVMConstInt(i64ty, types[cur_tid].lo, 1), MakeCStr(''));
+      END
+      ELSE IF (last_val_tk = TK_CHAR) OR (last_val_tk = TK_BOOLEAN) OR
          (TypeKind(last_val_tk) = TK_ENUM) THEN
       BEGIN
         { A CHAR (i8), BOOLEAN (i1) or enumeration (i32) index is unsigned:
