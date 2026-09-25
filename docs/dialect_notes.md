@@ -300,7 +300,8 @@ intersection or difference whose operands share a base type keeps that base,
 with bounds that cover both operands' declared ranges (`UPPER(bs + bs)` is
 TRUE for a `SET OF BOOLEAN`, and `SET OF 3..9 + SET OF 1..5` has bounds
 1..9); mixing bases, or mixing in a constructor, gives the generic set. A
-named set value or function result retains its declared bounds. String literals have no declared fixed capacity and are
+named set value or function result retains its declared bounds, including a
+parameterless function named without an argument list (`UPPER(getset)`). String literals have no declared fixed capacity and are
 rejected as bound operands.
 
 Static operands and `LOWER` use **only the type, not the value**, and never

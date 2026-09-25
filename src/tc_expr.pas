@@ -1073,6 +1073,28 @@ BEGIN
     END;
     IF (NodeType(operand_node) = 'BinOp') AND (ot = TK_SET) THEN
       bound_base_tk := last_set_base_tk;
+    { A parameterless function named without an argument list: its bounds
+      are its result type's, as for a FuncCall below. }
+    IF ((NodeType(operand_node) = 'Identifier') OR
+        ((NodeType(operand_node) = 'Designator') AND (bound_n = 0))) THEN
+    BEGIN
+      si := LookupSymbol(GetStr(operand_node, 'name'));
+      IF si <> 0 THEN
+        IF symbols[si].kind = 'FUNC' THEN
+        BEGIN
+          { A bare function name checks as TK_UNKNOWN; here it stands for
+            the call's result. }
+          IF ot = TK_UNKNOWN THEN ot := symbols[si].ret_tk;
+          bound_subrange := symbols[si].ret_aux = -1;
+          bound_super := symbols[si].ret_is_super;
+          IF ot = TK_SET THEN bound_base_tk := symbols[si].ret_aux
+          ELSE IF ot = TK_ARRAY THEN
+          BEGIN
+            bound_base_tk := symbols[si].ret_idx_tk;
+            bound_idx_unknown := FALSE;
+          END;
+        END;
+    END;
     IF NodeType(operand_node) = 'FuncCall' THEN
     BEGIN
       si := LookupSymbol(GetStr(operand_node, 'name'));

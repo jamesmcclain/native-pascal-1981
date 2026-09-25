@@ -1391,6 +1391,18 @@ BEGIN
   END;
 END;
 
+FUNCTION BareFunctionResultType(name: Str255): INTEGER;
+{ The result type of a function named without an argument list, or
+  TK_UNKNOWN when the name is not a function. }
+VAR
+  ri: INTEGER32;
+BEGIN
+  BareFunctionResultType := TK_UNKNOWN;
+  ri := LookupRoutine(name);
+  IF ri <> 0 THEN
+    IF RoutineIsFunc(ri) THEN BareFunctionResultType := routines[ri].ret_tk;
+END;
+
 FUNCTION BoundOperandType(node: ADRMEM): INTEGER;
 { Resolve the operand without generating any IR: LOWER and all static
   bounds must not execute calls or index expressions. }
@@ -1401,7 +1413,15 @@ VAR
 BEGIN
   nt := NodeType(node);
   IF (nt = 'Designator') OR (nt = 'PostfixExpr') THEN
-    BoundOperandType := StaticDesignatorType(node)
+  BEGIN
+    BoundOperandType := StaticDesignatorType(node);
+    { A bare name that is no variable may be a parameterless function
+      called without parentheses (UPPER(getset)); its bounds are its
+      result type's, and the call is not executed. }
+    IF (nt = 'Designator') AND (ArrSize(GetObj(node, 'selectors')) = 0) AND
+       (LookupSym(GetStr(node, 'name')) = 0) THEN
+      BoundOperandType := BareFunctionResultType(GetStr(node, 'name'));
+  END
   ELSE IF nt = 'Identifier' THEN
   BEGIN
     name := GetStr(node, 'name');
@@ -1410,7 +1430,7 @@ BEGIN
     ELSE BEGIN
       si := LookupConst(name);
       IF si <> 0 THEN BoundOperandType := const_tbl[si].enum_tid
-      ELSE BoundOperandType := TK_UNKNOWN;
+      ELSE BoundOperandType := BareFunctionResultType(name);
     END;
   END
   ELSE IF nt = 'FuncCall' THEN
