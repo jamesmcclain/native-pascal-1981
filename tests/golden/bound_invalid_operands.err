@@ -1,0 +1,9 @@
+Type checking failed:
+Unknown field
+Dereference of non-pointer value
+UPPER/LOWER requires an array designator
+UPPER/LOWER indexed operand is not supported
+UPPER/LOWER requires an array designator
+UPPER/LOWER indexed operand is not supported
+UPPER/LOWER requires an array designator
+Error: Failed to parse input AST JSON

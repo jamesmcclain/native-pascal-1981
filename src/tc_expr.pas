@@ -861,8 +861,8 @@ VAR
   left_node, right_node, operand_node, type_node: ADRMEM;
   lt, rt, ot, op_kind, aux, aux2, aux3, idx_tk: INTEGER;
   op: Str255;
-  elems_arr, elem_node: ADRMEM;
-  n_elems, ei: INTEGER32;
+  elems_arr, elem_node, bound_selectors, bound_sel: ADRMEM;
+  n_elems, ei, bound_n: INTEGER32;
   folded_value: INTEGER64;
 BEGIN
   expr_depth := expr_depth + 1;
@@ -964,6 +964,37 @@ BEGIN
   END
   ELSE IF nt = 'Designator' THEN
     CheckExpr := CheckDesignator(node)
+  ELSE IF (nt = 'UpperExpr') OR (nt = 'LowerExpr') THEN
+  BEGIN
+    operand_node := GetObj(node, 'operand');
+    bound_selectors := GetObj(operand_node, 'selectors');
+    bound_n := cJSON_GetArraySize(bound_selectors);
+    { The bound syntax accepts field and dereference chains, not indexed
+      or general expressions. CheckDesignator still diagnoses bad fields
+      and selector kinds by the ordinary path. }
+    FOR ei := 0 TO bound_n - 1 DO
+    BEGIN
+      bound_sel := cJSON_GetArrayItem(bound_selectors, ei);
+      IF GetStr(bound_sel, 'kind') = 'INDEX' THEN
+        AddError('UPPER/LOWER indexed operand is not supported');
+    END;
+    ot := CheckDesignator(operand_node);
+    IF (ot = TK_ARRAY) OR (ot = TK_STRING) OR (ot = TK_VECTOR) THEN
+    BEGIN
+      IF bound_n > 0 THEN
+        op := GetStr(cJSON_GetArrayItem(bound_selectors, bound_n - 1), 'kind')
+      ELSE
+        op := '';
+      IF op = 'DEREF' THEN
+        CheckExpr := TK_INTEGER64
+      ELSE
+        CheckExpr := TK_INTEGER;
+    END
+    ELSE BEGIN
+      IF ot <> TK_UNKNOWN THEN AddError('UPPER/LOWER requires an array designator');
+      CheckExpr := TK_UNKNOWN;
+    END;
+  END
   ELSE IF nt = 'FuncCall' THEN
     CheckExpr := CheckFuncCall(node)
   ELSE IF nt = 'RetypeExpr' THEN

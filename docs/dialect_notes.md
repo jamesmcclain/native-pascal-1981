@@ -275,6 +275,29 @@ it from a routine, take its `SIZEOF` / `LOWER` / `UPPER`.
   compiles may use the syntax. See
   [`bootstrap_subset.md`](bootstrap_subset.md).
 
+## Bound designators **[native]**
+
+`LOWER` and `UPPER` accept an identifier-rooted designator with record-field
+selectors and pointer dereferences: `p^`, `h.data^`, or `h.next^.data^`.
+For a final dereference of a `^SUPER ARRAY`, `UPPER` reads the actual upper
+bound in that selected `NEW` allocation's header; `LOWER` is its declared
+lower bound and does not evaluate the pointer. Fixed arrays, STRING, LSTRING
+and VECTOR retain their static bounds, also without evaluating the designator.
+An undereferenced pointer is not an array. Indexed bound operands (`a[i]^`),
+function results, WITH-qualified names and arbitrary expressions are outside
+this limited designator contract; this is narrower than the 1981 manual's
+`(expression)` rule. A NIL final pointer has no valid dynamic upper bound:
+`UPPER(p^)` currently performs an unchecked header load (no defined runtime
+error), including when `p` comes from a field. `LOWER(p^)` needs no load and
+can return its static bound even when the pointer is NIL. Ordinary
+pointer dereferences elsewhere follow their existing checks; this change
+introduces no new NIL policy.
+
+The Python reference parser accepts only `identifier ["^"]` here. Field
+selectors in a bound operand are intentionally native-only. Do not put them
+in the parser `should_pass` parity corpus; `make test-reference-parity` checks
+that corpus against the Python reference, not this deliberate extension.
+
 ## Integer widths
 
 `INTEGER` and `WORD` are **[both]**. Every wide type in this table is

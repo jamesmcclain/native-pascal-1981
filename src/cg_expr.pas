@@ -1346,8 +1346,9 @@ VAR
   consti: INTEGER32;
   routi: INTEGER32;
   ch: Str255;
-  res, addr, super_ptr, super_header: ADRMEM;
+  res, addr, super_ptr, super_header, bound_operand, bound_sels: ADRMEM;
   result_tid: INTEGER;
+  bound_n: INTEGER32;
   target_item, target_str, sizeof_synth: ADRMEM;
   sizeof_bytes: INTEGER32;
   call_args: ADRMEM;
@@ -1560,28 +1561,31 @@ BEGIN
     res := CodegenUnaryOp(GetStr(node, 'op'), GetObj(node, 'operand'))
   ELSE IF (nt = 'UpperExpr') OR (nt = 'LowerExpr') THEN
   BEGIN
-    { LOWER/UPPER bound resolution, scoped to the fixed-bound cases this
-      file's type system can represent: TYPE-declared ARRAY (static
-      lo/hi), STRING(n) (lower=1, upper=n), LSTRING(n) (lower=0,
-      upper=n -- the declared capacity, not the runtime length: the Python
-      reference resolves the same static bound for these, see exprs.py's
-      NamedType/ResolvedStringType/ResolvedLStringType branches). The
-      dereferenced form UPPER(p^)/LOWER(p^) -- bounds of a pointee, with a
-      dynamic upper bound for heap "super arrays" read from NEW's bound
-      header -- is not supported: this file has neither super arrays nor
-      multi-dimension arrays yet. }
-    nm := GetStr(node, 'name');
-    IF GetBool(node, 'deref') THEN
+    { Type-only walk for static bounds; only a final dereference of a
+      SUPER ARRAY pointer needs its selected allocation at run time. }
+    bound_operand := GetObj(node, 'operand');
+    bound_sels := GetObj(bound_operand, 'selectors');
+    bound_n := ArrSize(bound_sels);
+    FOR symi := 0 TO bound_n - 1 DO
+      IF GetStr(ArrItem(bound_sels, symi), 'kind') = 'INDEX' THEN
+        AbortWith('codegen: UPPER/LOWER indexed operand is not supported');
+    result_tid := StaticDesignatorType(bound_operand);
+    IF result_tid = TK_UNKNOWN THEN
+      AbortWith('codegen: invalid UPPER/LOWER designator');
+    { ArrItem is only called on a nonempty selector list. }
+    IF bound_n > 0 THEN
+      nm := GetStr(ArrItem(bound_sels, bound_n - 1), 'kind')
+    ELSE
+      nm := '';
+    IF nm = 'DEREF' THEN
     BEGIN
-      symi := LookupSym(nm);
-      IF (symi = 0) OR (TypeKind(symbols[symi].tk) <> TK_POINTER) OR
-         (NOT types[types[symbols[symi].tk].elem_tid].is_super) THEN
+      IF (TypeKind(result_tid) <> TK_ARRAY) OR (NOT types[result_tid].is_super) THEN
         AbortWith('codegen: UPPER/LOWER dereference requires a SUPER ARRAY pointer');
       IF nt = 'LowerExpr' THEN
-        res := LLVMConstInt(i16ty, types[types[symbols[symi].tk].elem_tid].lo, 1)
+        res := LLVMConstInt(i16ty, types[result_tid].lo, 1)
       ELSE
       BEGIN
-        super_ptr := LLVMBuildLoad2(builder, LLVMTypeForTk(symbols[symi].tk), symbols[symi].llvm_val, MakeCStr(''));
+        super_ptr := ComputeDesignatorAddress(bound_operand);
         super_ptr := LLVMBuildBitCast(builder, super_ptr, i8ptrty, MakeCStr(''));
         super_header := LLVMBuildGEP2(builder, i8ty, super_ptr,
           MakeArgs1(LLVMConstInt(i64ty, -8, 1)), 1, MakeCStr(''));
@@ -1590,46 +1594,18 @@ BEGIN
       END;
       last_val_tk := TK_INTEGER64;
     END
-    ELSE
-    BEGIN
-    symi := LookupSym(nm);
-    IF symi = 0 THEN
-    BEGIN
-      AbortWith2('codegen: undefined variable: ', nm);
-      res := NIL;
-    END
-    ELSE
-    BEGIN
-      result_tid := symbols[symi].tk;
-      IF TypeKind(result_tid) = TK_ARRAY THEN
+    ELSE BEGIN
+      IF (TypeKind(result_tid) = TK_ARRAY) OR (TypeKind(result_tid) = TK_STRING)
+         OR (TypeKind(result_tid) = TK_LSTRING) OR (TypeKind(result_tid) = TK_VECTOR) THEN
       BEGIN
         IF nt = 'UpperExpr' THEN res := LLVMConstInt(i16ty, types[result_tid].hi, 1)
         ELSE res := LLVMConstInt(i16ty, types[result_tid].lo, 1);
       END
-      ELSE IF TypeKind(result_tid) = TK_STRING THEN
-      BEGIN
-        IF nt = 'UpperExpr' THEN res := LLVMConstInt(i16ty, types[result_tid].hi, 1)
-        ELSE res := LLVMConstInt(i16ty, 1, 1);
-      END
-      ELSE IF TypeKind(result_tid) = TK_LSTRING THEN
-      BEGIN
-        IF nt = 'UpperExpr' THEN res := LLVMConstInt(i16ty, types[result_tid].hi, 1)
-        ELSE res := LLVMConstInt(i16ty, 0, 1);
-      END
-      ELSE IF TypeKind(result_tid) = TK_VECTOR THEN
-      BEGIN
-        { lo/hi were registered as 0/lanes-1, so the table read is identical
-          to the TK_ARRAY case. }
-        IF nt = 'UpperExpr' THEN res := LLVMConstInt(i16ty, types[result_tid].hi, 1)
-        ELSE res := LLVMConstInt(i16ty, types[result_tid].lo, 1);
-      END
-      ELSE
-      BEGIN
-        AbortWith2('codegen: UPPER/LOWER not supported for variable: ', nm);
+      ELSE BEGIN
+        AbortWith('codegen: UPPER/LOWER requires an array designator');
         res := NIL;
       END;
       last_val_tk := TK_INTEGER;
-    END;
     END;
   END
   ELSE IF nt = 'RetypeExpr' THEN

@@ -483,15 +483,8 @@ BEGIN
   BEGIN
     BEGIN RelayTokenTrivia; pos := pos + 1; END;
     Expect('LPAREN');
-    name := CurLex;
-    Expect('IDENTIFIER');
     node := CreateTriviaNode('UpperExpr');
-    AddStringField(node, 'name', name);
-    { UPPER(p^): bound of the pointee -- for a heap super array this is the
-      dynamic upper bound recorded by long-form NEW. Native codegen.pas
-      rejects this deref form (no super arrays there yet), but parsing it
-      is still correct regardless of what codegen later does with it. }
-    AddBoolField(node, 'deref', Match('POINTER'));
+    AddField(node, 'operand', ParseDesignator);
     Expect('RPAREN');
     ParseFactor := node;
   END
@@ -499,11 +492,8 @@ BEGIN
   BEGIN
     BEGIN RelayTokenTrivia; pos := pos + 1; END;
     Expect('LPAREN');
-    name := CurLex;
-    Expect('IDENTIFIER');
     node := CreateTriviaNode('LowerExpr');
-    AddStringField(node, 'name', name);
-    AddBoolField(node, 'deref', Match('POINTER'));
+    AddField(node, 'operand', ParseDesignator);
     Expect('RPAREN');
     ParseFactor := node;
   END

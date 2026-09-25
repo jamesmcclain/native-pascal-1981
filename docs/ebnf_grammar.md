@@ -83,7 +83,12 @@ simple_expression = [ "+" | "-" ] term { ( "+" | "-" | "OR" | "XOR" ) term } ;
 term = factor { ( "*" | "/" | "DIV" | "MOD" | "AND" ) factor } ;
 factor = constant | designator | identifier "(" [ expression_list ] ")" | "RETYPE" "(" identifier "," expression ")"
        | "NOT" factor | "(" expression ")" | set_constructor | "ADR" identifier
-       | "SIZEOF" "(" ( identifier | type ) ")" | ( "LOWER" | "UPPER" ) "(" identifier [ "^" ] ")" ;
+       | "SIZEOF" "(" ( identifier | type ) ")" | ( "LOWER" | "UPPER" ) "(" bound_designator ")" ;
+bound_designator = identifier { "." identifier | "^" } ;
+(* Bound operands may select nested record fields and dereference pointers;
+   indexed selectors and arbitrary expressions are not in this bound syntax.
+   Static array, STRING, LSTRING and VECTOR designators retain their bounds;
+   dynamic bounds require a final dereference of a SUPER ARRAY pointer. *)
 designator = identifier { "[" expression { "," expression } "]" | "." identifier | "^" } ;
 with_designator = identifier { "[" expression "]" | "." identifier | "^" } ;
 set_constructor = "[" [ set_element { "," set_element } ] "]" ;

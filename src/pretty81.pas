@@ -409,14 +409,12 @@ BEGIN
   ELSE IF nt = 'LowerExpr' THEN
   BEGIN
     Out('LOWER(');
-    IF GetBool(node, 'deref') THEN Out(Ch('^'));
-    Out(GetStr(node, 'name')); Out(Ch(')'));
+    PrintExpr(GetObj(node, 'operand')); Out(Ch(')'));
   END
   ELSE IF nt = 'UpperExpr' THEN
   BEGIN
     Out('UPPER(');
-    IF GetBool(node, 'deref') THEN Out(Ch('^'));
-    Out(GetStr(node, 'name')); Out(Ch(')'));
+    PrintExpr(GetObj(node, 'operand')); Out(Ch(')'));
   END
   ELSE
   BEGIN
