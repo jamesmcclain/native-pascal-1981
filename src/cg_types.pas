@@ -506,6 +506,90 @@ BEGIN
   END;
 END;
 
+PROCEDURE EmitSubrangeCheck(v: ADRMEM; from_tid, to_tid: INTEGER);
+{ $RANGECK for a store into a subrange: when to_tid is a subrange and the
+  check is on, compare v (a value of the ordinal type from_tid, extended by
+  its own signedness) against the declared lo..hi and call the noreturn
+  pas_subrange_error (runtime/subrange.c) from a cold block if it is
+  outside. The compare is done in i128 so no source width, WORD64 included,
+  can wrap into range. Leaves the builder in the in-range block. Device
+  code has no host runtime to call, so it is not checked. }
+VAR
+  i128ty, v128, ok, okhi, bad_bb, ok_bb, args, ps, fnty, fn, discard: ADRMEM;
+  fk: INTEGER;
+  is_unsigned: BOOLEAN;
+BEGIN
+  IF NOT cur_rangeck THEN RETURN;
+  IF is_nvptx_device THEN RETURN;
+  IF to_tid < 14 THEN RETURN;
+  IF NOT types[to_tid].is_subrange THEN RETURN;
+  fk := TypeKind(from_tid);
+  IF (fk = TK_CHAR) OR (fk = TK_BOOLEAN) THEN is_unsigned := TRUE
+  ELSE IF fk = TK_ENUM THEN is_unsigned := FALSE
+  ELSE IF IsIntegerFamilyTk(fk) THEN is_unsigned := IsUnsignedWordTk(fk)
+  ELSE RETURN;
+
+  i128ty := LLVMIntTypeInContext(ctx, 128);
+  IF is_unsigned THEN
+    v128 := LLVMBuildZExt(builder, v, i128ty, MakeCStr(''))
+  ELSE
+    v128 := LLVMBuildSExt(builder, v, i128ty, MakeCStr(''));
+  ok := LLVMBuildICmp(builder, LLVMIntSGE, v128,
+    LLVMConstInt(i128ty, types[to_tid].lo, 1), MakeCStr(''));
+  okhi := LLVMBuildICmp(builder, LLVMIntSLE, v128,
+    LLVMConstInt(i128ty, types[to_tid].hi, 1), MakeCStr(''));
+  ok := LLVMBuildAnd(builder, ok, okhi, MakeCStr(''));
+  bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('range.bad'));
+  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('range.ok'));
+  LLVMBuildCondBr(builder, ok, ok_bb, bad_bb);
+
+  LLVMPositionBuilderAtEnd(builder, bad_bb);
+  ps := AllocPtrArray(4);
+  SetPtrArrayElem(ps, 0, i64ty);
+  SetPtrArrayElem(ps, 1, i32ty);
+  SetPtrArrayElem(ps, 2, i64ty);
+  SetPtrArrayElem(ps, 3, i64ty);
+  fnty := LLVMFunctionType(voidty, ps, 4, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_subrange_error'));
+  IF fn = NIL THEN
+    fn := LLVMAddFunction(modl, MakeCStr('pas_subrange_error'), fnty);
+  args := AllocPtrArray(4);
+  SetPtrArrayElem(args, 0, LLVMBuildTrunc(builder, v128, i64ty, MakeCStr('')));
+  IF is_unsigned THEN
+    SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 1, 0))
+  ELSE
+    SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 0, 0));
+  SetPtrArrayElem(args, 2, LLVMConstInt(i64ty, types[to_tid].lo, 1));
+  SetPtrArrayElem(args, 3, LLVMConstInt(i64ty, types[to_tid].hi, 1));
+  discard := LLVMBuildCall2(builder, fnty, fn, args, 4, MakeCStr(''));
+  discard := LLVMBuildUnreachable(builder);
+
+  LLVMPositionBuilderAtEnd(builder, ok_bb);
+END;
+
+FUNCTION CoerceCheckedForAssign(v: ADRMEM; from_tid, to_tid: INTEGER; expr_node: ADRMEM; ctx_name: Str255): ADRMEM;
+{ CoerceForAssign plus the $RANGECK subrange check. An ordinal source is
+  checked before coercion, so a wider value that CoerceForAssign would
+  truncate (INTEGER32 -> INTEGER, INTEGER64 -> an enumeration) cannot wrap
+  into range; any other source is checked as the coerced host value. }
+VAR
+  r: ADRMEM;
+  fk: INTEGER;
+BEGIN
+  fk := TypeKind(from_tid);
+  IF (fk = TK_CHAR) OR (fk = TK_BOOLEAN) OR (fk = TK_ENUM) OR IsIntegerFamilyTk(fk) THEN
+  BEGIN
+    EmitSubrangeCheck(v, from_tid, to_tid);
+    r := CoerceForAssign(v, from_tid, to_tid, expr_node, ctx_name);
+  END
+  ELSE
+  BEGIN
+    r := CoerceForAssign(v, from_tid, to_tid, expr_node, ctx_name);
+    EmitSubrangeCheck(r, SubrangeBaseTid(to_tid), to_tid);
+  END;
+  CoerceCheckedForAssign := r;
+END;
+
 FUNCTION RoundUpBytes(n, a: INTEGER32): INTEGER32;
 { Round n up to the next multiple of alignment a, matching the reference's
   c_abi.py::_round_up -- shared by TypeSizeBytes/TypeAlignBytes's struct

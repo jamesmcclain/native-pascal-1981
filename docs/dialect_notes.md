@@ -317,8 +317,8 @@ super-array value without a supported dynamic-bound ABI, and arithmetic or
 literal expressions outside the permitted types are rejected. Standalone
 subrange type declarations are supported for vintage INTEGER bounds within
 `-32767..32767`, CHAR, BOOLEAN, and a pair of members from one enumerated
-type; out-of-range assignment is not checked at runtime (like ordinary
-array-index assignment). Function call
+type; stores into them are range-checked as described under
+[Subrange range checks](#subrange-range-checks). Function call
 postfix selectors are supported only inside a bound operand; this does not
 make `f(x)^` a general expression elsewhere. Super-array formal-parameter
 bound propagation remains unaudited. The manual does not prescribe this
@@ -329,6 +329,46 @@ indexed and call-result selectors, and general expression operands are
 intentional native-only parity exceptions. Do not add these to parser
 `should_pass` parity fixtures; `make test-reference-parity` checks the
 unchanged reference corpus.
+
+## Subrange range checks **[native]**
+
+Under `$RANGECK`, which is on by default, a value stored into a subrange
+(an `INTEGER`, `CHAR`, `BOOLEAN` or enumerated one, named or anonymous)
+must lie inside its declared bounds. Otherwise the program stops with
+
+    runtime error: value 12 is outside subrange 0..9
+
+on stderr and aborts (exit status 134), like the other runtime range
+errors. The value and bounds are ordinals: a `CHAR` subrange reports
+character codes and an enumerated one reports member positions.
+
+The check covers:
+
+- assignment to a subrange variable, record field, array element or
+  pointee, and to a function's subrange result inside its body;
+- a value parameter of subrange type (a `VAR` parameter is not checked,
+  because its actual must already have the same type);
+- `READ`/`READLN` into a subrange, from stdin or a text file, and a
+  subrange program parameter. A trapped file read failure, which leaves the
+  variable unchanged, is not checked;
+- a `FOR` loop over a subrange control variable: if the loop runs at all,
+  its initial and final values must both be in range, and the check is made
+  once, before the first iteration. A loop that runs zero times is not
+  checked.
+
+The check is made on the value before it is narrowed to the subrange's
+storage width, so a wide value cannot wrap into range. A constant that is
+out of range is reported when the store runs, not at compile time. `SUCC`,
+`PRED` and arithmetic are not checked themselves; their result is checked
+when it is stored.
+
+`{$RANGECK-}` turns the check off for the statements that follow it, and
+`{$RANGECK+}` turns it back on. The setting is recorded on assignments,
+procedure calls and `CASE` statements. A statement that does not record it,
+such as a `FOR` loop or a function call in an `IF` condition, uses the
+setting of the last assignment, call or `CASE` compiled before it. Array
+indexes and string capacities are still not range-checked, and `DEVICE`
+code is never checked.
 
 ## Integer widths
 

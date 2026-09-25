@@ -813,8 +813,9 @@ BEGIN
         { Value-mode call arguments get the same literal-adaptation leniency
           as an assignment RHS (e.g. a bare INTEGER literal passed to a CINT
           [C] EXTERN parameter, as with cJSON_CreateBool(1) or exit(1)):
-          reuse CoerceForAssign rather than a bare tid-equality check. }
-        v := CoerceForAssign(v, last_val_tk, routines[ri].param_tk[i + 1], arg_node, name);
+          reuse CoerceForAssign rather than a bare tid-equality check. A
+          subrange parameter is range-checked like an assignment. }
+        v := CoerceCheckedForAssign(v, last_val_tk, routines[ri].param_tk[i + 1], arg_node, name);
       END;
       IF NOT pieces_emitted THEN
       BEGIN

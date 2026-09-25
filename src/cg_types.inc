@@ -37,6 +37,8 @@ FUNCTION IsIntegerFamilyTk(tk: INTEGER): BOOLEAN;
 FUNCTION IsUnsignedWordTk(tk: INTEGER): BOOLEAN;
 FUNCTION IntFamilyWidth(tk: INTEGER): INTEGER;
 FUNCTION CoerceForAssign(v: ADRMEM; from_tid, to_tid: INTEGER; expr_node: ADRMEM; ctx_name: Str255): ADRMEM;
+PROCEDURE EmitSubrangeCheck(v: ADRMEM; from_tid, to_tid: INTEGER);
+FUNCTION CoerceCheckedForAssign(v: ADRMEM; from_tid, to_tid: INTEGER; expr_node: ADRMEM; ctx_name: Str255): ADRMEM;
 FUNCTION RoundUpBytes(n, a: INTEGER32): INTEGER32;
 FUNCTION TypeAlignBytes(tid_in: INTEGER): INTEGER32;
 FUNCTION TypeSizeBytes(tid_in: INTEGER): INTEGER32;

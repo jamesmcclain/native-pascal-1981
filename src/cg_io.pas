@@ -435,7 +435,7 @@ PROCEDURE CodegenReadStdinVar(addr: ADRMEM; tid: INTEGER);
   by reading it exactly like an ordinary bare READ, just under the
   command-line/keyboard stdin redirect runtime/cmdline.c sets up). }
 VAR
-  tmp32, loaded, call_args, buf_i8, cap, tmp64: ADRMEM;
+  tmp32, loaded, call_args, buf_i8, cap, tmp64, cur_v: ADRMEM;
 BEGIN
   IF TypeKind(tid) = TK_INTEGER THEN
   BEGIN
@@ -533,6 +533,14 @@ BEGIN
   END
   ELSE
     AbortWith('codegen: unsupported program-parameter type');
+  { $RANGECK: a subrange parameter is checked as for READ (stdin readers
+    never trap, so every read is checked). }
+  IF tid >= 14 THEN
+    IF types[tid].is_subrange THEN
+    BEGIN
+      cur_v := LLVMBuildLoad2(builder, LLVMTypeForTk(SubrangeBaseTid(tid)), addr, MakeCStr(''));
+      EmitSubrangeCheck(cur_v, SubrangeBaseTid(tid), tid);
+    END;
 END;
 
 PROCEDURE CodegenBindFileParameter(symi: INTEGER32);
@@ -640,7 +648,8 @@ VAR
   start_idx: INTEGER32;
   arg0, argnode, addr, fcb_ptr, tmp32, loaded, call_args, buf_i8, cap, tmp64: ADRMEM;
   tid: INTEGER;
-  using_file: BOOLEAN;
+  using_file, sub_chk: BOOLEAN;
+  rd_status, chk_bb, cont_bb, cur_v: ADRMEM;
 BEGIN
   nargs := ArrSize(args);
   start_idx := 0;
@@ -664,6 +673,7 @@ BEGIN
   FOR i := start_idx TO nargs - 1 DO
   BEGIN
     argnode := ArrItem(args, i);
+    rd_status := NIL;
     IF NodeType(argnode) = 'Identifier' THEN
     BEGIN
       symi := LookupSym(GetStr(argnode, 'name'));
@@ -701,6 +711,7 @@ BEGIN
         SetPtrArrayElem(call_args, 0, addr);
         loaded := LLVMBuildCall2(builder, read_word_fnty, read_int16_fn, call_args, 1, MakeCStr(''));
       END;
+      rd_status := loaded;
     END
     ELSE IF TypeKind(tid) = TK_INTEGER32 THEN
     BEGIN
@@ -781,6 +792,7 @@ BEGIN
         SetPtrArrayElem(call_args, 0, addr);
         loaded := LLVMBuildCall2(builder, read_char_fnty, read_char_fn, call_args, 1, MakeCStr(''));
       END;
+      rd_status := loaded;
     END
     ELSE IF TypeKind(tid) = TK_LSTRING THEN
     BEGIN
@@ -863,6 +875,7 @@ BEGIN
         loaded := LLVMBuildCall2(builder, read_int_fnty,
                                  read_int_fn, call_args, 1, MakeCStr(''));
       END;
+      rd_status := loaded;
       loaded := LLVMBuildLoad2(builder, i32ty, tmp32, MakeCStr(''));
       LLVMBuildStore(builder, loaded, addr);
     END
@@ -888,6 +901,7 @@ BEGIN
         SetPtrArrayElem(call_args, 2, LLVMConstInt(i32ty, 2, 0));
         loaded := LLVMBuildCall2(builder, read_enum_name_fnty, read_enum_name_fn, call_args, 3, MakeCStr(''));
       END;
+      rd_status := loaded;
       loaded := LLVMBuildLoad2(builder, i32ty, tmp32, MakeCStr(''));
       loaded := LLVMBuildTrunc(builder, loaded, i1ty, MakeCStr(''));
       LLVMBuildStore(builder, loaded, addr);
@@ -916,6 +930,27 @@ BEGIN
     END
     ELSE
       AbortWith('codegen: unsupported READ argument type');
+
+    { $RANGECK: a value read into a subrange must be inside its declared
+      bounds. A trapped file error (status -1) leaves the variable as it
+      was, so only a successful read is checked. }
+    sub_chk := FALSE;
+    IF cur_rangeck AND (NOT is_nvptx_device) THEN
+      IF tid >= 14 THEN
+        sub_chk := types[tid].is_subrange;
+    IF sub_chk AND (rd_status <> NIL) THEN
+    BEGIN
+      chk_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('read_range'));
+      cont_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('read_ranged'));
+      LLVMBuildCondBr(builder,
+        LLVMBuildICmp(builder, LLVMIntEQ, rd_status, LLVMConstInt(i32ty, 0, 0), MakeCStr('')),
+        chk_bb, cont_bb);
+      LLVMPositionBuilderAtEnd(builder, chk_bb);
+      cur_v := LLVMBuildLoad2(builder, LLVMTypeForTk(SubrangeBaseTid(tid)), addr, MakeCStr(''));
+      EmitSubrangeCheck(cur_v, SubrangeBaseTid(tid), tid);
+      LLVMBuildBr(builder, cont_bb);
+      LLVMPositionBuilderAtEnd(builder, cont_bb);
+    END;
   END;
 
   IF is_readln THEN
