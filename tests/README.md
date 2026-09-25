@@ -80,7 +80,7 @@ This directory contains the automated test suites for the native Pascal 1981 com
 
 - **Runner**: [`tests/test_precommit_hook.sh`](./test_precommit_hook.sh)
 - **Description**: Checks hook restaging, partial staging, tool errors, optional tools, and the executable file mode. Each behavior test uses an isolated Git repository.
-- **Requirements**: Install `isort` and `yapf`. The runner names missing formatters and fails before it starts the tests.
+- **Requirements**: `git` and `indent`. The test of Python restaging also needs `isort` and `yapf`; without them, the runner skips that one test and names the missing tools. A formatter that is on `PATH` but does not run still fails the hook, by design.
 - **Running**:
   ```bash
   ./tests/test_precommit_hook.sh
