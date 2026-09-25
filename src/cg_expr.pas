@@ -993,7 +993,8 @@ BEGIN
         re-validation M0 does for the type itself, since this file also
         lowers frozen ASTs the typechecker never saw. A variable vector
         index is not range-checked. }
-      IF (TypeKind(cur_tid) = TK_VECTOR) AND FoldConstInt(idx_expr, folded) THEN
+      IF (TypeKind(cur_tid) = TK_VECTOR) AND IsIntLiteralLike(idx_expr) AND
+         FoldConstInt(idx_expr, folded) THEN
         IF (folded < 0) OR (folded > types[cur_tid].hi) THEN
           AbortWith('codegen: vector lane index out of range');
       idx_val := CodegenExpr(idx_expr);
@@ -1016,8 +1017,11 @@ BEGIN
           value when CodegenExpr materialized it as vintage i16 (e.g. 40000).
           Never substitute a signed INTEGER64 fold for a typed WORD/CHAR/enum
           value: in particular MAXWORD64 must zero-extend its live i64 bits.
+          IsIntLiteralLike refuses a name that CodegenExpr resolved to a
+          variable or user routine rather than to the CONST or intrinsic.
           The expression itself was evaluated exactly once above. }
-        IF (last_val_tk = TK_INTEGER) AND FoldConstInt(idx_expr, folded) AND
+        IF (last_val_tk = TK_INTEGER) AND IsIntLiteralLike(idx_expr) AND
+           FoldConstInt(idx_expr, folded) AND
            ((folded < -32768) OR (folded > 32767)) THEN
           idx128 := LLVMConstInt(i128ty, folded, 1)
         ELSE IF unsigned_idx THEN
