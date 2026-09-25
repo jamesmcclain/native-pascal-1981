@@ -41,7 +41,6 @@ static const char *impl_unit;   /* IMPLEMENTATION OF <unit>, else NULL */
 static const char *iface_unit;  /* the interface being processed, else NULL */
 static Sym *cur_func;           /* routine whose body is being emitted */
 static int in_main;             /* emitting the program body */
-static int check_mode;
 static int for_count;           /* numbers each FOR's limit temporaries */
 
 static CE gen_expr(Expr * e);
@@ -804,7 +803,7 @@ static void signature(Routine *r, Sym *s)
         fatal(r->loc, "function '%s' has no result type", r->name);
 }
 
-static void process_sections(Vec * decls, int local, Buf * locals);
+static void process_sections(Vec * decls, int local);
 
 static int c_scalar(Type *t)
 {
@@ -846,7 +845,7 @@ static void emit_body(Sym *s, Routine *r)
     }
     Buf *hold = body;
     body = &locals;
-    process_sections(&r->decls, 1, &locals);
+    process_sections(&r->decls, 1);
     body = hold;
     if (locals.p)
         buf_put(body, locals.p);
@@ -1023,9 +1022,8 @@ static void var_section(Decl *d, int local)
     }
 }
 
-static void process_sections(Vec *decls, int local, Buf *locals)
+static void process_sections(Vec *decls, int local)
 {
-    (void) locals;
     for (int i = 0; i < decls->n; i++) {
         Decl *d = decls->p[i];
         switch (d->kind) {
@@ -1080,7 +1078,6 @@ static void mark_used(const char *unit, char *used)
 int translate(Compiland *c, FILE *f, int check_only)
 {
     comp = c;
-    check_mode = check_only;
     if (!c->name) {
         /* A bare interface file: it parsed, and its USES name units that
          * only a real compiland splices in, so there is nothing to check. */
@@ -1102,7 +1099,7 @@ int translate(Compiland *c, FILE *f, int check_only)
                 fatal(in->loc, "unit %s USES itself", in->unit);
         buf_printf(&out, "\n/* INTERFACE; UNIT %s */\n", in->unit);
         iface_unit = in->unit;
-        process_sections(&in->decls, 0, NULL);
+        process_sections(&in->decls, 0);
         iface_unit = NULL;
     }
     if (!c->name) {
@@ -1120,7 +1117,7 @@ int translate(Compiland *c, FILE *f, int check_only)
             fatal(c->loc, "IMPLEMENTATION OF %s without its interface", c->name);
     }
     buf_printf(&out, "\n/* %s %s */\n", c->is_program ? "PROGRAM" : "IMPLEMENTATION OF", c->name);
-    process_sections(&c->decls, 0, NULL);
+    process_sections(&c->decls, 0);
 
     /* Every exported routine needs a body. */
     for (int i = 0; impl_unit && i < c->ifaces.n; i++) {
