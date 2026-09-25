@@ -935,7 +935,7 @@ VAR
   folded: INTEGER64;
   indexck, unsigned_idx: BOOLEAN;
   idx128, i128ty, in_bounds, upper_ok, bad_bb, ok_bb: ADRMEM;
-  abort_fn, abort_fnty, discard_call: ADRMEM;
+  error_fn, error_fnty, error_params, error_args, discard_call: ADRMEM;
   deref_ptr_tid: INTEGER; { committed to last_desig_deref_ptr_tid only at
     the end, since index expressions below recurse through here }
 BEGIN
@@ -1033,13 +1033,28 @@ BEGIN
         ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('index.ok'));
         LLVMBuildCondBr(builder, in_bounds, ok_bb, bad_bb);
         LLVMPositionBuilderAtEnd(builder, bad_bb);
-        { The dedicated diagnostic belongs to the runtime-error slice.
-          For now abort without ever forming an out-of-bounds address. }
-        abort_fnty := LLVMFunctionType(voidty, NIL, 0, 0);
-        abort_fn := LLVMGetNamedFunction(modl, MakeCStr('abort'));
-        IF abort_fn = NIL THEN
-          abort_fn := LLVMAddFunction(modl, MakeCStr('abort'), abort_fnty);
-        discard_call := LLVMBuildCall2(builder, abort_fnty, abort_fn, NIL, 0, MakeCStr(''));
+        { Diagnose the original, full-width index before forming any GEP.
+          Pass its low 64 bits and signedness separately so WORD64 prints
+          as unsigned, just as the i128 guard compares it. DEVICE NVPTX
+          never enters this host-only path. }
+        error_params := AllocPtrArray(4);
+        SetPtrArrayElem(error_params, 0, i64ty);
+        SetPtrArrayElem(error_params, 1, i32ty);
+        SetPtrArrayElem(error_params, 2, i64ty);
+        SetPtrArrayElem(error_params, 3, i64ty);
+        error_fnty := LLVMFunctionType(voidty, error_params, 4, 0);
+        error_fn := LLVMGetNamedFunction(modl, MakeCStr('pas_array_index_error'));
+        IF error_fn = NIL THEN
+          error_fn := LLVMAddFunction(modl, MakeCStr('pas_array_index_error'), error_fnty);
+        error_args := AllocPtrArray(4);
+        SetPtrArrayElem(error_args, 0, LLVMBuildTrunc(builder, idx128, i64ty, MakeCStr('')));
+        IF unsigned_idx THEN
+          SetPtrArrayElem(error_args, 1, LLVMConstInt(i32ty, 1, 0))
+        ELSE
+          SetPtrArrayElem(error_args, 1, LLVMConstInt(i32ty, 0, 0));
+        SetPtrArrayElem(error_args, 2, LLVMConstInt(i64ty, types[cur_tid].lo, 1));
+        SetPtrArrayElem(error_args, 3, LLVMConstInt(i64ty, types[cur_tid].hi, 1));
+        discard_call := LLVMBuildCall2(builder, error_fnty, error_fn, error_args, 4, MakeCStr(''));
         discard_call := LLVMBuildUnreachable(builder);
         LLVMPositionBuilderAtEnd(builder, ok_bb);
       END;

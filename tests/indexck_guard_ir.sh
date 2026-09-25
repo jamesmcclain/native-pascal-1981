@@ -9,7 +9,8 @@ bin/pascal1981 --dialect extended -S tests/fixtures/indexck_guard_ir.pas -o "$wo
 # A bad constant is compiled, not rejected, and its guard runs only if reached.
 [ "$(grep -Ec '^index\.bad[0-9]*:' "$work/guard.ll")" -eq 2 ]
 [ "$(grep -Ec '^index\.ok[0-9]*:' "$work/guard.ll")" -eq 2 ]
-[ "$(grep -c 'call void @abort()' "$work/guard.ll")" -eq 2 ]
+[ "$(grep -c 'call void @pas_array_index_error(' "$work/guard.ll")" -eq 2 ]
+! grep -q 'call void @abort()' "$work/guard.ll"
 grep -Eq 'br i1 false, label %index\.ok[0-9]*, label %index\.bad[0-9]*' "$work/guard.ll"
 # Compare full-width typed values before computing a signed GEP offset.
 bin/pascal1981 --dialect extended -S tests/golden/indexck_wide_ordinals.pas -o "$work/width.ll"

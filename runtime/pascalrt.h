@@ -229,6 +229,11 @@ void  pas_upper_nil_error(int32_t unused) __attribute__((noreturn));
 void  pas_vector_range_error(int32_t is_store, int64_t idx, int32_t idx_unsigned,
                              int32_t lanes, int64_t lo, int64_t hi) __attribute__((noreturn));
 
+/* ---- $INDEXCK fixed-array indexes (array_index.c) ---- */
+
+void  pas_array_index_error(int64_t value, int32_t value_unsigned,
+                            int64_t lo, int64_t hi) __attribute__((noreturn));
+
 /* ---- $RANGECK subrange stores (subrange.c) ---- */
 
 void  pas_subrange_error(int64_t value, int32_t value_unsigned,
