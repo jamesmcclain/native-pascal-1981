@@ -1,0 +1,3 @@
+Type checking failed:
+VLOAD first argument must be an array
+Error: Failed to parse input AST JSON

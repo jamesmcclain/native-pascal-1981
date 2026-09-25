@@ -14,6 +14,13 @@ FUNCTION CodegenBinOp(op: Str255; left_node, right_node: ADRMEM): ADRMEM;
 FUNCTION CodegenUnaryOp(op: Str255; operand_node: ADRMEM): ADRMEM;
 FUNCTION CodegenCallCommon(name: Str255; args_arr: ADRMEM): ADRMEM;
 FUNCTION ComputeDesignatorAddress(node: ADRMEM): ADRMEM;
+{ The array operand of VLOAD/VSTORE: a bare array variable (Identifier) or
+  any array-typed Designator (e.g. p^, r.buf). Returns its storage address;
+  arr_tid is its type id and has_bound_hdr is TRUE only when the operand is
+  the pointee of a plain ^T pointer in a non-DEVICE compiland -- the one
+  shape where NEW's i64 upper-bound header sits 8 bytes before the data. }
+FUNCTION VectorArrayOperand(node: ADRMEM; VAR arr_tid: INTEGER;
+                            VAR has_bound_hdr: BOOLEAN): ADRMEM;
 FUNCTION CodegenSimpleBuiltin(nm: Str255; args: ADRMEM): ADRMEM;
 FUNCTION CodegenDevAlloc(args: ADRMEM): ADRMEM;
 FUNCTION CodegenExpr(node: ADRMEM): ADRMEM;

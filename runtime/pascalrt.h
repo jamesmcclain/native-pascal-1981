@@ -216,6 +216,12 @@ int   mover(char *src, char *dst, unsigned short len);
 int   movesl(adsmem src, adsmem dst, unsigned short len);
 int   movesr(adsmem src, adsmem dst, unsigned short len);
 
+/* ---- VLOAD/VSTORE SUPER ARRAY bounds (vector_bounds.c) ---- */
+
+void  pas_vector_nil_error(int32_t is_store) __attribute__((noreturn));
+void  pas_vector_range_error(int32_t is_store, int64_t idx, int32_t idx_unsigned,
+                             int32_t lanes, int64_t lo, int64_t hi) __attribute__((noreturn));
+
 #ifdef __cplusplus
 }
 #endif
