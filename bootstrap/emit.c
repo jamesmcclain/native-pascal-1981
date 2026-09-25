@@ -897,8 +897,11 @@ static void routine_decl(Routine *r)
         if (old->kind != SY_ROUTINE || old->is_c || r->is_c || old->defined || r->is_extern
             || !(old->routine->is_forward || is_exported(old)) || (r->is_forward && old->routine->is_forward))
             fatal(r->loc, "duplicate declaration of '%s'", r->name);
-        /* The body of a FORWARD or interface routine. A repeated parameter
-         * list must match; an omitted one takes the first. */
+        /* The body of a FORWARD or interface routine. It must be the same
+         * kind of routine, and a repeated parameter list must match; an
+         * omitted one takes the first. */
+        if (r->is_func != old->routine->is_func)
+            fatal(r->loc, "heading of '%s' does not match its earlier declaration", r->name);
         if (r->has_params || r->result) {
             Sym tmp = { 0 };
             signature(r, &tmp);
