@@ -14,6 +14,7 @@ FUNCTION cJSON_GetStringValue(item: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION pas_double_to_int64(x: REAL): CLONG [C]; EXTERN;
 
 FUNCTION CheckExpr(node: ADRMEM): INTEGER; FORWARD;
+FUNCTION CheckFuncCall(node: ADRMEM): INTEGER; FORWARD;
 
 VAR
   expr_context_tk: INTEGER;
@@ -328,26 +329,47 @@ VAR
   fi: INTEGER32;
   lane_ct: INTEGER;
   folded_value: INTEGER64;
+  super_value: BOOLEAN;
 BEGIN
-  name := GetStr(node, 'name');
-  si := LookupSymbol(name);
-  IF si = 0 THEN
+  IF NodeType(node) = 'PostfixExpr' THEN
   BEGIN
-    AddError('Undefined identifier');
-    CheckDesignator := TK_UNKNOWN;
-    RETURN;
+    name := GetStr(GetObj(node, 'base'), 'name');
+    si := LookupSymbol(name);
+    tk := CheckFuncCall(GetObj(node, 'base'));
+    IF si = 0 THEN
+    BEGIN
+      CheckDesignator := TK_UNKNOWN;
+      RETURN;
+    END;
+    aux := symbols[si].ret_aux;
+    aux2 := symbols[si].ret_aux2;
+    aux3 := symbols[si].ret_aux3;
+    current_idx_tk := symbols[si].ret_idx_tk;
+    super_value := symbols[si].ret_is_super;
+  END
+  ELSE BEGIN
+    name := GetStr(node, 'name');
+    si := LookupSymbol(name);
+    IF si = 0 THEN
+    BEGIN
+      AddError('Undefined identifier');
+      CheckDesignator := TK_UNKNOWN;
+      RETURN;
+    END;
+    tk := symbols[si].tk;
+    aux := symbols[si].aux;
+    aux2 := symbols[si].aux2;
+    aux3 := symbols[si].aux3;
+    current_idx_tk := symbols[si].idx_tk;
+    super_value := symbols[si].is_super;
   END;
-  tk := symbols[si].tk;
-  aux := symbols[si].aux;
-  aux2 := symbols[si].aux2;
-  aux3 := symbols[si].aux3;
-  current_idx_tk := symbols[si].idx_tk;
   sel_arr := GetObj(node, 'selectors');
   nsel := cJSON_GetArraySize(sel_arr);
   FOR i := 0 TO nsel - 1 DO
   BEGIN
     sel := cJSON_GetArrayItem(sel_arr, i);
     skind := GetStr(sel, 'kind');
+    super_value := FALSE;
     IF skind = 'FIELD' THEN
     BEGIN
       fname := UpperStr(CStrToStr255(cJSON_GetStringValue(GetObj(sel, 'index_or_field'))));
@@ -385,6 +407,8 @@ BEGIN
           aux := fields[fi].faux;
           aux2 := fields[fi].faux2;
           aux3 := fields[fi].faux3;
+          current_idx_tk := fields[fi].fidx_tk;
+          super_value := fields[fi].is_super;
         END;
       END;
     END
@@ -494,6 +518,8 @@ BEGIN
       END;
     END;
   END;
+  last_designator_super := super_value;
+  last_designator_idx_tk := current_idx_tk;
   last_designator_aux := aux;
   last_designator_aux2 := aux2;
   CheckDesignator := tk;
@@ -859,11 +885,12 @@ VAR
   nt, name: Str255;
   si: INTEGER32;
   left_node, right_node, operand_node, type_node: ADRMEM;
-  lt, rt, ot, op_kind, aux, aux2, aux3, idx_tk: INTEGER;
+  lt, rt, ot, op_kind, aux, aux2, aux3, idx_tk, bound_base_tk: INTEGER;
   op: Str255;
   elems_arr, elem_node, bound_selectors, bound_sel: ADRMEM;
   n_elems, ei, bound_n: INTEGER32;
   folded_value: INTEGER64;
+  bound_subrange, bound_super: BOOLEAN;
 BEGIN
   expr_depth := expr_depth + 1;
   IF expr_depth > MAX_EXPR_DEPTH THEN
@@ -962,36 +989,83 @@ BEGIN
     END;
     CheckExpr := TK_SET;
   END
-  ELSE IF nt = 'Designator' THEN
+  ELSE IF (nt = 'Designator') OR (nt = 'PostfixExpr') THEN
     CheckExpr := CheckDesignator(node)
   ELSE IF (nt = 'UpperExpr') OR (nt = 'LowerExpr') THEN
   BEGIN
     operand_node := GetObj(node, 'operand');
     bound_selectors := GetObj(operand_node, 'selectors');
     bound_n := cJSON_GetArraySize(bound_selectors);
-    { The bound syntax accepts field and dereference chains, not indexed
-      or general expressions. CheckDesignator still diagnoses bad fields
-      and selector kinds by the ordinary path. }
-    FOR ei := 0 TO bound_n - 1 DO
+    ot := TK_UNKNOWN;
+    IF NodeType(operand_node) = 'Identifier' THEN
     BEGIN
-      bound_sel := cJSON_GetArrayItem(bound_selectors, ei);
-      IF GetStr(bound_sel, 'kind') = 'INDEX' THEN
-        AddError('UPPER/LOWER indexed operand is not supported');
+      name := GetStr(operand_node, 'name');
+      IF (LookupSymbol(name) = 0) AND (LookupType(name) <> 0) THEN
+        AddError('UPPER/LOWER type identifier is not an expression')
+      ELSE
+        ot := CheckExpr(operand_node);
+    END
+    ELSE ot := CheckExpr(operand_node);
+    bound_subrange := FALSE;
+    bound_super := FALSE;
+    bound_base_tk := TK_INTEGER;
+    IF (NodeType(operand_node) = 'Designator') OR
+       (NodeType(operand_node) = 'PostfixExpr') THEN
+    BEGIN
+      bound_subrange := last_designator_aux = -1;
+      bound_super := last_designator_super;
+      IF ot = TK_SET THEN bound_base_tk := last_designator_aux
+      ELSE IF ot = TK_ARRAY THEN bound_base_tk := last_designator_idx_tk;
     END;
-    ot := CheckDesignator(operand_node);
-    IF (ot = TK_ARRAY) OR (ot = TK_STRING) OR (ot = TK_VECTOR) THEN
+    si := 0;
+    IF NodeType(operand_node) = 'Identifier' THEN
+      si := LookupSymbol(GetStr(operand_node, 'name'));
+    IF si <> 0 THEN
+    BEGIN
+      IF symbols[si].kind = 'TYPE' THEN
+        AddError('UPPER/LOWER type identifier is not an expression');
+      bound_subrange := symbols[si].aux = -1;
+      bound_super := symbols[si].is_super;
+      IF ot = TK_SET THEN bound_base_tk := symbols[si].aux
+      ELSE IF ot = TK_ARRAY THEN bound_base_tk := symbols[si].idx_tk;
+    END;
+    IF NodeType(operand_node) = 'FuncCall' THEN
+    BEGIN
+      si := LookupSymbol(GetStr(operand_node, 'name'));
+      IF si <> 0 THEN
+      BEGIN
+        bound_subrange := symbols[si].ret_aux = -1;
+        bound_super := symbols[si].ret_is_super;
+        IF ot = TK_SET THEN bound_base_tk := symbols[si].ret_aux
+        ELSE IF ot = TK_ARRAY THEN bound_base_tk := symbols[si].ret_idx_tk;
+      END;
+    END;
+    IF bound_base_tk = TK_UNKNOWN THEN bound_base_tk := TK_INTEGER;
+    IF ot = TK_POINTER THEN
+      AddError('UPPER/LOWER requires a dereferenced pointer');
+    IF NodeType(operand_node) = 'StringLiteral' THEN
+      AddError('UPPER/LOWER string literal has no declared capacity');
+    IF (ot = TK_ARRAY) OR (ot = TK_STRING) OR (ot = TK_VECTOR) OR
+       (ot = TK_SET) OR (ot = TK_ENUM) OR bound_subrange THEN
     BEGIN
       IF bound_n > 0 THEN
         op := GetStr(cJSON_GetArrayItem(bound_selectors, bound_n - 1), 'kind')
       ELSE
         op := '';
-      IF op = 'DEREF' THEN
+      IF (ot = TK_ARRAY) AND bound_super THEN
+        AddError('UPPER/LOWER non-pointer SUPER ARRAY has no runtime bound');
+      IF (ot = TK_ARRAY) AND (op = 'DEREF') THEN
         CheckExpr := TK_INTEGER64
+      ELSE IF (ot = TK_SET) OR (ot = TK_ARRAY) THEN
+        CheckExpr := bound_base_tk
+      ELSE IF (ot = TK_ENUM) OR bound_subrange THEN
+        CheckExpr := ot
       ELSE
         CheckExpr := TK_INTEGER;
     END
     ELSE BEGIN
-      IF ot <> TK_UNKNOWN THEN AddError('UPPER/LOWER requires an array designator');
+      IF (ot <> TK_UNKNOWN) AND (ot <> TK_POINTER) THEN
+        AddError('UPPER/LOWER requires an array, set, enum or subrange expression');
       CheckExpr := TK_UNKNOWN;
     END;
   END

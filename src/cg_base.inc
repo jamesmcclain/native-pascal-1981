@@ -303,7 +303,9 @@ TYPE
     tk: INTEGER;      { TK_ARRAY or TK_RECORD }
     elem_tid: INTEGER; { ARRAY only: the element type's id }
     lo, hi: INTEGER32; { ARRAY/SET bounds can include vintage WORD values }
+    index_tid: INTEGER; { fixed ARRAY's ordinal index type }
     is_super: BOOLEAN; { SUPER ARRAY is represented as a flat element pointer }
+    is_subrange: BOOLEAN; { scalar whose declared bounds are lo..hi }
     ptr_space: INTEGER; { POINTER only: PTR_SPACE_PLAIN for `^T`, or the
                           PTR_SPACE_* code of an ADS pointer's space. Part of
                           the pointer's identity for assignment compatibility,

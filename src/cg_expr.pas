@@ -940,7 +940,15 @@ BEGIN
   symi := LookupSym(nm);
   selectors := GetObj(node, 'selectors');
   nsel := ArrSize(selectors);
-  IF (symi = 0) AND (nsel = 0) AND RoutineIsFunc(LookupRoutine(nm)) THEN
+  IF NodeType(node) = 'PostfixExpr' THEN
+  BEGIN
+    { Materialize one function result before walking its selectors. }
+    file_handle := CodegenExpr(GetObj(node, 'base'));
+    cur_tid := last_val_tk;
+    base_ptr := EntryAlloca(LLVMTypeForTk(cur_tid), '');
+    LLVMBuildStore(builder, file_handle, base_ptr);
+  END
+  ELSE IF (symi = 0) AND (nsel = 0) AND RoutineIsFunc(LookupRoutine(nm)) THEN
   BEGIN
     { A bare niladic-call Designator (e.g. `CurKind = 'X'`, an aggregate
       Str255-returning FUNCTION called without parens) has no symbol-table
@@ -1337,6 +1345,47 @@ BEGIN
   last_val_tk := TK_ADRMEM;
 END;
 
+FUNCTION BoundOperandType(node: ADRMEM): INTEGER;
+{ Resolve the operand without generating any IR: LOWER and all static
+  bounds must not execute calls or index expressions. }
+VAR
+  nt, name: Str255;
+  si: INTEGER32;
+  lt, rt: INTEGER;
+BEGIN
+  nt := NodeType(node);
+  IF (nt = 'Designator') OR (nt = 'PostfixExpr') THEN
+    BoundOperandType := StaticDesignatorType(node)
+  ELSE IF nt = 'Identifier' THEN
+  BEGIN
+    name := GetStr(node, 'name');
+    si := LookupSym(name);
+    IF si <> 0 THEN BoundOperandType := symbols[si].tk
+    ELSE BEGIN
+      si := LookupConst(name);
+      IF si <> 0 THEN BoundOperandType := const_tbl[si].enum_tid
+      ELSE BoundOperandType := TK_UNKNOWN;
+    END;
+  END
+  ELSE IF nt = 'FuncCall' THEN
+  BEGIN
+    si := LookupRoutine(GetStr(node, 'name'));
+    IF si <> 0 THEN BoundOperandType := routines[si].ret_tk
+    ELSE BoundOperandType := TK_UNKNOWN;
+  END
+  ELSE IF nt = 'SetConstructor' THEN
+    BoundOperandType := EnsureGenericSetType
+  ELSE IF nt = 'BinOp' THEN
+  BEGIN
+    lt := BoundOperandType(GetObj(node, 'left'));
+    rt := BoundOperandType(GetObj(node, 'right'));
+    IF (TypeKind(lt) = TK_SET) AND (TypeKind(rt) = TK_SET) THEN
+      BoundOperandType := EnsureGenericSetType
+    ELSE BoundOperandType := TK_UNKNOWN;
+  END
+  ELSE BoundOperandType := TK_UNKNOWN;
+END;
+
 FUNCTION CodegenExpr(node: ADRMEM): ADRMEM;
 VAR
   nt: Str255;
@@ -1347,7 +1396,8 @@ VAR
   routi: INTEGER32;
   ch: Str255;
   res, addr, super_ptr, super_header, bound_operand, bound_sels: ADRMEM;
-  result_tid: INTEGER;
+  nil_bb, ok_bb, is_nil, err_args, discard, nil_fnty, nil_fn: ADRMEM;
+  result_tid, static_bound_tid: INTEGER;
   bound_n: INTEGER32;
   target_item, target_str, sizeof_synth: ADRMEM;
   sizeof_bytes: INTEGER32;
@@ -1356,7 +1406,7 @@ VAR
   vsel_mask_tid, vsel_a_tid, vsel_b_tid: INTEGER;
   vld_idx, vld_arr: ADRMEM;
   vld_idx_tk, vld_arr_tid: INTEGER;
-  vld_hdr: BOOLEAN;
+  vld_hdr, bound_is_subrange: BOOLEAN;
 BEGIN
   EnterExprLevel;
   nt := NodeType(node);
@@ -1519,7 +1569,7 @@ BEGIN
     END;
     END;
   END
-  ELSE IF nt = 'Designator' THEN  BEGIN
+  ELSE IF (nt = 'Designator') OR (nt = 'PostfixExpr') THEN  BEGIN
     addr := ComputeDesignatorAddress(node);
     result_tid := last_val_tk;
     res := LLVMBuildLoad2(builder, LLVMTypeForTk(result_tid), addr, MakeCStr(''));
@@ -1566,10 +1616,10 @@ BEGIN
     bound_operand := GetObj(node, 'operand');
     bound_sels := GetObj(bound_operand, 'selectors');
     bound_n := ArrSize(bound_sels);
-    FOR symi := 0 TO bound_n - 1 DO
-      IF GetStr(ArrItem(bound_sels, symi), 'kind') = 'INDEX' THEN
-        AbortWith('codegen: UPPER/LOWER indexed operand is not supported');
-    result_tid := StaticDesignatorType(bound_operand);
+    result_tid := BoundOperandType(bound_operand);
+    bound_is_subrange := FALSE;
+    IF result_tid >= 14 THEN
+      bound_is_subrange := types[result_tid].is_subrange;
     IF result_tid = TK_UNKNOWN THEN
       AbortWith('codegen: invalid UPPER/LOWER designator');
     { ArrItem is only called on a nonempty selector list. }
@@ -1587,6 +1637,20 @@ BEGIN
       BEGIN
         super_ptr := ComputeDesignatorAddress(bound_operand);
         super_ptr := LLVMBuildBitCast(builder, super_ptr, i8ptrty, MakeCStr(''));
+        nil_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('upper.nil'));
+        ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('upper.ok'));
+        is_nil := LLVMBuildICmp(builder, LLVMIntEQ, super_ptr,
+          LLVMConstPointerNull(i8ptrty), MakeCStr(''));
+        LLVMBuildCondBr(builder, is_nil, nil_bb, ok_bb);
+        LLVMPositionBuilderAtEnd(builder, nil_bb);
+        err_args := MakeArgs1(LLVMConstInt(i32ty, 0, 0));
+        nil_fnty := LLVMFunctionType(voidty, MakeArgs1(i32ty), 1, 0);
+        nil_fn := LLVMGetNamedFunction(modl, MakeCStr('pas_upper_nil_error'));
+        IF nil_fn = NIL THEN
+          nil_fn := LLVMAddFunction(modl, MakeCStr('pas_upper_nil_error'), nil_fnty);
+        discard := LLVMBuildCall2(builder, nil_fnty, nil_fn, err_args, 1, MakeCStr(''));
+        discard := LLVMBuildUnreachable(builder);
+        LLVMPositionBuilderAtEnd(builder, ok_bb);
         super_header := LLVMBuildGEP2(builder, i8ty, super_ptr,
           MakeArgs1(LLVMConstInt(i64ty, -8, 1)), 1, MakeCStr(''));
         super_header := LLVMBuildBitCast(builder, super_header, LLVMPointerType(i64ty, 0), MakeCStr(''));
@@ -1595,17 +1659,32 @@ BEGIN
       last_val_tk := TK_INTEGER64;
     END
     ELSE BEGIN
+      IF TypeKind(result_tid) = TK_ARRAY THEN
+        IF types[result_tid].is_super THEN
+          AbortWith('codegen: non-pointer SUPER ARRAY value has no runtime bound');
       IF (TypeKind(result_tid) = TK_ARRAY) OR (TypeKind(result_tid) = TK_STRING)
-         OR (TypeKind(result_tid) = TK_LSTRING) OR (TypeKind(result_tid) = TK_VECTOR) THEN
+         OR (TypeKind(result_tid) = TK_LSTRING) OR (TypeKind(result_tid) = TK_VECTOR)
+         OR (TypeKind(result_tid) = TK_SET) OR (TypeKind(result_tid) = TK_ENUM)
+         OR bound_is_subrange THEN
       BEGIN
-        IF nt = 'UpperExpr' THEN res := LLVMConstInt(i16ty, types[result_tid].hi, 1)
-        ELSE res := LLVMConstInt(i16ty, types[result_tid].lo, 1);
+        static_bound_tid := TK_INTEGER;
+        IF TypeKind(result_tid) = TK_SET THEN
+          static_bound_tid := types[result_tid].elem_tid
+        ELSE IF TypeKind(result_tid) = TK_ARRAY THEN
+          static_bound_tid := types[result_tid].index_tid
+        ELSE IF (TypeKind(result_tid) = TK_ENUM) OR bound_is_subrange THEN
+          static_bound_tid := result_tid;
+        IF nt = 'UpperExpr' THEN
+          res := LLVMConstInt(LLVMTypeForTk(static_bound_tid), types[result_tid].hi, 1)
+        ELSE
+          res := LLVMConstInt(LLVMTypeForTk(static_bound_tid), types[result_tid].lo, 1);
       END
       ELSE BEGIN
-        AbortWith('codegen: UPPER/LOWER requires an array designator');
+        AbortWith('codegen: UPPER/LOWER requires an array, set, enum or subrange expression');
         res := NIL;
+        static_bound_tid := TK_UNKNOWN;
       END;
-      last_val_tk := TK_INTEGER;
+      last_val_tk := static_bound_tid;
     END;
   END
   ELSE IF nt = 'RetypeExpr' THEN

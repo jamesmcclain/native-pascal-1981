@@ -63,6 +63,8 @@ TYPE
     nparams: INTEGER;
     param_tk: ARRAY [1..MAX_PARAMS] OF INTEGER;
     ret_tk: INTEGER;
+    ret_aux, ret_aux2, ret_aux3, ret_idx_tk: INTEGER;
+    is_super, ret_is_super: BOOLEAN;
     is_vararg: BOOLEAN;  { TRUE for a routine carrying the [VARARGS]
                            attribute: its declared parameters are the FIXED
                            prefix and a call may pass extra trailing
@@ -83,6 +85,7 @@ TYPE
     aux2: INTEGER;
     aux3: INTEGER;
     idx_tk: INTEGER;
+    is_super: BOOLEAN;
   END;
 
   FieldRec = RECORD
@@ -92,6 +95,8 @@ TYPE
     faux: INTEGER;
     faux2: INTEGER;
     faux3: INTEGER;
+    fidx_tk: INTEGER;
+    is_super: BOOLEAN;
   END;
 
 VAR
@@ -107,6 +112,8 @@ VAR
   nfields: INTEGER32;
   next_record_id: INTEGER;
 
+  last_designator_super: BOOLEAN;
+  last_designator_idx_tk: INTEGER;
   last_designator_aux, last_designator_aux2: INTEGER; { side channel set by
     CheckDesignator on every call, mirroring codegen.pas's last_val_tk
     convention -- lets WithStmt recover the resolved record's id (aux) to
@@ -246,6 +253,8 @@ BEGIN
   symbols[nsymbols].idx_tk := idx_tk;
   symbols[nsymbols].nparams := 0;
   symbols[nsymbols].ret_tk := TK_VOID;
+  symbols[nsymbols].is_super := FALSE;
+  symbols[nsymbols].ret_is_super := FALSE;
   symbols[nsymbols].is_vararg := FALSE;
   symbols[nsymbols].is_extern := FALSE;
   symbols[nsymbols].has_const_int := FALSE;
@@ -281,7 +290,7 @@ BEGIN
   GetObjOrNil := v;
 END;
 
-PROCEDURE AddFieldEntry(record_id: INTEGER; fname: Str255; ftk, faux, faux2, faux3: INTEGER);
+PROCEDURE AddFieldEntry(record_id: INTEGER; fname: Str255; ftk, faux, faux2, faux3, fidx_tk: INTEGER);
 BEGIN
   IF nfields < MAX_FIELDS THEN
   BEGIN
@@ -292,6 +301,8 @@ BEGIN
     fields[nfields].faux := faux;
     fields[nfields].faux2 := faux2;
     fields[nfields].faux3 := faux3;
+    fields[nfields].fidx_tk := fidx_tk;
+    fields[nfields].is_super := FALSE;
   END;
 END;
 
@@ -305,12 +316,12 @@ BEGIN
   LookupField := i;
 END;
 
-PROCEDURE AddUniqueRecordField(record_id: INTEGER; fname: Str255; ftk, faux, faux2, faux3: INTEGER);
+PROCEDURE AddUniqueRecordField(record_id: INTEGER; fname: Str255; ftk, faux, faux2, faux3, fidx_tk: INTEGER);
 BEGIN
   IF LookupField(record_id, fname) <> 0 THEN
     AddError('Duplicate record field name')
   ELSE
-    AddFieldEntry(record_id, fname, ftk, faux, faux2, faux3);
+    AddFieldEntry(record_id, fname, ftk, faux, faux2, faux3, fidx_tk);
 END;
 
 FUNCTION IsSignedInteger(tk: INTEGER): BOOLEAN;

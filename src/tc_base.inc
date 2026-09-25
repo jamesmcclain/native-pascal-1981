@@ -49,6 +49,8 @@ TYPE
     nparams: INTEGER;
     param_tk: ARRAY [1..MAX_PARAMS] OF INTEGER;
     ret_tk: INTEGER;
+    ret_aux, ret_aux2, ret_aux3, ret_idx_tk: INTEGER;
+    is_super, ret_is_super: BOOLEAN;
     is_vararg: BOOLEAN;
     is_extern: BOOLEAN;
     has_const_int: BOOLEAN;
@@ -62,6 +64,7 @@ TYPE
     aux2: INTEGER;
     aux3: INTEGER;
     idx_tk: INTEGER;
+    is_super: BOOLEAN;
   END;
 
   FieldRec = RECORD
@@ -71,6 +74,8 @@ TYPE
     faux: INTEGER;
     faux2: INTEGER;
     faux3: INTEGER;
+    fidx_tk: INTEGER;
+    is_super: BOOLEAN;
   END;
 
 VAR
@@ -83,6 +88,8 @@ VAR
   fields: ARRAY [1..MAX_FIELDS] OF FieldRec;
   nfields: INTEGER32;
   next_record_id: INTEGER;
+  last_designator_super: BOOLEAN;
+  last_designator_idx_tk: INTEGER;
   last_designator_aux, last_designator_aux2: INTEGER;
   errors: ARRAY [1..MAX_ERRORS] OF Str255;
   nerrors: INTEGER32;
@@ -105,9 +112,9 @@ FUNCTION LookupSymbolInScope(name: Str255): INTEGER32;
 FUNCTION DefineSymbol(name: Str255; kind: Str255; tk, aux, aux2, aux3, idx_tk: INTEGER): INTEGER32;
 FUNCTION LookupType(name: Str255): INTEGER32;
 FUNCTION GetObjOrNil(obj: ADRMEM; key: Str255): ADRMEM;
-PROCEDURE AddFieldEntry(record_id: INTEGER; fname: Str255; ftk, faux, faux2, faux3: INTEGER);
+PROCEDURE AddFieldEntry(record_id: INTEGER; fname: Str255; ftk, faux, faux2, faux3, fidx_tk: INTEGER);
 FUNCTION LookupField(record_id: INTEGER; fname: Str255): INTEGER32;
-PROCEDURE AddUniqueRecordField(record_id: INTEGER; fname: Str255; ftk, faux, faux2, faux3: INTEGER);
+PROCEDURE AddUniqueRecordField(record_id: INTEGER; fname: Str255; ftk, faux, faux2, faux3, fidx_tk: INTEGER);
 FUNCTION IsInteger(tk: INTEGER): BOOLEAN;
 FUNCTION IsSignedInteger(tk: INTEGER): BOOLEAN;
 FUNCTION IsUnsignedInteger(tk: INTEGER): BOOLEAN;

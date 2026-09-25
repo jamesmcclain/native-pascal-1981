@@ -373,6 +373,7 @@ BEGIN
     BEGIN
       nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, i)));
       si := DefineSymbol(nm, 'VAR', tk, aux, aux2, aux3, idx_tk);
+      symbols[si].is_super := IsSuperTypeExpr(type_expr);
     END;
   END
   ELSE IF nt = 'ConstDecl' THEN
@@ -404,6 +405,7 @@ BEGIN
       types[ntypes].aux2 := aux2;
       types[ntypes].aux3 := aux3;
       types[ntypes].idx_tk := idx_tk;
+      types[ntypes].is_super := IsSuperTypeExpr(type_expr);
     END;
     IF NodeType(type_expr) = 'EnumType' THEN
     BEGIN
@@ -469,6 +471,14 @@ BEGIN
     ELSE
       symbols[si].kind := 'PROC';
     symbols[si].ret_tk := ret_tk;
+    IF nt = 'FuncDecl' THEN
+    BEGIN
+      symbols[si].ret_aux := aux;
+      symbols[si].ret_aux2 := aux2;
+      symbols[si].ret_aux3 := aux3;
+      symbols[si].ret_idx_tk := idx_tk;
+      symbols[si].ret_is_super := IsSuperTypeExpr(ret_type_node);
+    END;
     symbols[si].is_extern := HasExternMarkerDecl(decl);
     ppi := 0;
     FOR pi := 0 TO np - 1 DO
@@ -998,6 +1008,12 @@ BEGIN
     FOR pi := 1 TO symbols[si].nparams DO
       symbols[ai].param_tk[pi] := symbols[si].param_tk[pi];
     symbols[ai].ret_tk := symbols[si].ret_tk;
+    symbols[ai].ret_aux := symbols[si].ret_aux;
+    symbols[ai].ret_aux2 := symbols[si].ret_aux2;
+    symbols[ai].ret_aux3 := symbols[si].ret_aux3;
+    symbols[ai].ret_idx_tk := symbols[si].ret_idx_tk;
+    symbols[ai].ret_is_super := symbols[si].ret_is_super;
+    symbols[ai].is_super := symbols[si].is_super;
     symbols[ai].is_vararg := symbols[si].is_vararg;
   END;
 END;

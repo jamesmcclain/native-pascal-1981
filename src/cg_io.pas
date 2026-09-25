@@ -23,7 +23,7 @@ VAR
   v: ADRMEM;
 BEGIN
   v := CodegenExpr(node);
-  IF last_val_tk = TK_INTEGER THEN
+  IF TypeKind(last_val_tk) = TK_INTEGER THEN
     v := LLVMBuildSExt(builder, v, i32ty, MakeCStr(''));
   EvalPrintfIntArg := v;
 END;
@@ -126,7 +126,7 @@ VAR
 BEGIN
   out_v := in_v;
   handled_own_args := FALSE;
-  IF tid = TK_INTEGER THEN
+  IF TypeKind(tid) = TK_INTEGER THEN
   BEGIN
     out_v := LLVMBuildSExt(builder, in_v, i32ty, MakeCStr(''));
     IF have_width THEN CONCAT(fmt, '%*d') ELSE CONCAT(fmt, '%d');
@@ -186,11 +186,11 @@ BEGIN
     vi := vi + 1;
     handled_own_args := TRUE;
   END
-  ELSE IF tid = TK_CHAR THEN
+  ELSE IF TypeKind(tid) = TK_CHAR THEN
   BEGIN
     IF have_width THEN CONCAT(fmt, '%*c') ELSE CONCAT(fmt, '%c');
   END
-  ELSE IF tid = TK_BOOLEAN THEN
+  ELSE IF TypeKind(tid) = TK_BOOLEAN THEN
   BEGIN
     is_true := LLVMBuildICmp(builder, LLVMIntNE, in_v, LLVMConstInt(i1ty, 0, 0), MakeCStr(''));
     bool_str := LLVMBuildSelect(builder, is_true,

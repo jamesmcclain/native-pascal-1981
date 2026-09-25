@@ -58,6 +58,20 @@ END;
 
 { ========================== type-expr resolution ======================= }
 
+FUNCTION IsSuperTypeExpr(node: ADRMEM): BOOLEAN;
+VAR
+  ti: INTEGER32;
+BEGIN
+  IsSuperTypeExpr := FALSE;
+  IF NodeType(node) = 'ArrayType' THEN
+    IsSuperTypeExpr := GetBool(node, 'super')
+  ELSE IF NodeType(node) = 'NamedType' THEN
+  BEGIN
+    ti := LookupType(GetStr(node, 'name'));
+    IF ti <> 0 THEN IsSuperTypeExpr := types[ti].is_super;
+  END;
+END;
+
 PROCEDURE ResolveTypeExpr(node: ADRMEM; VAR tk, aux, aux2, aux3, idx_tk: INTEGER);
 VAR
   nt, name, uname: Str255;
@@ -218,6 +232,7 @@ BEGIN
     IF (inner_tk = TK_STRING) AND (inner_aux2 = 1) THEN aux2 := 1
     ELSE aux2 := inner_aux;
     aux3 := inner_aux2;
+    idx_tk := inner_idx;
   END
   ELSE IF nt = 'FileType' THEN
   BEGIN
@@ -331,7 +346,8 @@ BEGIN
       FOR ni := 0 TO nn - 1 DO
       BEGIN
         nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, ni)));
-        AddUniqueRecordField(rid, nm, inner_tk, inner_aux, inner_aux2, inner_aux3);
+        AddUniqueRecordField(rid, nm, inner_tk, inner_aux, inner_aux2, inner_aux3, inner_idx);
+        fields[nfields].is_super := IsSuperTypeExpr(ftype_node);
       END;
     END;
     variants_arr := GetObj(node, 'variants');
@@ -344,7 +360,7 @@ BEGIN
       IF GetBool(node, 'has_tag') THEN
       BEGIN
         nm := GetStr(node, 'tag_name');
-        AddUniqueRecordField(rid, nm, inner_tk, inner_aux, inner_aux2, inner_aux3);
+        AddUniqueRecordField(rid, nm, inner_tk, inner_aux, inner_aux2, inner_aux3, inner_idx);
       END;
       FOR fi := 0 TO cJSON_GetArraySize(variants_arr) - 1 DO
       BEGIN
@@ -361,7 +377,8 @@ BEGIN
           FOR n := 0 TO nn - 1 DO
           BEGIN
             nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, n)));
-            AddUniqueRecordField(rid, nm, inner_tk, inner_aux, inner_aux2, inner_aux3);
+            AddUniqueRecordField(rid, nm, inner_tk, inner_aux, inner_aux2, inner_aux3, inner_idx);
+            fields[nfields].is_super := IsSuperTypeExpr(ftype_node);
           END;
         END;
       END;
@@ -381,7 +398,16 @@ BEGIN
     BEGIN
       IF NodeType(GetObj(node, 'low')) = 'CharLiteral' THEN tk := TK_CHAR
       ELSE IF NodeType(GetObj(node, 'low')) = 'BoolLiteral' THEN tk := TK_BOOLEAN
+      ELSE IF NodeType(GetObj(node, 'low')) = 'Identifier' THEN
+      BEGIN
+        ti := LookupSymbol(GetStr(GetObj(node, 'low'), 'name'));
+        IF ti <> 0 THEN tk := symbols[ti].tk
+        ELSE tk := TK_UNKNOWN;
+      END
       ELSE tk := TK_INTEGER;
+      { A declared subrange retains its base scalar kind but marks its
+        declaration shape for type-only LOWER/UPPER classification. }
+      aux := -1;
     END
     ELSE BEGIN
       name := GetStr(node, 'name');

@@ -76,7 +76,9 @@ BEGIN
   types[ntypes].elem_tid := elem_tid;
   types[ntypes].lo := lo;
   types[ntypes].hi := hi;
+  types[ntypes].index_tid := TK_INTEGER;
   types[ntypes].is_super := FALSE;
+  types[ntypes].is_subrange := FALSE;
   types[ntypes].ptr_space := PTR_SPACE_PLAIN;
   types[ntypes].enum_values := NIL;
   types[ntypes].llvm_ty := llvm_ty;
@@ -189,6 +191,11 @@ BEGIN
        AND (types[from_tid].elem_tid = types[to_tid].elem_tid)
        AND (types[from_tid].lo = types[to_tid].lo)
        AND (types[from_tid].hi = types[to_tid].hi)) OR
+    ((TypeKind(from_tid) = TypeKind(to_tid)) AND
+      ((TypeKind(to_tid) = TK_INTEGER) OR (TypeKind(to_tid) = TK_CHAR) OR
+       (TypeKind(to_tid) = TK_BOOLEAN))) OR
+    ((TypeKind(from_tid) = TK_ENUM) AND (TypeKind(to_tid) = TK_ENUM)
+       AND (types[from_tid].enum_values = types[to_tid].enum_values)) OR
     ((TypeKind(from_tid) = TK_SET) AND (TypeKind(to_tid) = TK_SET)) OR
     ((from_tid = TK_INTEGER) AND (to_tid = TK_WORD)) OR
     ((from_tid = TK_ADRMEM) AND (TypeKind(to_tid) = TK_POINTER)) OR
@@ -972,12 +979,22 @@ FUNCTION ResolveIntLiteral(node: ADRMEM): INTEGER32;
   this repository's own native sources; any other computed bound expression
   is still not supported. }
 VAR
-  nm: Str255;
+  nm, ch: Str255;
   ci: INTEGER32;
   wide: INTEGER64;
 BEGIN
   IF NodeType(node) = 'IntLiteral' THEN
     ResolveIntLiteral := CheckedIndexBound(RETYPE(INTEGER64, GetInt(node, 'value')))
+  ELSE IF NodeType(node) = 'CharLiteral' THEN
+  BEGIN
+    ch := GetStr(node, 'value');
+    ResolveIntLiteral := ORD(ch[1]);
+  END
+  ELSE IF NodeType(node) = 'BoolLiteral' THEN
+  BEGIN
+    IF GetBool(node, 'value') THEN ResolveIntLiteral := 1
+    ELSE ResolveIntLiteral := 0;
+  END
   ELSE IF NodeType(node) = 'Identifier' THEN
   BEGIN
     nm := GetStr(node, 'name');
@@ -1064,6 +1081,7 @@ VAR
   values_arr: ADRMEM; { EnumType's member identifier list }
   mi: INTEGER32;
   named_tid: INTEGER;
+  ci: INTEGER32;
 BEGIN
   nt := NodeType(te);
   IF nt = 'NamedType' THEN
@@ -1181,6 +1199,18 @@ BEGIN
       count := hi - lo + 1;
       arr_ty := LLVMArrayType(LLVMTypeForTk(elem_tid), count);
       tid := RegisterType(TK_ARRAY, elem_tid, lo, hi, arr_ty);
+      IF NodeType(GetObj(GetObj(te, 'index_range'), 'low')) = 'CharLiteral' THEN
+        types[tid].index_tid := TK_CHAR
+      ELSE IF NodeType(GetObj(GetObj(te, 'index_range'), 'low')) = 'BoolLiteral' THEN
+        types[tid].index_tid := TK_BOOLEAN
+      ELSE IF NodeType(GetObj(GetObj(te, 'index_range'), 'low')) = 'Identifier' THEN
+      BEGIN
+        ci := LookupConst(GetStr(GetObj(GetObj(te, 'index_range'), 'low'), 'name'));
+        IF ci <> 0 THEN
+          IF const_tbl[ci].enum_tid <> 0 THEN
+            types[tid].index_tid := const_tbl[ci].enum_tid;
+      END
+      ELSE IF hi > 32767 THEN types[tid].index_tid := TK_WORD;
     END;
   END
   ELSE IF nt = 'VectorType' THEN
@@ -1353,6 +1383,35 @@ BEGIN
     elem_tid := ResolveTypeExpr(GetObj(te, 'element_type'));
     IF GetStr(te, 'structure') = 'ASCII' THEN hi := 1 ELSE hi := 0;
     tid := RegisterType(TK_FILE, elem_tid, 0, hi, i8ptrty);
+  END
+  ELSE IF nt = 'SubrangeType' THEN
+  BEGIN
+    { Retain declared bounds without changing the scalar's physical ABI. }
+    lo := ResolveIntLiteral(GetObj(te, 'low'));
+    hi := ResolveIntLiteral(GetObj(te, 'high'));
+    IF lo > hi THEN AbortWith('codegen: subrange lower bound exceeds upper bound');
+    IF NodeType(GetObj(te, 'low')) = 'CharLiteral' THEN
+      tid := RegisterType(TK_CHAR, 0, lo, hi, i8ty)
+    ELSE IF NodeType(GetObj(te, 'low')) = 'Identifier' THEN
+    BEGIN
+      ci := LookupConst(GetStr(GetObj(te, 'low'), 'name'));
+      IF ci = 0 THEN AbortWith('codegen: subrange lower bound must be a constant');
+      elem_tid := const_tbl[ci].enum_tid;
+      ci := LookupConst(GetStr(GetObj(te, 'high'), 'name'));
+      IF ci = 0 THEN AbortWith('codegen: subrange upper bound must be a constant');
+      IF (elem_tid = 0) OR (elem_tid <> const_tbl[ci].enum_tid) THEN
+        AbortWith('codegen: subrange enum bounds must share a type');
+      tid := RegisterType(TK_ENUM, 0, lo, hi, i32ty);
+      types[tid].enum_values := types[elem_tid].enum_values;
+    END
+    ELSE IF NodeType(GetObj(te, 'low')) = 'BoolLiteral' THEN
+      tid := RegisterType(TK_BOOLEAN, 0, lo, hi, i1ty)
+    ELSE BEGIN
+      IF (lo < -32767) OR (hi > 32767) THEN
+        AbortWith('codegen: INTEGER subrange bounds must fit vintage INTEGER');
+      tid := RegisterType(TK_INTEGER, 0, lo, hi, i16ty);
+    END;
+    types[tid].is_subrange := TRUE;
   END
   ELSE IF nt = 'SetType' THEN
   BEGIN

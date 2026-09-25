@@ -223,6 +223,7 @@ int   movesr(adsmem src, adsmem dst, unsigned short len);
 /* ---- VLOAD/VSTORE SUPER ARRAY bounds (vector_bounds.c) ---- */
 
 void  pas_vector_nil_error(int32_t is_store) __attribute__((noreturn));
+void  pas_upper_nil_error(int32_t unused) __attribute__((noreturn));
 void  pas_vector_range_error(int32_t is_store, int64_t idx, int32_t idx_unsigned,
                              int32_t lanes, int64_t lo, int64_t hi) __attribute__((noreturn));
 

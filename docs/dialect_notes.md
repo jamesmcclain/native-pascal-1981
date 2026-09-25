@@ -275,28 +275,57 @@ it from a routine, take its `SIZEOF` / `LOWER` / `UPPER`.
   compiles may use the syntax. See
   [`bootstrap_subset.md`](bootstrap_subset.md).
 
-## Bound designators **[native]**
+## Bound expressions **[native]**
 
-`LOWER` and `UPPER` accept an identifier-rooted designator with record-field
-selectors and pointer dereferences: `p^`, `h.data^`, or `h.next^.data^`.
-For a final dereference of a `^SUPER ARRAY`, `UPPER` reads the actual upper
-bound in that selected `NEW` allocation's header; `LOWER` is its declared
-lower bound and does not evaluate the pointer. Fixed arrays, STRING, LSTRING
-and VECTOR retain their static bounds, also without evaluating the designator.
-An undereferenced pointer is not an array. Indexed bound operands (`a[i]^`),
-function results, WITH-qualified names and arbitrary expressions are outside
-this limited designator contract; this is narrower than the 1981 manual's
-`(expression)` rule. A NIL final pointer has no valid dynamic upper bound:
-`UPPER(p^)` currently performs an unchecked header load (no defined runtime
-error), including when `p` comes from a field. `LOWER(p^)` needs no load and
-can return its static bound even when the pointer is NIL. Ordinary
-pointer dereferences elsewhere follow their existing checks; this change
-introduces no new NIL policy.
+`LOWER(expression)` and `UPPER(expression)` accept the 1981 manual's array,
+set, enumerated and subrange operands, subject to these native ABI limits:
 
-The Python reference parser accepts only `identifier ["^"]` here. Field
-selectors in a bound operand are intentionally native-only. Do not put them
-in the parser `should_pass` parity corpus; `make test-reference-parity` checks
-that corpus against the Python reference, not this deliberate extension.
+| Operand type | LOWER | UPPER | Evaluation |
+| --- | --- | --- | --- |
+| `^SUPER ARRAY` final dereference, including indexed/record designators and pointer-valued function call results such as `f(x)^` | declared lower bound | actual selected `NEW` allocation's upper-bound header | UPPER evaluates selection exactly once; LOWER does not evaluate |
+| fixed array | declared lower | declared upper | type only |
+| `STRING(n)` / `LSTRING(n)` | 1 / 0 | capacity `n` (not current length) | type only |
+| `VECTOR[n] OF T` (local extension) | 0 | `n-1` | type only |
+| set | ordinal base type low | ordinal base type high | type only |
+| enumerated | first member ordinal | last member ordinal | type only |
+| subrange | declared low | declared high | type only |
+
+The result type for static set, enumerated and subrange bounds is the base
+ordinal type (for example, `LOWER(e)` for an enum is an enum value, and
+`LOWER(SET OF BOOLEAN)` is BOOLEAN). Fixed-array bounds use their declared
+index type, including CHAR and enum index types. The established STRING,
+LSTRING and VECTOR bound results remain INTEGER; dynamic super-array bounds
+remain INTEGER64. A set constructor without a declared base uses the local
+generic SET representation (`INTEGER` index bounds 0..255). Set operations also use the generic representation, even when both operands
+share a declared range; a named set value or function result retains its
+declared bounds. String literals have no declared fixed capacity and are
+rejected as bound operands.
+
+Static operands and `LOWER` use **only the type, not the value**, and never
+execute their index/call side effects. Dynamic `UPPER` evaluates a selected
+pointer, index or function call once, then reads the allocation header. A NIL
+selected pointer produces `runtime error: UPPER through NIL super-array pointer`
+before the header access; `LOWER` of the same NIL pointer stays type-only.
+This defined NIL check intentionally changes the old unchecked `UPPER(p^)`
+behavior. Dangling pointers after `DISPOSE` are not detected.
+
+A type identifier (unlike `SIZEOF`), an undereferenced pointer, a non-pointer
+super-array value without a supported dynamic-bound ABI, and arithmetic or
+literal expressions outside the permitted types are rejected. Standalone
+subrange type declarations are supported for vintage INTEGER bounds within
+`-32767..32767`, CHAR, BOOLEAN, and a pair of members from one enumerated
+type; out-of-range assignment is not checked at runtime (like ordinary
+array-index assignment). Function call
+postfix selectors are supported only inside a bound operand; this does not
+make `f(x)^` a general expression elsewhere. Super-array formal-parameter
+bound propagation remains unaudited. The manual does not prescribe this
+implementation's NIL diagnostic or side-effect count.
+
+The Python reference parser accepts only `identifier ["^"]` here. Field,
+indexed and call-result selectors, and general expression operands are
+intentional native-only parity exceptions. Do not add these to parser
+`should_pass` parity fixtures; `make test-reference-parity` checks the
+unchanged reference corpus.
 
 ## Integer widths
 

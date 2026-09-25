@@ -83,12 +83,13 @@ simple_expression = [ "+" | "-" ] term { ( "+" | "-" | "OR" | "XOR" ) term } ;
 term = factor { ( "*" | "/" | "DIV" | "MOD" | "AND" ) factor } ;
 factor = constant | designator | identifier "(" [ expression_list ] ")" | "RETYPE" "(" identifier "," expression ")"
        | "NOT" factor | "(" expression ")" | set_constructor | "ADR" identifier
-       | "SIZEOF" "(" ( identifier | type ) ")" | ( "LOWER" | "UPPER" ) "(" bound_designator ")" ;
-bound_designator = identifier { "." identifier | "^" } ;
-(* Bound operands may select nested record fields and dereference pointers;
-   indexed selectors and arbitrary expressions are not in this bound syntax.
-   Static array, STRING, LSTRING and VECTOR designators retain their bounds;
-   dynamic bounds require a final dereference of a SUPER ARRAY pointer. *)
+       | "SIZEOF" "(" ( identifier | type ) ")" | ( "LOWER" | "UPPER" ) "(" expression ")" ;
+bound_call_postfix = identifier "(" [ expression_list ] ")"
+                     { "[" expression { "," expression } "]" | "." identifier | "^" } ;
+(* bound_call_postfix is a bound-operand-only extension of the FuncCall
+   alternative of factor. Bounds accept typed expressions; outside a bound
+   operand selectors remain identifier-rooted. See dialect_notes.md for
+   permitted types and the static-versus-dynamic evaluation rule. *)
 designator = identifier { "[" expression { "," expression } "]" | "." identifier | "^" } ;
 with_designator = identifier { "[" expression "]" | "." identifier | "^" } ;
 set_constructor = "[" [ set_element { "," set_element } ] "]" ;
@@ -96,7 +97,8 @@ set_element = expression [ ".." expression ] ;
 relation = "=" | "<>" | "<" | "<=" | ">" | ">=" | "IN" ;
 
 type = [ "PACKED" ] ( array_type | record_type ) | set_type | file_type | enum_type | lstring_type
-     | pointer_type | vector_type | named_type | builtin_type ;
+     | pointer_type | vector_type | subrange_type | named_type | builtin_type ;
+subrange_type = constant ".." constant ;
 array_type = "ARRAY" "[" fixed_index_range "]" "OF" type
            | "SUPER" "ARRAY" "[" super_index_range "]" "OF" type ;
 fixed_index_range = constant ".." constant ;

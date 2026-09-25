@@ -1,7 +1,6 @@
 Type checking failed:
-Unknown field
-Dereference of non-pointer value
+UPPER/LOWER type identifier is not an expression
 UPPER/LOWER requires a dereferenced pointer
 UPPER/LOWER requires an array, set, enum or subrange expression
-UPPER/LOWER requires an array, set, enum or subrange expression
+UPPER/LOWER string literal has no declared capacity
 Error: Failed to parse input AST JSON
