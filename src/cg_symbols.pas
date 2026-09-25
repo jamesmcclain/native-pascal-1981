@@ -10,19 +10,6 @@ IMPLEMENTATION OF cg_symbols;
 
 { ============================ symbol table ============================== }
 
-FUNCTION LookupSym(name: Str255): INTEGER32;
-VAR
-  i: INTEGER32;
-  found: INTEGER32;
-  uname: Str255;
-BEGIN
-  uname := UpperStr(name);
-  found := 0;
-  FOR i := 1 TO nsymbols DO
-    IF UpperStr(symbols[i].name) = uname THEN found := i;
-  LookupSym := found;
-END;
-
 PROCEDURE PushScope;
 { Marks both tables, not just symbols: a routine declared inside this scope
   is no more visible after it ends than a variable is. Its entry is written

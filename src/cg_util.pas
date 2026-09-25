@@ -187,11 +187,11 @@ BEGIN
   UpperStr := res;
 END;
 
-{ ============================ routine table =============================== }
-{ These two live here rather than in cg_symbols beside the rest of the routine
-  table because cg_types needs UserRoutineShadows -- see IsIntLiteralLike --
-  and sits below cg_symbols.  cg_util is the lowest unit that has both the
-  cg_base table and UpperStr. }
+{ ======================= symbol and routine lookup ======================== }
+{ These live here rather than in cg_symbols beside the rest of the symbol and
+  routine tables because cg_types needs UserRoutineShadows and LookupSym --
+  see IsIntLiteralLike -- and sits below cg_symbols.  cg_util is the lowest
+  unit that has both the cg_base tables and UpperStr. }
 
 FUNCTION LookupRoutine(name: Str255): INTEGER32;
 VAR
@@ -204,6 +204,19 @@ BEGIN
   FOR i := 1 TO nroutines DO
     IF UpperStr(routines[i].name) = uname THEN found := i;
   LookupRoutine := found;
+END;
+
+FUNCTION LookupSym(name: Str255): INTEGER32;
+VAR
+  i: INTEGER32;
+  found: INTEGER32;
+  uname: Str255;
+BEGIN
+  uname := UpperStr(name);
+  found := 0;
+  FOR i := 1 TO nsymbols DO
+    IF UpperStr(symbols[i].name) = uname THEN found := i;
+  LookupSym := found;
 END;
 
 FUNCTION UserRoutineShadows(name: Str255): BOOLEAN;
