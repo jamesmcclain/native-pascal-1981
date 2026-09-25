@@ -478,6 +478,10 @@ BEGIN
           aux2 := new_aux2;
         END;
         aux3 := 0;
+        { The element's own index kind is not kept in this flat type
+          model, so an element that is itself an array has an unknown
+          index kind; codegen, which has the full type, decides it. }
+        current_idx_tk := TK_UNKNOWN;
       END;
     END
     ELSE IF skind = 'DEREF' THEN
@@ -890,7 +894,7 @@ VAR
   elems_arr, elem_node, bound_selectors, bound_sel: ADRMEM;
   n_elems, ei, bound_n: INTEGER32;
   folded_value: INTEGER64;
-  bound_subrange, bound_super: BOOLEAN;
+  bound_subrange, bound_super, bound_idx_unknown: BOOLEAN;
 BEGIN
   expr_depth := expr_depth + 1;
   IF expr_depth > MAX_EXPR_DEPTH THEN
@@ -1009,13 +1013,18 @@ BEGIN
     bound_subrange := FALSE;
     bound_super := FALSE;
     bound_base_tk := TK_INTEGER;
+    bound_idx_unknown := FALSE;
     IF (NodeType(operand_node) = 'Designator') OR
        (NodeType(operand_node) = 'PostfixExpr') THEN
     BEGIN
       bound_subrange := last_designator_aux = -1;
       bound_super := last_designator_super;
       IF ot = TK_SET THEN bound_base_tk := last_designator_aux
-      ELSE IF ot = TK_ARRAY THEN bound_base_tk := last_designator_idx_tk;
+      ELSE IF ot = TK_ARRAY THEN
+      BEGIN
+        bound_base_tk := last_designator_idx_tk;
+        bound_idx_unknown := last_designator_idx_tk = TK_UNKNOWN;
+      END;
     END;
     si := 0;
     IF NodeType(operand_node) = 'Identifier' THEN
@@ -1056,6 +1065,8 @@ BEGIN
         AddError('UPPER/LOWER non-pointer SUPER ARRAY has no runtime bound');
       IF (ot = TK_ARRAY) AND (op = 'DEREF') THEN
         CheckExpr := TK_INTEGER64
+      ELSE IF (ot = TK_ARRAY) AND bound_idx_unknown THEN
+        CheckExpr := TK_UNKNOWN
       ELSE IF (ot = TK_SET) OR (ot = TK_ARRAY) THEN
         CheckExpr := bound_base_tk
       ELSE IF (ot = TK_ENUM) OR bound_subrange THEN
