@@ -14,11 +14,14 @@ FUNCTION open(path: ADRMEM; flags: CINT; mode: CINT): CINT [C]; EXTERN;
 FUNCTION close(fd: CINT): CINT [C]; EXTERN;
 FUNCTION pipe(fds: ADRMEM): CINT [C]; EXTERN;
 FUNCTION fork: CINT [C]; EXTERN;
+FUNCTION dup(old_fd: CINT): CINT [C]; EXTERN;
 FUNCTION dup2(old_fd: CINT; new_fd: CINT): CINT [C]; EXTERN;
 FUNCTION waitpid(pid: CINT; status: ADRMEM; options: CINT): CINT [C]; EXTERN;
 FUNCTION execvp(file_name: ADRMEM; args: ADRMEM): CINT [C]; EXTERN;
 FUNCTION mkstemps(template_name: ADRMEM; suffix_length: CINT): CINT [C]; EXTERN;
 FUNCTION unlink(path: ADRMEM): CINT [C]; EXTERN;
+FUNCTION realpath(path: ADRMEM; resolved: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION strcmp(left: ADRMEM; right: ADRMEM): CINT [C]; EXTERN;
 PROCEDURE exit(status: CINT) [C]; EXTERN;
 
 CONST
@@ -52,7 +55,8 @@ BEGIN
   WRITELN('  -c                      Compile to object file only (.o)');
   WRITELN('  -S                      Compile to LLVM IR (.ll) only');
   WRITELN('  --emit-ptx              Emit PTX assembly (.ptx) for device code');
-  WRITELN('  --pretty-print          Emit formatted Pascal source (pretty81)');
+  WRITELN('  --pretty-print          Emit formatted Pascal source (pretty81);');
+  WRITELN('                          written to stdout unless -o is given');
   WRITELN('  -O0, -O1, -O2, -O3      Optimization level (default: -O1)');
   WRITELN('  --dialect <name>        Language dialect: vintage or extended');
   WRITELN('  --target-cpu <cpu>      Host target CPU (LLVM target-cpu attribute)');
@@ -119,6 +123,28 @@ BEGIN
      (base[length - 1] = 'a') AND (base[length] = 's') THEN
     base[0] := CHR(length - 4);
   DefaultOutput := MakeCStr(Join(base, suffix));
+END;
+
+PROCEDURE CheckOutputNotInput;
+{ Opening the output truncates it before the lexer reads the input, so an
+  output that names an input file would destroy that source. A default
+  output can name the input too: an input without the .pas suffix is its
+  own default executable name. Resolving both paths also catches a
+  different spelling or a symbolic link to the same file. }
+VAR
+  resolved_output, resolved_input: ADRMEM;
+  k: CINT;
+BEGIN
+  resolved_output := realpath(output_file, NIL);
+  IF resolved_output <> NIL THEN
+    FOR k := 0 TO input_count - 1 DO
+    BEGIN
+      resolved_input := realpath(inputs[k], NIL);
+      IF resolved_input <> NIL THEN
+        IF strcmp(resolved_output, resolved_input) = 0 THEN
+          Fail(Join(Join('error: output file ''', CStrToStr255(output_file)),
+                    ''' would overwrite an input file'));
+    END;
 END;
 
 PROCEDURE ClosePipes;
@@ -205,7 +231,9 @@ BEGIN
   IF in_fd < 0 THEN BEGIN RunPipeline := 1; END
   ELSE
   BEGIN
-    out_fd := open(ir_name, 577, 420);
+    { A NIL ir_name means standard output (--pretty-print without -o). }
+    IF ir_name = NIL THEN out_fd := dup(1)
+    ELSE out_fd := open(ir_name, 577, 420);
     IF out_fd < 0 THEN BEGIN close(in_fd); RunPipeline := 1; END
     ELSE
     BEGIN
@@ -247,7 +275,7 @@ BEGIN
         { The output was opened and truncated above, so a failed stage leaves
           a partial or empty file there. Remove it: with -S, --emit-ptx, or
           --pretty it is the user's output file. }
-        IF rc <> 0 THEN unlink(ir_name);
+        IF (rc <> 0) AND (ir_name <> NIL) THEN unlink(ir_name);
         RunPipeline := rc;
       END;
     END;
@@ -422,10 +450,10 @@ BEGIN
   BEGIN
     IF ptx_only THEN output_file := DefaultOutput(inputs[0], '.ptx')
     ELSE IF ir_only THEN output_file := DefaultOutput(inputs[0], '.ll')
-    ELSE IF pretty_print THEN output_file := DefaultOutput(inputs[0], '.pas')
     ELSE IF compile_only THEN output_file := DefaultOutput(inputs[0], '.o')
-    ELSE output_file := DefaultOutput(inputs[0], '');
+    ELSE IF NOT pretty_print THEN output_file := DefaultOutput(inputs[0], '');
   END;
+  IF output_file <> NIL THEN CheckOutputNotInput;
   root_dir := pas_toolchain_root;
   lexer_bin := getenv(MakeCStr('PASCAL1981_LEXER'));
   parser_bin := getenv(MakeCStr('PASCAL1981_PARSER'));

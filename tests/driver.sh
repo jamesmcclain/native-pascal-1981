@@ -327,6 +327,48 @@ done
 expect_status 1 env "${stage_env[@]}" "$DRIVER" -O9 "$source_file"
 expect_stderr 'error: optimization level must be 0, 1, 2, or 3'
 
+# Opening the output truncates it before the lexer reads the input, so an
+# output that names an input must be refused with the source left intact.
+pretty_env=("${stage_env[@]}" "PASCAL1981_PRETTY81=$stage_dir/cat-stage")
+guard_source="$work_dir/guard.pas"
+printf 'guard input\n' > "$guard_source"
+cp "$guard_source" "$work_dir/guard-original.pas"
+# --pretty-print without -o writes to stdout; it used to default to the
+# input's own name.
+expect_status 0 env "${pretty_env[@]}" "$DRIVER" --pretty-print "$guard_source"
+if ! cmp -s "$work_dir/guard-original.pas" "$work_dir/stdout"; then
+  echo 'FAIL: --pretty-print without -o did not write the stage output to stdout' >&2
+  fail=$((fail + 1))
+fi
+check_guard_source() {
+  if ! cmp -s "$work_dir/guard-original.pas" "$guard_source"; then
+    echo "FAIL: $1 changed the input file" >&2
+    fail=$((fail + 1))
+    cp "$work_dir/guard-original.pas" "$guard_source"
+  fi
+}
+check_guard_source '--pretty-print without -o'
+expect_status 1 env "${pretty_env[@]}" "$DRIVER" --pretty-print "$guard_source" -o "$guard_source"
+expect_stderr 'would overwrite an input file'
+check_guard_source '--pretty-print -o <input>'
+# A different spelling of the same path is the same file.
+expect_status 1 env "${stage_env[@]}" "$DRIVER" -S "$guard_source" -o "$work_dir/./guard.pas"
+expect_stderr 'would overwrite an input file'
+check_guard_source '-S -o <input>'
+ln -s "$guard_source" "$work_dir/guard-link.pas"
+expect_status 1 env "${stage_env[@]}" "$DRIVER" -c "$guard_source" -o "$work_dir/guard-link.pas"
+expect_stderr 'would overwrite an input file'
+check_guard_source '-c -o <symlink to input>'
+# An input without the .pas suffix is its own default executable name.
+bare_source="$work_dir/bare"
+cp "$guard_source" "$bare_source"
+expect_status 1 env "${stage_env[@]}" "$DRIVER" "$bare_source"
+expect_stderr 'would overwrite an input file'
+if ! cmp -s "$work_dir/guard-original.pas" "$bare_source"; then
+  echo 'FAIL: default output for a suffixless input changed the input file' >&2
+  fail=$((fail + 1))
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "Driver contract results: $pass passed, $fail failed" >&2
   exit 1
