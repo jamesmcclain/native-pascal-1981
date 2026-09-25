@@ -114,10 +114,10 @@
   involved) are still rejected, same as the file's existing no-implicit-
   promotion rule for plain INTEGER/REAL. Not yet covered: files,
   multi-dimension arrays, CHAR-keyed CASE, CASE label ranges,
-  MATHCK/RANGECK-style runtime traps (including CONCAT/COPYLST/COPYSTR/
-  INSERT's own capacity overflow,
-  which is unchecked -- same simplification as an unchecked array index
-  elsewhere in this file), C-ABI externs, units, and DEVICE MODULE/PTX
+  MATHCK-style runtime traps and RANGECK beyond subrange stores (which
+  EmitSubrangeCheck does check) -- CONCAT/COPYLST/COPYSTR/INSERT's own
+  capacity overflow, for one, is unchecked, the same simplification as an
+  unchecked array index elsewhere in this file -- C-ABI externs, units, and DEVICE MODULE/PTX
   generation. Anything not yet covered is
   rejected loudly via AbortWith rather than silently mishandled
   or miscompiled -- reject unhandled constructs instead of guessing, the
@@ -446,12 +446,20 @@ BEGIN
   SetPtrArrayElem(param_arr, 1, LLVMPointerType(i32ty, 0));
   fread_int_fnty := LLVMFunctionType(i32ty, param_arr, 2, 0);
   fread_int_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_int'), fread_int_fnty);
+  fread_int32_fnty := fread_int_fnty;
+  fread_int32_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_int32'), fread_int32_fnty);
+  param_arr := AllocPtrArray(2);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  SetPtrArrayElem(param_arr, 1, LLVMPointerType(i64ty, 0));
+  fread_int64_fnty := LLVMFunctionType(i32ty, param_arr, 2, 0);
+  fread_int64_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_int64'), fread_int64_fnty);
 
   param_arr := AllocPtrArray(2);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
   SetPtrArrayElem(param_arr, 1, LLVMPointerType(i16ty, 0));
   fread_word_fnty := LLVMFunctionType(i32ty, param_arr, 2, 0);
   fread_word_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_word'), fread_word_fnty);
+  fread_int16_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_int16'), fread_word_fnty);
 
   param_arr := AllocPtrArray(2);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
@@ -516,11 +524,18 @@ BEGIN
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(i32ty, 0));
   read_int_fnty := LLVMFunctionType(i32ty, param_arr, 1, 0);
   read_int_fn := LLVMAddFunction(modl, MakeCStr('pas_read_int'), read_int_fnty);
+  read_int32_fnty := read_int_fnty;
+  read_int32_fn := LLVMAddFunction(modl, MakeCStr('pas_read_int32'), read_int32_fnty);
+  param_arr := AllocPtrArray(1);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(i64ty, 0));
+  read_int64_fnty := LLVMFunctionType(i32ty, param_arr, 1, 0);
+  read_int64_fn := LLVMAddFunction(modl, MakeCStr('pas_read_int64'), read_int64_fnty);
 
   param_arr := AllocPtrArray(1);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(i16ty, 0));
   read_word_fnty := LLVMFunctionType(i32ty, param_arr, 1, 0);
   read_word_fn := LLVMAddFunction(modl, MakeCStr('pas_read_word'), read_word_fnty);
+  read_int16_fn := LLVMAddFunction(modl, MakeCStr('pas_read_int16'), read_word_fnty);
 
   param_arr := AllocPtrArray(1);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(i64ty, 0));
@@ -735,6 +750,7 @@ BEGIN
   loop_depth := 0;
   nlabels := 0;
   cur_routine_has_labels := FALSE;
+  cur_rangeck := TRUE;
   pending_loop_label := '';
   ntypes := 13; { ids 1..13 are the bare TK_INTEGER..TK_ADRMEM scalars, not
                  `types` table entries -- the first RegisterType call must

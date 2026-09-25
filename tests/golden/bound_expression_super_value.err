@@ -1,0 +1,3 @@
+Type checking failed:
+UPPER/LOWER non-pointer SUPER ARRAY has no runtime bound
+Error: Failed to parse input AST JSON

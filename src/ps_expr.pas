@@ -6,6 +6,8 @@
 IMPLEMENTATION OF ps_expr;
 USES ps_base;
 
+VAR bound_expr_depth: INTEGER;
+
 FUNCTION ParseExpression: ADRMEM; FORWARD;
 FUNCTION ParseBooleanExpression: ADRMEM; FORWARD;
 FUNCTION ParseSimpleExpression: ADRMEM; FORWARD;
@@ -418,6 +420,15 @@ BEGIN
       node := CreateTriviaNode('FuncCall');
       AddStringField(node, 'name', name);
       AddField(node, 'args', args_arr);
+      IF (bound_expr_depth > 0) AND
+         ((CurKind = 'LBRACKET') OR (CurKind = 'DOT') OR (CurKind = 'POINTER')) THEN
+      BEGIN
+        expr := ParseDesignatorRest('');
+        args_arr := CreateTriviaNode('PostfixExpr');
+        AddField(args_arr, 'base', node);
+        AddField(args_arr, 'selectors', GetObj(expr, 'selectors'));
+        node := args_arr;
+      END;
       ParseFactor := node;
     END
     ELSE
@@ -483,15 +494,10 @@ BEGIN
   BEGIN
     BEGIN RelayTokenTrivia; pos := pos + 1; END;
     Expect('LPAREN');
-    name := CurLex;
-    Expect('IDENTIFIER');
     node := CreateTriviaNode('UpperExpr');
-    AddStringField(node, 'name', name);
-    { UPPER(p^): bound of the pointee -- for a heap super array this is the
-      dynamic upper bound recorded by long-form NEW. Native codegen.pas
-      rejects this deref form (no super arrays there yet), but parsing it
-      is still correct regardless of what codegen later does with it. }
-    AddBoolField(node, 'deref', Match('POINTER'));
+    bound_expr_depth := bound_expr_depth + 1;
+    AddField(node, 'operand', ParseExpression);
+    bound_expr_depth := bound_expr_depth - 1;
     Expect('RPAREN');
     ParseFactor := node;
   END
@@ -499,11 +505,10 @@ BEGIN
   BEGIN
     BEGIN RelayTokenTrivia; pos := pos + 1; END;
     Expect('LPAREN');
-    name := CurLex;
-    Expect('IDENTIFIER');
     node := CreateTriviaNode('LowerExpr');
-    AddStringField(node, 'name', name);
-    AddBoolField(node, 'deref', Match('POINTER'));
+    bound_expr_depth := bound_expr_depth + 1;
+    AddField(node, 'operand', ParseExpression);
+    bound_expr_depth := bound_expr_depth - 1;
     Expect('RPAREN');
     ParseFactor := node;
   END
@@ -689,7 +694,8 @@ BEGIN
     END;
   END
   ELSE IF (CurKind = 'INTEGER_LITERAL') OR (CurKind = 'CHAR_LITERAL') OR
-          (CurKind = 'STRING_LITERAL') OR (CurKind = 'BOOLEAN_LITERAL') THEN
+          (CurKind = 'STRING_LITERAL') OR (CurKind = 'BOOLEAN_LITERAL') OR
+          (CurKind = 'MINUS') OR (CurKind = 'PLUS') THEN
   BEGIN
     low_e := ParseConstant;
     IF CurKind = 'RANGE' THEN
@@ -951,6 +957,23 @@ BEGIN
     AddStringField(node, 'flavor', 'ADS');
     ParseType := node;
   END
+  ELSE IF (CurKind = 'IDENTIFIER') AND (NextKind = 'RANGE') THEN
+  BEGIN
+    node := ParseSetBase;
+    ParseType := node;
+  END
+  ELSE IF (CurKind = 'INTEGER_LITERAL') OR (CurKind = 'CHAR_LITERAL') OR
+          (CurKind = 'BOOLEAN_LITERAL') OR (CurKind = 'MINUS') OR
+          (CurKind = 'PLUS') THEN
+  BEGIN
+    node := ParseSetBase;
+    IF NodeType(node) <> 'SubrangeType' THEN
+    BEGIN
+      EPrint('Parser Error: expected subrange high bound');
+      exit(1);
+    END;
+    ParseType := node;
+  END
   ELSE IF CurKind = 'IDENTIFIER' THEN
   BEGIN
     nm := CurLex;
@@ -996,4 +1019,5 @@ BEGIN
 END;
 
 BEGIN
+  bound_expr_depth := 0;
 END.

@@ -1,0 +1,1 @@
+PROGRAM t; BEGIN WITH x DO y := 1 END.

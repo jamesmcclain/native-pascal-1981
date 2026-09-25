@@ -69,7 +69,10 @@ VAR
     the file-targeted counterpart of printf_fn above, same varargs shape. }
   enum_write_token_fnty, enum_write_token_fn: ADRMEM;
   fread_int_fnty, fread_int_fn: ADRMEM;
+  fread_int32_fnty, fread_int32_fn: ADRMEM;
+  fread_int64_fnty, fread_int64_fn: ADRMEM;
   fread_word_fnty, fread_word_fn: ADRMEM;
+  fread_int16_fn: ADRMEM; { INTEGER READ; same (fcb*, i16*) shape as fread_word_fnty }
   fread_ptr_fnty, fread_ptr_fn: ADRMEM; { pointer-as-number READ, the manual's
     implementation-defined round-trip format (13620-13623). }
   fread_enum_name_fnty, fread_enum_name_fn: ADRMEM; { enum/BOOLEAN
@@ -81,9 +84,12 @@ VAR
   freadln_skip_fnty, freadln_skip_fn: ADRMEM;
   freadset_fnty, freadset_fn: ADRMEM; { pas_freadset(fcb*, lstr*, cap, set_words*) }
   file_attach_std_fnty, file_attach_std_fn: ADRMEM; { pas_file_attach_std(in_fcb*, out_fcb*) }
+  read_int32_fnty, read_int32_fn: ADRMEM;
+  read_int64_fnty, read_int64_fn: ADRMEM;
   read_int_fnty, read_int_fn: ADRMEM; { stdin counterparts (readq.c), used by
     a bare READ/READLN with no leading file argument. }
   read_word_fnty, read_word_fn: ADRMEM;
+  read_int16_fn: ADRMEM; { INTEGER READ; same (i16*) shape as read_word_fnty }
   read_ptr_fnty, read_ptr_fn: ADRMEM; { stdin counterparts of the two above. }
   read_enum_name_fnty, read_enum_name_fn: ADRMEM;
   read_real_fnty, read_real_fn: ADRMEM;
@@ -241,6 +247,11 @@ VAR
   cur_routine_has_labels: BOOLEAN; { CodegenStmtArray consults this to decide
     whether code after a terminated block might still be a live GOTO target
     (see its own comment) rather than genuinely dead. }
+  cur_rangeck: BOOLEAN; { the $RANGECK setting for subrange checks: set by
+    CodegenStmt from each statement that records it (assignment, procedure
+    call, CASE), so a statement that does not -- a FOR, or an IF condition's
+    function call -- uses the last one seen in source order; on by default,
+    like the lexer's own flag. }
   pending_loop_label: Str255; { set by CodegenLabelStmt just before it
     descends into an inner WhileStmt/RepeatStmt/ForStmt, consumed (and
     cleared) by that loop's own codegen procedure when it pushes loop_depth;

@@ -29,6 +29,15 @@ exit 23
 EOF
 chmod +x "$stage_dir/fail-stage"
 
+# LLVM's verifier aborts codegen with SIGABRT on a broken module, after the
+# stage has written nothing.
+cat > "$stage_dir/abort-stage" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+kill -ABRT $$
+EOF
+chmod +x "$stage_dir/abort-stage"
+
 record_dir="$work_dir/stage-args"
 mkdir -p "$record_dir"
 for stage in lexer parser typechecker codegen; do
@@ -247,8 +256,45 @@ expect_stderr 'error: --emit-ptx and -c cannot be combined'
 fail_env=("${stage_env[@]}")
 fail_env[3]="PASCAL1981_CODEGEN=$stage_dir/fail-stage"
 expect_status 23 env "${fail_env[@]}" "$DRIVER" -S "$source_file" -o "$work_dir/failed.ll"
+if [ -e "$work_dir/failed.ll" ]; then
+  echo 'FAIL: a failed -S compile left its output file' >&2
+  fail=$((fail + 1))
+fi
+abort_env=("${stage_env[@]}")
+abort_env[3]="PASCAL1981_CODEGEN=$stage_dir/abort-stage"
+expect_status 134 env "${abort_env[@]}" "$DRIVER" -S "$source_file" -o "$work_dir/aborted.ll"
+if [ -e "$work_dir/aborted.ll" ]; then
+  echo 'FAIL: a -S compile whose stage aborted left its output file' >&2
+  fail=$((fail + 1))
+fi
+# A failed stage removes only an output that this run created. A path that
+# already existed (the user's file, a symlink, or a device such as
+# /dev/null) stays.
+printf 'old\n' > "$work_dir/existing.ll"
+expect_status 23 env "${fail_env[@]}" "$DRIVER" -S "$source_file" -o "$work_dir/existing.ll"
+if [ ! -e "$work_dir/existing.ll" ]; then
+  echo 'FAIL: a failed -S compile removed an output file that already existed' >&2
+  fail=$((fail + 1))
+fi
+: > "$work_dir/link-target.ll"
+ln -s "$work_dir/link-target.ll" "$work_dir/link.ll"
+expect_status 23 env "${fail_env[@]}" "$DRIVER" -S "$source_file" -o "$work_dir/link.ll"
+if [ ! -L "$work_dir/link.ll" ] || [ ! -e "$work_dir/link-target.ll" ]; then
+  echo 'FAIL: a failed -S compile removed a symlink output or its target' >&2
+  fail=$((fail + 1))
+fi
+expect_status 134 env "${abort_env[@]}" "PASCAL1981_CC=$stage_dir/fake-clang" "PASCAL1981_FAKE_CLANG_LOG=$work_dir/abort-clang.log" "$DRIVER" -c "$source_file" -o "$work_dir/aborted.o"
+if [ -e "$work_dir/abort-clang.log" ]; then
+  echo 'FAIL: the driver ran clang after a stage aborted' >&2
+  fail=$((fail + 1))
+fi
 
+printf 'keep\n' > "$work_dir/missing.ll"
 expect_status 1 env "${stage_env[@]}" "$DRIVER" -S "$work_dir/no-such-source.pas" -o "$work_dir/missing.ll"
+if [ ! -e "$work_dir/missing.ll" ]; then
+  echo 'FAIL: an unreadable source removed an existing output file' >&2
+  fail=$((fail + 1))
+fi
 mkdir "$work_dir/not-a-source.pas"
 expect_status 1 env "${stage_env[@]}" "$DRIVER" -S "$work_dir/not-a-source.pas" -o "$work_dir/directory.ll"
 absent_env=("${stage_env[@]}")
@@ -296,6 +342,48 @@ done
 
 expect_status 1 env "${stage_env[@]}" "$DRIVER" -O9 "$source_file"
 expect_stderr 'error: optimization level must be 0, 1, 2, or 3'
+
+# Opening the output truncates it before the lexer reads the input, so an
+# output that names an input must be refused with the source left intact.
+pretty_env=("${stage_env[@]}" "PASCAL1981_PRETTY81=$stage_dir/cat-stage")
+guard_source="$work_dir/guard.pas"
+printf 'guard input\n' > "$guard_source"
+cp "$guard_source" "$work_dir/guard-original.pas"
+# --pretty-print without -o writes to stdout; it used to default to the
+# input's own name.
+expect_status 0 env "${pretty_env[@]}" "$DRIVER" --pretty-print "$guard_source"
+if ! cmp -s "$work_dir/guard-original.pas" "$work_dir/stdout"; then
+  echo 'FAIL: --pretty-print without -o did not write the stage output to stdout' >&2
+  fail=$((fail + 1))
+fi
+check_guard_source() {
+  if ! cmp -s "$work_dir/guard-original.pas" "$guard_source"; then
+    echo "FAIL: $1 changed the input file" >&2
+    fail=$((fail + 1))
+    cp "$work_dir/guard-original.pas" "$guard_source"
+  fi
+}
+check_guard_source '--pretty-print without -o'
+expect_status 1 env "${pretty_env[@]}" "$DRIVER" --pretty-print "$guard_source" -o "$guard_source"
+expect_stderr 'would overwrite an input file'
+check_guard_source '--pretty-print -o <input>'
+# A different spelling of the same path is the same file.
+expect_status 1 env "${stage_env[@]}" "$DRIVER" -S "$guard_source" -o "$work_dir/./guard.pas"
+expect_stderr 'would overwrite an input file'
+check_guard_source '-S -o <input>'
+ln -s "$guard_source" "$work_dir/guard-link.pas"
+expect_status 1 env "${stage_env[@]}" "$DRIVER" -c "$guard_source" -o "$work_dir/guard-link.pas"
+expect_stderr 'would overwrite an input file'
+check_guard_source '-c -o <symlink to input>'
+# An input without the .pas suffix is its own default executable name.
+bare_source="$work_dir/bare"
+cp "$guard_source" "$bare_source"
+expect_status 1 env "${stage_env[@]}" "$DRIVER" "$bare_source"
+expect_stderr 'would overwrite an input file'
+if ! cmp -s "$work_dir/guard-original.pas" "$bare_source"; then
+  echo 'FAIL: default output for a suffixless input changed the input file' >&2
+  fail=$((fail + 1))
+fi
 
 if [ "$fail" -ne 0 ]; then
   echo "Driver contract results: $pass passed, $fail failed" >&2

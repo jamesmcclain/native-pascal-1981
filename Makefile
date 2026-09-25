@@ -5,11 +5,10 @@ CC          := clang
 else
 CC          ?= clang
 endif
-PYTHON      ?= python3
 CFLAGS      := -O2 -Wall -Wextra
 LLVM_CONFIG ?= $(shell command -v llvm-config 2>/dev/null || command -v llvm-config-20 2>/dev/null || echo llvm-config)
 LLVM_LINK_FLAGS ?= $(shell $(LLVM_CONFIG) --ldflags --libs)
-export CC LLVM_CONFIG PYTHON
+export CC LLVM_CONFIG
 
 BIN_DIR := bin
 BUILD_DIR := build
@@ -20,6 +19,10 @@ PROXY_BIN := $(BIN_DIR)/pascal1981-proxy
 PRETTY81_BIN := $(BIN_DIR)/pretty81
 RUNTIME_LIB := runtime/build/libpascalrt.a
 RUNTIME_SRCS := $(wildcard runtime/*.c runtime/*.h) runtime/Makefile
+# pasboot translates the gen1 sources to C; no other Pascal compiler is needed
+# to bootstrap. prelude.h is included by the C it writes, so it counts too.
+PASBOOT := bootstrap/build/pasboot
+PASBOOT_SRCS := $(wildcard bootstrap/*.c bootstrap/*.h) bootstrap/Makefile
 STAGES := lexer parser typechecker codegen
 # Every stage splices jsonutil.inc, so a change to the interface must rebuild
 # all of them -- $INCLUDE is textual, and make cannot see through it.
@@ -48,7 +51,7 @@ GEN4_BINS := $(addprefix $(BUILD_DIR)/gen4/,$(STAGES))
 BOOTSTRAP_BINS := $(addprefix $(BIN_DIR)/,$(STAGES))
 FIXED_POINT := $(BUILD_DIR)/.fixed-point-verified
 
-.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-driver test-native test-sysutil test-proxy test-gpu test-reference-parity test-elisp test-bootstrap
+.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-driver test-native test-sysutil test-proxy test-gpu test-reference-parity test-elisp test-bootstrap test-pasboot check-bootstrap-subset
 
 all: runtime driver bootstrap $(PROXY_BIN) $(PRETTY81_BIN)
 
@@ -56,6 +59,9 @@ runtime: $(RUNTIME_LIB)
 
 $(RUNTIME_LIB): $(RUNTIME_SRCS)
 	$(MAKE) -C runtime
+
+$(PASBOOT): $(PASBOOT_SRCS)
+	$(MAKE) -C bootstrap
 
 driver: $(DRIVER_BIN)
 
@@ -84,7 +90,7 @@ $(BIN_DIR):
 
 bootstrap: $(BOOTSTRAP_BINS)
 
-$(BUILD_DIR)/gen1/%: src/%.pas $(STAGE_SRCS) $(RUNTIME_LIB) | $(BUILD_DIR)/gen1
+$(BUILD_DIR)/gen1/%: src/%.pas $(STAGE_SRCS) $(RUNTIME_LIB) $(PASBOOT) $(PASBOOT_SRCS) | $(BUILD_DIR)/gen1
 	./scripts/build-stage.sh $< $@ $(if $(filter codegen,$*),$(LLVM_LINK_FLAGS))
 
 $(BUILD_DIR)/gen2/%: src/%.pas $(STAGE_SRCS) $(GEN1_BINS) $(RUNTIME_LIB) | $(BUILD_DIR)/gen2
@@ -127,12 +133,29 @@ clean:
 cleaner: clean
 	rm -rf bin/lexer bin/parser bin/typechecker bin/codegen bin/astcompare bin/pascal1981-proxy bin/pascal1981-native bin/pascal1981 bin/pretty81
 	$(MAKE) -C runtime cleaner
+	$(MAKE) -C bootstrap cleaner
 
 cleanest: cleaner
 	rm -rf .pytest_cache
 
-test: test-native test-proxy
+test: check-bootstrap-subset test-pasboot test-native test-proxy
 	./tests/test_precommit_hook.sh
+
+# Every gen1 compiland must stay inside the subset pasboot translates
+# (docs/bootstrap_subset.md). Parse-only, so a src/ change that leaves the
+# subset fails here, in seconds, naming the construct and line, rather than
+# deep inside a gen1 build. The list is the gen1 stages and their units.
+GEN1_COMPILANDS := $(sort jsonutil $(CODEGEN_UNITS) $(TYPECHECKER_UNITS) $(PARSER_UNITS) $(STAGES))
+check-bootstrap-subset: $(PASBOOT)
+	@for u in $(GEN1_COMPILANDS); do \
+	  $(PASBOOT) --parse-only src/$$u.pas || exit 1; \
+	done
+	@echo "check-bootstrap-subset: $(words $(GEN1_COMPILANDS)) gen1 compilands are inside the bootstrap subset"
+
+# pasboot's per-feature fixtures (bootstrap/tests/). Needs only clang, libc
+# and the runtime library -- no Pascal compiler.
+test-pasboot: $(PASBOOT) $(RUNTIME_LIB)
+	./bootstrap/tests/run.sh
 
 # The zero-Python subset of `test`: driver, golden-file behavioral, and
 # IR/PTX-text directive tests. It does not run pytest or Python.
@@ -140,6 +163,8 @@ test-driver: $(DRIVER_BIN)
 	./tests/driver.sh
 
 test-native: test-driver test-sysutil $(ASTCOMPARE_BIN) $(PROXY_BIN)
+	$(CC) -o $(BUILD_DIR)/read_wide_runtime tests/read_wide_runtime.c $(RUNTIME_LIB)
+	$(BUILD_DIR)/read_wide_runtime
 	./tests/run.sh
 	./tests/checklit.sh
 	./tests/depth.sh
@@ -168,6 +193,8 @@ test-gpu: bootstrap
 
 # Compare the native compiler stages with the Python reference implementation.
 # Kept separate from `test` because it requires the reference Python toolchain.
+# Python is an optional test dependency only; nothing in the build uses it.
+PYTHON ?= python3
 test-reference-parity:
 	PYTHONPATH=. $(PYTHON) -m pytest tests/parity/
 
@@ -178,7 +205,15 @@ test-elisp: bootstrap $(PRETTY81_BIN)
 
 # Full fixed-point regression: force a clean gen1->gen4 rebuild (not reusing
 # any cached generation) and fail if gen3/gen4 aren't byte-identical. Separate
-# from `test` because it's the slowest thing in the repo.
+# from `test` because it's the slowest thing in the repo. pascal1981, python
+# and python3 are shadowed on PATH by stubs that fail, so the bootstrap is
+# proven to need no Python even on a machine that has it.
+NO_PYTHON_DIR := $(BUILD_DIR)/no-python
 test-bootstrap:
 	rm -rf $(BUILD_DIR)
-	$(MAKE) bootstrap
+	mkdir -p $(NO_PYTHON_DIR)
+	for tool in pascal1981 python python3; do \
+	  printf '#!/bin/sh\necho "test-bootstrap: $$0 was invoked; the bootstrap must not need Python" >&2\nexit 1\n' > $(NO_PYTHON_DIR)/$$tool; \
+	  chmod +x $(NO_PYTHON_DIR)/$$tool; \
+	done
+	PATH="$(abspath $(NO_PYTHON_DIR)):$$PATH" USE_PYTHON_REFERENCE=0 $(MAKE) bootstrap

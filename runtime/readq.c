@@ -1,4 +1,6 @@
 #include <ctype.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -111,17 +113,84 @@ int pas_read_int(int32_t *out)
         die("unexpected EOF while reading integer");
     unread(ch);
     long v;
+    errno = 0;
     if (scanf("%ld", &v) != 1)
         die("malformed integer input");
+    if (errno == ERANGE || v < INT32_MIN || v > INT32_MAX)
+        die("integer out of range");
     *out = (int32_t) v;
+    return 0;
+}
+
+/* Decimal prefix reader: unlike the vintage int reader, never narrows a
+ * long value before checking its range. Keep the following delimiter.
+ * Leading whitespace, newlines included, is skipped the way the vintage
+ * reader's scanf("%ld") skips it. */
+static int64_t read_wide_decimal(int bits)
+{
+    int ch;
+    do
+        ch = getchar();
+    while (ch != EOF && isspace((unsigned char) ch));
+    if (ch == EOF)
+        die("unexpected EOF while reading integer");
+    char token[32];
+    int n = 0, overflow = 0;
+    if (ch == '+' || ch == '-') {
+        token[n++] = (char) ch;
+        ch = getchar();
+    }
+    if (ch == EOF || !isdigit((unsigned char) ch)) {
+        unread(ch);
+        die("malformed integer input");
+    }
+    /* Leading zeros do not count toward the token's length limit. */
+    int sign_len = n;
+    do {
+        if (n == sign_len && ch == '0');
+        else if (n < (int) sizeof(token) - 1)
+            token[n++] = (char) ch;
+        else
+            overflow = 1;
+        ch = getchar();
+    } while (ch != EOF && isdigit((unsigned char) ch));
+    unread(ch);
+    if (n == sign_len)
+        token[n++] = '0';
+    token[n] = '\0';
+    errno = 0;
+    long long value = strtoll(token, NULL, 10);
+    if (overflow || errno == ERANGE || (bits == 32 && (value < INT32_MIN || value > INT32_MAX))
+        || (bits == 16 && (value < INT16_MIN || value > INT16_MAX)))
+        die("integer out of range");
+    return (int64_t) value;
+}
+
+/* The 16-bit INTEGER reader: out-of-range input is an error, as it is for
+ * INTEGER32 and INTEGER64, rather than wrapping. */
+int pas_read_int16(int16_t *out)
+{
+    *out = (int16_t) read_wide_decimal(16);
+    return 0;
+}
+
+int pas_read_int32(int32_t *out)
+{
+    *out = (int32_t) read_wide_decimal(32);
+    return 0;
+}
+
+int pas_read_int64(int64_t *out)
+{
+    *out = read_wide_decimal(64);
     return 0;
 }
 
 int pas_read_word(uint16_t *out)
 {
-    int32_t v = 0;
-    if (pas_read_int(&v) != 0)
-        return -1;
+    /* Read the full value first: narrowing to 32 bits before the range
+     * check turned 4294967296 into 0. */
+    int64_t v = read_wide_decimal(64);
     if (v < 0 || v > 65535)
         die("word out of range");
     *out = (uint16_t) v;

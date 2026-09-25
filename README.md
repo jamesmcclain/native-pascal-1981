@@ -19,10 +19,9 @@ Install these packages before you build the toolchain (for example, on Debian or
 - `libllvm-20-dev` / `llvm-20` (LLVM 20 library and headers)
 - `libcjson-dev` (cJSON library and headers)
 - `indent` (C code formatting tool)
-- `python3` and `pip3` with the reference compiler package:
-  ```bash
-  pip3 install 'https://github.com/jamesmcclain/pascal-1981/archive/5fe71893fd8b16a415a6c67c2fad12bd729e7279.zip'
-  ```
+
+The build needs no Python and no other Pascal compiler. Some optional test
+groups need more; see [Running Tests](#running-tests).
 
 ## Repository Layout
 
@@ -43,6 +42,7 @@ Install these packages before you build the toolchain (for example, on Debian or
   - `cg_stmt`: statement lowering.
   - `cg_decl`: declaration lowering.
 - `runtime/`: C runtime static library and headers (`libpascalrt.a`, `pascalrt.h`).
+- `bootstrap/`: `pasboot`, a C99 translator from the bootstrap subset of the dialect to C. It builds Generation 1 of the compiler stages. [`docs/bootstrap_subset.md`](docs/bootstrap_subset.md) defines the subset.
 - `bin/`: Compiler driver (`pascal1981-native`, alias `pascal1981`) and stage binaries (`lexer`, `parser`, `typechecker`, `codegen`).
 - `scripts/`: Build scripts (`build-stage.sh`), formatting scripts (`beautify.sh`), and git hooks (`scripts/hooks`). To enable the pre-commit formatting hook, run `git config core.hooksPath scripts/hooks` once per clone. This setting is local config. A fresh checkout does not enable the hook. The root `Makefile` drives the multi-generation bootstrap with the `bootstrap` target. It is not a standalone script.
 - `tests/`: Test suites (golden files, unit tests, integration tests, dialect fixtures).
@@ -74,7 +74,7 @@ make driver
 ```
 
 The bootstrap process has four steps:
-1. **Generation 1 (Hybrid)**: Builds the native compiler stages with the Python reference compiler (`pascal1981`).
+1. **Generation 1 (Bootstrap)**: Builds `bootstrap/pasboot`. Then `pasboot` translates each compiler-stage compiland to C, and `clang` compiles it. The Generation 1 sources must stay inside the [bootstrap subset](docs/bootstrap_subset.md).
 2. **Generation 2 (Self-hosted)**: Recompiles all native compiler stages with the Generation 1 binaries.
 3. **Generation 3 (Self-hosted)**: Recompiles all native compiler stages with the Generation 2 binaries.
 4. **Generation 4 (Fixed Point)**: Recompiles all native compiler stages with the Generation 3 binaries and verifies binary identity (`cmp`). `make driver` then compiles `src/driver.pas` with the fixed-point stages and installs it as `bin/pascal1981-native` (with `bin/pascal1981` as its alias).
@@ -105,7 +105,7 @@ Run the routine test suites:
 make test
 ```
 
-This target runs the driver, sysutil, native, proxy, and pre-commit-hook test groups. The test runners do not require pytest. The proxy tests need `python3`.
+This target runs the bootstrap-subset check, the `pasboot` fixtures, and the driver, sysutil, native, proxy, and pre-commit-hook test groups. The test runners do not require pytest. The proxy tests need `python3`.
 
 This target does not run the reference-parity, bootstrap, or Emacs tests.
 
@@ -113,6 +113,8 @@ Use these targets for a specific test group:
 
 | Target | Test group |
 | --- | --- |
+| `make check-bootstrap-subset` | Generation 1 sources stay inside the bootstrap subset. No Python needed. |
+| `make test-pasboot` | Per-feature fixtures for the `pasboot` bootstrap translator. No Python needed. |
 | `make test-driver` | Driver, golden-file, and IR/PTX-text directive tests. No Python needed. |
 | `make test-native` | Routine native compiler tests |
 | `make test-sysutil` | POSIX filesystem and process primitives, exercised from Pascal |
@@ -120,11 +122,15 @@ Use these targets for a specific test group:
 | `make test-gpu` | CUDA compilation and execution on an NVIDIA GPU |
 | `make test-reference-parity` | Native compiler parity with the Python reference compiler |
 | `make test-elisp` | Emacs major-mode ERT tests |
-| `make test-bootstrap` | Clean bootstrap and fixed-point comparison |
+| `make test-bootstrap` | Clean bootstrap and fixed-point comparison, with Python made unavailable |
 
 If a CUDA prerequisite is not available, the `test-gpu` target skips the test.
 
-The `test-reference-parity` target requires Python and pytest. The `test-elisp` target requires Emacs and builds the compiler stages first.
+The `test-reference-parity` target requires Python, pytest, and the reference compiler package:
+```bash
+pip3 install 'https://github.com/jamesmcclain/pascal-1981/archive/5fe71893fd8b16a415a6c67c2fad12bd729e7279.zip'
+```
+With the same package, `scripts/cross-bootstrap-check.sh` builds Generation 1 with `pasboot` and with the Python reference compiler. Then it checks that the two Generation 2 builds are identical. The `test-elisp` target requires Emacs and builds the compiler stages first.
 
 See [tests/README.md](tests/README.md). It describes the compiler test suites.
 

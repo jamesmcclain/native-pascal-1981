@@ -344,13 +344,13 @@ PROCEDURE CheckDecl(decl: ADRMEM);
 VAR
   nt, dname: Str255;
   names_arr, type_expr, params_arr, body, ret_type_node: ADRMEM;
-  tk, aux, aux2, idx_tk, ret_tk: INTEGER;
+  tk, aux, aux2, aux3, idx_tk, ret_tk: INTEGER;
   n, i: INTEGER32;
   nm: Str255;
   si: INTEGER32;
   np, pi, ppi: INTEGER32;
   param, pnames: ADRMEM;
-  ptk, paux, paux2, pidx: INTEGER;
+  ptk, paux, paux2, paux3, pidx: INTEGER;
   pn, pj: INTEGER32;
   saved_func_name: Str255;
   saved_func_ret_tk, saved_func_aux, saved_func_aux2: INTEGER;
@@ -367,12 +367,13 @@ BEGIN
     CheckVarSpaceAttrs(decl);
     names_arr := GetObj(decl, 'names');
     type_expr := GetObj(decl, 'type_expr');
-    ResolveTypeExpr(type_expr, tk, aux, aux2, idx_tk);
+    ResolveTypeExpr(type_expr, tk, aux, aux2, aux3, idx_tk);
     n := cJSON_GetArraySize(names_arr);
     FOR i := 0 TO n - 1 DO
     BEGIN
       nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, i)));
-      si := DefineSymbol(nm, 'VAR', tk, aux, aux2, idx_tk);
+      si := DefineSymbol(nm, 'VAR', tk, aux, aux2, aux3, idx_tk);
+      symbols[si].is_super := IsSuperTypeExpr(type_expr);
     END;
   END
   ELSE IF nt = 'ConstDecl' THEN
@@ -383,7 +384,7 @@ BEGIN
       AddError('CONST intrinsic calls require the extended-const-intrinsics feature');
     tk := CheckExpr(GetObj(decl, 'value'));
     CheckConstOrdinalBounds(GetObj(decl, 'value'));
-    si := DefineSymbol(dname, 'CONST', tk, 0, 0, 0);
+    si := DefineSymbol(dname, 'CONST', tk, 0, 0, 0, 0);
     IF FoldConstInt(GetObj(decl, 'value'), const_value) THEN
     BEGIN
       symbols[si].has_const_int := TRUE;
@@ -394,7 +395,7 @@ BEGIN
   BEGIN
     dname := GetStr(decl, 'name');
     type_expr := GetObj(decl, 'type_expr');
-    ResolveTypeExpr(type_expr, tk, aux, aux2, idx_tk);
+    ResolveTypeExpr(type_expr, tk, aux, aux2, aux3, idx_tk);
     IF ntypes < MAX_TYPES THEN
     BEGIN
       ntypes := ntypes + 1;
@@ -402,7 +403,9 @@ BEGIN
       types[ntypes].tk := tk;
       types[ntypes].aux := aux;
       types[ntypes].aux2 := aux2;
+      types[ntypes].aux3 := aux3;
       types[ntypes].idx_tk := idx_tk;
+      types[ntypes].is_super := IsSuperTypeExpr(type_expr);
     END;
     IF NodeType(type_expr) = 'EnumType' THEN
     BEGIN
@@ -415,7 +418,7 @@ BEGIN
       FOR i := 0 TO n - 1 DO
       BEGIN
         nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, i)));
-        si := DefineSymbol(nm, 'CONST', TK_ENUM, 0, 0, 0);
+        si := DefineSymbol(nm, 'CONST', TK_ENUM, 0, 0, 0, 0);
       END;
     END;
   END
@@ -427,7 +430,7 @@ BEGIN
     IF nt = 'FuncDecl' THEN
     BEGIN
       ret_type_node := GetObj(decl, 'return_type');
-      ResolveTypeExpr(ret_type_node, ret_tk, aux, aux2, idx_tk);
+      ResolveTypeExpr(ret_type_node, ret_tk, aux, aux2, aux3, idx_tk);
     END
     ELSE
       ret_tk := TK_VOID;
@@ -462,18 +465,26 @@ BEGIN
         IF has_block_body THEN
           AddError2('EXTERN routine cannot be defined here (use FORWARD): ', dname);
 
-    si := DefineSymbol(dname, nt, TK_UNKNOWN, 0, 0, 0);
+    si := DefineSymbol(dname, nt, TK_UNKNOWN, 0, 0, 0, 0);
     IF nt = 'FuncDecl' THEN
       symbols[si].kind := 'FUNC'
     ELSE
       symbols[si].kind := 'PROC';
     symbols[si].ret_tk := ret_tk;
+    IF nt = 'FuncDecl' THEN
+    BEGIN
+      symbols[si].ret_aux := aux;
+      symbols[si].ret_aux2 := aux2;
+      symbols[si].ret_aux3 := aux3;
+      symbols[si].ret_idx_tk := idx_tk;
+      symbols[si].ret_is_super := IsSuperTypeExpr(ret_type_node);
+    END;
     symbols[si].is_extern := HasExternMarkerDecl(decl);
     ppi := 0;
     FOR pi := 0 TO np - 1 DO
     BEGIN
       param := cJSON_GetArrayItem(params_arr, pi);
-      ResolveTypeExpr(GetObj(param, 'type_expr'), ptk, paux, paux2, pidx);
+      ResolveTypeExpr(GetObj(param, 'type_expr'), ptk, paux, paux2, paux3, pidx);
       pnames := GetObj(param, 'names');
       pn := cJSON_GetArraySize(pnames);
       FOR pj := 0 TO pn - 1 DO
@@ -542,13 +553,13 @@ BEGIN
       FOR pi := 0 TO np - 1 DO
       BEGIN
         param := cJSON_GetArrayItem(params_arr, pi);
-        ResolveTypeExpr(GetObj(param, 'type_expr'), ptk, paux, paux2, pidx);
+        ResolveTypeExpr(GetObj(param, 'type_expr'), ptk, paux, paux2, paux3, pidx);
         pnames := GetObj(param, 'names');
         pn := cJSON_GetArraySize(pnames);
         FOR pj := 0 TO pn - 1 DO
         BEGIN
           nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(pnames, pj)));
-          si := DefineSymbol(nm, 'VAR', ptk, paux, paux2, pidx);
+          si := DefineSymbol(nm, 'VAR', ptk, paux, paux2, paux3, pidx);
         END;
       END;
       CheckBlock(body);
@@ -630,7 +641,7 @@ PROCEDURE ResolveRoutineSignature(decl: ADRMEM);
 VAR
   params_arr, param, pnames, ret_type_node, attrs_arr, attr_item: ADRMEM;
   np, pi, ppi, pn, pj, nattrs, ai: INTEGER32;
-  ptk, paux, paux2, pidx, aux, aux2, idx_tk: INTEGER;
+  ptk, paux, paux2, paux3, pidx, aux, aux2, aux3, idx_tk: INTEGER;
 BEGIN
   rs_is_func := NodeType(decl) = 'FuncDecl';
   params_arr := GetObj(decl, 'params');
@@ -638,7 +649,7 @@ BEGIN
   IF rs_is_func THEN
   BEGIN
     ret_type_node := GetObj(decl, 'return_type');
-    ResolveTypeExpr(ret_type_node, rs_ret_tk, aux, aux2, idx_tk);
+    ResolveTypeExpr(ret_type_node, rs_ret_tk, aux, aux2, aux3, idx_tk);
   END
   ELSE
     rs_ret_tk := TK_VOID;
@@ -646,7 +657,7 @@ BEGIN
   FOR pi := 0 TO np - 1 DO
   BEGIN
     param := cJSON_GetArrayItem(params_arr, pi);
-    ResolveTypeExpr(GetObj(param, 'type_expr'), ptk, paux, paux2, pidx);
+    ResolveTypeExpr(GetObj(param, 'type_expr'), ptk, paux, paux2, paux3, pidx);
     pnames := GetObj(param, 'names');
     pn := cJSON_GetArraySize(pnames);
     FOR pj := 0 TO pn - 1 DO
@@ -863,12 +874,12 @@ PROCEDURE ValidateVarExport(iface_type_expr, impl_decls: ADRMEM; name: Str255);
   agree on its type for the extern declaration codegen emits in an
   importer to actually match what this compiland defines. }
 VAR
-  a_tk, a_aux, a_aux2, a_idx_tk: INTEGER;
-  b_tk, b_aux, b_aux2, b_idx_tk: INTEGER;
+  a_tk, a_aux, a_aux2, a_aux3, a_idx_tk: INTEGER;
+  b_tk, b_aux, b_aux2, b_aux3, b_idx_tk: INTEGER;
   impl_decl: ADRMEM;
   msg: Str255;
 BEGIN
-  ResolveTypeExpr(iface_type_expr, a_tk, a_aux, a_aux2, a_idx_tk);
+  ResolveTypeExpr(iface_type_expr, a_tk, a_aux, a_aux2, a_aux3, a_idx_tk);
   impl_decl := FindVarDeclContainingName(impl_decls, name);
   IF impl_decl = NIL THEN
   BEGIN
@@ -878,8 +889,8 @@ BEGIN
   END
   ELSE
   BEGIN
-    ResolveTypeExpr(GetObj(impl_decl, 'type_expr'), b_tk, b_aux, b_aux2, b_idx_tk);
-    IF (b_tk <> a_tk) OR (b_aux <> a_aux) OR (b_aux2 <> a_aux2) OR (b_idx_tk <> a_idx_tk) THEN
+    ResolveTypeExpr(GetObj(impl_decl, 'type_expr'), b_tk, b_aux, b_aux2, b_aux3, b_idx_tk);
+    IF (b_tk <> a_tk) OR (b_aux <> a_aux) OR (b_aux2 <> a_aux2) OR (b_aux3 <> a_aux3) OR (b_idx_tk <> a_idx_tk) THEN
     BEGIN
       msg := 'implementation type does not match its interface declaration for: ';
       CONCAT(msg, name);
@@ -992,11 +1003,17 @@ BEGIN
   ELSE
   BEGIN
     ai := DefineSymbol(alias, symbols[si].kind, symbols[si].tk,
-      symbols[si].aux, symbols[si].aux2, symbols[si].idx_tk);
+      symbols[si].aux, symbols[si].aux2, symbols[si].aux3, symbols[si].idx_tk);
     symbols[ai].nparams := symbols[si].nparams;
     FOR pi := 1 TO symbols[si].nparams DO
       symbols[ai].param_tk[pi] := symbols[si].param_tk[pi];
     symbols[ai].ret_tk := symbols[si].ret_tk;
+    symbols[ai].ret_aux := symbols[si].ret_aux;
+    symbols[ai].ret_aux2 := symbols[si].ret_aux2;
+    symbols[ai].ret_aux3 := symbols[si].ret_aux3;
+    symbols[ai].ret_idx_tk := symbols[si].ret_idx_tk;
+    symbols[ai].ret_is_super := symbols[si].ret_is_super;
+    symbols[ai].is_super := symbols[si].is_super;
     symbols[ai].is_vararg := symbols[si].is_vararg;
   END;
 END;
