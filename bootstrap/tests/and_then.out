@@ -1,0 +1,9 @@
+FALSE AND x: FALSE
+call_count: 2
+TRUE OR x: TRUE
+call_count: 2
+FALSE AND THEN x: FALSE
+call_count: 1
+TRUE AND THEN x: TRUE
+call_count: 4
+NOT: FALSE

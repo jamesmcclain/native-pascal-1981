@@ -6,17 +6,19 @@
  * order, so the output is "#include prelude.h", then the types, then the
  * declarations.
  *
- * Expression semantics follow the Python reference compiler that used to
- * build generation 1, because generation 2 must come out byte-identical
- * whichever of the two built generation 1:
+ * Expression semantics are the native compiler's, which the Python reference
+ * compiler that used to build generation 1 shares wherever the compiled
+ * sources can tell (scripts/cross-bootstrap-check.sh checks exactly that):
  *   - integer operands widen (sign-extending) to the wider of the two, the
  *     operation happens at that width and wraps (the C is compiled with
  *     -fwrapv), and comparisons are signed, CHAR included;
  *   - AND and OR evaluate both operands; only AND THEN short-circuits;
  *   - ORD yields 32 bits, zero-extended; CHR truncates to 8 bits;
- *   - RETYPE reinterprets memory, so widening zero-extends;
- *   - a FOR limit is re-evaluated, and truncated to the control variable's
- *     type, on every iteration;
+ *   - RETYPE between integers truncates or sign-extends (the Python
+ *     reference zero-filled on widening; the sources only narrow);
+ *   - a FOR limit is evaluated once and converted to the control variable's
+ *     type, and the variable ends one past it (the Python reference
+ *     re-evaluated the limit; the sources never depend on either);
  *   - LSTRING comparison is memcmp over the shorter length, then length. */
 #include <stdarg.h>
 #include <stdlib.h>
@@ -40,6 +42,7 @@ static const char *iface_unit;  /* the interface being processed, else NULL */
 static Sym *cur_func;           /* routine whose body is being emitted */
 static int in_main;             /* emitting the program body */
 static int check_mode;
+static int for_count;           /* numbers each FOR's limit temporaries */
 
 static CE gen_expr(Expr * e);
 
@@ -169,8 +172,6 @@ static char *lstr_bytes(CE e, Loc loc)
         return xfmt("((const uint8_t *)(%s).b)", e.s);
     if (e.ty->kind == TY_STRLIT)
         return lit_lstr_ptr(e.lit);
-    if (e.ty->kind == TY_CHAR)
-        return xfmt("((const uint8_t[2]){1, %s})", e.s);
     fatal(loc, "string operand expected, found %s", type_name(e.ty));
 }
 
@@ -214,8 +215,6 @@ static char *conv(CE e, Type *to, Loc loc)
                 fatal(loc, "string literal of length %d does not fit %s", e.lit->slen, type_name(to));
             return xfmt("((%s){%s})", ctype(to), c_string_bytes(e.lit->s, e.lit->slen, 1));
         }
-        if (from->kind == TY_CHAR)
-            return xfmt("((%s){{1, %s}})", ctype(to), e.s);
         if (from->kind == TY_LSTR)
             unsupported(loc, xfmt("assignment between %s and %s", type_name(from), type_name(to)));
         break;
@@ -337,10 +336,10 @@ static CE gen_builtin(Expr *e)
         CE v = gen_expr(a[1]);
         int tw = bits_of(to), fw = bits_of(v.ty);
         if (tw && fw) {
-            /* A reinterpretation of memory: narrowing keeps the low bytes,
-             * widening zero-fills the high ones. */
-            if (tw > fw)
-                return mk(xfmt("((%s)(uint%d_t)%s)", ctype(to), fw, v.s), to, 0);
+            /* Narrowing keeps the low bytes; widening sign-extends a signed
+             * integer, as the native compiler does. (The Python reference
+             * zero-filled instead; the compiled sources only ever narrow or
+             * keep the width.) */
             return mk(xfmt("((%s)%s)", ctype(to), v.s), to, 0);
         }
         if (is_ptr(to) && is_ptr(v.ty))
@@ -717,10 +716,22 @@ static void gen_stmt(Stmt *s)
             CE to = gen_expr(s->to);
             if (!is_int(to.ty))
                 fatal(s->to->loc, "FOR limit is %s", type_name(to.ty));
+            /* The limit is saved once. 'done' is set as the variable steps
+             * past the limit, so a limit at the type's extreme ends the
+             * loop instead of wrapping around, while the variable still
+             * ends one step past the limit, as in the native compiler. */
             const char *ct = ctype(v->ty);
-            line("for (%s = %s; %s %s (%s)%s; %s = (%s)(%s %s 1)) {", cv.s, conv(from, v->ty, s->from->loc), cv.s, s->down ? ">=" : "<=", ct, to.s, cv.s, ct, cv.s,
+            int n = ++for_count;
+            line("{");
+            indent++;
+            line("%s = %s;", cv.s, conv(from, v->ty, s->from->loc));
+            line("%s lim_%d = (%s)%s;", ct, n, ct, to.s);
+            line("int done_%d = 0;", n);
+            line("for (; !done_%d && %s %s lim_%d; done_%d = %s == lim_%d, %s = (%s)(%s %s 1)) {", n, cv.s, s->down ? ">=" : "<=", n, n, cv.s, n, cv.s, ct, cv.s,
                  s->down ? "-" : "+");
             gen_block_body(s->body);
+            line("}");
+            indent--;
             line("}");
             return;
         }
@@ -795,6 +806,22 @@ static void signature(Routine *r, Sym *s)
 
 static void process_sections(Vec * decls, int local, Buf * locals);
 
+static int c_scalar(Type *t)
+{
+    return is_int(t) || is_ptr(t) || t->kind == TY_REAL;
+}
+
+/* Only scalars cross the C boundary: no aggregate passed or returned by
+ * value, and no VAR parameter. */
+static void check_c_signature(Routine *r, Sym *s)
+{
+    for (int i = 0; i < s->nparams; i++)
+        if (s->params[i].is_var || !c_scalar(s->params[i].ty))
+            unsupported(r->loc, xfmt("[C] parameter '%s' of %s%s", s->params[i].name, s->params[i].is_var ? "VAR " : "", type_name(s->params[i].ty)));
+    if (s->ty && !c_scalar(s->ty))
+        unsupported(r->loc, xfmt("[C] result of %s", type_name(s->ty)));
+}
+
 static void emit_body(Sym *s, Routine *r)
 {
     Buf fb = { 0 };
@@ -853,6 +880,8 @@ static void routine_decl(Routine *r)
         s->is_c = r->is_c;
         s->unit_level = 1;
         signature(r, s);
+        if (r->is_c)
+            check_c_signature(r, s);
         s->cname = r->is_c ? xfmt("c_%s", r->orig) : xfmt("p_%s", r->name);
         define(s);
         if (r->is_c)
@@ -892,6 +921,8 @@ static void routine_decl(Routine *r)
     s->is_c = r->is_c;
     s->unit_level = 1;
     signature(r, s);
+    if (r->is_c)
+        check_c_signature(r, s);
     s->cname = r->is_c ? xfmt("c_%s", r->orig) : xfmt("p_%s", r->name);
     define(s);
     if (r->is_c) {

@@ -271,8 +271,9 @@ static Expr *term(void)
             op = OP_IDIV;
         } else if (accept_word("mod")) {
             op = OP_MOD;
-        } else if (accept_word("and")) {
-            op = accept_word("then") ? OP_ANDTHEN : OP_AND;
+        } else if (at_word("and") && !is_word(peek(1), "then")) {
+            pos++;
+            op = OP_AND;
         } else {
             return e;
         }
@@ -335,6 +336,25 @@ static Expr *expr(void)
         return e;
     }
     return binary(op, e, simple(), loc);
+}
+
+/* An IF or WHILE condition: the only place AND THEN may appear, binding
+ * more loosely than any other operator, as in the native parser's
+ * ParseBooleanExpression. */
+static Expr *bool_expr(void)
+{
+    Expr *e = expr();
+    for (;;) {
+        Loc loc = here();
+        if (at_word("and") && is_word(peek(1), "then")) {
+            pos += 2;
+            e = binary(OP_ANDTHEN, e, expr(), loc);
+        } else if (at_word("or") && is_word(peek(1), "else")) {
+            unsupported(loc, "OR ELSE");
+        } else {
+            return e;
+        }
+    }
 }
 
 /* ---- types ---- */
@@ -463,7 +483,7 @@ static Stmt *statement(void)
     }
     if (accept_word("if")) {
         s = new_stmt(S_IF, loc);
-        s->cond = expr();
+        s->cond = bool_expr();
         expect_word("then");
         s->then = statement();
         if (accept_word("else"))
@@ -472,7 +492,7 @@ static Stmt *statement(void)
     }
     if (accept_word("while")) {
         s = new_stmt(S_WHILE, loc);
-        s->cond = expr();
+        s->cond = bool_expr();
         expect_word("do");
         s->body = statement();
         return s;

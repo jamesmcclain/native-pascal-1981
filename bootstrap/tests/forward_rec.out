@@ -1,0 +1,2 @@
+IsEven(10) IsOdd(7) IsEven(3): TRUE TRUE FALSE
+CountDown: 105
