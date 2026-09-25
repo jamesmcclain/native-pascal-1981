@@ -5,6 +5,7 @@ UNIT ps_expr;
 USES jsonutil, ps_base;
 
 FUNCTION ParseIdentifier: ADRMEM;
+FUNCTION ParseIndexSelector: ADRMEM;
 FUNCTION ParseDesignatorRest(name: Str255): ADRMEM;
 FUNCTION ParseDesignator: ADRMEM;
 FUNCTION NextKind: Str255;

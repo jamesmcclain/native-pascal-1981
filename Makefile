@@ -170,6 +170,7 @@ test-native: test-driver test-sysutil $(ASTCOMPARE_BIN) $(PROXY_BIN)
 	./tests/depth.sh
 	./tests/stage_cli.sh
 	./tests/astcompare.sh
+	./tests/indexck_metadata.sh
 
 # Reusable POSIX filesystem and process primitives, exercised from Pascal.
 test-sysutil: $(DRIVER_BIN) runtime

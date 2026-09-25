@@ -370,6 +370,18 @@ setting of the last assignment, call or `CASE` compiled before it. Array
 indexes and string capacities are still not range-checked, and `DEVICE`
 code is never checked.
 
+### Index-check metadata (guard implementation pending)
+
+The native parser records `indexck` on each INDEX selector from the first
+source token of that index expression (after `[` or a dimension comma).
+The snapshot survives typechecking and is read locally by codegen; a legacy
+AST without it defaults to on. `{$INDEXCK-}` and `{$INDEXCK+}` affect subsequent
+snapshots independently of `$RANGECK`. A directive later within an index
+expression does not change that index's snapshot, but does affect subsequent
+indexes, including nested ones. No index guards are emitted yet: this is
+metadata plumbing only, not a change to array, string, vector or DEVICE
+runtime behavior. The Python reference AST does not carry this native field.
+
 ## Integer widths
 
 `INTEGER` and `WORD` are **[both]**. Every wide type in this table is

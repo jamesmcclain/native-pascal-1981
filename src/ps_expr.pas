@@ -30,6 +30,19 @@ BEGIN
   ParseIdentifier := node;
 END;
 
+FUNCTION ParseIndexSelector: ADRMEM;
+VAR
+  node: ADRMEM;
+BEGIN
+  node := CreateTriviaNode('Selector');
+  AddStringField(node, 'kind', 'INDEX');
+  { Snapshot before parsing: nested indexes and later directives must not
+    overwrite the setting at this index expression's first token. }
+  AddBoolField(node, 'indexck', CurIndexCk());
+  AddField(node, 'index_or_field', ParseExpression);
+  ParseIndexSelector := node;
+END;
+
 FUNCTION ParseDesignatorRest(name: Str255): ADRMEM;
 VAR
   node, selectors_arr, sel_obj: ADRMEM;
@@ -44,15 +57,11 @@ BEGIN
     IF CurKind = 'LBRACKET' THEN
     BEGIN
       BEGIN RelayTokenTrivia; pos := pos + 1; END;
-      sel_obj := CreateTriviaNode('Selector');
-      AddStringField(sel_obj, 'kind', 'INDEX');
-      AddField(sel_obj, 'index_or_field', ParseExpression);
+      sel_obj := ParseIndexSelector;
       WHILE Match('COMMA') DO
       BEGIN
         cJSON_AddItemToArray(selectors_arr, sel_obj);
-        sel_obj := CreateTriviaNode('Selector');
-        AddStringField(sel_obj, 'kind', 'INDEX');
-        AddField(sel_obj, 'index_or_field', ParseExpression);
+        sel_obj := ParseIndexSelector;
       END;
       Expect('RBRACKET');
       cJSON_AddItemToArray(selectors_arr, sel_obj);
@@ -107,15 +116,11 @@ BEGIN
     IF CurKind = 'LBRACKET' THEN
     BEGIN
       BEGIN RelayTokenTrivia; pos := pos + 1; END;
-      sel_obj := CreateTriviaNode('Selector');
-      AddStringField(sel_obj, 'kind', 'INDEX');
-      AddField(sel_obj, 'index_or_field', ParseExpression);
+      sel_obj := ParseIndexSelector;
       WHILE Match('COMMA') DO
       BEGIN
         cJSON_AddItemToArray(selectors_arr, sel_obj);
-        sel_obj := CreateTriviaNode('Selector');
-        AddStringField(sel_obj, 'kind', 'INDEX');
-        AddField(sel_obj, 'index_or_field', ParseExpression);
+        sel_obj := ParseIndexSelector;
       END;
       Expect('RBRACKET');
       cJSON_AddItemToArray(selectors_arr, sel_obj);

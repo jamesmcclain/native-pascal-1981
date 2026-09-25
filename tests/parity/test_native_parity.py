@@ -121,6 +121,9 @@ def _without_trivia(value):
         return {
             key: _without_trivia(item)
             for key, item in value.items() if key not in _TRIVIA_KEYS
+            # Native-only semantic snapshot, validated by indexck_metadata.sh.
+            # The reference still uses statement-level directive state.
+            and not (key == "indexck" and value.get("kind") == "INDEX")
         }
     return value
 

@@ -338,9 +338,7 @@ BEGIN
     IF CurKind = 'LBRACKET' THEN
     BEGIN
       BEGIN RelayTokenTrivia; pos := pos + 1; END;
-      sel_obj := CreateTriviaNode('Selector');
-      AddStringField(sel_obj, 'kind', 'INDEX');
-      AddField(sel_obj, 'index_or_field', ParseExpression);
+      sel_obj := ParseIndexSelector;
       Expect('RBRACKET');
       cJSON_AddItemToArray(selectors_arr, sel_obj);
     END

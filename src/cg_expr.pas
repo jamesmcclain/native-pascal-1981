@@ -933,6 +933,7 @@ VAR
   fi: INTEGER;
   file_handle, file_fcb, file_call_args, file_raw_buf, discard: ADRMEM;
   folded: INTEGER64;
+  indexck: BOOLEAN;
   deref_ptr_tid: INTEGER; { committed to last_desig_deref_ptr_tid only at
     the end, since index expressions below recurse through here }
 BEGIN
@@ -979,13 +980,19 @@ BEGIN
       IF (TypeKind(cur_tid) <> TK_ARRAY) AND (TypeKind(cur_tid) <> TK_LSTRING)
         AND (TypeKind(cur_tid) <> TK_STRING) AND (TypeKind(cur_tid) <> TK_VECTOR) THEN
         AbortWith('codegen: an INDEX selector was applied to a non-array');
+      { Per-selector state, never inherited from CodegenStmt. Keep this
+        local across recursive CodegenExpr calls. Legacy ASTs omit the
+        snapshot and use the language default (on). Fixed-array guards
+        will consume this setting in the next implementation slice. }
+      indexck := TRUE;
+      IF HasKey(sel, 'indexck') THEN indexck := GetBool(sel, 'indexck');
       idx_expr := GetObj(sel, 'index_or_field');
       { A vector lane index is 0-based (types[].lo = 0). A constant lane
         index outside 0..lanes-1 is a compile-time error -- the same
         re-validation M0 does for the type itself, since this file also
         lowers frozen ASTs the typechecker never saw. A variable index is
-        not range-checked (no $INDEXCK machinery; arrays are unchecked
-        too). }
+        not range-checked; the INDEXCK snapshot does not yet emit guards
+        for arrays either. }
       IF (TypeKind(cur_tid) = TK_VECTOR) AND FoldConstInt(idx_expr, folded) THEN
         IF (folded < 0) OR (folded > types[cur_tid].hi) THEN
           AbortWith('codegen: vector lane index out of range');
