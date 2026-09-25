@@ -92,7 +92,9 @@ These rules are the ones that a C programmer does not expect:
 - `AND` and `OR` evaluate both operands. Only `AND THEN` stops early.
 - `/` always gives a `REAL`. An integer operand converts to `REAL` when the
   other operand is a `REAL`.
-- `ORD` gives a 32-bit result. `CHR` keeps the low 8 bits.
+- `ORD` of a `CHAR` zero-extends it to a 16-bit `INTEGER`. `ORD` of an
+  integer keeps its value and width, and `ORD` of an enumeration value gives
+  an `INTEGER32`. `CHR` keeps the low 8 bits.
 - `RETYPE` between integer types keeps the low bytes when it narrows, and
   sign-extends when it widens.
 - `TRUNC` gives a 16-bit `INTEGER`.

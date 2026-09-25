@@ -13,7 +13,9 @@
  *     operation happens at that width and wraps (the C is compiled with
  *     -fwrapv), and comparisons are signed, CHAR included;
  *   - AND and OR evaluate both operands; only AND THEN short-circuits;
- *   - ORD yields 32 bits, zero-extended; CHR truncates to 8 bits;
+ *   - ORD of a CHAR zero-extends to a 16-bit INTEGER, ORD of an integer
+ *     keeps its width, and ORD of an enumeration is an INTEGER32 (the Python
+ *     reference gave 32 bits, zero-extended); CHR truncates to 8 bits;
  *   - RETYPE between integers truncates or sign-extends (the Python
  *     reference zero-filled on widening; the sources only narrow);
  *   - a FOR limit is evaluated once and converted to the control variable's
@@ -314,15 +316,20 @@ static CE gen_builtin(Expr *e)
     int nargs = e->args.n;
     Expr **a = (Expr **) e->args.p;
     if (strcmp(n, "ord") == 0 && nargs == 1) {
+        /* As the native compiler does: a CHAR (or BOOLEAN) zero-extends to
+         * a 16-bit INTEGER, an integer keeps its own value and width, and an
+         * enumeration's ordinal is an INTEGER32. */
         CE v = gen_expr(a[0]);
         int w = bits_of(v.ty);
         if (!w)
             fatal(e->loc, "ORD of %s", type_name(v.ty));
         if (w == 64)
             unsupported(e->loc, "ORD of a 64-bit value");
-        if (w < 32)
-            return mk(xfmt("((int32_t)(uint%d_t)%s)", w, v.s), t_int32, 0);
-        return mk(xfmt("((int32_t)%s)", v.s), t_int32, 0);
+        if (v.ty->kind == TY_CHAR || v.ty->kind == TY_BOOL)
+            return mk(xfmt("((int16_t)(uint8_t)%s)", v.s), t_integer, 0);
+        if (v.ty->kind == TY_ENUM)
+            return mk(xfmt("((int32_t)%s)", v.s), t_int32, 0);
+        return mk(xfmt("(%s)", v.s), v.ty, 0);
     }
     if (strcmp(n, "chr") == 0 && nargs == 1) {
         CE v = gen_expr(a[0]);
