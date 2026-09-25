@@ -44,6 +44,7 @@ TYPE
     tk: INTEGER;
     aux: INTEGER;
     aux2: INTEGER;
+    aux3: INTEGER;
     idx_tk: INTEGER;
     nparams: INTEGER;
     param_tk: ARRAY [1..MAX_PARAMS] OF INTEGER;
@@ -59,6 +60,7 @@ TYPE
     tk: INTEGER;
     aux: INTEGER;
     aux2: INTEGER;
+    aux3: INTEGER;
     idx_tk: INTEGER;
   END;
 
@@ -68,6 +70,7 @@ TYPE
     ftk: INTEGER;
     faux: INTEGER;
     faux2: INTEGER;
+    faux3: INTEGER;
   END;
 
 VAR
@@ -99,12 +102,12 @@ PROCEDURE PopScope;
 FUNCTION LookupSymbol(name: Str255): INTEGER32;
 FUNCTION UserDeclarationShadows(name: Str255): BOOLEAN;
 FUNCTION LookupSymbolInScope(name: Str255): INTEGER32;
-FUNCTION DefineSymbol(name: Str255; kind: Str255; tk, aux, aux2, idx_tk: INTEGER): INTEGER32;
+FUNCTION DefineSymbol(name: Str255; kind: Str255; tk, aux, aux2, aux3, idx_tk: INTEGER): INTEGER32;
 FUNCTION LookupType(name: Str255): INTEGER32;
 FUNCTION GetObjOrNil(obj: ADRMEM; key: Str255): ADRMEM;
-PROCEDURE AddFieldEntry(record_id: INTEGER; fname: Str255; ftk, faux, faux2: INTEGER);
+PROCEDURE AddFieldEntry(record_id: INTEGER; fname: Str255; ftk, faux, faux2, faux3: INTEGER);
 FUNCTION LookupField(record_id: INTEGER; fname: Str255): INTEGER32;
-PROCEDURE AddUniqueRecordField(record_id: INTEGER; fname: Str255; ftk, faux, faux2: INTEGER);
+PROCEDURE AddUniqueRecordField(record_id: INTEGER; fname: Str255; ftk, faux, faux2, faux3: INTEGER);
 FUNCTION IsInteger(tk: INTEGER): BOOLEAN;
 FUNCTION IsSignedInteger(tk: INTEGER): BOOLEAN;
 FUNCTION IsUnsignedInteger(tk: INTEGER): BOOLEAN;

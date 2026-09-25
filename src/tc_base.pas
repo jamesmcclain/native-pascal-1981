@@ -57,16 +57,8 @@ TYPE
     kind: Str255;       { 'VAR', 'CONST', 'TYPE', 'PROC', 'FUNC' }
     tk: INTEGER;
     aux: INTEGER;        { pointee/element TK, or record id }
-    aux2: INTEGER;       { one level deeper: the pointee/element's OWN aux
-                           (its record id, or its own element/pointee TK) --
-                           carried so CheckDesignator can resolve a FIELD or
-                           INDEX selector applied after a DEREF/INDEX, e.g.
-                           `symbols[i].name` (array-of-record) or
-                           `tok^.line` (pointer-to-record). Only one level
-                           deep is tracked; a third level (e.g. a field of a
-                           dereferenced element of an array of records)
-                           isn't -- not needed by tests/fixtures/typecheck/
-                           or this repository's own native sources. }
+    aux2: INTEGER;       { next aggregate's aux, or LSTRING .LEN marker }
+    aux3: INTEGER;       { third level: e.g. pointer -> array -> record id }
     idx_tk: INTEGER;     { array index TK }
     nparams: INTEGER;
     param_tk: ARRAY [1..MAX_PARAMS] OF INTEGER;
@@ -89,6 +81,7 @@ TYPE
     tk: INTEGER;
     aux: INTEGER;
     aux2: INTEGER;
+    aux3: INTEGER;
     idx_tk: INTEGER;
   END;
 
@@ -98,6 +91,7 @@ TYPE
     ftk: INTEGER;
     faux: INTEGER;
     faux2: INTEGER;
+    faux3: INTEGER;
   END;
 
 VAR
@@ -240,7 +234,7 @@ BEGIN
   ELSE LookupSymbolInScope := 0;
 END;
 
-FUNCTION DefineSymbol(name: Str255; kind: Str255; tk, aux, aux2, idx_tk: INTEGER): INTEGER32;
+FUNCTION DefineSymbol(name: Str255; kind: Str255; tk, aux, aux2, aux3, idx_tk: INTEGER): INTEGER32;
 BEGIN
   nsymbols := nsymbols + 1;
   symbols[nsymbols].name := name;
@@ -248,6 +242,7 @@ BEGIN
   symbols[nsymbols].tk := tk;
   symbols[nsymbols].aux := aux;
   symbols[nsymbols].aux2 := aux2;
+  symbols[nsymbols].aux3 := aux3;
   symbols[nsymbols].idx_tk := idx_tk;
   symbols[nsymbols].nparams := 0;
   symbols[nsymbols].ret_tk := TK_VOID;
@@ -286,7 +281,7 @@ BEGIN
   GetObjOrNil := v;
 END;
 
-PROCEDURE AddFieldEntry(record_id: INTEGER; fname: Str255; ftk, faux, faux2: INTEGER);
+PROCEDURE AddFieldEntry(record_id: INTEGER; fname: Str255; ftk, faux, faux2, faux3: INTEGER);
 BEGIN
   IF nfields < MAX_FIELDS THEN
   BEGIN
@@ -296,6 +291,7 @@ BEGIN
     fields[nfields].ftk := ftk;
     fields[nfields].faux := faux;
     fields[nfields].faux2 := faux2;
+    fields[nfields].faux3 := faux3;
   END;
 END;
 
@@ -309,12 +305,12 @@ BEGIN
   LookupField := i;
 END;
 
-PROCEDURE AddUniqueRecordField(record_id: INTEGER; fname: Str255; ftk, faux, faux2: INTEGER);
+PROCEDURE AddUniqueRecordField(record_id: INTEGER; fname: Str255; ftk, faux, faux2, faux3: INTEGER);
 BEGIN
   IF LookupField(record_id, fname) <> 0 THEN
     AddError('Duplicate record field name')
   ELSE
-    AddFieldEntry(record_id, fname, ftk, faux, faux2);
+    AddFieldEntry(record_id, fname, ftk, faux, faux2, faux3);
 END;
 
 FUNCTION IsSignedInteger(tk: INTEGER): BOOLEAN;
@@ -376,27 +372,27 @@ BEGIN
   cur_func_aux := 0;
   cur_func_aux2 := 0;
   cur_func_name := '';
-  si := DefineSymbol('MAXINT', 'CONST', TK_INTEGER, 0, 0, 0);
+  si := DefineSymbol('MAXINT', 'CONST', TK_INTEGER, 0, 0, 0, 0);
   symbols[si].has_const_int := TRUE;
   symbols[si].const_int := 32767;
-  si := DefineSymbol('MAXWORD', 'CONST', TK_WORD, 0, 0, 0);
+  si := DefineSymbol('MAXWORD', 'CONST', TK_WORD, 0, 0, 0, 0);
   symbols[si].has_const_int := TRUE;
   symbols[si].const_int := 65535;
   IF active_features.wide_integers THEN
   BEGIN
-    si := DefineSymbol('MAXINT32', 'CONST', TK_INTEGER32, 0, 0, 0);
+    si := DefineSymbol('MAXINT32', 'CONST', TK_INTEGER32, 0, 0, 0, 0);
     symbols[si].has_const_int := TRUE;
     symbols[si].const_int := 2147483647;
-    si := DefineSymbol('MAXWORD32', 'CONST', TK_WORD32, 0, 0, 0);
+    si := DefineSymbol('MAXWORD32', 'CONST', TK_WORD32, 0, 0, 0, 0);
     symbols[si].has_const_int := TRUE;
     symbols[si].const_int := 4294967295;
-    si := DefineSymbol('MAXINT64', 'CONST', TK_INTEGER64, 0, 0, 0);
+    si := DefineSymbol('MAXINT64', 'CONST', TK_INTEGER64, 0, 0, 0, 0);
     symbols[si].has_const_int := TRUE;
     symbols[si].const_int := 9223372036854775807;
     { MAXWORD64 cannot be represented in the signed INTEGER64 const_int
       field. Its exact WORD64 type is still available to contextual checks;
       codegen materializes the all-ones bit pattern directly. }
-    si := DefineSymbol('MAXWORD64', 'CONST', TK_WORD64, 0, 0, 0);
+    si := DefineSymbol('MAXWORD64', 'CONST', TK_WORD64, 0, 0, 0, 0);
   END;
 END;
 

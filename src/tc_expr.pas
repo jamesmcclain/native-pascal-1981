@@ -315,10 +315,8 @@ BEGIN
 END;
 
 FUNCTION CheckDesignator(node: ADRMEM): INTEGER;
-{ Walks the base identifier's selectors, threading a (tk, aux, aux2) triple
-  along so a FIELD or INDEX selector applied right after a DEREF/INDEX can
-  still resolve (aux2 carries the element/pointee's own aux -- see SymRec's
-  aux2 doc comment). Only one level of nesting is tracked this way. }
+{ Thread aggregate metadata through selectors. aux3 retains the record id
+  through pointer -> array -> record, including pointers stored in fields. }
 VAR
   name: Str255;
   si: INTEGER32;
@@ -326,7 +324,7 @@ VAR
   nsel, i: INTEGER32;
   sel, idx_expr: ADRMEM;
   skind, fname: Str255;
-  tk, aux, aux2, itk, new_tk, new_aux, current_idx_tk: INTEGER;
+  tk, aux, aux2, aux3, itk, new_tk, new_aux, new_aux2, current_idx_tk: INTEGER;
   fi: INTEGER32;
   lane_ct: INTEGER;
   folded_value: INTEGER64;
@@ -342,6 +340,7 @@ BEGIN
   tk := symbols[si].tk;
   aux := symbols[si].aux;
   aux2 := symbols[si].aux2;
+  aux3 := symbols[si].aux3;
   current_idx_tk := symbols[si].idx_tk;
   sel_arr := GetObj(node, 'selectors');
   nsel := cJSON_GetArraySize(sel_arr);
@@ -385,6 +384,7 @@ BEGIN
           tk := fields[fi].ftk;
           aux := fields[fi].faux;
           aux2 := fields[fi].faux2;
+          aux3 := fields[fi].faux3;
         END;
       END;
     END
@@ -441,10 +441,9 @@ BEGIN
           AddError('Array index must be an ordinal type');
         new_tk := aux;
         new_aux := aux2;
+        new_aux2 := aux3;
         tk := new_tk;
-        { An LSTRING element/pointee carries its .LEN marker in the aux2 slot
-          (a string never uses aux); route it back to aux2 so a[i].LEN and
-          p^.LEN resolve instead of hitting the non-record selector error. }
+        { Restore the LSTRING marker to aux2, not aux. }
         IF new_tk = TK_STRING THEN
         BEGIN
           aux := 0;
@@ -452,8 +451,9 @@ BEGIN
         END
         ELSE BEGIN
           aux := new_aux;
-          aux2 := 0;
+          aux2 := new_aux2;
         END;
+        aux3 := 0;
       END;
     END
     ELSE IF skind = 'DEREF' THEN
@@ -478,10 +478,9 @@ BEGIN
       ELSE BEGIN
         new_tk := aux;
         new_aux := aux2;
+        new_aux2 := aux3;
         tk := new_tk;
-        { An LSTRING element/pointee carries its .LEN marker in the aux2 slot
-          (a string never uses aux); route it back to aux2 so a[i].LEN and
-          p^.LEN resolve instead of hitting the non-record selector error. }
+        { Restore the LSTRING marker to aux2, not aux. }
         IF new_tk = TK_STRING THEN
         BEGIN
           aux := 0;
@@ -489,8 +488,9 @@ BEGIN
         END
         ELSE BEGIN
           aux := new_aux;
-          aux2 := 0;
+          aux2 := new_aux2;
         END;
+        aux3 := 0;
       END;
     END;
   END;
@@ -859,7 +859,7 @@ VAR
   nt, name: Str255;
   si: INTEGER32;
   left_node, right_node, operand_node, type_node: ADRMEM;
-  lt, rt, ot, op_kind, aux, aux2, idx_tk: INTEGER;
+  lt, rt, ot, op_kind, aux, aux2, aux3, idx_tk: INTEGER;
   op: Str255;
   elems_arr, elem_node: ADRMEM;
   n_elems, ei: INTEGER32;
@@ -974,7 +974,7 @@ BEGIN
     ot := CheckExpr(GetObj(node, 'expr'));
     type_node := CreateNode('NamedType');
     AddStringField(type_node, 'name', GetStr(node, 'type_id'));
-    ResolveTypeExpr(type_node, lt, aux, aux2, idx_tk);
+    ResolveTypeExpr(type_node, lt, aux, aux2, aux3, idx_tk);
     CheckExpr := lt;
   END
   ELSE IF nt = 'BinOp' THEN

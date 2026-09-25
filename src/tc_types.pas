@@ -58,12 +58,12 @@ END;
 
 { ========================== type-expr resolution ======================= }
 
-PROCEDURE ResolveTypeExpr(node: ADRMEM; VAR tk, aux, aux2, idx_tk: INTEGER);
+PROCEDURE ResolveTypeExpr(node: ADRMEM; VAR tk, aux, aux2, aux3, idx_tk: INTEGER);
 VAR
   nt, name, uname: Str255;
   base_node, elem_node, index_node, bound_node, fields_arr, tup, items, names_arr, ftype_node: ADRMEM;
   variants_arr, arm_node, tag_type_node: ADRMEM;
-  inner_tk, inner_aux, inner_aux2, inner_idx: INTEGER;
+  inner_tk, inner_aux, inner_aux2, inner_aux3, inner_idx: INTEGER;
   lanes_v, pow2: INTEGER;
   ti: INTEGER32;
   rid: INTEGER;
@@ -73,6 +73,7 @@ BEGIN
   tk := TK_UNKNOWN;
   aux := 0;
   aux2 := 0;
+  aux3 := 0;
   idx_tk := 0;
   nt := NodeType(node);
   IF nt = 'NamedType' THEN
@@ -97,6 +98,7 @@ BEGIN
       tk := types[ti].tk;
       aux := types[ti].aux;
       aux2 := types[ti].aux2;
+      aux3 := types[ti].aux3;
       idx_tk := types[ti].idx_tk;
     END
     ELSE IF uname = 'INTEGER' THEN tk := TK_INTEGER
@@ -202,6 +204,7 @@ BEGIN
         tk := types[ti].tk;
         aux := types[ti].aux;
         aux2 := types[ti].aux2;
+        aux3 := types[ti].aux3;
         idx_tk := types[ti].idx_tk;
       END;
     END;
@@ -209,16 +212,17 @@ BEGIN
   ELSE IF nt = 'PointerType' THEN
   BEGIN
     base_node := GetObj(node, 'base');
-    ResolveTypeExpr(base_node, inner_tk, inner_aux, inner_aux2, inner_idx);
+    ResolveTypeExpr(base_node, inner_tk, inner_aux, inner_aux2, inner_aux3, inner_idx);
     tk := TK_POINTER;
     aux := inner_tk;
     IF (inner_tk = TK_STRING) AND (inner_aux2 = 1) THEN aux2 := 1
     ELSE aux2 := inner_aux;
+    aux3 := inner_aux2;
   END
   ELSE IF nt = 'FileType' THEN
   BEGIN
     elem_node := GetObj(node, 'element_type');
-    ResolveTypeExpr(elem_node, inner_tk, inner_aux, inner_aux2, inner_idx);
+    ResolveTypeExpr(elem_node, inner_tk, inner_aux, inner_aux2, inner_aux3, inner_idx);
     tk := TK_FILE;
     aux := inner_tk;
     IF GetStr(node, 'structure') = 'ASCII' THEN aux2 := 1 ELSE aux2 := 0;
@@ -226,13 +230,14 @@ BEGIN
   ELSE IF nt = 'ArrayType' THEN
   BEGIN
     elem_node := GetObj(node, 'element_type');
-    ResolveTypeExpr(elem_node, inner_tk, inner_aux, inner_aux2, inner_idx);
+    ResolveTypeExpr(elem_node, inner_tk, inner_aux, inner_aux2, inner_aux3, inner_idx);
     tk := TK_ARRAY;
     aux := inner_tk;
     { An LSTRING element has no aux of its own; keep its .LEN marker alive
       by folding it into the array's aux2 (see the string aux2 flag above). }
     IF (inner_tk = TK_STRING) AND (inner_aux2 = 1) THEN aux2 := 1
     ELSE aux2 := inner_aux;
+    aux3 := inner_aux2;
     idx_tk := TK_INTEGER;
     index_node := GetObj(node, 'index_range');
     bound_node := GetObj(index_node, 'low');
@@ -268,7 +273,7 @@ BEGIN
       RETURN;
     END;
     elem_node := GetObj(node, 'element_type');
-    ResolveTypeExpr(elem_node, inner_tk, inner_aux, inner_aux2, inner_idx);
+    ResolveTypeExpr(elem_node, inner_tk, inner_aux, inner_aux2, inner_aux3, inner_idx);
     bound_node := GetObj(node, 'lanes');
     lanes_v := FoldVectorLanes(bound_node);
     { Power-of-two probe by successive halving: the source language's AND is
@@ -321,25 +326,25 @@ BEGIN
       items := GetObj(tup, 'items');
       names_arr := cJSON_GetArrayItem(items, 0);
       ftype_node := cJSON_GetArrayItem(items, 1);
-      ResolveTypeExpr(ftype_node, inner_tk, inner_aux, inner_aux2, inner_idx);
+      ResolveTypeExpr(ftype_node, inner_tk, inner_aux, inner_aux2, inner_aux3, inner_idx);
       nn := cJSON_GetArraySize(names_arr);
       FOR ni := 0 TO nn - 1 DO
       BEGIN
         nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, ni)));
-        AddUniqueRecordField(rid, nm, inner_tk, inner_aux, inner_aux2);
+        AddUniqueRecordField(rid, nm, inner_tk, inner_aux, inner_aux2, inner_aux3);
       END;
     END;
     variants_arr := GetObj(node, 'variants');
     IF cJSON_GetArraySize(variants_arr) > 0 THEN
     BEGIN
       tag_type_node := GetObj(node, 'tag_type');
-      ResolveTypeExpr(tag_type_node, inner_tk, inner_aux, inner_aux2, inner_idx);
+      ResolveTypeExpr(tag_type_node, inner_tk, inner_aux, inner_aux2, inner_aux3, inner_idx);
       IF NOT IsOrdinal(inner_tk) THEN
         AddError('Variant record tag type must be ordinal');
       IF GetBool(node, 'has_tag') THEN
       BEGIN
         nm := GetStr(node, 'tag_name');
-        AddUniqueRecordField(rid, nm, inner_tk, inner_aux, inner_aux2);
+        AddUniqueRecordField(rid, nm, inner_tk, inner_aux, inner_aux2, inner_aux3);
       END;
       FOR fi := 0 TO cJSON_GetArraySize(variants_arr) - 1 DO
       BEGIN
@@ -351,12 +356,12 @@ BEGIN
           items := GetObj(tup, 'items');
           names_arr := cJSON_GetArrayItem(items, 0);
           ftype_node := cJSON_GetArrayItem(items, 1);
-          ResolveTypeExpr(ftype_node, inner_tk, inner_aux, inner_aux2, inner_idx);
+          ResolveTypeExpr(ftype_node, inner_tk, inner_aux, inner_aux2, inner_aux3, inner_idx);
           nn := cJSON_GetArraySize(names_arr);
           FOR n := 0 TO nn - 1 DO
           BEGIN
             nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, n)));
-            AddUniqueRecordField(rid, nm, inner_tk, inner_aux, inner_aux2);
+            AddUniqueRecordField(rid, nm, inner_tk, inner_aux, inner_aux2, inner_aux3);
           END;
         END;
       END;
@@ -394,6 +399,7 @@ BEGIN
         tk := types[ti].tk;
         aux := types[ti].aux;
         aux2 := types[ti].aux2;
+        aux3 := types[ti].aux3;
         idx_tk := types[ti].idx_tk;
       END
       ELSE IF uname = 'CHAR' THEN tk := TK_CHAR
@@ -411,7 +417,7 @@ BEGIN
   ELSE IF nt = 'SetType' THEN
   BEGIN
     base_node := GetObj(node, 'base');
-    ResolveTypeExpr(base_node, inner_tk, inner_aux, inner_aux2, inner_idx);
+    ResolveTypeExpr(base_node, inner_tk, inner_aux, inner_aux2, inner_aux3, inner_idx);
     IF NOT IsOrdinal(inner_tk) THEN
       AddError('SET OF <base> requires an ordinal base type');
     tk := TK_SET;
