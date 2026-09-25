@@ -1171,8 +1171,9 @@ BEGIN
   END
   ELSE IF nm = 'ORD' THEN
   BEGIN
-    IF argtk = TK_CHAR THEN
+    IF (argtk = TK_CHAR) OR (argtk = TK_BOOLEAN) THEN
     BEGIN
+      { Zero-extend, so ORD(TRUE) is 1 rather than a sign-extended i1. }
       res := LLVMBuildZExt(builder, v, i16ty, MakeCStr(''));
       last_val_tk := TK_INTEGER;
     END
@@ -1186,8 +1187,10 @@ BEGIN
     END
     ELSE
     BEGIN
+      { An integer keeps its own value and width (so does pasboot); tagging
+        an i32 or i64 INTEGER would mix widths in later arithmetic. }
       res := v;
-      last_val_tk := TK_INTEGER;
+      last_val_tk := argtk;
     END;
   END
   ELSE IF nm = 'ODD' THEN

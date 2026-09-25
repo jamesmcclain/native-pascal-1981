@@ -1,0 +1,11 @@
+PROGRAM ord_result_type(OUTPUT);
+VAR l: INTEGER32; q: INTEGER64; w: WORD; s: INTEGER8; b: BOOLEAN; k: INTEGER32; i: INTEGER;
+BEGIN
+  l := 100000; WRITELN(ORD(l) + 1);
+  q := 5000000000; WRITELN(ORD(q) + 1);
+  w := 65535; WRITELN(ORD(w));
+  s := -5; WRITELN(ORD(s));
+  b := TRUE; WRITELN(ORD(b)); WRITELN(ORD(TRUE) + 1); WRITELN(ORD(FALSE));
+  k := ORD(l) * 2; WRITELN(k);
+  i := ORD(b) + ORD('A'); WRITELN(i);
+END.

@@ -591,7 +591,10 @@ BEGIN
       IF NOT IsOrdinal(atk) AND (atk <> TK_UNKNOWN) THEN
         AddError('ORD argument must be an ordinal type');
     END;
-    CheckFuncCall := TK_INTEGER;
+    { Codegen keeps an integer argument's own type; everything else is an
+      INTEGER here (an enumeration's i32 ordinal included, as before). }
+    IF (nargs = 1) AND IsInteger(atk) THEN CheckFuncCall := atk
+    ELSE CheckFuncCall := TK_INTEGER;
     RETURN;
   END;
   IF name = 'CHR' THEN
