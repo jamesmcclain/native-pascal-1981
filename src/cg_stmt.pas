@@ -516,16 +516,21 @@ VAR
   var_llty: ADRMEM;
   start_node, end_node: ADRMEM;
   start_val, end_val, cur_val, cmp_val, next_val: ADRMEM;
-  loop_bb, body_bb, step_bb, end_bb: ADRMEM;
-  down: BOOLEAN;
+  loop_bb, body_bb, step_bb, inc_bb, end_bb: ADRMEM;
+  down, narrow: BOOLEAN;
 BEGIN
   var_name := GetStr(stmt, 'var');
   symi := LookupSym(var_name);
   IF symi = 0 THEN
     AbortWith2('codegen: undefined FOR loop variable: ', var_name);
   var_tk := SubrangeBaseTid(symbols[symi].tk);
-  IF NOT IsIntegerFamilyTk(var_tk) AND (TypeKind(var_tk) <> TK_ENUM) THEN
-    AbortWith('codegen: FOR loop variable must be an integer-family or enumerated type');
+  { A CHAR (i8) or BOOLEAN (i1) control variable is unsigned and its range
+    usually reaches the type's last value ('a'..CHR(255), FALSE..TRUE), so
+    it compares unsigned and leaves the loop at the final value instead of
+    stepping past it and wrapping. }
+  narrow := (var_tk = TK_CHAR) OR (var_tk = TK_BOOLEAN);
+  IF NOT IsIntegerFamilyTk(var_tk) AND (TypeKind(var_tk) <> TK_ENUM) AND NOT narrow THEN
+    AbortWith('codegen: FOR loop variable must be an ordinal type');
   var_llty := LLVMTypeForTk(var_tk);
 
   start_node := GetObj(stmt, 'start');
@@ -547,7 +552,11 @@ BEGIN
   LLVMBuildBr(builder, loop_bb);
   LLVMPositionBuilderAtEnd(builder, loop_bb);
   cur_val := LLVMBuildLoad2(builder, var_llty, symbols[symi].llvm_val, MakeCStr(''));
-  IF down THEN
+  IF narrow AND down THEN
+    cmp_val := LLVMBuildICmp(builder, LLVMIntUGE, cur_val, end_val, MakeCStr(''))
+  ELSE IF narrow THEN
+    cmp_val := LLVMBuildICmp(builder, LLVMIntULE, cur_val, end_val, MakeCStr(''))
+  ELSE IF down THEN
     cmp_val := LLVMBuildICmp(builder, LLVMIntSGE, cur_val, end_val, MakeCStr(''))
   ELSE
     cmp_val := LLVMBuildICmp(builder, LLVMIntSLE, cur_val, end_val, MakeCStr(''));
@@ -566,6 +575,13 @@ BEGIN
 
   LLVMPositionBuilderAtEnd(builder, step_bb);
   cur_val := LLVMBuildLoad2(builder, var_llty, symbols[symi].llvm_val, MakeCStr(''));
+  IF narrow THEN
+  BEGIN
+    inc_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('for_inc'));
+    cmp_val := LLVMBuildICmp(builder, LLVMIntEQ, cur_val, end_val, MakeCStr(''));
+    LLVMBuildCondBr(builder, cmp_val, end_bb, inc_bb);
+    LLVMPositionBuilderAtEnd(builder, inc_bb);
+  END;
   IF down THEN
     next_val := LLVMBuildSub(builder, cur_val, LLVMConstInt(var_llty, 1, 0), MakeCStr(''))
   ELSE
