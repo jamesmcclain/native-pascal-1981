@@ -40,6 +40,17 @@ BEGIN
   ELSE TypeKind := types[tid].tk;
 END;
 
+FUNCTION SubrangeBaseTid(tid: INTEGER): INTEGER;
+{ A subrange keeps its own tid so UPPER/LOWER can see its declared bounds,
+  but its values are values of the host type: INTEGER, CHAR, BOOLEAN, or
+  the enumeration. Operand, index and loop checks compare tids, so a value
+  read from a subrange must carry the host tid, kept in elem_tid. }
+BEGIN
+  SubrangeBaseTid := tid;
+  IF tid >= 14 THEN
+    IF types[tid].is_subrange THEN SubrangeBaseTid := types[tid].elem_tid;
+END;
+
 FUNCTION LookupNamedType(name: Str255): INTEGER;
 { Case-insensitive, per the manual's "Lowercase and uppercase letters are
   interchangeable, except in string literals" (IBM Pascal, Aug 1981, Syntax
@@ -1391,7 +1402,7 @@ BEGIN
     hi := ResolveIntLiteral(GetObj(te, 'high'));
     IF lo > hi THEN AbortWith('codegen: subrange lower bound exceeds upper bound');
     IF NodeType(GetObj(te, 'low')) = 'CharLiteral' THEN
-      tid := RegisterType(TK_CHAR, 0, lo, hi, i8ty)
+      tid := RegisterType(TK_CHAR, TK_CHAR, lo, hi, i8ty)
     ELSE IF NodeType(GetObj(te, 'low')) = 'Identifier' THEN
     BEGIN
       ci := LookupConst(GetStr(GetObj(te, 'low'), 'name'));
@@ -1401,15 +1412,15 @@ BEGIN
       IF ci = 0 THEN AbortWith('codegen: subrange upper bound must be a constant');
       IF (elem_tid = 0) OR (elem_tid <> const_tbl[ci].enum_tid) THEN
         AbortWith('codegen: subrange enum bounds must share a type');
-      tid := RegisterType(TK_ENUM, 0, lo, hi, i32ty);
+      tid := RegisterType(TK_ENUM, elem_tid, lo, hi, i32ty);
       types[tid].enum_values := types[elem_tid].enum_values;
     END
     ELSE IF NodeType(GetObj(te, 'low')) = 'BoolLiteral' THEN
-      tid := RegisterType(TK_BOOLEAN, 0, lo, hi, i1ty)
+      tid := RegisterType(TK_BOOLEAN, TK_BOOLEAN, lo, hi, i1ty)
     ELSE BEGIN
       IF (lo < -32767) OR (hi > 32767) THEN
         AbortWith('codegen: INTEGER subrange bounds must fit vintage INTEGER');
-      tid := RegisterType(TK_INTEGER, 0, lo, hi, i16ty);
+      tid := RegisterType(TK_INTEGER, TK_INTEGER, lo, hi, i16ty);
     END;
     types[tid].is_subrange := TRUE;
   END

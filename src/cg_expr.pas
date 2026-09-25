@@ -1880,6 +1880,7 @@ BEGIN
     res := NIL;
   END;
   LeaveExprLevel;
+  last_val_tk := SubrangeBaseTid(last_val_tk);
   CodegenExpr := res;
 END;
 

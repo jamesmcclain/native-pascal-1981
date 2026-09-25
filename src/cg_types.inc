@@ -18,6 +18,7 @@ CONST
 
 FUNCTION LLVMTypeForTk(tk: INTEGER): ADRMEM;
 FUNCTION TypeKind(tid: INTEGER): INTEGER;
+FUNCTION SubrangeBaseTid(tid: INTEGER): INTEGER;
 FUNCTION LookupNamedType(name: Str255): INTEGER;
 FUNCTION LookupField(rec_tid: INTEGER; fname: Str255): INTEGER;
 FUNCTION RegisterType(tk, elem_tid: INTEGER; lo, hi: INTEGER32; llvm_ty: ADRMEM): INTEGER;

@@ -523,7 +523,7 @@ BEGIN
   symi := LookupSym(var_name);
   IF symi = 0 THEN
     AbortWith2('codegen: undefined FOR loop variable: ', var_name);
-  var_tk := symbols[symi].tk;
+  var_tk := SubrangeBaseTid(symbols[symi].tk);
   IF NOT IsIntegerFamilyTk(var_tk) AND (TypeKind(var_tk) <> TK_ENUM) THEN
     AbortWith('codegen: FOR loop variable must be an integer-family or enumerated type');
   var_llty := LLVMTypeForTk(var_tk);
