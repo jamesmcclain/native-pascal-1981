@@ -332,16 +332,18 @@ BEGIN
   END;
 END;
 
-FUNCTION FoldsThroughShadowedRoutine(expr_node: ADRMEM): BOOLEAN;
+FUNCTION FoldsThroughShadowedName(expr_node: ADRMEM): BOOLEAN;
 { TRUE when FoldConstInt would reach its value through a spelling that a
-  visible user routine has taken over.  FoldConstInt itself folds ORD/CHR/
-  SUCC/PRED by name, deliberately: ps_expr.pas's ParseConstant admits exactly
-  those names in a constant expression and nothing else can appear there, so
-  a CONST value is the intrinsic whatever else is in scope -- which is also
-  what the Python reference's eval_const_expr/_fold_const_int do.  A general
-  expression is the opposite case: `y := ORD(''a'')' with a user ORD in scope
-  is an ordinary call, and folding it substitutes the builtin's value for the
-  callee the typechecker resolved. }
+  visible variable or user routine has taken over.  FoldConstInt itself
+  folds a CONST name and ORD/CHR/SUCC/PRED by name, deliberately: ps_expr.pas's
+  ParseConstant admits exactly those names in a constant expression and
+  nothing else can appear there, so a CONST value is the intrinsic whatever
+  else is in scope -- which is also what the Python reference's
+  eval_const_expr/_fold_const_int do.  A general expression is the opposite
+  case: `y := ORD(''a'')' with a user ORD in scope is an ordinary call, and
+  `a[big]' with a VAR big in scope loads the variable (CodegenExpr looks up
+  symbols before the flat const table), so folding either substitutes a
+  value the lowered code never computes. }
 VAR
   nt: Str255;
   args: ADRMEM;
@@ -350,33 +352,36 @@ VAR
 BEGIN
   found := FALSE;
   nt := NodeType(expr_node);
-  IF nt = 'FuncCall' THEN
+  IF nt = 'Identifier' THEN
+    found := LookupSym(GetStr(expr_node, 'name')) <> 0
+  ELSE IF nt = 'FuncCall' THEN
   BEGIN
     IF UserRoutineShadows(GetStr(expr_node, 'name')) THEN found := TRUE;
     args := GetObj(expr_node, 'args');
     n := ArrSize(args);
     FOR i := 0 TO n - 1 DO
-      IF FoldsThroughShadowedRoutine(ArrItem(args, i)) THEN found := TRUE;
+      IF FoldsThroughShadowedName(ArrItem(args, i)) THEN found := TRUE;
   END
   ELSE IF nt = 'UnaryOp' THEN
-    found := FoldsThroughShadowedRoutine(GetObj(expr_node, 'operand'))
+    found := FoldsThroughShadowedName(GetObj(expr_node, 'operand'))
   ELSE IF nt = 'BinOp' THEN
   BEGIN
-    IF FoldsThroughShadowedRoutine(GetObj(expr_node, 'left')) THEN found := TRUE;
-    IF FoldsThroughShadowedRoutine(GetObj(expr_node, 'right')) THEN found := TRUE;
+    IF FoldsThroughShadowedName(GetObj(expr_node, 'left')) THEN found := TRUE;
+    IF FoldsThroughShadowedName(GetObj(expr_node, 'right')) THEN found := TRUE;
   END;
-  FoldsThroughShadowedRoutine := found;
+  FoldsThroughShadowedName := found;
 END;
 
 FUNCTION IsIntLiteralLike(expr_node: ADRMEM): BOOLEAN;
 { True when FoldConstInt can produce a compile-time INTEGER value.  Every
   caller is a general-expression coercion (CoerceForAssign's narrowing arms,
-  cg_expr's mixed-width binop widening), never a constant declaration, so a
-  shadowed spelling must not fold here -- see FoldsThroughShadowedRoutine. }
+  cg_expr's mixed-width binop widening, index and VLOAD bound checks), never
+  a constant declaration, so a shadowed spelling must not fold here -- see
+  FoldsThroughShadowedName. }
 VAR
   folded: INTEGER64;
 BEGIN
-  IF FoldsThroughShadowedRoutine(expr_node) THEN
+  IF FoldsThroughShadowedName(expr_node) THEN
     IsIntLiteralLike := FALSE
   ELSE
     IsIntLiteralLike := FoldConstInt(expr_node, folded);
