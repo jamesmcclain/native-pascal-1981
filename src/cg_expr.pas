@@ -1632,7 +1632,7 @@ BEGIN
       IF (TypeKind(result_tid) <> TK_ARRAY) OR (NOT types[result_tid].is_super) THEN
         AbortWith('codegen: UPPER/LOWER dereference requires a SUPER ARRAY pointer');
       IF nt = 'LowerExpr' THEN
-        res := LLVMConstInt(i16ty, types[result_tid].lo, 1)
+        res := LLVMConstInt(i64ty, types[result_tid].lo, 1)
       ELSE
       BEGIN
         super_ptr := ComputeDesignatorAddress(bound_operand);
