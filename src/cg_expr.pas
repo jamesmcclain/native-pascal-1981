@@ -1125,6 +1125,17 @@ BEGIN
     (u = 'EXP') OR (u = 'ARCTAN');
 END;
 
+FUNCTION RealArgToDouble(v: ADRMEM; argtk: INTEGER): ADRMEM;
+{ Bring a builtin's numeric argument to REAL (double) for the libm calls,
+  TRUNC, ROUND, and FLOAT: a REAL stays as it is, a REAL32 widens with
+  fpext, and an integer converts with sitofp. sitofp on a float is invalid
+  IR. }
+BEGIN
+  IF argtk = TK_REAL THEN RealArgToDouble := v
+  ELSE IF argtk = TK_REAL32 THEN RealArgToDouble := LLVMBuildFPExt(builder, v, dblty, MakeCStr(''))
+  ELSE RealArgToDouble := LLVMBuildSIToFP(builder, v, dblty, MakeCStr(''));
+END;
+
 FUNCTION CodegenSimpleBuiltin(nm: Str255; args: ADRMEM): ADRMEM;
 { The math/ordinal builtins that need no libpascalrt support: pure inline
   LLVM IR (CHR/ORD/ODD/SUCC/PRED/ABS/SQR), or a single libm call
@@ -1193,28 +1204,30 @@ BEGIN
   END
   ELSE IF nm = 'ABS' THEN
   BEGIN
-    IF argtk = TK_REAL THEN
+    { ABS and SQR keep the argument's own width: REAL32 stays float, and
+      INTEGER8/32/64 compare against a zero of their own width. }
+    IF (argtk = TK_REAL) OR (argtk = TK_REAL32) THEN
     BEGIN
-      is_neg := LLVMBuildFCmp(builder, LLVMRealOLT, v, LLVMConstReal(dblty, 0.0), MakeCStr(''));
-      neg := LLVMBuildFSub(builder, LLVMConstReal(dblty, 0.0), v, MakeCStr(''));
+      is_neg := LLVMBuildFCmp(builder, LLVMRealOLT, v, LLVMConstReal(LLVMTypeForTk(argtk), 0.0), MakeCStr(''));
+      neg := LLVMBuildFSub(builder, LLVMConstReal(LLVMTypeForTk(argtk), 0.0), v, MakeCStr(''));
     END
     ELSE
     BEGIN
-      is_neg := LLVMBuildICmp(builder, LLVMIntSLT, v, LLVMConstInt(i16ty, 0, 1), MakeCStr(''));
-      neg := LLVMBuildSub(builder, LLVMConstInt(i16ty, 0, 1), v, MakeCStr(''));
+      is_neg := LLVMBuildICmp(builder, LLVMIntSLT, v, LLVMConstInt(LLVMTypeForTk(argtk), 0, 1), MakeCStr(''));
+      neg := LLVMBuildSub(builder, LLVMConstInt(LLVMTypeForTk(argtk), 0, 1), v, MakeCStr(''));
     END;
     res := LLVMBuildSelect(builder, is_neg, neg, v, MakeCStr(''));
     last_val_tk := argtk;
   END
   ELSE IF nm = 'SQR' THEN
   BEGIN
-    IF argtk = TK_REAL THEN res := LLVMBuildFMul(builder, v, v, MakeCStr(''))
+    IF (argtk = TK_REAL) OR (argtk = TK_REAL32) THEN res := LLVMBuildFMul(builder, v, v, MakeCStr(''))
     ELSE res := LLVMBuildMul(builder, v, v, MakeCStr(''));
     last_val_tk := argtk;
   END
   ELSE IF (nm = 'SQRT') OR (nm = 'SIN') OR (nm = 'COS') OR (nm = 'LN') OR (nm = 'EXP') OR (nm = 'ARCTAN') THEN
   BEGIN
-    IF argtk <> TK_REAL THEN v := LLVMBuildSIToFP(builder, v, dblty, MakeCStr(''));
+    v := RealArgToDouble(v, argtk);
     IF nm = 'SQRT' THEN res := LLVMBuildCall2(builder, sqrt_fnty, sqrt_fn, MakeArgs1(v), 1, MakeCStr(''))
     ELSE IF nm = 'SIN' THEN res := LLVMBuildCall2(builder, sin_fnty, sin_fn, MakeArgs1(v), 1, MakeCStr(''))
     ELSE IF nm = 'COS' THEN res := LLVMBuildCall2(builder, cos_fnty, cos_fn, MakeArgs1(v), 1, MakeCStr(''))
@@ -1225,13 +1238,13 @@ BEGIN
   END
   ELSE IF nm = 'TRUNC' THEN
   BEGIN
-    IF argtk <> TK_REAL THEN v := LLVMBuildSIToFP(builder, v, dblty, MakeCStr(''));
+    v := RealArgToDouble(v, argtk);
     res := LLVMBuildFPToSI(builder, v, i16ty, MakeCStr(''));
     last_val_tk := TK_INTEGER;
   END
   ELSE IF nm = 'ROUND' THEN
   BEGIN
-    IF argtk <> TK_REAL THEN v := LLVMBuildSIToFP(builder, v, dblty, MakeCStr(''));
+    v := RealArgToDouble(v, argtk);
     is_neg := LLVMBuildFCmp(builder, LLVMRealOLT, v, LLVMConstReal(dblty, 0.0), MakeCStr(''));
     half := LLVMBuildSelect(builder, is_neg, LLVMConstReal(dblty, -0.5), LLVMConstReal(dblty, 0.5), MakeCStr(''));
     v := LLVMBuildFAdd(builder, v, half, MakeCStr(''));
@@ -1240,8 +1253,7 @@ BEGIN
   END
   ELSE IF nm = 'FLOAT' THEN
   BEGIN
-    IF argtk = TK_REAL THEN res := v
-    ELSE res := LLVMBuildSIToFP(builder, v, dblty, MakeCStr(''));
+    res := RealArgToDouble(v, argtk);
     last_val_tk := TK_REAL;
   END
   ELSE IF (nm = 'HIBYTE') OR (nm = 'LOBYTE') THEN
