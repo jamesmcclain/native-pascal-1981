@@ -3,6 +3,5 @@ int translate(Compiland *c, FILE *out, int check_only)
 {
     (void) c;
     (void) out;
-    (void) check_only;
-    return 1;
+    return check_only ? 0 : 1;
 }
