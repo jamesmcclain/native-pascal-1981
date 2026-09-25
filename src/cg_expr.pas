@@ -997,10 +997,12 @@ BEGIN
         IF (folded < 0) OR (folded > types[cur_tid].hi) THEN
           AbortWith('codegen: vector lane index out of range');
       idx_val := CodegenExpr(idx_expr);
-      { Only fixed ARRAY selectors are guarded. A SUPER ARRAY's stored hi
-        is a placeholder, not a runtime upper bound; string and vector
-        selectors retain their existing behavior. Compare the original
-        index before narrowing or subtracting lo, once per selector. }
+      { Only fixed ARRAY selectors are guarded. Even a constant outside
+        lo..hi takes the runtime failure branch when its access runs, not
+        a compile-time error. A SUPER ARRAY's stored hi is a placeholder,
+        not a runtime upper bound; string and vector selectors retain their
+        existing behavior. Compare the original index before narrowing or
+        subtracting lo, once per selector. }
       IF indexck AND (NOT is_nvptx_device) AND
          (TypeKind(cur_tid) = TK_ARRAY) AND (NOT types[cur_tid].is_super) THEN
       BEGIN

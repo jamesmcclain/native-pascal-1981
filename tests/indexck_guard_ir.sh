@@ -5,10 +5,12 @@ cd "$(dirname "$0")/.."
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 bin/pascal1981 --dialect extended -S tests/fixtures/indexck_guard_ir.pas -o "$work/guard.ll"
-# One checked selector, one unchecked: no branch or abort for a[3].
-[ "$(grep -Ec '^index\.bad[0-9]*:' "$work/guard.ll")" -eq 1 ]
-[ "$(grep -Ec '^index\.ok[0-9]*:' "$work/guard.ll")" -eq 1 ]
-[ "$(grep -c 'call void @abort()' "$work/guard.ll")" -eq 1 ]
+# Two checked selectors (including dead a[0]), one unchecked constant a[3].
+# A bad constant is compiled, not rejected, and its guard runs only if reached.
+[ "$(grep -Ec '^index\.bad[0-9]*:' "$work/guard.ll")" -eq 2 ]
+[ "$(grep -Ec '^index\.ok[0-9]*:' "$work/guard.ll")" -eq 2 ]
+[ "$(grep -c 'call void @abort()' "$work/guard.ll")" -eq 2 ]
+grep -Eq 'br i1 false, label %index\.ok[0-9]*, label %index\.bad[0-9]*' "$work/guard.ll"
 # Compare full-width typed values before computing a signed GEP offset.
 bin/pascal1981 --dialect extended -S tests/golden/indexck_wide_ordinals.pas -o "$work/width.ll"
 for pattern in 'sext i64 .* to i128' 'sext i8 .* to i128' \
