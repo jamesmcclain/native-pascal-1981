@@ -51,7 +51,7 @@ if [ ! -f "$runtime_lib" ]; then
   make -C runtime >/dev/null
 fi
 
-USE_PYTHON_REFERENCE="${USE_PYTHON_REFERENCE:-1}"
+USE_PYTHON_REFERENCE="${USE_PYTHON_REFERENCE:-0}"
 bootstrap_dir="$(pwd)/bootstrap"
 pasboot="$bootstrap_dir/build/pasboot"
 if [ -z "${NATIVE_CODEGEN:-}" ] && [ "$USE_PYTHON_REFERENCE" != 1 ] && [ ! -x "$pasboot" ]; then
