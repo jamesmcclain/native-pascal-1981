@@ -1,0 +1,1 @@
+{$DEBUG+} PROGRAM t; BEGIN END.

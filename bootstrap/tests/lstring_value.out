@@ -1,0 +1,9 @@
+a =: hello
+b =: jello
+callee: X
+a after call: hello
+length: 5
+truncated: hel
+empty length: 0
+LSTRING(10) length: 5
+compare: TRUE TRUE TRUE TRUE

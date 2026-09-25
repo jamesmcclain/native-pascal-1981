@@ -18,6 +18,7 @@ CONST
 
 FUNCTION LLVMTypeForTk(tk: INTEGER): ADRMEM;
 FUNCTION TypeKind(tid: INTEGER): INTEGER;
+FUNCTION SubrangeBaseTid(tid: INTEGER): INTEGER;
 FUNCTION LookupNamedType(name: Str255): INTEGER;
 FUNCTION LookupField(rec_tid: INTEGER; fname: Str255): INTEGER;
 FUNCTION RegisterType(tk, elem_tid: INTEGER; lo, hi: INTEGER32; llvm_ty: ADRMEM): INTEGER;
@@ -36,13 +37,15 @@ FUNCTION IsIntegerFamilyTk(tk: INTEGER): BOOLEAN;
 FUNCTION IsUnsignedWordTk(tk: INTEGER): BOOLEAN;
 FUNCTION IntFamilyWidth(tk: INTEGER): INTEGER;
 FUNCTION CoerceForAssign(v: ADRMEM; from_tid, to_tid: INTEGER; expr_node: ADRMEM; ctx_name: Str255): ADRMEM;
+PROCEDURE EmitSubrangeCheck(v: ADRMEM; from_tid, to_tid: INTEGER);
+FUNCTION CoerceCheckedForAssign(v: ADRMEM; from_tid, to_tid: INTEGER; expr_node: ADRMEM; ctx_name: Str255): ADRMEM;
 FUNCTION RoundUpBytes(n, a: INTEGER32): INTEGER32;
-FUNCTION TypeAlignBytes(tid: INTEGER): INTEGER32;
-FUNCTION TypeSizeBytes(tid: INTEGER): INTEGER32;
+FUNCTION TypeAlignBytes(tid_in: INTEGER): INTEGER32;
+FUNCTION TypeSizeBytes(tid_in: INTEGER): INTEGER32;
 FUNCTION IsAggregateTk(tk: INTEGER): BOOLEAN;
 FUNCTION SysVMergeClass(a: INTEGER; b: INTEGER): INTEGER;
-FUNCTION IsSysVLeafTid(tid: INTEGER): BOOLEAN;
-PROCEDURE WalkTypeLeaves(tid: INTEGER; base_off: INTEGER32; VAR nleaves: INTEGER32; VAR leaf_off: SysVLeafOffArr; VAR leaf_tid: SysVLeafTidArr);
+FUNCTION IsSysVLeafTid(tid_in: INTEGER): BOOLEAN;
+PROCEDURE WalkTypeLeaves(tid_in: INTEGER; base_off: INTEGER32; VAR nleaves: INTEGER32; VAR leaf_off: SysVLeafOffArr; VAR leaf_tid: SysVLeafTidArr);
 PROCEDURE ClassifyAggregate(tk: INTEGER; VAR agg_class: INTEGER; VAR n_pieces: INTEGER; VAR piece_kind: SysVPieceArr; VAR piece_bytes: SysVPieceSzArr);
 FUNCTION SysVAggClass(tk: INTEGER): INTEGER;
 FUNCTION SysVByvalAlign(tk: INTEGER): INTEGER32;

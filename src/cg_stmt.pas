@@ -237,7 +237,7 @@ BEGIN
     ELSE
     BEGIN
       v := CodegenExpr(GetObj(stmt, 'expr'));
-      v := CoerceForAssign(v, last_val_tk, cur_func_ret_tk, GetObj(stmt, 'expr'), nm);
+      v := CoerceCheckedForAssign(v, last_val_tk, cur_func_ret_tk, GetObj(stmt, 'expr'), nm);
       LLVMBuildStore(builder, v, cur_func_ret_slot);
     END;
   END
@@ -255,7 +255,7 @@ BEGIN
     ELSE
     BEGIN
       v := CodegenExpr(GetObj(stmt, 'expr'));
-      v := CoerceForAssign(v, last_val_tk, symbols[symi].tk, GetObj(stmt, 'expr'), nm);
+      v := CoerceCheckedForAssign(v, last_val_tk, symbols[symi].tk, GetObj(stmt, 'expr'), nm);
       LLVMBuildStore(builder, v, symbols[symi].llvm_val);
     END;
   END
@@ -272,7 +272,7 @@ BEGIN
     ELSE
     BEGIN
       v := CodegenExpr(GetObj(stmt, 'expr'));
-      v := CoerceForAssign(v, last_val_tk, target_tid, GetObj(stmt, 'expr'), nm);
+      v := CoerceCheckedForAssign(v, last_val_tk, target_tid, GetObj(stmt, 'expr'), nm);
       LLVMBuildStore(builder, v, addr);
     END;
   END;
@@ -516,16 +516,21 @@ VAR
   var_llty: ADRMEM;
   start_node, end_node: ADRMEM;
   start_val, end_val, cur_val, cmp_val, next_val: ADRMEM;
-  loop_bb, body_bb, step_bb, end_bb: ADRMEM;
-  down: BOOLEAN;
+  loop_bb, body_bb, step_bb, inc_bb, end_bb, chk_bb, cont_bb: ADRMEM;
+  down, narrow, sub_chk: BOOLEAN;
 BEGIN
   var_name := GetStr(stmt, 'var');
   symi := LookupSym(var_name);
   IF symi = 0 THEN
     AbortWith2('codegen: undefined FOR loop variable: ', var_name);
-  var_tk := symbols[symi].tk;
-  IF NOT IsIntegerFamilyTk(var_tk) AND (TypeKind(var_tk) <> TK_ENUM) THEN
-    AbortWith('codegen: FOR loop variable must be an integer-family or enumerated type');
+  var_tk := SubrangeBaseTid(symbols[symi].tk);
+  { A CHAR (i8) or BOOLEAN (i1) control variable is unsigned and its range
+    usually reaches the type's last value ('a'..CHR(255), FALSE..TRUE), so
+    it compares unsigned and leaves the loop at the final value instead of
+    stepping past it and wrapping. }
+  narrow := (var_tk = TK_CHAR) OR (var_tk = TK_BOOLEAN);
+  IF NOT IsIntegerFamilyTk(var_tk) AND (TypeKind(var_tk) <> TK_ENUM) AND NOT narrow THEN
+    AbortWith('codegen: FOR loop variable must be an ordinal type');
   var_llty := LLVMTypeForTk(var_tk);
 
   start_node := GetObj(stmt, 'start');
@@ -539,6 +544,33 @@ BEGIN
 
   down := GetStr(stmt, 'direction') = 'DOWNTO';
 
+  { $RANGECK on a subrange control variable: if the body runs at all, it
+    runs with both the initial and the final value, so both must be inside
+    the declared bounds; a loop that runs zero times is not checked. }
+  sub_chk := FALSE;
+  IF cur_rangeck THEN
+    IF symbols[symi].tk >= 14 THEN
+      sub_chk := types[symbols[symi].tk].is_subrange;
+  IF sub_chk THEN
+  BEGIN
+    IF narrow AND down THEN
+      cmp_val := LLVMBuildICmp(builder, LLVMIntUGE, start_val, end_val, MakeCStr(''))
+    ELSE IF narrow THEN
+      cmp_val := LLVMBuildICmp(builder, LLVMIntULE, start_val, end_val, MakeCStr(''))
+    ELSE IF down THEN
+      cmp_val := LLVMBuildICmp(builder, LLVMIntSGE, start_val, end_val, MakeCStr(''))
+    ELSE
+      cmp_val := LLVMBuildICmp(builder, LLVMIntSLE, start_val, end_val, MakeCStr(''));
+    chk_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('for_range'));
+    cont_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('for_ranged'));
+    LLVMBuildCondBr(builder, cmp_val, chk_bb, cont_bb);
+    LLVMPositionBuilderAtEnd(builder, chk_bb);
+    EmitSubrangeCheck(start_val, var_tk, symbols[symi].tk);
+    EmitSubrangeCheck(end_val, var_tk, symbols[symi].tk);
+    LLVMBuildBr(builder, cont_bb);
+    LLVMPositionBuilderAtEnd(builder, cont_bb);
+  END;
+
   loop_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('for_loop'));
   body_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('for_body'));
   step_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('for_step'));
@@ -547,7 +579,11 @@ BEGIN
   LLVMBuildBr(builder, loop_bb);
   LLVMPositionBuilderAtEnd(builder, loop_bb);
   cur_val := LLVMBuildLoad2(builder, var_llty, symbols[symi].llvm_val, MakeCStr(''));
-  IF down THEN
+  IF narrow AND down THEN
+    cmp_val := LLVMBuildICmp(builder, LLVMIntUGE, cur_val, end_val, MakeCStr(''))
+  ELSE IF narrow THEN
+    cmp_val := LLVMBuildICmp(builder, LLVMIntULE, cur_val, end_val, MakeCStr(''))
+  ELSE IF down THEN
     cmp_val := LLVMBuildICmp(builder, LLVMIntSGE, cur_val, end_val, MakeCStr(''))
   ELSE
     cmp_val := LLVMBuildICmp(builder, LLVMIntSLE, cur_val, end_val, MakeCStr(''));
@@ -566,6 +602,13 @@ BEGIN
 
   LLVMPositionBuilderAtEnd(builder, step_bb);
   cur_val := LLVMBuildLoad2(builder, var_llty, symbols[symi].llvm_val, MakeCStr(''));
+  IF narrow THEN
+  BEGIN
+    inc_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('for_inc'));
+    cmp_val := LLVMBuildICmp(builder, LLVMIntEQ, cur_val, end_val, MakeCStr(''));
+    LLVMBuildCondBr(builder, cmp_val, end_bb, inc_bb);
+    LLVMPositionBuilderAtEnd(builder, inc_bb);
+  END;
   IF down THEN
     next_val := LLVMBuildSub(builder, cur_val, LLVMConstInt(var_llty, 1, 0), MakeCStr(''))
   ELSE
@@ -1618,6 +1661,8 @@ VAR
 BEGIN
   EnterStmtLevel;
   nt := NodeType(stmt);
+  IF GetObjOrNil(stmt, 'rangeck') <> NIL THEN
+    cur_rangeck := GetBool(stmt, 'rangeck');
   IF nt = 'AssignStmt' THEN CodegenAssignStmt(stmt)
   ELSE IF nt = 'CompoundStmt' THEN CodegenStmtArray(GetObj(stmt, 'stmts'))
   ELSE IF nt = 'IfStmt' THEN CodegenIfStmt(stmt)

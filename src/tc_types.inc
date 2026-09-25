@@ -4,6 +4,7 @@ INTERFACE;
 UNIT tc_types;
 USES jsonutil, features, tc_base;
 
-PROCEDURE ResolveTypeExpr(node: ADRMEM; VAR tk, aux, aux2, idx_tk: INTEGER);
+PROCEDURE ResolveTypeExpr(node: ADRMEM; VAR tk, aux, aux2, aux3, idx_tk: INTEGER);
+FUNCTION IsSuperTypeExpr(node: ADRMEM): BOOLEAN;
 
 END;

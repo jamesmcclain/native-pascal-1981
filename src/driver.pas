@@ -14,11 +14,14 @@ FUNCTION open(path: ADRMEM; flags: CINT; mode: CINT): CINT [C]; EXTERN;
 FUNCTION close(fd: CINT): CINT [C]; EXTERN;
 FUNCTION pipe(fds: ADRMEM): CINT [C]; EXTERN;
 FUNCTION fork: CINT [C]; EXTERN;
+FUNCTION dup(old_fd: CINT): CINT [C]; EXTERN;
 FUNCTION dup2(old_fd: CINT; new_fd: CINT): CINT [C]; EXTERN;
 FUNCTION waitpid(pid: CINT; status: ADRMEM; options: CINT): CINT [C]; EXTERN;
 FUNCTION execvp(file_name: ADRMEM; args: ADRMEM): CINT [C]; EXTERN;
 FUNCTION mkstemps(template_name: ADRMEM; suffix_length: CINT): CINT [C]; EXTERN;
 FUNCTION unlink(path: ADRMEM): CINT [C]; EXTERN;
+FUNCTION realpath(path: ADRMEM; resolved: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION strcmp(left: ADRMEM; right: ADRMEM): CINT [C]; EXTERN;
 PROCEDURE exit(status: CINT) [C]; EXTERN;
 
 CONST
@@ -52,7 +55,8 @@ BEGIN
   WRITELN('  -c                      Compile to object file only (.o)');
   WRITELN('  -S                      Compile to LLVM IR (.ll) only');
   WRITELN('  --emit-ptx              Emit PTX assembly (.ptx) for device code');
-  WRITELN('  --pretty-print          Emit formatted Pascal source (pretty81)');
+  WRITELN('  --pretty-print          Emit formatted Pascal source (pretty81);');
+  WRITELN('                          written to stdout unless -o is given');
   WRITELN('  -O0, -O1, -O2, -O3      Optimization level (default: -O1)');
   WRITELN('  --dialect <name>        Language dialect: vintage or extended');
   WRITELN('  --target-cpu <cpu>      Host target CPU (LLVM target-cpu attribute)');
@@ -121,6 +125,28 @@ BEGIN
   DefaultOutput := MakeCStr(Join(base, suffix));
 END;
 
+PROCEDURE CheckOutputNotInput;
+{ Opening the output truncates it before the lexer reads the input, so an
+  output that names an input file would destroy that source. A default
+  output can name the input too: an input without the .pas suffix is its
+  own default executable name. Resolving both paths also catches a
+  different spelling or a symbolic link to the same file. }
+VAR
+  resolved_output, resolved_input: ADRMEM;
+  k: CINT;
+BEGIN
+  resolved_output := realpath(output_file, NIL);
+  IF resolved_output <> NIL THEN
+    FOR k := 0 TO input_count - 1 DO
+    BEGIN
+      resolved_input := realpath(inputs[k], NIL);
+      IF resolved_input <> NIL THEN
+        IF strcmp(resolved_output, resolved_input) = 0 THEN
+          Fail(Join(Join('error: output file ''', CStrToStr255(output_file)),
+                    ''' would overwrite an input file'));
+    END;
+END;
+
 PROCEDURE ClosePipes;
 BEGIN
   close(p1[0]); close(p1[1]);
@@ -187,13 +213,39 @@ BEGIN
   exit(127);
 END;
 
+FUNCTION ExitCodeOf(status: CINT): CINT;
+{ The exit code for a waitpid status. A child that a signal killed has
+  status 0 in the exit-code byte, so status DIV 256 alone reads it as
+  success: LLVM's verifier aborts codegen with SIGABRT on a broken module.
+  Such a child gives 128 + the signal number, as a shell does. }
+BEGIN
+  IF (status MOD 128) <> 0 THEN ExitCodeOf := 128 + (status MOD 128)
+  ELSE ExitCodeOf := status DIV 256;
+END;
+
 FUNCTION RunPipeline(source_name, ir_name: ADRMEM): CINT;
+VAR
+  rc: CINT;
+  created: BOOLEAN;
 BEGIN
   in_fd := open(source_name, 0, 0);
   IF in_fd < 0 THEN BEGIN RunPipeline := 1; END
   ELSE
   BEGIN
-    out_fd := open(ir_name, 577, 420);
+    { A NIL ir_name means standard output (--pretty-print without -o).
+      Otherwise try O_WRONLY|O_CREAT|O_EXCL first, so that a failed run
+      removes the output only when this run created it. A path that already
+      exists (a device such as /dev/null, a symlink, the user's own file,
+      or a mkstemps temporary) is opened with O_WRONLY|O_CREAT|O_TRUNC and
+      left in place. }
+    created := FALSE;
+    IF ir_name = NIL THEN out_fd := dup(1)
+    ELSE
+    BEGIN
+      out_fd := open(ir_name, 193, 420);
+      IF out_fd >= 0 THEN created := TRUE
+      ELSE out_fd := open(ir_name, 577, 420);
+    END;
     IF out_fd < 0 THEN BEGIN close(in_fd); RunPipeline := 1; END
     ELSE
     BEGIN
@@ -228,11 +280,14 @@ BEGIN
         close(in_fd); close(out_fd); ClosePipes;
         waitpid(pid1, ADR status1, 0); waitpid(pid2, ADR status2, 0);
         waitpid(pid3, ADR status3, 0); waitpid(pid4, ADR status4, 0);
-        RunPipeline := 0;
-        IF (status1 DIV 256) <> 0 THEN RunPipeline := status1 DIV 256
-        ELSE IF (status2 DIV 256) <> 0 THEN RunPipeline := status2 DIV 256
-        ELSE IF (status3 DIV 256) <> 0 THEN RunPipeline := status3 DIV 256
-        ELSE IF (status4 DIV 256) <> 0 THEN RunPipeline := status4 DIV 256;
+        rc := ExitCodeOf(status1);
+        IF rc = 0 THEN rc := ExitCodeOf(status2);
+        IF rc = 0 THEN rc := ExitCodeOf(status3);
+        IF rc = 0 THEN rc := ExitCodeOf(status4);
+        { A failed stage leaves a partial or empty file. Remove it only if
+          this run created it; see the open above. }
+        IF (rc <> 0) AND created THEN unlink(ir_name);
+        RunPipeline := rc;
       END;
     END;
   END;
@@ -406,10 +461,10 @@ BEGIN
   BEGIN
     IF ptx_only THEN output_file := DefaultOutput(inputs[0], '.ptx')
     ELSE IF ir_only THEN output_file := DefaultOutput(inputs[0], '.ll')
-    ELSE IF pretty_print THEN output_file := DefaultOutput(inputs[0], '.pas')
     ELSE IF compile_only THEN output_file := DefaultOutput(inputs[0], '.o')
-    ELSE output_file := DefaultOutput(inputs[0], '');
+    ELSE IF NOT pretty_print THEN output_file := DefaultOutput(inputs[0], '');
   END;
+  IF output_file <> NIL THEN CheckOutputNotInput;
   root_dir := pas_toolchain_root;
   lexer_bin := getenv(MakeCStr('PASCAL1981_LEXER'));
   parser_bin := getenv(MakeCStr('PASCAL1981_PARSER'));
@@ -475,7 +530,7 @@ BEGIN
       IF pid1 = 0 THEN ExecClang;
       waitpid(pid1, ADR clang_status, 0);
       unlink(extra_ll);
-      IF (clang_status DIV 256) <> 0 THEN exit(clang_status DIV 256);
+      IF ExitCodeOf(clang_status) <> 0 THEN exit(ExitCodeOf(clang_status));
       extra_object_count := extra_object_count + 1;
     END;
     temp_ll := primary_ll;
@@ -491,6 +546,6 @@ BEGIN
     waitpid(pid1, ADR clang_status, 0);
     unlink(temp_ll);
     FOR i := 0 TO extra_object_count - 1 DO unlink(extra_objects[i]);
-    IF (clang_status DIV 256) <> 0 THEN exit(clang_status DIV 256);
+    IF ExitCodeOf(clang_status) <> 0 THEN exit(ExitCodeOf(clang_status));
   END;
 END.

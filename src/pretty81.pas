@@ -326,9 +326,10 @@ BEGIN
     PrintExpr(GetObj(node, 'operand'));
     Out(Ch(')'));
   END
-  ELSE IF nt = 'Designator' THEN
+  ELSE IF (nt = 'Designator') OR (nt = 'PostfixExpr') THEN
   BEGIN
-    Out(GetStr(node, 'name'));
+    IF nt = 'PostfixExpr' THEN PrintExpr(GetObj(node, 'base'))
+    ELSE Out(GetStr(node, 'name'));
     arr := GetObj(node, 'selectors');
     n := ArrSize(arr);
     FOR i := 0 TO n - 1 DO
@@ -409,14 +410,12 @@ BEGIN
   ELSE IF nt = 'LowerExpr' THEN
   BEGIN
     Out('LOWER(');
-    IF GetBool(node, 'deref') THEN Out(Ch('^'));
-    Out(GetStr(node, 'name')); Out(Ch(')'));
+    PrintExpr(GetObj(node, 'operand')); Out(Ch(')'));
   END
   ELSE IF nt = 'UpperExpr' THEN
   BEGIN
     Out('UPPER(');
-    IF GetBool(node, 'deref') THEN Out(Ch('^'));
-    Out(GetStr(node, 'name')); Out(Ch(')'));
+    PrintExpr(GetObj(node, 'operand')); Out(Ch(')'));
   END
   ELSE
   BEGIN
@@ -444,7 +443,10 @@ BEGIN
   ELSE IF nt = 'ArrayType' THEN
   BEGIN
     IF GetBool(node, 'packed') THEN Out('PACKED ');
-    Out('ARRAY['); PrintType(GetObj(node, 'index_range')); Out('] OF ');
+    IF GetBool(node, 'super') THEN Out('SUPER ');
+    Out('ARRAY['); PrintType(GetObj(node, 'index_range'));
+    IF GetBool(node, 'super') THEN Out('..*');
+    Out('] OF ');
     PrintType(GetObj(node, 'element_type'));
   END
   ELSE IF nt = 'IndexRange' THEN

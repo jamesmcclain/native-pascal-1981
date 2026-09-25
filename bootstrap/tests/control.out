@@ -1,0 +1,8 @@
+odd numbers below 10, stopping at 7: 1 3 5 7 
+DOWNTO: 54321
+FirstOver(50): 8
+not returned
+iterations with the limit raised to 6: 3
+control variable after FOR 1 TO 4: 5
+iterations of FOR 32760 TO 32767: 8
+WHILE with CYCLE and BREAK: 50

@@ -93,6 +93,9 @@ const char *pas_enum_write_token(int32_t value, const char **names, int count);
 
 /* File-based formatted READ */
 int   pas_fread_int(struct pas_file_fcb *f, int32_t *out);
+int   pas_fread_int16(struct pas_file_fcb *f, int16_t *out);
+int   pas_fread_int32(struct pas_file_fcb *f, int32_t *out);
+int   pas_fread_int64(struct pas_file_fcb *f, int64_t *out);
 int   pas_fread_word(struct pas_file_fcb *f, uint16_t *out);
 int   pas_fread_ptr(struct pas_file_fcb *f, uint64_t *out);
 int   pas_fread_real(struct pas_file_fcb *f, double *out);
@@ -170,6 +173,9 @@ int   pas_sys_exec(const char *executable, const char *packed_args,
 /* ---- stdin READ / READLN (readq.c) ---- */
 
 int   pas_read_int(int32_t *out);
+int   pas_read_int16(int16_t *out);
+int   pas_read_int32(int32_t *out);
+int   pas_read_int64(int64_t *out);
 int   pas_read_word(uint16_t *out);
 int   pas_read_ptr(uint64_t *out);
 int   pas_read_real(double *out);
@@ -219,8 +225,14 @@ int   movesr(adsmem src, adsmem dst, unsigned short len);
 /* ---- VLOAD/VSTORE SUPER ARRAY bounds (vector_bounds.c) ---- */
 
 void  pas_vector_nil_error(int32_t is_store) __attribute__((noreturn));
+void  pas_upper_nil_error(int32_t unused) __attribute__((noreturn));
 void  pas_vector_range_error(int32_t is_store, int64_t idx, int32_t idx_unsigned,
                              int32_t lanes, int64_t lo, int64_t hi) __attribute__((noreturn));
+
+/* ---- $RANGECK subrange stores (subrange.c) ---- */
+
+void  pas_subrange_error(int64_t value, int32_t value_unsigned,
+                         int64_t lo, int64_t hi) __attribute__((noreturn));
 
 #ifdef __cplusplus
 }

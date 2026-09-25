@@ -1,0 +1,5 @@
+Type checking failed:
+Unknown field
+Field selector on non-record value
+Index selector on non-array value
+Error: Failed to parse input AST JSON

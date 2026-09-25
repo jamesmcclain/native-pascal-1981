@@ -208,9 +208,9 @@ test_missing_python_formatters() {
     fi
 }
 
-have_end_to_end_tools() {
+have_tools() {
     local tool
-    for tool in git indent isort yapf; do
+    for tool in "$@"; do
         command -v "$tool" >/dev/null 2>&1 || return 1
     done
 }
@@ -250,9 +250,21 @@ write_tidy_c() {
     printf 'int f(int x)\n{\n    return x;\n}\n' > "$1"
 }
 
+# The end-to-end tests commit C files, which need only git and indent:
+# beautify.sh skips Python formatting when isort and yapf are absent. Only
+# the Python restaging test needs the Python formatters themselves.
 skip_end_to_end_test() {
     local name=$1
-    if ! have_end_to_end_tools; then
+    if ! have_tools git indent; then
+        skip_test "$name" 'git and indent are required'
+        return 0
+    fi
+    return 1
+}
+
+skip_python_formatter_test() {
+    local name=$1
+    if ! have_tools git indent isort yapf; then
         skip_test "$name" 'git, indent, isort, and yapf are required'
         return 0
     fi
@@ -318,7 +330,7 @@ test_unstaged_file_is_not_committed() {
 
 test_python_file_is_restaged() {
     local name='formatted Python file is restaged'
-    skip_end_to_end_test "$name" && return
+    skip_python_formatter_test "$name" && return
     setup_git_repo python-restage || { fail_test "$name" 'repository setup failed'; return; }
     printf 'x = {   "a":1 }\n' > "$TEST_REPO/tests/z_fmt.py"
     printf 'x = {   "a":1 }\n' > "$TEST_LOG_DIR/expected.py"
@@ -404,16 +416,6 @@ test_partially_staged_file_warns() {
         pass_test "$name"
     fi
 }
-
-missing_tools=()
-for tool in isort yapf; do
-    command -v "$tool" >/dev/null 2>&1 || missing_tools+=("$tool")
-done
-if [ ${#missing_tools[@]} -ne 0 ]; then
-    echo "ERROR: pre-commit hook tests require: ${missing_tools[*]}" >&2
-    echo "Install the missing Python formatters and run this test again." >&2
-    exit 1
-fi
 
 test_hook_is_executable
 test_hook_has_executable_git_mode

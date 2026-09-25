@@ -14,9 +14,12 @@ FUNCTION cJSON_GetStringValue(item: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION pas_double_to_int64(x: REAL): CLONG [C]; EXTERN;
 
 FUNCTION CheckExpr(node: ADRMEM): INTEGER; FORWARD;
+FUNCTION CheckFuncCall(node: ADRMEM): INTEGER; FORWARD;
 
 VAR
   expr_context_tk: INTEGER;
+  last_set_base_tk: INTEGER; { base kind of the last set operation checked;
+    see SetBaseAfterCheck. }
 
 FUNCTION IsDeviceIndexName(name: Str255): BOOLEAN;
 VAR
@@ -315,10 +318,8 @@ BEGIN
 END;
 
 FUNCTION CheckDesignator(node: ADRMEM): INTEGER;
-{ Walks the base identifier's selectors, threading a (tk, aux, aux2) triple
-  along so a FIELD or INDEX selector applied right after a DEREF/INDEX can
-  still resolve (aux2 carries the element/pointee's own aux -- see SymRec's
-  aux2 doc comment). Only one level of nesting is tracked this way. }
+{ Thread aggregate metadata through selectors. aux3 retains the record id
+  through pointer -> array -> record, including pointers stored in fields. }
 VAR
   name: Str255;
   si: INTEGER32;
@@ -326,29 +327,66 @@ VAR
   nsel, i: INTEGER32;
   sel, idx_expr: ADRMEM;
   skind, fname: Str255;
-  tk, aux, aux2, itk, new_tk, new_aux, current_idx_tk: INTEGER;
+  tk, aux, aux2, aux3, itk, new_tk, new_aux, new_aux2, current_idx_tk: INTEGER;
   fi: INTEGER32;
   lane_ct: INTEGER;
   folded_value: INTEGER64;
+  super_value: BOOLEAN;
 BEGIN
-  name := GetStr(node, 'name');
-  si := LookupSymbol(name);
-  IF si = 0 THEN
+  IF NodeType(node) = 'PostfixExpr' THEN
   BEGIN
-    AddError('Undefined identifier');
-    CheckDesignator := TK_UNKNOWN;
-    RETURN;
+    name := GetStr(GetObj(node, 'base'), 'name');
+    si := LookupSymbol(name);
+    tk := CheckFuncCall(GetObj(node, 'base'));
+    IF si = 0 THEN
+    BEGIN
+      CheckDesignator := TK_UNKNOWN;
+      RETURN;
+    END;
+    aux := symbols[si].ret_aux;
+    aux2 := symbols[si].ret_aux2;
+    aux3 := symbols[si].ret_aux3;
+    current_idx_tk := symbols[si].ret_idx_tk;
+    super_value := symbols[si].ret_is_super;
+  END
+  ELSE BEGIN
+    name := GetStr(node, 'name');
+    si := LookupSymbol(name);
+    IF si = 0 THEN
+    BEGIN
+      AddError('Undefined identifier');
+      CheckDesignator := TK_UNKNOWN;
+      RETURN;
+    END;
+    IF symbols[si].kind = 'FUNC' THEN
+    BEGIN
+      { A function named without an argument list stands for its call's
+        result (the symbol's own tk is TK_UNKNOWN). Assignment to the
+        result inside the function's body never reaches here: AssignStmt
+        handles that through cur_func_ret_tk. }
+      tk := symbols[si].ret_tk;
+      aux := symbols[si].ret_aux;
+      aux2 := symbols[si].ret_aux2;
+      aux3 := symbols[si].ret_aux3;
+      current_idx_tk := symbols[si].ret_idx_tk;
+      super_value := symbols[si].ret_is_super;
+    END
+    ELSE BEGIN
+      tk := symbols[si].tk;
+      aux := symbols[si].aux;
+      aux2 := symbols[si].aux2;
+      aux3 := symbols[si].aux3;
+      current_idx_tk := symbols[si].idx_tk;
+      super_value := symbols[si].is_super;
+    END;
   END;
-  tk := symbols[si].tk;
-  aux := symbols[si].aux;
-  aux2 := symbols[si].aux2;
-  current_idx_tk := symbols[si].idx_tk;
   sel_arr := GetObj(node, 'selectors');
   nsel := cJSON_GetArraySize(sel_arr);
   FOR i := 0 TO nsel - 1 DO
   BEGIN
     sel := cJSON_GetArrayItem(sel_arr, i);
     skind := GetStr(sel, 'kind');
+    super_value := FALSE;
     IF skind = 'FIELD' THEN
     BEGIN
       fname := UpperStr(CStrToStr255(cJSON_GetStringValue(GetObj(sel, 'index_or_field'))));
@@ -385,6 +423,9 @@ BEGIN
           tk := fields[fi].ftk;
           aux := fields[fi].faux;
           aux2 := fields[fi].faux2;
+          aux3 := fields[fi].faux3;
+          current_idx_tk := fields[fi].fidx_tk;
+          super_value := fields[fi].is_super;
         END;
       END;
     END
@@ -441,10 +482,9 @@ BEGIN
           AddError('Array index must be an ordinal type');
         new_tk := aux;
         new_aux := aux2;
+        new_aux2 := aux3;
         tk := new_tk;
-        { An LSTRING element/pointee carries its .LEN marker in the aux2 slot
-          (a string never uses aux); route it back to aux2 so a[i].LEN and
-          p^.LEN resolve instead of hitting the non-record selector error. }
+        { Restore the LSTRING marker to aux2, not aux. }
         IF new_tk = TK_STRING THEN
         BEGIN
           aux := 0;
@@ -452,8 +492,13 @@ BEGIN
         END
         ELSE BEGIN
           aux := new_aux;
-          aux2 := 0;
+          aux2 := new_aux2;
         END;
+        aux3 := 0;
+        { The element's own index kind is not kept in this flat type
+          model, so an element that is itself an array has an unknown
+          index kind; codegen, which has the full type, decides it. }
+        current_idx_tk := TK_UNKNOWN;
       END;
     END
     ELSE IF skind = 'DEREF' THEN
@@ -478,10 +523,9 @@ BEGIN
       ELSE BEGIN
         new_tk := aux;
         new_aux := aux2;
+        new_aux2 := aux3;
         tk := new_tk;
-        { An LSTRING element/pointee carries its .LEN marker in the aux2 slot
-          (a string never uses aux); route it back to aux2 so a[i].LEN and
-          p^.LEN resolve instead of hitting the non-record selector error. }
+        { Restore the LSTRING marker to aux2, not aux. }
         IF new_tk = TK_STRING THEN
         BEGIN
           aux := 0;
@@ -489,11 +533,14 @@ BEGIN
         END
         ELSE BEGIN
           aux := new_aux;
-          aux2 := 0;
+          aux2 := new_aux2;
         END;
+        aux3 := 0;
       END;
     END;
   END;
+  last_designator_super := super_value;
+  last_designator_idx_tk := current_idx_tk;
   last_designator_aux := aux;
   last_designator_aux2 := aux2;
   CheckDesignator := tk;
@@ -561,7 +608,10 @@ BEGIN
       IF NOT IsOrdinal(atk) AND (atk <> TK_UNKNOWN) THEN
         AddError('ORD argument must be an ordinal type');
     END;
-    CheckFuncCall := TK_INTEGER;
+    { Codegen keeps an integer argument's own type; everything else is an
+      INTEGER here (an enumeration's i32 ordinal included, as before). }
+    IF (nargs = 1) AND IsInteger(atk) THEN CheckFuncCall := atk
+    ELSE CheckFuncCall := TK_INTEGER;
     RETURN;
   END;
   IF name = 'CHR' THEN
@@ -854,16 +904,45 @@ BEGIN
   CheckFuncCall := symbols[si].ret_tk;
 END;
 
+FUNCTION SetBaseAfterCheck(node: ADRMEM): INTEGER;
+{ The base ordinal kind of a set-valued expression, read right after
+  CheckExpr has checked it (a designator's comes from the side channel that
+  check just set). A set constructor has no declared base, so it is the
+  generic INTEGER one, as in codegen. }
+VAR
+  nt: Str255;
+  si: INTEGER32;
+BEGIN
+  SetBaseAfterCheck := TK_INTEGER;
+  nt := NodeType(node);
+  IF (nt = 'Designator') OR (nt = 'PostfixExpr') THEN
+    SetBaseAfterCheck := last_designator_aux
+  ELSE IF nt = 'Identifier' THEN
+  BEGIN
+    si := LookupSymbol(GetStr(node, 'name'));
+    IF si <> 0 THEN SetBaseAfterCheck := symbols[si].aux;
+  END
+  ELSE IF nt = 'FuncCall' THEN
+  BEGIN
+    si := LookupSymbol(GetStr(node, 'name'));
+    IF si <> 0 THEN SetBaseAfterCheck := symbols[si].ret_aux;
+  END
+  ELSE IF nt = 'BinOp' THEN
+    SetBaseAfterCheck := last_set_base_tk;
+END;
+
 FUNCTION CheckExpr(node: ADRMEM): INTEGER;
 VAR
   nt, name: Str255;
   si: INTEGER32;
   left_node, right_node, operand_node, type_node: ADRMEM;
-  lt, rt, ot, op_kind, aux, aux2, idx_tk: INTEGER;
+  lt, rt, ot, op_kind, aux, aux2, aux3, idx_tk, bound_base_tk: INTEGER;
+  set_base_l, set_base_r: INTEGER;
   op: Str255;
-  elems_arr, elem_node: ADRMEM;
-  n_elems, ei: INTEGER32;
+  elems_arr, elem_node, bound_selectors, bound_sel: ADRMEM;
+  n_elems, ei, bound_n: INTEGER32;
   folded_value: INTEGER64;
+  bound_subrange, bound_super, bound_idx_unknown: BOOLEAN;
 BEGIN
   expr_depth := expr_depth + 1;
   IF expr_depth > MAX_EXPR_DEPTH THEN
@@ -928,6 +1007,8 @@ BEGIN
         AddError('Undefined identifier');
         CheckExpr := TK_UNKNOWN;
       END
+      ELSE IF symbols[si].kind = 'FUNC' THEN
+        CheckExpr := symbols[si].ret_tk
       ELSE
         CheckExpr := symbols[si].tk;
     END;
@@ -962,8 +1043,114 @@ BEGIN
     END;
     CheckExpr := TK_SET;
   END
-  ELSE IF nt = 'Designator' THEN
+  ELSE IF (nt = 'Designator') OR (nt = 'PostfixExpr') THEN
     CheckExpr := CheckDesignator(node)
+  ELSE IF (nt = 'UpperExpr') OR (nt = 'LowerExpr') THEN
+  BEGIN
+    operand_node := GetObj(node, 'operand');
+    bound_selectors := GetObj(operand_node, 'selectors');
+    bound_n := cJSON_GetArraySize(bound_selectors);
+    ot := TK_UNKNOWN;
+    IF NodeType(operand_node) = 'Identifier' THEN
+    BEGIN
+      name := GetStr(operand_node, 'name');
+      IF (LookupSymbol(name) = 0) AND (LookupType(name) <> 0) THEN
+        AddError('UPPER/LOWER type identifier is not an expression')
+      ELSE
+        ot := CheckExpr(operand_node);
+    END
+    ELSE ot := CheckExpr(operand_node);
+    bound_subrange := FALSE;
+    bound_super := FALSE;
+    bound_base_tk := TK_INTEGER;
+    bound_idx_unknown := FALSE;
+    IF (NodeType(operand_node) = 'Designator') OR
+       (NodeType(operand_node) = 'PostfixExpr') THEN
+    BEGIN
+      bound_subrange := last_designator_aux = -1;
+      bound_super := last_designator_super;
+      IF ot = TK_SET THEN bound_base_tk := last_designator_aux
+      ELSE IF ot = TK_ARRAY THEN
+      BEGIN
+        bound_base_tk := last_designator_idx_tk;
+        bound_idx_unknown := last_designator_idx_tk = TK_UNKNOWN;
+      END;
+    END;
+    si := 0;
+    IF NodeType(operand_node) = 'Identifier' THEN
+      si := LookupSymbol(GetStr(operand_node, 'name'));
+    IF si <> 0 THEN
+    BEGIN
+      IF symbols[si].kind = 'TYPE' THEN
+        AddError('UPPER/LOWER type identifier is not an expression');
+      bound_subrange := symbols[si].aux = -1;
+      bound_super := symbols[si].is_super;
+      IF ot = TK_SET THEN bound_base_tk := symbols[si].aux
+      ELSE IF ot = TK_ARRAY THEN bound_base_tk := symbols[si].idx_tk;
+    END;
+    IF (NodeType(operand_node) = 'BinOp') AND (ot = TK_SET) THEN
+      bound_base_tk := last_set_base_tk;
+    { A parameterless function named without an argument list: its bounds
+      are its result type's, as for a FuncCall below. }
+    IF ((NodeType(operand_node) = 'Identifier') OR
+        ((NodeType(operand_node) = 'Designator') AND (bound_n = 0))) THEN
+    BEGIN
+      si := LookupSymbol(GetStr(operand_node, 'name'));
+      IF si <> 0 THEN
+        IF symbols[si].kind = 'FUNC' THEN
+        BEGIN
+          bound_subrange := symbols[si].ret_aux = -1;
+          bound_super := symbols[si].ret_is_super;
+          IF ot = TK_SET THEN bound_base_tk := symbols[si].ret_aux
+          ELSE IF ot = TK_ARRAY THEN
+          BEGIN
+            bound_base_tk := symbols[si].ret_idx_tk;
+            bound_idx_unknown := FALSE;
+          END;
+        END;
+    END;
+    IF NodeType(operand_node) = 'FuncCall' THEN
+    BEGIN
+      si := LookupSymbol(GetStr(operand_node, 'name'));
+      IF si <> 0 THEN
+      BEGIN
+        bound_subrange := symbols[si].ret_aux = -1;
+        bound_super := symbols[si].ret_is_super;
+        IF ot = TK_SET THEN bound_base_tk := symbols[si].ret_aux
+        ELSE IF ot = TK_ARRAY THEN bound_base_tk := symbols[si].ret_idx_tk;
+      END;
+    END;
+    IF bound_base_tk = TK_UNKNOWN THEN bound_base_tk := TK_INTEGER;
+    IF ot = TK_POINTER THEN
+      AddError('UPPER/LOWER requires a dereferenced pointer');
+    IF NodeType(operand_node) = 'StringLiteral' THEN
+      AddError('UPPER/LOWER string literal has no declared capacity');
+    IF (ot = TK_ARRAY) OR (ot = TK_STRING) OR (ot = TK_VECTOR) OR
+       (ot = TK_SET) OR (ot = TK_ENUM) OR bound_subrange THEN
+    BEGIN
+      IF bound_n > 0 THEN
+        op := GetStr(cJSON_GetArrayItem(bound_selectors, bound_n - 1), 'kind')
+      ELSE
+        op := '';
+      IF (ot = TK_ARRAY) AND bound_super THEN
+        AddError('UPPER/LOWER non-pointer SUPER ARRAY has no runtime bound');
+      IF (ot = TK_ARRAY) AND (op = 'DEREF') THEN
+        CheckExpr := TK_INTEGER64
+      ELSE IF (ot = TK_ARRAY) AND bound_idx_unknown THEN
+        CheckExpr := TK_UNKNOWN
+      ELSE IF (ot = TK_SET) OR (ot = TK_ARRAY) THEN
+        CheckExpr := bound_base_tk
+      ELSE IF (ot = TK_ENUM) OR bound_subrange THEN
+        CheckExpr := ot
+      ELSE
+        CheckExpr := TK_INTEGER;
+    END
+    ELSE BEGIN
+      IF (ot <> TK_UNKNOWN) AND (ot <> TK_POINTER) THEN
+        AddError('UPPER/LOWER requires an array, set, enum or subrange expression');
+      CheckExpr := TK_UNKNOWN;
+    END;
+  END
   ELSE IF nt = 'FuncCall' THEN
     CheckExpr := CheckFuncCall(node)
   ELSE IF nt = 'RetypeExpr' THEN
@@ -974,15 +1161,19 @@ BEGIN
     ot := CheckExpr(GetObj(node, 'expr'));
     type_node := CreateNode('NamedType');
     AddStringField(type_node, 'name', GetStr(node, 'type_id'));
-    ResolveTypeExpr(type_node, lt, aux, aux2, idx_tk);
+    ResolveTypeExpr(type_node, lt, aux, aux2, aux3, idx_tk);
     CheckExpr := lt;
   END
   ELSE IF nt = 'BinOp' THEN
   BEGIN
     left_node := GetObj(node, 'left');
     right_node := GetObj(node, 'right');
+    set_base_l := TK_INTEGER;
+    set_base_r := TK_INTEGER;
     lt := CheckExpr(left_node);
+    IF lt = TK_SET THEN set_base_l := SetBaseAfterCheck(left_node);
     rt := CheckExpr(right_node);
+    IF rt = TK_SET THEN set_base_r := SetBaseAfterCheck(right_node);
     op := GetStr(node, 'op');
     IF (lt = TK_UNKNOWN) OR (rt = TK_UNKNOWN) THEN
       CheckExpr := TK_UNKNOWN
@@ -1045,7 +1236,14 @@ BEGIN
         CheckExpr := TK_UNKNOWN;
       END
       ELSE IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') THEN
-        CheckExpr := TK_SET
+      BEGIN
+        { Operands with the same base keep it (codegen keeps the base and
+          widens the bounds to cover both); a mixed-base result is the
+          generic INTEGER set. }
+        IF set_base_l = set_base_r THEN last_set_base_tk := set_base_l
+        ELSE last_set_base_tk := TK_INTEGER;
+        CheckExpr := TK_SET;
+      END
       ELSE
       BEGIN
         AddError('Unsupported SET operator');

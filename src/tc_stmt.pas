@@ -649,7 +649,7 @@ BEGIN
         pushed := pushed + 1;
         FOR fi := 1 TO nfields DO
           IF fields[fi].record_id = rec_id THEN
-            si := DefineSymbol(fields[fi].fname, 'VAR', fields[fi].ftk, fields[fi].faux, fields[fi].faux2, 0);
+            si := DefineSymbol(fields[fi].fname, 'VAR', fields[fi].ftk, fields[fi].faux, fields[fi].faux2, fields[fi].faux3, fields[fi].fidx_tk);
       END
       ELSE IF with_tk <> TK_UNKNOWN THEN
         AddError('WITH target must be a record');

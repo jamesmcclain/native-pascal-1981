@@ -1,0 +1,3 @@
+pascal_init_order_b();
+pascal_init_order_c();
+pascal_init_order_a();

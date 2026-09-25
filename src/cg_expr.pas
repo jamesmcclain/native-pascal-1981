@@ -813,8 +813,9 @@ BEGIN
         { Value-mode call arguments get the same literal-adaptation leniency
           as an assignment RHS (e.g. a bare INTEGER literal passed to a CINT
           [C] EXTERN parameter, as with cJSON_CreateBool(1) or exit(1)):
-          reuse CoerceForAssign rather than a bare tid-equality check. }
-        v := CoerceForAssign(v, last_val_tk, routines[ri].param_tk[i + 1], arg_node, name);
+          reuse CoerceForAssign rather than a bare tid-equality check. A
+          subrange parameter is range-checked like an assignment. }
+        v := CoerceCheckedForAssign(v, last_val_tk, routines[ri].param_tk[i + 1], arg_node, name);
       END;
       IF NOT pieces_emitted THEN
       BEGIN
@@ -940,7 +941,15 @@ BEGIN
   symi := LookupSym(nm);
   selectors := GetObj(node, 'selectors');
   nsel := ArrSize(selectors);
-  IF (symi = 0) AND (nsel = 0) AND RoutineIsFunc(LookupRoutine(nm)) THEN
+  IF NodeType(node) = 'PostfixExpr' THEN
+  BEGIN
+    { Materialize one function result before walking its selectors. }
+    file_handle := CodegenExpr(GetObj(node, 'base'));
+    cur_tid := last_val_tk;
+    base_ptr := EntryAlloca(LLVMTypeForTk(cur_tid), '');
+    LLVMBuildStore(builder, file_handle, base_ptr);
+  END
+  ELSE IF (symi = 0) AND (nsel = 0) AND RoutineIsFunc(LookupRoutine(nm)) THEN
   BEGIN
     { A bare niladic-call Designator (e.g. `CurKind = 'X'`, an aggregate
       Str255-returning FUNCTION called without parens) has no symbol-table
@@ -986,12 +995,23 @@ BEGIN
         lower bound using a constant of the index's own LLVM type and lets
         GEP take an index of whatever width it is, not just a plain
         16-bit INTEGER. Match that here instead of requiring TK_INTEGER. }
-      IF (last_val_tk <> TK_INTEGER) AND (last_val_tk <> TK_WORD)
+      IF (last_val_tk = TK_CHAR) OR (last_val_tk = TK_BOOLEAN) OR
+         (TypeKind(last_val_tk) = TK_ENUM) THEN
+      BEGIN
+        { A CHAR (i8), BOOLEAN (i1) or enumeration (i32) index is unsigned:
+          zero-extend it to i32 before subtracting the low bound, so CHAR
+          values past 127 and TRUE do not become negative offsets. }
+        IF TypeKind(last_val_tk) <> TK_ENUM THEN
+          idx_val := LLVMBuildZExt(builder, idx_val, i32ty, MakeCStr(''));
+        offset := LLVMBuildSub(builder, idx_val, LLVMConstInt(i32ty, types[cur_tid].lo, 1), MakeCStr(''));
+      END
+      ELSE IF (last_val_tk <> TK_INTEGER) AND (last_val_tk <> TK_WORD)
         AND (last_val_tk <> TK_INTEGER8) AND (last_val_tk <> TK_WORD8)
         AND (last_val_tk <> TK_INTEGER32) AND (last_val_tk <> TK_WORD32)
         AND (last_val_tk <> TK_INTEGER64) AND (last_val_tk <> TK_WORD64) THEN
-        AbortWith('codegen: an array index must be an integer-family type');
-      offset := LLVMBuildSub(builder, idx_val, LLVMConstInt(LLVMTypeForTk(last_val_tk), types[cur_tid].lo, 1), MakeCStr(''));
+        AbortWith('codegen: an array index must be an ordinal type')
+      ELSE
+        offset := LLVMBuildSub(builder, idx_val, LLVMConstInt(LLVMTypeForTk(last_val_tk), types[cur_tid].lo, 1), MakeCStr(''));
       IF types[cur_tid].is_super THEN
       BEGIN
         gep_idx := AllocPtrArray(1);
@@ -1125,6 +1145,17 @@ BEGIN
     (u = 'EXP') OR (u = 'ARCTAN');
 END;
 
+FUNCTION RealArgToDouble(v: ADRMEM; argtk: INTEGER): ADRMEM;
+{ Bring a builtin's numeric argument to REAL (double) for the libm calls,
+  TRUNC, ROUND, and FLOAT: a REAL stays as it is, a REAL32 widens with
+  fpext, and an integer converts with sitofp. sitofp on a float is invalid
+  IR. }
+BEGIN
+  IF argtk = TK_REAL THEN RealArgToDouble := v
+  ELSE IF argtk = TK_REAL32 THEN RealArgToDouble := LLVMBuildFPExt(builder, v, dblty, MakeCStr(''))
+  ELSE RealArgToDouble := LLVMBuildSIToFP(builder, v, dblty, MakeCStr(''));
+END;
+
 FUNCTION CodegenSimpleBuiltin(nm: Str255; args: ADRMEM): ADRMEM;
 { The math/ordinal builtins that need no libpascalrt support: pure inline
   LLVM IR (CHR/ORD/ODD/SUCC/PRED/ABS/SQR), or a single libm call
@@ -1152,8 +1183,9 @@ BEGIN
   END
   ELSE IF nm = 'ORD' THEN
   BEGIN
-    IF argtk = TK_CHAR THEN
+    IF (argtk = TK_CHAR) OR (argtk = TK_BOOLEAN) THEN
     BEGIN
+      { Zero-extend, so ORD(TRUE) is 1 rather than a sign-extended i1. }
       res := LLVMBuildZExt(builder, v, i16ty, MakeCStr(''));
       last_val_tk := TK_INTEGER;
     END
@@ -1167,8 +1199,10 @@ BEGIN
     END
     ELSE
     BEGIN
+      { An integer keeps its own value and width (so does pasboot); tagging
+        an i32 or i64 INTEGER would mix widths in later arithmetic. }
       res := v;
-      last_val_tk := TK_INTEGER;
+      last_val_tk := argtk;
     END;
   END
   ELSE IF nm = 'ODD' THEN
@@ -1193,28 +1227,30 @@ BEGIN
   END
   ELSE IF nm = 'ABS' THEN
   BEGIN
-    IF argtk = TK_REAL THEN
+    { ABS and SQR keep the argument's own width: REAL32 stays float, and
+      INTEGER8/32/64 compare against a zero of their own width. }
+    IF (argtk = TK_REAL) OR (argtk = TK_REAL32) THEN
     BEGIN
-      is_neg := LLVMBuildFCmp(builder, LLVMRealOLT, v, LLVMConstReal(dblty, 0.0), MakeCStr(''));
-      neg := LLVMBuildFSub(builder, LLVMConstReal(dblty, 0.0), v, MakeCStr(''));
+      is_neg := LLVMBuildFCmp(builder, LLVMRealOLT, v, LLVMConstReal(LLVMTypeForTk(argtk), 0.0), MakeCStr(''));
+      neg := LLVMBuildFSub(builder, LLVMConstReal(LLVMTypeForTk(argtk), 0.0), v, MakeCStr(''));
     END
     ELSE
     BEGIN
-      is_neg := LLVMBuildICmp(builder, LLVMIntSLT, v, LLVMConstInt(i16ty, 0, 1), MakeCStr(''));
-      neg := LLVMBuildSub(builder, LLVMConstInt(i16ty, 0, 1), v, MakeCStr(''));
+      is_neg := LLVMBuildICmp(builder, LLVMIntSLT, v, LLVMConstInt(LLVMTypeForTk(argtk), 0, 1), MakeCStr(''));
+      neg := LLVMBuildSub(builder, LLVMConstInt(LLVMTypeForTk(argtk), 0, 1), v, MakeCStr(''));
     END;
     res := LLVMBuildSelect(builder, is_neg, neg, v, MakeCStr(''));
     last_val_tk := argtk;
   END
   ELSE IF nm = 'SQR' THEN
   BEGIN
-    IF argtk = TK_REAL THEN res := LLVMBuildFMul(builder, v, v, MakeCStr(''))
+    IF (argtk = TK_REAL) OR (argtk = TK_REAL32) THEN res := LLVMBuildFMul(builder, v, v, MakeCStr(''))
     ELSE res := LLVMBuildMul(builder, v, v, MakeCStr(''));
     last_val_tk := argtk;
   END
   ELSE IF (nm = 'SQRT') OR (nm = 'SIN') OR (nm = 'COS') OR (nm = 'LN') OR (nm = 'EXP') OR (nm = 'ARCTAN') THEN
   BEGIN
-    IF argtk <> TK_REAL THEN v := LLVMBuildSIToFP(builder, v, dblty, MakeCStr(''));
+    v := RealArgToDouble(v, argtk);
     IF nm = 'SQRT' THEN res := LLVMBuildCall2(builder, sqrt_fnty, sqrt_fn, MakeArgs1(v), 1, MakeCStr(''))
     ELSE IF nm = 'SIN' THEN res := LLVMBuildCall2(builder, sin_fnty, sin_fn, MakeArgs1(v), 1, MakeCStr(''))
     ELSE IF nm = 'COS' THEN res := LLVMBuildCall2(builder, cos_fnty, cos_fn, MakeArgs1(v), 1, MakeCStr(''))
@@ -1225,13 +1261,13 @@ BEGIN
   END
   ELSE IF nm = 'TRUNC' THEN
   BEGIN
-    IF argtk <> TK_REAL THEN v := LLVMBuildSIToFP(builder, v, dblty, MakeCStr(''));
+    v := RealArgToDouble(v, argtk);
     res := LLVMBuildFPToSI(builder, v, i16ty, MakeCStr(''));
     last_val_tk := TK_INTEGER;
   END
   ELSE IF nm = 'ROUND' THEN
   BEGIN
-    IF argtk <> TK_REAL THEN v := LLVMBuildSIToFP(builder, v, dblty, MakeCStr(''));
+    v := RealArgToDouble(v, argtk);
     is_neg := LLVMBuildFCmp(builder, LLVMRealOLT, v, LLVMConstReal(dblty, 0.0), MakeCStr(''));
     half := LLVMBuildSelect(builder, is_neg, LLVMConstReal(dblty, -0.5), LLVMConstReal(dblty, 0.5), MakeCStr(''));
     v := LLVMBuildFAdd(builder, v, half, MakeCStr(''));
@@ -1240,8 +1276,7 @@ BEGIN
   END
   ELSE IF nm = 'FLOAT' THEN
   BEGIN
-    IF argtk = TK_REAL THEN res := v
-    ELSE res := LLVMBuildSIToFP(builder, v, dblty, MakeCStr(''));
+    res := RealArgToDouble(v, argtk);
     last_val_tk := TK_REAL;
   END
   ELSE IF (nm = 'HIBYTE') OR (nm = 'LOBYTE') THEN
@@ -1325,6 +1360,99 @@ BEGIN
   last_val_tk := TK_ADRMEM;
 END;
 
+FUNCTION SetOpResultType(lt, rt: INTEGER): INTEGER;
+{ The static type of a set union, intersection or difference. Operands of
+  the same base type keep it, with bounds that cover both declared ranges
+  (so SET OF BOOLEAN + SET OF BOOLEAN is still FALSE..TRUE); an existing
+  entry with that shape is reused. Mixed bases, or a constructor's generic
+  set, give the generic INTEGER set, as the typechecker does. }
+VAR
+  lo, hi: INTEGER32;
+  ti, found: INTEGER;
+BEGIN
+  IF lt = rt THEN
+    SetOpResultType := lt
+  ELSE IF types[lt].elem_tid <> types[rt].elem_tid THEN
+    SetOpResultType := EnsureGenericSetType
+  ELSE
+  BEGIN
+    lo := types[lt].lo;
+    IF types[rt].lo < lo THEN lo := types[rt].lo;
+    hi := types[lt].hi;
+    IF types[rt].hi > hi THEN hi := types[rt].hi;
+    found := 0;
+    FOR ti := 14 TO ntypes DO
+      IF (found = 0) AND (types[ti].tk = TK_SET) AND
+         (types[ti].elem_tid = types[lt].elem_tid) AND
+         (types[ti].lo = lo) AND (types[ti].hi = hi) THEN
+        found := ti;
+    IF found = 0 THEN
+      found := RegisterType(TK_SET, types[lt].elem_tid, lo, hi, setty);
+    SetOpResultType := found;
+  END;
+END;
+
+FUNCTION BareFunctionResultType(name: Str255): INTEGER;
+{ The result type of a function named without an argument list, or
+  TK_UNKNOWN when the name is not a function. }
+VAR
+  ri: INTEGER32;
+BEGIN
+  BareFunctionResultType := TK_UNKNOWN;
+  ri := LookupRoutine(name);
+  IF ri <> 0 THEN
+    IF RoutineIsFunc(ri) THEN BareFunctionResultType := routines[ri].ret_tk;
+END;
+
+FUNCTION BoundOperandType(node: ADRMEM): INTEGER;
+{ Resolve the operand without generating any IR: LOWER and all static
+  bounds must not execute calls or index expressions. }
+VAR
+  nt, name: Str255;
+  si: INTEGER32;
+  lt, rt: INTEGER;
+BEGIN
+  nt := NodeType(node);
+  IF (nt = 'Designator') OR (nt = 'PostfixExpr') THEN
+  BEGIN
+    BoundOperandType := StaticDesignatorType(node);
+    { A bare name that is no variable may be a parameterless function
+      called without parentheses (UPPER(getset)); its bounds are its
+      result type's, and the call is not executed. }
+    IF (nt = 'Designator') AND (ArrSize(GetObj(node, 'selectors')) = 0) AND
+       (LookupSym(GetStr(node, 'name')) = 0) THEN
+      BoundOperandType := BareFunctionResultType(GetStr(node, 'name'));
+  END
+  ELSE IF nt = 'Identifier' THEN
+  BEGIN
+    name := GetStr(node, 'name');
+    si := LookupSym(name);
+    IF si <> 0 THEN BoundOperandType := symbols[si].tk
+    ELSE BEGIN
+      si := LookupConst(name);
+      IF si <> 0 THEN BoundOperandType := const_tbl[si].enum_tid
+      ELSE BoundOperandType := BareFunctionResultType(name);
+    END;
+  END
+  ELSE IF nt = 'FuncCall' THEN
+  BEGIN
+    si := LookupRoutine(GetStr(node, 'name'));
+    IF si <> 0 THEN BoundOperandType := routines[si].ret_tk
+    ELSE BoundOperandType := TK_UNKNOWN;
+  END
+  ELSE IF nt = 'SetConstructor' THEN
+    BoundOperandType := EnsureGenericSetType
+  ELSE IF nt = 'BinOp' THEN
+  BEGIN
+    lt := BoundOperandType(GetObj(node, 'left'));
+    rt := BoundOperandType(GetObj(node, 'right'));
+    IF (TypeKind(lt) = TK_SET) AND (TypeKind(rt) = TK_SET) THEN
+      BoundOperandType := SetOpResultType(lt, rt)
+    ELSE BoundOperandType := TK_UNKNOWN;
+  END
+  ELSE BoundOperandType := TK_UNKNOWN;
+END;
+
 FUNCTION CodegenExpr(node: ADRMEM): ADRMEM;
 VAR
   nt: Str255;
@@ -1334,8 +1462,10 @@ VAR
   consti: INTEGER32;
   routi: INTEGER32;
   ch: Str255;
-  res, addr, super_ptr, super_header: ADRMEM;
-  result_tid: INTEGER;
+  res, addr, super_ptr, super_header, bound_operand, bound_sels: ADRMEM;
+  nil_bb, ok_bb, is_nil, err_args, discard, nil_fnty, nil_fn: ADRMEM;
+  result_tid, static_bound_tid: INTEGER;
+  bound_n: INTEGER32;
   target_item, target_str, sizeof_synth: ADRMEM;
   sizeof_bytes: INTEGER32;
   call_args: ADRMEM;
@@ -1343,7 +1473,7 @@ VAR
   vsel_mask_tid, vsel_a_tid, vsel_b_tid: INTEGER;
   vld_idx, vld_arr: ADRMEM;
   vld_idx_tk, vld_arr_tid: INTEGER;
-  vld_hdr: BOOLEAN;
+  vld_hdr, bound_is_subrange: BOOLEAN;
 BEGIN
   EnterExprLevel;
   nt := NodeType(node);
@@ -1506,7 +1636,7 @@ BEGIN
     END;
     END;
   END
-  ELSE IF nt = 'Designator' THEN  BEGIN
+  ELSE IF (nt = 'Designator') OR (nt = 'PostfixExpr') THEN  BEGIN
     addr := ComputeDesignatorAddress(node);
     result_tid := last_val_tk;
     res := LLVMBuildLoad2(builder, LLVMTypeForTk(result_tid), addr, MakeCStr(''));
@@ -1548,29 +1678,46 @@ BEGIN
     res := CodegenUnaryOp(GetStr(node, 'op'), GetObj(node, 'operand'))
   ELSE IF (nt = 'UpperExpr') OR (nt = 'LowerExpr') THEN
   BEGIN
-    { LOWER/UPPER bound resolution, scoped to the fixed-bound cases this
-      file's type system can represent: TYPE-declared ARRAY (static
-      lo/hi), STRING(n) (lower=1, upper=n), LSTRING(n) (lower=0,
-      upper=n -- the declared capacity, not the runtime length: the Python
-      reference resolves the same static bound for these, see exprs.py's
-      NamedType/ResolvedStringType/ResolvedLStringType branches). The
-      dereferenced form UPPER(p^)/LOWER(p^) -- bounds of a pointee, with a
-      dynamic upper bound for heap "super arrays" read from NEW's bound
-      header -- is not supported: this file has neither super arrays nor
-      multi-dimension arrays yet. }
-    nm := GetStr(node, 'name');
-    IF GetBool(node, 'deref') THEN
+    { Type-only walk for static bounds; only a final dereference of a
+      SUPER ARRAY pointer needs its selected allocation at run time. }
+    bound_operand := GetObj(node, 'operand');
+    bound_sels := GetObj(bound_operand, 'selectors');
+    bound_n := ArrSize(bound_sels);
+    result_tid := BoundOperandType(bound_operand);
+    bound_is_subrange := FALSE;
+    IF result_tid >= 14 THEN
+      bound_is_subrange := types[result_tid].is_subrange;
+    IF result_tid = TK_UNKNOWN THEN
+      AbortWith('codegen: invalid UPPER/LOWER designator');
+    { ArrItem is only called on a nonempty selector list. }
+    IF bound_n > 0 THEN
+      nm := GetStr(ArrItem(bound_sels, bound_n - 1), 'kind')
+    ELSE
+      nm := '';
+    IF nm = 'DEREF' THEN
     BEGIN
-      symi := LookupSym(nm);
-      IF (symi = 0) OR (TypeKind(symbols[symi].tk) <> TK_POINTER) OR
-         (NOT types[types[symbols[symi].tk].elem_tid].is_super) THEN
+      IF (TypeKind(result_tid) <> TK_ARRAY) OR (NOT types[result_tid].is_super) THEN
         AbortWith('codegen: UPPER/LOWER dereference requires a SUPER ARRAY pointer');
       IF nt = 'LowerExpr' THEN
-        res := LLVMConstInt(i16ty, types[types[symbols[symi].tk].elem_tid].lo, 1)
+        res := LLVMConstInt(i64ty, types[result_tid].lo, 1)
       ELSE
       BEGIN
-        super_ptr := LLVMBuildLoad2(builder, LLVMTypeForTk(symbols[symi].tk), symbols[symi].llvm_val, MakeCStr(''));
+        super_ptr := ComputeDesignatorAddress(bound_operand);
         super_ptr := LLVMBuildBitCast(builder, super_ptr, i8ptrty, MakeCStr(''));
+        nil_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('upper.nil'));
+        ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('upper.ok'));
+        is_nil := LLVMBuildICmp(builder, LLVMIntEQ, super_ptr,
+          LLVMConstPointerNull(i8ptrty), MakeCStr(''));
+        LLVMBuildCondBr(builder, is_nil, nil_bb, ok_bb);
+        LLVMPositionBuilderAtEnd(builder, nil_bb);
+        err_args := MakeArgs1(LLVMConstInt(i32ty, 0, 0));
+        nil_fnty := LLVMFunctionType(voidty, MakeArgs1(i32ty), 1, 0);
+        nil_fn := LLVMGetNamedFunction(modl, MakeCStr('pas_upper_nil_error'));
+        IF nil_fn = NIL THEN
+          nil_fn := LLVMAddFunction(modl, MakeCStr('pas_upper_nil_error'), nil_fnty);
+        discard := LLVMBuildCall2(builder, nil_fnty, nil_fn, err_args, 1, MakeCStr(''));
+        discard := LLVMBuildUnreachable(builder);
+        LLVMPositionBuilderAtEnd(builder, ok_bb);
         super_header := LLVMBuildGEP2(builder, i8ty, super_ptr,
           MakeArgs1(LLVMConstInt(i64ty, -8, 1)), 1, MakeCStr(''));
         super_header := LLVMBuildBitCast(builder, super_header, LLVMPointerType(i64ty, 0), MakeCStr(''));
@@ -1578,46 +1725,33 @@ BEGIN
       END;
       last_val_tk := TK_INTEGER64;
     END
-    ELSE
-    BEGIN
-    symi := LookupSym(nm);
-    IF symi = 0 THEN
-    BEGIN
-      AbortWith2('codegen: undefined variable: ', nm);
-      res := NIL;
-    END
-    ELSE
-    BEGIN
-      result_tid := symbols[symi].tk;
+    ELSE BEGIN
       IF TypeKind(result_tid) = TK_ARRAY THEN
+        IF types[result_tid].is_super THEN
+          AbortWith('codegen: non-pointer SUPER ARRAY value has no runtime bound');
+      IF (TypeKind(result_tid) = TK_ARRAY) OR (TypeKind(result_tid) = TK_STRING)
+         OR (TypeKind(result_tid) = TK_LSTRING) OR (TypeKind(result_tid) = TK_VECTOR)
+         OR (TypeKind(result_tid) = TK_SET) OR (TypeKind(result_tid) = TK_ENUM)
+         OR bound_is_subrange THEN
       BEGIN
-        IF nt = 'UpperExpr' THEN res := LLVMConstInt(i16ty, types[result_tid].hi, 1)
-        ELSE res := LLVMConstInt(i16ty, types[result_tid].lo, 1);
+        static_bound_tid := TK_INTEGER;
+        IF TypeKind(result_tid) = TK_SET THEN
+          static_bound_tid := types[result_tid].elem_tid
+        ELSE IF TypeKind(result_tid) = TK_ARRAY THEN
+          static_bound_tid := types[result_tid].index_tid
+        ELSE IF (TypeKind(result_tid) = TK_ENUM) OR bound_is_subrange THEN
+          static_bound_tid := result_tid;
+        IF nt = 'UpperExpr' THEN
+          res := LLVMConstInt(LLVMTypeForTk(static_bound_tid), types[result_tid].hi, 1)
+        ELSE
+          res := LLVMConstInt(LLVMTypeForTk(static_bound_tid), types[result_tid].lo, 1);
       END
-      ELSE IF TypeKind(result_tid) = TK_STRING THEN
-      BEGIN
-        IF nt = 'UpperExpr' THEN res := LLVMConstInt(i16ty, types[result_tid].hi, 1)
-        ELSE res := LLVMConstInt(i16ty, 1, 1);
-      END
-      ELSE IF TypeKind(result_tid) = TK_LSTRING THEN
-      BEGIN
-        IF nt = 'UpperExpr' THEN res := LLVMConstInt(i16ty, types[result_tid].hi, 1)
-        ELSE res := LLVMConstInt(i16ty, 0, 1);
-      END
-      ELSE IF TypeKind(result_tid) = TK_VECTOR THEN
-      BEGIN
-        { lo/hi were registered as 0/lanes-1, so the table read is identical
-          to the TK_ARRAY case. }
-        IF nt = 'UpperExpr' THEN res := LLVMConstInt(i16ty, types[result_tid].hi, 1)
-        ELSE res := LLVMConstInt(i16ty, types[result_tid].lo, 1);
-      END
-      ELSE
-      BEGIN
-        AbortWith2('codegen: UPPER/LOWER not supported for variable: ', nm);
+      ELSE BEGIN
+        AbortWith('codegen: UPPER/LOWER requires an array, set, enum or subrange expression');
         res := NIL;
+        static_bound_tid := TK_UNKNOWN;
       END;
-      last_val_tk := TK_INTEGER;
-    END;
+      last_val_tk := static_bound_tid;
     END;
   END
   ELSE IF nt = 'RetypeExpr' THEN
@@ -1813,6 +1947,7 @@ BEGIN
     res := NIL;
   END;
   LeaveExprLevel;
+  last_val_tk := SubrangeBaseTid(last_val_tk);
   CodegenExpr := res;
 END;
 

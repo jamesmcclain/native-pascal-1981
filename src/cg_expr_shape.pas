@@ -33,14 +33,27 @@ VAR
   fi: INTEGER;
   failed: BOOLEAN;
 BEGIN
-  nm := GetStr(node, 'name');
-  symi := LookupSym(nm);
-  IF symi = 0 THEN
+  IF NodeType(node) = 'PostfixExpr' THEN
   BEGIN
-    StaticDesignatorType := TK_UNKNOWN;
-    RETURN;
+    nm := GetStr(GetObj(node, 'base'), 'name');
+    symi := LookupRoutine(nm);
+    IF (symi = 0) OR (NOT RoutineIsFunc(symi)) THEN
+    BEGIN
+      StaticDesignatorType := TK_UNKNOWN;
+      RETURN;
+    END;
+    cur_tid := routines[symi].ret_tk;
+  END
+  ELSE BEGIN
+    nm := GetStr(node, 'name');
+    symi := LookupSym(nm);
+    IF symi = 0 THEN
+    BEGIN
+      StaticDesignatorType := TK_UNKNOWN;
+      RETURN;
+    END;
+    cur_tid := symbols[symi].tk;
   END;
-  cur_tid := symbols[symi].tk;
   selectors := GetObj(node, 'selectors');
   nsel := ArrSize(selectors);
   failed := FALSE;

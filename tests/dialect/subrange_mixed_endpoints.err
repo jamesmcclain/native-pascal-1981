@@ -1,0 +1,6 @@
+Type checking failed:
+Subrange bounds must be of the same ordinal type
+Subrange bounds must be of the same ordinal type
+Subrange bounds must be of the same ordinal type
+Subrange bounds must be of the same ordinal type
+Error: Failed to parse input AST JSON

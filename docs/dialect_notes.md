@@ -74,6 +74,8 @@ to activate the complete extended feature set.
 ### Bootstrap dialect
 
 Compiler sources use extended types and C interoperability declarations.
+Generation 1 is built by `bootstrap/pasboot`, which accepts only the
+[bootstrap subset](bootstrap_subset.md) of the extended dialect.
 `scripts/build-stage.sh` passes `--dialect extended` to each parser,
 typechecker, and code generator that builds these sources. It does not pass a
 dialect option to a lexer. Use `make test-bootstrap` to rebuild all bootstrap
@@ -97,6 +99,31 @@ and to explicit text files.
 `BOOLEAN` keeps its documented vintage behavior in both dialects. Output is
 `TRUE` or `FALSE`. Input accepts those names without regard to letter case and
 also accepts the numeric ordinals `1` and `0`.
+
+## Wide signed integer input **[extended]**
+
+`READ` and `READLN` accept `INTEGER32` and `INTEGER64` destinations from
+standard input or an explicit `TEXT` file. They read signed decimal values
+(including an optional `+` or `-`) at their full width; overflow of either
+width is a runtime error, never a truncation through vintage `INTEGER` or a
+32-bit intermediate. `READLN` first reads its arguments, then consumes through
+the next newline. Vintage `INTEGER` and `WORD` readers are unchanged.
+
+Leading whitespace, newlines included, is skipped before the number, as the
+vintage `INTEGER` reader does (and as the 1981 manual and ISO texts do with
+leading line markers). A newline after a number remains for `READLN` to
+consume. Leading zeros are accepted in any number and do not count toward
+the length of the number.
+
+At stdin, EOF aborts with `runtime error: unexpected EOF while reading
+integer`; a malformed number or out-of-range value aborts with `runtime
+error: malformed integer input` or `runtime error: integer out of range`.
+For explicit files, malformed input and overflow set `F.ERRS` to 14 when
+`F.TRAP` is set (leaving the destination unchanged); without a trap they
+abort with the same `runtime error:` messages. EOF aborts in either case,
+as in the existing formatted integer reader. Input consumes a decimal prefix
+and leaves the following non-digit delimiter for the next read, like the
+existing formatted numeric readers.
 
 ## String precision
 
@@ -242,9 +269,106 @@ it from a routine, take its `SIZEOF` / `LOWER` / `UPPER`.
 - **ISA selection** is `--target-cpu` / `--target-features` on the driver
   (attached as LLVM function attributes; default is baseline x86-64). No
   `llvm.x86.*` intrinsics, no runtime CPU detection.
-- **Not usable in the compiler's own sources.** `gen1` is built by the
-  Python reference, which has no `VECTOR`; no file under `src/` may use the
-  syntax. See `tests/README.md` for the matching test-layout rule.
+- **Not usable in the compiler's bootstrap sources.** `gen1` is built by
+  `pasboot`, whose bootstrap subset has no `VECTOR`; no file that `gen1`
+  compiles may use the syntax. See
+  [`bootstrap_subset.md`](bootstrap_subset.md).
+
+## Bound expressions **[native]**
+
+`LOWER(expression)` and `UPPER(expression)` accept the 1981 manual's array,
+set, enumerated and subrange operands, subject to these native ABI limits:
+
+| Operand type | LOWER | UPPER | Evaluation |
+| --- | --- | --- | --- |
+| `^SUPER ARRAY` final dereference, including indexed/record designators and pointer-valued function call results such as `f(x)^` | declared lower bound | actual selected `NEW` allocation's upper-bound header | UPPER evaluates selection exactly once; LOWER does not evaluate |
+| fixed array | declared lower | declared upper | type only |
+| `STRING(n)` / `LSTRING(n)` | 1 / 0 | capacity `n` (not current length) | type only |
+| `VECTOR[n] OF T` (local extension) | 0 | `n-1` | type only |
+| set | ordinal base type low | ordinal base type high | type only |
+| enumerated | first member ordinal | last member ordinal | type only |
+| subrange | declared low | declared high | type only |
+
+The result type for static set, enumerated and subrange bounds is the base
+ordinal type (for example, `LOWER(e)` for an enum is an enum value, and
+`LOWER(SET OF BOOLEAN)` is BOOLEAN). Fixed-array bounds use their declared
+index type, including CHAR and enum index types. The established STRING,
+LSTRING and VECTOR bound results remain INTEGER; dynamic super-array bounds
+remain INTEGER64. A set constructor without a declared base uses the local
+generic SET representation (`INTEGER` index bounds 0..255). A set union,
+intersection or difference whose operands share a base type keeps that base,
+with bounds that cover both operands' declared ranges (`UPPER(bs + bs)` is
+TRUE for a `SET OF BOOLEAN`, and `SET OF 3..9 + SET OF 1..5` has bounds
+1..9); mixing bases, or mixing in a constructor, gives the generic set. A
+named set value or function result retains its declared bounds, including a
+parameterless function named without an argument list (`UPPER(getset)`). String literals have no declared fixed capacity and are
+rejected as bound operands.
+
+Static operands and `LOWER` use **only the type, not the value**, and never
+execute their index/call side effects. Dynamic `UPPER` evaluates a selected
+pointer, index or function call once, then reads the allocation header. A NIL
+selected pointer produces `runtime error: UPPER through NIL super-array pointer`
+before the header access; `LOWER` of the same NIL pointer stays type-only.
+This defined NIL check intentionally changes the old unchecked `UPPER(p^)`
+behavior. Dangling pointers after `DISPOSE` are not detected.
+
+A type identifier (unlike `SIZEOF`), an undereferenced pointer, a non-pointer
+super-array value without a supported dynamic-bound ABI, and arithmetic or
+literal expressions outside the permitted types are rejected. Standalone
+subrange type declarations are supported for vintage INTEGER bounds within
+`-32767..32767`, CHAR, BOOLEAN, and a pair of members from one enumerated
+type; stores into them are range-checked as described under
+[Subrange range checks](#subrange-range-checks). Function call
+postfix selectors are supported only inside a bound operand; this does not
+make `f(x)^` a general expression elsewhere. Super-array formal-parameter
+bound propagation remains unaudited. The manual does not prescribe this
+implementation's NIL diagnostic or side-effect count.
+
+The Python reference parser accepts only `identifier ["^"]` here. Field,
+indexed and call-result selectors, and general expression operands are
+intentional native-only parity exceptions. Do not add these to parser
+`should_pass` parity fixtures; `make test-reference-parity` checks the
+unchanged reference corpus.
+
+## Subrange range checks **[native]**
+
+Under `$RANGECK`, which is on by default, a value stored into a subrange
+(an `INTEGER`, `CHAR`, `BOOLEAN` or enumerated one, named or anonymous)
+must lie inside its declared bounds. Otherwise the program stops with
+
+    runtime error: value 12 is outside subrange 0..9
+
+on stderr and aborts (exit status 134), like the other runtime range
+errors. The value and bounds are ordinals: a `CHAR` subrange reports
+character codes and an enumerated one reports member positions.
+
+The check covers:
+
+- assignment to a subrange variable, record field, array element or
+  pointee, and to a function's subrange result inside its body;
+- a value parameter of subrange type (a `VAR` parameter is not checked,
+  because its actual must already have the same type);
+- `READ`/`READLN` into a subrange, from stdin or a text file, and a
+  subrange program parameter. A trapped file read failure, which leaves the
+  variable unchanged, is not checked;
+- a `FOR` loop over a subrange control variable: if the loop runs at all,
+  its initial and final values must both be in range, and the check is made
+  once, before the first iteration. A loop that runs zero times is not
+  checked.
+
+The check is made on the value before it is narrowed to the subrange's
+storage width, so a wide value cannot wrap into range. A constant that is
+out of range is reported when the store runs, not at compile time. `SUCC`,
+`PRED` and arithmetic are not checked themselves; their result is checked
+when it is stored.
+
+`{$RANGECK-}` turns the check off for the statements that follow it, and
+`{$RANGECK+}` turns it back on. The setting is recorded on assignments,
+procedure calls and `CASE` statements. A statement that does not record it,
+such as a `FOR` loop or a function call in an `IF` condition, uses the
+setting of the last assignment, call or `CASE` compiled before it. Array
+indexes and string capacities are still not range-checked, and `DEVICE`
+code is never checked.
 
 ## Integer widths
 

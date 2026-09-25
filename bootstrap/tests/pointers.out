@@ -1,0 +1,5 @@
+byte 4 is the low byte of 100: 100
+ADRMEM + 12 as ^INTEGER32: 300
+record stride = SIZEOF: 42 q
+pointer equality: TRUE TRUE
+strtol: 73 x

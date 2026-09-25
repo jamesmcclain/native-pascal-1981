@@ -1,0 +1,7 @@
+Type checking failed:
+Unknown field
+Dereference of non-pointer value
+UPPER/LOWER requires a dereferenced pointer
+UPPER/LOWER requires an array, set, enum or subrange expression
+UPPER/LOWER requires an array, set, enum or subrange expression
+Error: Failed to parse input AST JSON

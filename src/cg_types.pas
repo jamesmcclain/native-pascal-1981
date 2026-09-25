@@ -40,6 +40,17 @@ BEGIN
   ELSE TypeKind := types[tid].tk;
 END;
 
+FUNCTION SubrangeBaseTid(tid: INTEGER): INTEGER;
+{ A subrange keeps its own tid so UPPER/LOWER can see its declared bounds,
+  but its values are values of the host type: INTEGER, CHAR, BOOLEAN, or
+  the enumeration. Operand, index and loop checks compare tids, so a value
+  read from a subrange must carry the host tid, kept in elem_tid. }
+BEGIN
+  SubrangeBaseTid := tid;
+  IF tid >= 14 THEN
+    IF types[tid].is_subrange THEN SubrangeBaseTid := types[tid].elem_tid;
+END;
+
 FUNCTION LookupNamedType(name: Str255): INTEGER;
 { Case-insensitive, per the manual's "Lowercase and uppercase letters are
   interchangeable, except in string literals" (IBM Pascal, Aug 1981, Syntax
@@ -76,7 +87,9 @@ BEGIN
   types[ntypes].elem_tid := elem_tid;
   types[ntypes].lo := lo;
   types[ntypes].hi := hi;
+  types[ntypes].index_tid := TK_INTEGER;
   types[ntypes].is_super := FALSE;
+  types[ntypes].is_subrange := FALSE;
   types[ntypes].ptr_space := PTR_SPACE_PLAIN;
   types[ntypes].enum_values := NIL;
   types[ntypes].llvm_ty := llvm_ty;
@@ -189,6 +202,11 @@ BEGIN
        AND (types[from_tid].elem_tid = types[to_tid].elem_tid)
        AND (types[from_tid].lo = types[to_tid].lo)
        AND (types[from_tid].hi = types[to_tid].hi)) OR
+    ((TypeKind(from_tid) = TypeKind(to_tid)) AND
+      ((TypeKind(to_tid) = TK_INTEGER) OR (TypeKind(to_tid) = TK_CHAR) OR
+       (TypeKind(to_tid) = TK_BOOLEAN))) OR
+    ((TypeKind(from_tid) = TK_ENUM) AND (TypeKind(to_tid) = TK_ENUM)
+       AND (types[from_tid].enum_values = types[to_tid].enum_values)) OR
     ((TypeKind(from_tid) = TK_SET) AND (TypeKind(to_tid) = TK_SET)) OR
     ((from_tid = TK_INTEGER) AND (to_tid = TK_WORD)) OR
     ((from_tid = TK_ADRMEM) AND (TypeKind(to_tid) = TK_POINTER)) OR
@@ -488,6 +506,90 @@ BEGIN
   END;
 END;
 
+PROCEDURE EmitSubrangeCheck(v: ADRMEM; from_tid, to_tid: INTEGER);
+{ $RANGECK for a store into a subrange: when to_tid is a subrange and the
+  check is on, compare v (a value of the ordinal type from_tid, extended by
+  its own signedness) against the declared lo..hi and call the noreturn
+  pas_subrange_error (runtime/subrange.c) from a cold block if it is
+  outside. The compare is done in i128 so no source width, WORD64 included,
+  can wrap into range. Leaves the builder in the in-range block. Device
+  code has no host runtime to call, so it is not checked. }
+VAR
+  i128ty, v128, ok, okhi, bad_bb, ok_bb, args, ps, fnty, fn, discard: ADRMEM;
+  fk: INTEGER;
+  is_unsigned: BOOLEAN;
+BEGIN
+  IF NOT cur_rangeck THEN RETURN;
+  IF is_nvptx_device THEN RETURN;
+  IF to_tid < 14 THEN RETURN;
+  IF NOT types[to_tid].is_subrange THEN RETURN;
+  fk := TypeKind(from_tid);
+  IF (fk = TK_CHAR) OR (fk = TK_BOOLEAN) THEN is_unsigned := TRUE
+  ELSE IF fk = TK_ENUM THEN is_unsigned := FALSE
+  ELSE IF IsIntegerFamilyTk(fk) THEN is_unsigned := IsUnsignedWordTk(fk)
+  ELSE RETURN;
+
+  i128ty := LLVMIntTypeInContext(ctx, 128);
+  IF is_unsigned THEN
+    v128 := LLVMBuildZExt(builder, v, i128ty, MakeCStr(''))
+  ELSE
+    v128 := LLVMBuildSExt(builder, v, i128ty, MakeCStr(''));
+  ok := LLVMBuildICmp(builder, LLVMIntSGE, v128,
+    LLVMConstInt(i128ty, types[to_tid].lo, 1), MakeCStr(''));
+  okhi := LLVMBuildICmp(builder, LLVMIntSLE, v128,
+    LLVMConstInt(i128ty, types[to_tid].hi, 1), MakeCStr(''));
+  ok := LLVMBuildAnd(builder, ok, okhi, MakeCStr(''));
+  bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('range.bad'));
+  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('range.ok'));
+  LLVMBuildCondBr(builder, ok, ok_bb, bad_bb);
+
+  LLVMPositionBuilderAtEnd(builder, bad_bb);
+  ps := AllocPtrArray(4);
+  SetPtrArrayElem(ps, 0, i64ty);
+  SetPtrArrayElem(ps, 1, i32ty);
+  SetPtrArrayElem(ps, 2, i64ty);
+  SetPtrArrayElem(ps, 3, i64ty);
+  fnty := LLVMFunctionType(voidty, ps, 4, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_subrange_error'));
+  IF fn = NIL THEN
+    fn := LLVMAddFunction(modl, MakeCStr('pas_subrange_error'), fnty);
+  args := AllocPtrArray(4);
+  SetPtrArrayElem(args, 0, LLVMBuildTrunc(builder, v128, i64ty, MakeCStr('')));
+  IF is_unsigned THEN
+    SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 1, 0))
+  ELSE
+    SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 0, 0));
+  SetPtrArrayElem(args, 2, LLVMConstInt(i64ty, types[to_tid].lo, 1));
+  SetPtrArrayElem(args, 3, LLVMConstInt(i64ty, types[to_tid].hi, 1));
+  discard := LLVMBuildCall2(builder, fnty, fn, args, 4, MakeCStr(''));
+  discard := LLVMBuildUnreachable(builder);
+
+  LLVMPositionBuilderAtEnd(builder, ok_bb);
+END;
+
+FUNCTION CoerceCheckedForAssign(v: ADRMEM; from_tid, to_tid: INTEGER; expr_node: ADRMEM; ctx_name: Str255): ADRMEM;
+{ CoerceForAssign plus the $RANGECK subrange check. An ordinal source is
+  checked before coercion, so a wider value that CoerceForAssign would
+  truncate (INTEGER32 -> INTEGER, INTEGER64 -> an enumeration) cannot wrap
+  into range; any other source is checked as the coerced host value. }
+VAR
+  r: ADRMEM;
+  fk: INTEGER;
+BEGIN
+  fk := TypeKind(from_tid);
+  IF (fk = TK_CHAR) OR (fk = TK_BOOLEAN) OR (fk = TK_ENUM) OR IsIntegerFamilyTk(fk) THEN
+  BEGIN
+    EmitSubrangeCheck(v, from_tid, to_tid);
+    r := CoerceForAssign(v, from_tid, to_tid, expr_node, ctx_name);
+  END
+  ELSE
+  BEGIN
+    r := CoerceForAssign(v, from_tid, to_tid, expr_node, ctx_name);
+    EmitSubrangeCheck(r, SubrangeBaseTid(to_tid), to_tid);
+  END;
+  CoerceCheckedForAssign := r;
+END;
+
 FUNCTION RoundUpBytes(n, a: INTEGER32): INTEGER32;
 { Round n up to the next multiple of alignment a, matching the reference's
   c_abi.py::_round_up -- shared by TypeSizeBytes/TypeAlignBytes's struct
@@ -496,7 +598,30 @@ BEGIN
   RoundUpBytes := ((n + a - 1) DIV a) * a;
 END;
 
-FUNCTION TypeAlignBytes(tid: INTEGER): INTEGER32;
+FUNCTION LayoutScalarTid(tid: INTEGER): INTEGER;
+{ The bare scalar whose size, alignment and C ABI class a type shares: a
+  subrange is laid out as its host, and an enumeration is an i32 ordinal,
+  laid out as INTEGER32. Every other tid is returned unchanged. Without
+  this, a record field or array element of an enumeration or subrange type
+  reached the layout routines below as an unknown type id. }
+VAR
+  r: INTEGER;
+  more: BOOLEAN;
+BEGIN
+  r := tid;
+  more := r >= 14;
+  WHILE more DO
+  BEGIN
+    IF types[r].is_subrange THEN r := types[r].elem_tid
+    ELSE more := FALSE;
+    IF r < 14 THEN more := FALSE;
+  END;
+  IF r >= 14 THEN
+    IF types[r].tk = TK_ENUM THEN r := TK_INTEGER32;
+  LayoutScalarTid := r;
+END;
+
+FUNCTION TypeAlignBytes(tid_in: INTEGER): INTEGER32;
 { Natural (non-packed) byte alignment of a Pascal type's LLVM representation
   -- mirrors the reference's c_abi.py::_align_of exactly (scalars align to
   their width, ARRAY/RECORD take their element/field max), since
@@ -510,9 +635,11 @@ FUNCTION TypeAlignBytes(tid: INTEGER): INTEGER32;
   computed too small a stride, corrupting the heap one record at a time
   until a later, unrelated allocation crashed. }
 VAR
+  tid: INTEGER;
   i: INTEGER;
   best, fa: INTEGER32;
 BEGIN
+  tid := LayoutScalarTid(tid_in);
   IF tid = TK_INTEGER THEN TypeAlignBytes := 2
   ELSE IF tid = TK_WORD THEN TypeAlignBytes := 2
   ELSE IF tid = TK_INTEGER8 THEN TypeAlignBytes := 1
@@ -572,16 +699,18 @@ BEGIN
   END;
 END;
 
-FUNCTION TypeSizeBytes(tid: INTEGER): INTEGER32;
+FUNCTION TypeSizeBytes(tid_in: INTEGER): INTEGER32;
 { Used by SIZEOF and NEW's malloc-sized allocation -- must agree exactly
   with the real (natural-alignment) LLVM layout CodegenTypeDecl builds, so
   ARRAY-of-RECORD pointer arithmetic (base + i * SIZEOF(rec)) lands on the
   same offsets GEP does; see TypeAlignBytes above for why a naive
   no-padding sum is wrong. }
 VAR
+  tid: INTEGER;
   i: INTEGER;
   off, fa, end_off: INTEGER32;
 BEGIN
+  tid := LayoutScalarTid(tid_in);
   IF tid = TK_INTEGER THEN TypeSizeBytes := 2
   ELSE IF tid = TK_REAL THEN TypeSizeBytes := 8
   ELSE IF tid = TK_BOOLEAN THEN TypeSizeBytes := 1
@@ -648,10 +777,13 @@ BEGIN
   ELSE SysVMergeClass := SYSV_EB_SSE;
 END;
 
-FUNCTION IsSysVLeafTid(tid: INTEGER): BOOLEAN;
+FUNCTION IsSysVLeafTid(tid_in: INTEGER): BOOLEAN;
 { TRUE for exactly the scalar types TypeSizeBytes/TypeAlignBytes handle
   without recursing -- the leaves of the walk below. }
+VAR
+  tid: INTEGER;
 BEGIN
+  tid := LayoutScalarTid(tid_in);
   IsSysVLeafTid := (tid = TK_INTEGER) OR (tid = TK_WORD) OR (tid = TK_INTEGER8)
                 OR (tid = TK_WORD8) OR (tid = TK_BOOLEAN) OR (tid = TK_CHAR)
                 OR (tid = TK_INTEGER32) OR (tid = TK_WORD32) OR (tid = TK_REAL32)
@@ -659,7 +791,7 @@ BEGIN
                 OR (tid = TK_ADRMEM) OR (TypeKind(tid) = TK_POINTER);
 END;
 
-PROCEDURE WalkTypeLeaves(tid: INTEGER; base_off: INTEGER32; VAR nleaves: INTEGER32;
+PROCEDURE WalkTypeLeaves(tid_in: INTEGER; base_off: INTEGER32; VAR nleaves: INTEGER32;
                           VAR leaf_off: SysVLeafOffArr; VAR leaf_tid: SysVLeafTidArr);
 { Append (absolute byte offset, scalar leaf tid) for every scalar leaf of tid
   to the caller's arrays, recursing through RECORD fields and ARRAY elements.
@@ -669,10 +801,12 @@ PROCEDURE WalkTypeLeaves(tid: INTEGER; base_off: INTEGER32; VAR nleaves: INTEGER
   ARRAY elements use the same stride TypeSizeBytes uses for the array's own
   size, so the two can never disagree. }
 VAR
+  tid: INTEGER;
   i: INTEGER;
   stride: INTEGER32;
   k, n: INTEGER32;
 BEGIN
+  tid := LayoutScalarTid(tid_in);
   IF IsSysVLeafTid(tid) THEN
   BEGIN
     IF nleaves >= MAX_SYSV_LEAVES THEN
@@ -972,12 +1106,22 @@ FUNCTION ResolveIntLiteral(node: ADRMEM): INTEGER32;
   this repository's own native sources; any other computed bound expression
   is still not supported. }
 VAR
-  nm: Str255;
+  nm, ch: Str255;
   ci: INTEGER32;
   wide: INTEGER64;
 BEGIN
   IF NodeType(node) = 'IntLiteral' THEN
     ResolveIntLiteral := CheckedIndexBound(RETYPE(INTEGER64, GetInt(node, 'value')))
+  ELSE IF NodeType(node) = 'CharLiteral' THEN
+  BEGIN
+    ch := GetStr(node, 'value');
+    ResolveIntLiteral := ORD(ch[1]);
+  END
+  ELSE IF NodeType(node) = 'BoolLiteral' THEN
+  BEGIN
+    IF GetBool(node, 'value') THEN ResolveIntLiteral := 1
+    ELSE ResolveIntLiteral := 0;
+  END
   ELSE IF NodeType(node) = 'Identifier' THEN
   BEGIN
     nm := GetStr(node, 'name');
@@ -997,6 +1141,24 @@ BEGIN
   BEGIN
     AbortWith('codegen: array index bounds must be integer literals or CONST identifiers');
     ResolveIntLiteral := 0;
+  END;
+END;
+
+FUNCTION BoundHostTid(node: ADRMEM): INTEGER;
+{ The host type of a subrange or array index bound: CHAR, BOOLEAN, an
+  enumeration, or INTEGER. A named constant has the type of its value. }
+VAR
+  ci: INTEGER32;
+BEGIN
+  BoundHostTid := TK_INTEGER;
+  IF NodeType(node) = 'CharLiteral' THEN BoundHostTid := TK_CHAR
+  ELSE IF NodeType(node) = 'BoolLiteral' THEN BoundHostTid := TK_BOOLEAN
+  ELSE IF NodeType(node) = 'Identifier' THEN
+  BEGIN
+    ci := LookupConst(GetStr(node, 'name'));
+    IF ci <> 0 THEN
+      IF const_tbl[ci].enum_tid <> 0 THEN BoundHostTid := const_tbl[ci].enum_tid
+      ELSE IF const_tbl[ci].is_char THEN BoundHostTid := TK_CHAR;
   END;
 END;
 
@@ -1181,6 +1343,12 @@ BEGIN
       count := hi - lo + 1;
       arr_ty := LLVMArrayType(LLVMTypeForTk(elem_tid), count);
       tid := RegisterType(TK_ARRAY, elem_tid, lo, hi, arr_ty);
+      elem_tid := BoundHostTid(GetObj(GetObj(te, 'index_range'), 'low'));
+      IF elem_tid <> TK_INTEGER THEN
+        types[tid].index_tid := elem_tid
+      ELSE IF (NodeType(GetObj(GetObj(te, 'index_range'), 'low')) <> 'Identifier')
+              AND (hi > 32767) THEN
+        types[tid].index_tid := TK_WORD;
     END;
   END
   ELSE IF nt = 'VectorType' THEN
@@ -1353,6 +1521,31 @@ BEGIN
     elem_tid := ResolveTypeExpr(GetObj(te, 'element_type'));
     IF GetStr(te, 'structure') = 'ASCII' THEN hi := 1 ELSE hi := 0;
     tid := RegisterType(TK_FILE, elem_tid, 0, hi, i8ptrty);
+  END
+  ELSE IF nt = 'SubrangeType' THEN
+  BEGIN
+    { Retain declared bounds without changing the scalar's physical ABI. }
+    lo := ResolveIntLiteral(GetObj(te, 'low'));
+    hi := ResolveIntLiteral(GetObj(te, 'high'));
+    IF lo > hi THEN AbortWith('codegen: subrange lower bound exceeds upper bound');
+    elem_tid := BoundHostTid(GetObj(te, 'low'));
+    IF elem_tid = TK_CHAR THEN
+      tid := RegisterType(TK_CHAR, TK_CHAR, lo, hi, i8ty)
+    ELSE IF elem_tid >= 14 THEN
+    BEGIN
+      IF BoundHostTid(GetObj(te, 'high')) <> elem_tid THEN
+        AbortWith('codegen: subrange enum bounds must share a type');
+      tid := RegisterType(TK_ENUM, elem_tid, lo, hi, i32ty);
+      types[tid].enum_values := types[elem_tid].enum_values;
+    END
+    ELSE IF elem_tid = TK_BOOLEAN THEN
+      tid := RegisterType(TK_BOOLEAN, TK_BOOLEAN, lo, hi, i1ty)
+    ELSE BEGIN
+      IF (lo < -32767) OR (hi > 32767) THEN
+        AbortWith('codegen: INTEGER subrange bounds must fit vintage INTEGER');
+      tid := RegisterType(TK_INTEGER, TK_INTEGER, lo, hi, i16ty);
+    END;
+    types[tid].is_subrange := TRUE;
   END
   ELSE IF nt = 'SetType' THEN
   BEGIN

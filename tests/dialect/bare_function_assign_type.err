@@ -1,0 +1,3 @@
+Type checking failed:
+Cannot assign incompatible type without narrowing: i
+Error: Failed to parse input AST JSON
