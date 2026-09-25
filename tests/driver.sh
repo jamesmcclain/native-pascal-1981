@@ -29,6 +29,15 @@ exit 23
 EOF
 chmod +x "$stage_dir/fail-stage"
 
+# LLVM's verifier aborts codegen with SIGABRT on a broken module, after the
+# stage has written nothing.
+cat > "$stage_dir/abort-stage" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+kill -ABRT $$
+EOF
+chmod +x "$stage_dir/abort-stage"
+
 record_dir="$work_dir/stage-args"
 mkdir -p "$record_dir"
 for stage in lexer parser typechecker codegen; do
@@ -247,8 +256,29 @@ expect_stderr 'error: --emit-ptx and -c cannot be combined'
 fail_env=("${stage_env[@]}")
 fail_env[3]="PASCAL1981_CODEGEN=$stage_dir/fail-stage"
 expect_status 23 env "${fail_env[@]}" "$DRIVER" -S "$source_file" -o "$work_dir/failed.ll"
+if [ -e "$work_dir/failed.ll" ]; then
+  echo 'FAIL: a failed -S compile left its output file' >&2
+  fail=$((fail + 1))
+fi
+abort_env=("${stage_env[@]}")
+abort_env[3]="PASCAL1981_CODEGEN=$stage_dir/abort-stage"
+expect_status 134 env "${abort_env[@]}" "$DRIVER" -S "$source_file" -o "$work_dir/aborted.ll"
+if [ -e "$work_dir/aborted.ll" ]; then
+  echo 'FAIL: a -S compile whose stage aborted left its output file' >&2
+  fail=$((fail + 1))
+fi
+expect_status 134 env "${abort_env[@]}" "PASCAL1981_CC=$stage_dir/fake-clang" "PASCAL1981_FAKE_CLANG_LOG=$work_dir/abort-clang.log" "$DRIVER" -c "$source_file" -o "$work_dir/aborted.o"
+if [ -e "$work_dir/abort-clang.log" ]; then
+  echo 'FAIL: the driver ran clang after a stage aborted' >&2
+  fail=$((fail + 1))
+fi
 
+printf 'keep\n' > "$work_dir/missing.ll"
 expect_status 1 env "${stage_env[@]}" "$DRIVER" -S "$work_dir/no-such-source.pas" -o "$work_dir/missing.ll"
+if [ ! -e "$work_dir/missing.ll" ]; then
+  echo 'FAIL: an unreadable source removed an existing output file' >&2
+  fail=$((fail + 1))
+fi
 mkdir "$work_dir/not-a-source.pas"
 expect_status 1 env "${stage_env[@]}" "$DRIVER" -S "$work_dir/not-a-source.pas" -o "$work_dir/directory.ll"
 absent_env=("${stage_env[@]}")

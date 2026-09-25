@@ -187,7 +187,19 @@ BEGIN
   exit(127);
 END;
 
+FUNCTION ExitCodeOf(status: CINT): CINT;
+{ The exit code for a waitpid status. A child that a signal killed has
+  status 0 in the exit-code byte, so status DIV 256 alone reads it as
+  success: LLVM's verifier aborts codegen with SIGABRT on a broken module.
+  Such a child gives 128 + the signal number, as a shell does. }
+BEGIN
+  IF (status MOD 128) <> 0 THEN ExitCodeOf := 128 + (status MOD 128)
+  ELSE ExitCodeOf := status DIV 256;
+END;
+
 FUNCTION RunPipeline(source_name, ir_name: ADRMEM): CINT;
+VAR
+  rc: CINT;
 BEGIN
   in_fd := open(source_name, 0, 0);
   IF in_fd < 0 THEN BEGIN RunPipeline := 1; END
@@ -228,11 +240,15 @@ BEGIN
         close(in_fd); close(out_fd); ClosePipes;
         waitpid(pid1, ADR status1, 0); waitpid(pid2, ADR status2, 0);
         waitpid(pid3, ADR status3, 0); waitpid(pid4, ADR status4, 0);
-        RunPipeline := 0;
-        IF (status1 DIV 256) <> 0 THEN RunPipeline := status1 DIV 256
-        ELSE IF (status2 DIV 256) <> 0 THEN RunPipeline := status2 DIV 256
-        ELSE IF (status3 DIV 256) <> 0 THEN RunPipeline := status3 DIV 256
-        ELSE IF (status4 DIV 256) <> 0 THEN RunPipeline := status4 DIV 256;
+        rc := ExitCodeOf(status1);
+        IF rc = 0 THEN rc := ExitCodeOf(status2);
+        IF rc = 0 THEN rc := ExitCodeOf(status3);
+        IF rc = 0 THEN rc := ExitCodeOf(status4);
+        { The output was opened and truncated above, so a failed stage leaves
+          a partial or empty file there. Remove it: with -S, --emit-ptx, or
+          --pretty it is the user's output file. }
+        IF rc <> 0 THEN unlink(ir_name);
+        RunPipeline := rc;
       END;
     END;
   END;
@@ -475,7 +491,7 @@ BEGIN
       IF pid1 = 0 THEN ExecClang;
       waitpid(pid1, ADR clang_status, 0);
       unlink(extra_ll);
-      IF (clang_status DIV 256) <> 0 THEN exit(clang_status DIV 256);
+      IF ExitCodeOf(clang_status) <> 0 THEN exit(ExitCodeOf(clang_status));
       extra_object_count := extra_object_count + 1;
     END;
     temp_ll := primary_ll;
@@ -491,6 +507,6 @@ BEGIN
     waitpid(pid1, ADR clang_status, 0);
     unlink(temp_ll);
     FOR i := 0 TO extra_object_count - 1 DO unlink(extra_objects[i]);
-    IF (clang_status DIV 256) <> 0 THEN exit(clang_status DIV 256);
+    IF ExitCodeOf(clang_status) <> 0 THEN exit(ExitCodeOf(clang_status));
   END;
 END.
