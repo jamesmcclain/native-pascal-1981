@@ -74,6 +74,8 @@ to activate the complete extended feature set.
 ### Bootstrap dialect
 
 Compiler sources use extended types and C interoperability declarations.
+Generation 1 is built by `bootstrap/pasboot`, which accepts only the
+[bootstrap subset](bootstrap_subset.md) of the extended dialect.
 `scripts/build-stage.sh` passes `--dialect extended` to each parser,
 typechecker, and code generator that builds these sources. It does not pass a
 dialect option to a lexer. Use `make test-bootstrap` to rebuild all bootstrap
@@ -242,9 +244,10 @@ it from a routine, take its `SIZEOF` / `LOWER` / `UPPER`.
 - **ISA selection** is `--target-cpu` / `--target-features` on the driver
   (attached as LLVM function attributes; default is baseline x86-64). No
   `llvm.x86.*` intrinsics, no runtime CPU detection.
-- **Not usable in the compiler's own sources.** `gen1` is built by the
-  Python reference, which has no `VECTOR`; no file under `src/` may use the
-  syntax. See `tests/README.md` for the matching test-layout rule.
+- **Not usable in the compiler's bootstrap sources.** `gen1` is built by
+  `pasboot`, whose bootstrap subset has no `VECTOR`; no file that `gen1`
+  compiles may use the syntax. See
+  [`bootstrap_subset.md`](bootstrap_subset.md).
 
 ## Integer widths
 

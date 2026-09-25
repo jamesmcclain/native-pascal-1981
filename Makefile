@@ -51,7 +51,7 @@ GEN4_BINS := $(addprefix $(BUILD_DIR)/gen4/,$(STAGES))
 BOOTSTRAP_BINS := $(addprefix $(BIN_DIR)/,$(STAGES))
 FIXED_POINT := $(BUILD_DIR)/.fixed-point-verified
 
-.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-driver test-native test-sysutil test-proxy test-gpu test-reference-parity test-elisp test-bootstrap
+.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-driver test-native test-sysutil test-proxy test-gpu test-reference-parity test-elisp test-bootstrap test-pasboot check-bootstrap-subset
 
 all: runtime driver bootstrap $(PROXY_BIN) $(PRETTY81_BIN)
 
@@ -138,8 +138,24 @@ cleaner: clean
 cleanest: cleaner
 	rm -rf .pytest_cache
 
-test: test-native test-proxy
+test: check-bootstrap-subset test-pasboot test-native test-proxy
 	./tests/test_precommit_hook.sh
+
+# Every gen1 compiland must stay inside the subset pasboot translates
+# (docs/bootstrap_subset.md). Parse-only, so a src/ change that leaves the
+# subset fails here, in seconds, naming the construct and line, rather than
+# deep inside a gen1 build. The list is the gen1 stages and their units.
+GEN1_COMPILANDS := $(sort jsonutil $(CODEGEN_UNITS) $(TYPECHECKER_UNITS) $(PARSER_UNITS) $(STAGES))
+check-bootstrap-subset: $(PASBOOT)
+	@for u in $(GEN1_COMPILANDS); do \
+	  $(PASBOOT) --parse-only src/$$u.pas || exit 1; \
+	done
+	@echo "check-bootstrap-subset: $(words $(GEN1_COMPILANDS)) gen1 compilands are inside the bootstrap subset"
+
+# pasboot's per-feature fixtures (bootstrap/tests/). Needs only clang, libc
+# and the runtime library -- no Pascal compiler.
+test-pasboot: $(PASBOOT) $(RUNTIME_LIB)
+	./bootstrap/tests/run.sh
 
 # The zero-Python subset of `test`: driver, golden-file behavioral, and
 # IR/PTX-text directive tests. It does not run pytest or Python.
