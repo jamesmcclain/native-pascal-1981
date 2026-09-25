@@ -295,9 +295,12 @@ ordinal type (for example, `LOWER(e)` for an enum is an enum value, and
 index type, including CHAR and enum index types. The established STRING,
 LSTRING and VECTOR bound results remain INTEGER; dynamic super-array bounds
 remain INTEGER64. A set constructor without a declared base uses the local
-generic SET representation (`INTEGER` index bounds 0..255). Set operations also use the generic representation, even when both operands
-share a declared range; a named set value or function result retains its
-declared bounds. String literals have no declared fixed capacity and are
+generic SET representation (`INTEGER` index bounds 0..255). A set union,
+intersection or difference whose operands share a base type keeps that base,
+with bounds that cover both operands' declared ranges (`UPPER(bs + bs)` is
+TRUE for a `SET OF BOOLEAN`, and `SET OF 3..9 + SET OF 1..5` has bounds
+1..9); mixing bases, or mixing in a constructor, gives the generic set. A
+named set value or function result retains its declared bounds. String literals have no declared fixed capacity and are
 rejected as bound operands.
 
 Static operands and `LOWER` use **only the type, not the value**, and never

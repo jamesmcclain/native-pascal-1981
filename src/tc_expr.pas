@@ -18,6 +18,8 @@ FUNCTION CheckFuncCall(node: ADRMEM): INTEGER; FORWARD;
 
 VAR
   expr_context_tk: INTEGER;
+  last_set_base_tk: INTEGER; { base kind of the last set operation checked;
+    see SetBaseAfterCheck. }
 
 FUNCTION IsDeviceIndexName(name: Str255): BOOLEAN;
 VAR
@@ -887,12 +889,40 @@ BEGIN
   CheckFuncCall := symbols[si].ret_tk;
 END;
 
+FUNCTION SetBaseAfterCheck(node: ADRMEM): INTEGER;
+{ The base ordinal kind of a set-valued expression, read right after
+  CheckExpr has checked it (a designator's comes from the side channel that
+  check just set). A set constructor has no declared base, so it is the
+  generic INTEGER one, as in codegen. }
+VAR
+  nt: Str255;
+  si: INTEGER32;
+BEGIN
+  SetBaseAfterCheck := TK_INTEGER;
+  nt := NodeType(node);
+  IF (nt = 'Designator') OR (nt = 'PostfixExpr') THEN
+    SetBaseAfterCheck := last_designator_aux
+  ELSE IF nt = 'Identifier' THEN
+  BEGIN
+    si := LookupSymbol(GetStr(node, 'name'));
+    IF si <> 0 THEN SetBaseAfterCheck := symbols[si].aux;
+  END
+  ELSE IF nt = 'FuncCall' THEN
+  BEGIN
+    si := LookupSymbol(GetStr(node, 'name'));
+    IF si <> 0 THEN SetBaseAfterCheck := symbols[si].ret_aux;
+  END
+  ELSE IF nt = 'BinOp' THEN
+    SetBaseAfterCheck := last_set_base_tk;
+END;
+
 FUNCTION CheckExpr(node: ADRMEM): INTEGER;
 VAR
   nt, name: Str255;
   si: INTEGER32;
   left_node, right_node, operand_node, type_node: ADRMEM;
   lt, rt, ot, op_kind, aux, aux2, aux3, idx_tk, bound_base_tk: INTEGER;
+  set_base_l, set_base_r: INTEGER;
   op: Str255;
   elems_arr, elem_node, bound_selectors, bound_sel: ADRMEM;
   n_elems, ei, bound_n: INTEGER32;
@@ -1041,6 +1071,8 @@ BEGIN
       IF ot = TK_SET THEN bound_base_tk := symbols[si].aux
       ELSE IF ot = TK_ARRAY THEN bound_base_tk := symbols[si].idx_tk;
     END;
+    IF (NodeType(operand_node) = 'BinOp') AND (ot = TK_SET) THEN
+      bound_base_tk := last_set_base_tk;
     IF NodeType(operand_node) = 'FuncCall' THEN
     BEGIN
       si := LookupSymbol(GetStr(operand_node, 'name'));
@@ -1100,8 +1132,12 @@ BEGIN
   BEGIN
     left_node := GetObj(node, 'left');
     right_node := GetObj(node, 'right');
+    set_base_l := TK_INTEGER;
+    set_base_r := TK_INTEGER;
     lt := CheckExpr(left_node);
+    IF lt = TK_SET THEN set_base_l := SetBaseAfterCheck(left_node);
     rt := CheckExpr(right_node);
+    IF rt = TK_SET THEN set_base_r := SetBaseAfterCheck(right_node);
     op := GetStr(node, 'op');
     IF (lt = TK_UNKNOWN) OR (rt = TK_UNKNOWN) THEN
       CheckExpr := TK_UNKNOWN
@@ -1164,7 +1200,14 @@ BEGIN
         CheckExpr := TK_UNKNOWN;
       END
       ELSE IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') THEN
-        CheckExpr := TK_SET
+      BEGIN
+        { Operands with the same base keep it (codegen keeps the base and
+          widens the bounds to cover both); a mixed-base result is the
+          generic INTEGER set. }
+        IF set_base_l = set_base_r THEN last_set_base_tk := set_base_l
+        ELSE last_set_base_tk := TK_INTEGER;
+        CheckExpr := TK_SET;
+      END
       ELSE
       BEGIN
         AddError('Unsupported SET operator');

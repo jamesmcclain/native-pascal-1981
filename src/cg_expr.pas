@@ -1359,6 +1359,38 @@ BEGIN
   last_val_tk := TK_ADRMEM;
 END;
 
+FUNCTION SetOpResultType(lt, rt: INTEGER): INTEGER;
+{ The static type of a set union, intersection or difference. Operands of
+  the same base type keep it, with bounds that cover both declared ranges
+  (so SET OF BOOLEAN + SET OF BOOLEAN is still FALSE..TRUE); an existing
+  entry with that shape is reused. Mixed bases, or a constructor's generic
+  set, give the generic INTEGER set, as the typechecker does. }
+VAR
+  lo, hi: INTEGER32;
+  ti, found: INTEGER;
+BEGIN
+  IF lt = rt THEN
+    SetOpResultType := lt
+  ELSE IF types[lt].elem_tid <> types[rt].elem_tid THEN
+    SetOpResultType := EnsureGenericSetType
+  ELSE
+  BEGIN
+    lo := types[lt].lo;
+    IF types[rt].lo < lo THEN lo := types[rt].lo;
+    hi := types[lt].hi;
+    IF types[rt].hi > hi THEN hi := types[rt].hi;
+    found := 0;
+    FOR ti := 14 TO ntypes DO
+      IF (found = 0) AND (types[ti].tk = TK_SET) AND
+         (types[ti].elem_tid = types[lt].elem_tid) AND
+         (types[ti].lo = lo) AND (types[ti].hi = hi) THEN
+        found := ti;
+    IF found = 0 THEN
+      found := RegisterType(TK_SET, types[lt].elem_tid, lo, hi, setty);
+    SetOpResultType := found;
+  END;
+END;
+
 FUNCTION BoundOperandType(node: ADRMEM): INTEGER;
 { Resolve the operand without generating any IR: LOWER and all static
   bounds must not execute calls or index expressions. }
@@ -1394,7 +1426,7 @@ BEGIN
     lt := BoundOperandType(GetObj(node, 'left'));
     rt := BoundOperandType(GetObj(node, 'right'));
     IF (TypeKind(lt) = TK_SET) AND (TypeKind(rt) = TK_SET) THEN
-      BoundOperandType := EnsureGenericSetType
+      BoundOperandType := SetOpResultType(lt, rt)
     ELSE BoundOperandType := TK_UNKNOWN;
   END
   ELSE BoundOperandType := TK_UNKNOWN;
