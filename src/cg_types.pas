@@ -514,7 +514,30 @@ BEGIN
   RoundUpBytes := ((n + a - 1) DIV a) * a;
 END;
 
-FUNCTION TypeAlignBytes(tid: INTEGER): INTEGER32;
+FUNCTION LayoutScalarTid(tid: INTEGER): INTEGER;
+{ The bare scalar whose size, alignment and C ABI class a type shares: a
+  subrange is laid out as its host, and an enumeration is an i32 ordinal,
+  laid out as INTEGER32. Every other tid is returned unchanged. Without
+  this, a record field or array element of an enumeration or subrange type
+  reached the layout routines below as an unknown type id. }
+VAR
+  r: INTEGER;
+  more: BOOLEAN;
+BEGIN
+  r := tid;
+  more := r >= 14;
+  WHILE more DO
+  BEGIN
+    IF types[r].is_subrange THEN r := types[r].elem_tid
+    ELSE more := FALSE;
+    IF r < 14 THEN more := FALSE;
+  END;
+  IF r >= 14 THEN
+    IF types[r].tk = TK_ENUM THEN r := TK_INTEGER32;
+  LayoutScalarTid := r;
+END;
+
+FUNCTION TypeAlignBytes(tid_in: INTEGER): INTEGER32;
 { Natural (non-packed) byte alignment of a Pascal type's LLVM representation
   -- mirrors the reference's c_abi.py::_align_of exactly (scalars align to
   their width, ARRAY/RECORD take their element/field max), since
@@ -528,9 +551,11 @@ FUNCTION TypeAlignBytes(tid: INTEGER): INTEGER32;
   computed too small a stride, corrupting the heap one record at a time
   until a later, unrelated allocation crashed. }
 VAR
+  tid: INTEGER;
   i: INTEGER;
   best, fa: INTEGER32;
 BEGIN
+  tid := LayoutScalarTid(tid_in);
   IF tid = TK_INTEGER THEN TypeAlignBytes := 2
   ELSE IF tid = TK_WORD THEN TypeAlignBytes := 2
   ELSE IF tid = TK_INTEGER8 THEN TypeAlignBytes := 1
@@ -590,16 +615,18 @@ BEGIN
   END;
 END;
 
-FUNCTION TypeSizeBytes(tid: INTEGER): INTEGER32;
+FUNCTION TypeSizeBytes(tid_in: INTEGER): INTEGER32;
 { Used by SIZEOF and NEW's malloc-sized allocation -- must agree exactly
   with the real (natural-alignment) LLVM layout CodegenTypeDecl builds, so
   ARRAY-of-RECORD pointer arithmetic (base + i * SIZEOF(rec)) lands on the
   same offsets GEP does; see TypeAlignBytes above for why a naive
   no-padding sum is wrong. }
 VAR
+  tid: INTEGER;
   i: INTEGER;
   off, fa, end_off: INTEGER32;
 BEGIN
+  tid := LayoutScalarTid(tid_in);
   IF tid = TK_INTEGER THEN TypeSizeBytes := 2
   ELSE IF tid = TK_REAL THEN TypeSizeBytes := 8
   ELSE IF tid = TK_BOOLEAN THEN TypeSizeBytes := 1
@@ -666,10 +693,13 @@ BEGIN
   ELSE SysVMergeClass := SYSV_EB_SSE;
 END;
 
-FUNCTION IsSysVLeafTid(tid: INTEGER): BOOLEAN;
+FUNCTION IsSysVLeafTid(tid_in: INTEGER): BOOLEAN;
 { TRUE for exactly the scalar types TypeSizeBytes/TypeAlignBytes handle
   without recursing -- the leaves of the walk below. }
+VAR
+  tid: INTEGER;
 BEGIN
+  tid := LayoutScalarTid(tid_in);
   IsSysVLeafTid := (tid = TK_INTEGER) OR (tid = TK_WORD) OR (tid = TK_INTEGER8)
                 OR (tid = TK_WORD8) OR (tid = TK_BOOLEAN) OR (tid = TK_CHAR)
                 OR (tid = TK_INTEGER32) OR (tid = TK_WORD32) OR (tid = TK_REAL32)
@@ -677,7 +707,7 @@ BEGIN
                 OR (tid = TK_ADRMEM) OR (TypeKind(tid) = TK_POINTER);
 END;
 
-PROCEDURE WalkTypeLeaves(tid: INTEGER; base_off: INTEGER32; VAR nleaves: INTEGER32;
+PROCEDURE WalkTypeLeaves(tid_in: INTEGER; base_off: INTEGER32; VAR nleaves: INTEGER32;
                           VAR leaf_off: SysVLeafOffArr; VAR leaf_tid: SysVLeafTidArr);
 { Append (absolute byte offset, scalar leaf tid) for every scalar leaf of tid
   to the caller's arrays, recursing through RECORD fields and ARRAY elements.
@@ -687,10 +717,12 @@ PROCEDURE WalkTypeLeaves(tid: INTEGER; base_off: INTEGER32; VAR nleaves: INTEGER
   ARRAY elements use the same stride TypeSizeBytes uses for the array's own
   size, so the two can never disagree. }
 VAR
+  tid: INTEGER;
   i: INTEGER;
   stride: INTEGER32;
   k, n: INTEGER32;
 BEGIN
+  tid := LayoutScalarTid(tid_in);
   IF IsSysVLeafTid(tid) THEN
   BEGIN
     IF nleaves >= MAX_SYSV_LEAVES THEN
