@@ -3,7 +3,8 @@
 # PROGRAM that USES the testio unit: it is translated, compiled, linked with
 # testio and run, and its output must equal <name>.out. Each <name>.pas with
 # a <name>.err must be rejected, and the first line of <name>.err must
-# appear in pasboot's diagnostic.
+# appear in pasboot's diagnostic. Each <name>.pas with a <name>.inits is a
+# PROGRAM whose generated main must call exactly those unit inits, in order.
 set -euo pipefail
 cd "$(dirname "$0")"
 here="$(pwd)"
@@ -38,6 +39,18 @@ for src in *.pas; do
       echo "FAIL: $name"
       cat "$work/$name.log"
       [ -f "$work/$name.actual" ] && diff "$name.out" "$work/$name.actual" || true
+      fail=$((fail + 1))
+    fi
+  elif [ -f "$name.inits" ]; then
+    if "$pasboot" "$src" -o "$work/$name.c" 2>"$work/$name.log" &&
+       grep -oE 'pascal_init_[A-Za-z0-9_]+\(\);' "$work/$name.c" >"$work/$name.actual" &&
+       cmp -s "$work/$name.actual" "$name.inits"; then
+      echo "PASS: $name"
+      pass=$((pass + 1))
+    else
+      echo "FAIL: $name"
+      cat "$work/$name.log"
+      [ -f "$work/$name.actual" ] && diff "$name.inits" "$work/$name.actual" || true
       fail=$((fail + 1))
     fi
   elif [ -f "$name.err" ]; then

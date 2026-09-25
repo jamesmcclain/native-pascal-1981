@@ -1060,19 +1060,26 @@ static Interface *find_iface(const char *unit)
     return NULL;
 }
 
-/* Mark the units a PROGRAM reaches through USES, as the native compiler's
- * BuildUnitInitOrder does: only units whose interface this compiland
- * splices take part, and a USES naming any other unit is skipped. */
-static void mark_used(const char *unit, char *used)
+/* Order the units a compiland reaches through USES, as the native
+ * compiler's BuildUnitInitOrder does: a post-order depth-first walk, so each
+ * unit comes after the units it uses, and a USES edge back to a unit still on
+ * the walk is a circular dependency. Only units whose interface this
+ * compiland splices take part, and a USES naming any other unit is skipped.
+ * state[i] is 0 (not visited), 1 (on the walk) or 2 (done). */
+static void visit_unit(const char *unit, char *state, int *order, int *norder, Loc loc)
 {
     for (int i = 0; i < comp->ifaces.n; i++) {
         Interface *in = comp->ifaces.p[i];
         if (strcmp(in->unit, unit) == 0) {
-            if (used[i])
+            if (state[i] == 2)
                 return;
-            used[i] = 1;
+            if (state[i] == 1)
+                fatal(loc, "circular USES dependency detected involving unit: %s", in->unit);
+            state[i] = 1;
             for (int j = 0; j < in->uses.n; j++)
-                mark_used(in->uses.p[j], used);
+                visit_unit(in->uses.p[j], state, order, norder, in->loc);
+            state[i] = 2;
+            order[(*norder)++] = i;
             return;
         }
     }
@@ -1111,9 +1118,11 @@ int translate(Compiland *c, FILE *f, int check_only)
             return 0;
         fatal(c->loc, "no PROGRAM or IMPLEMENTATION");
     }
-    char *used = xmalloc((size_t) c->ifaces.n + 1);
+    char *state = xmalloc((size_t) c->ifaces.n + 1);
+    int *order = xmalloc(((size_t) c->ifaces.n + 1) * sizeof *order);
+    int norder = 0;
     for (int j = 0; j < c->uses.n; j++)
-        mark_used(c->uses.p[j], used);
+        visit_unit(c->uses.p[j], state, order, &norder, c->loc);
     if (!c->is_program) {
         impl_unit = c->name;
         if (!find_iface(c->name))
@@ -1142,13 +1151,11 @@ int translate(Compiland *c, FILE *f, int check_only)
     indent = 1;
     if (c->is_program) {
         in_main = 1;
-        for (int i = 0; i < c->ifaces.n; i++)
-            if (used[i])
-                buf_printf(&out, "void pascal_init_%s(void);\n", ((Interface *) c->ifaces.p[i])->unit);
+        for (int i = 0; i < norder; i++)
+            buf_printf(&out, "void pascal_init_%s(void);\n", ((Interface *) c->ifaces.p[order[i]])->unit);
         line("pas_args_init(argc, argv);");
-        for (int i = 0; i < c->ifaces.n; i++)
-            if (used[i])
-                line("pascal_init_%s();", ((Interface *) c->ifaces.p[i])->unit);
+        for (int i = 0; i < norder; i++)
+            line("pascal_init_%s();", ((Interface *) c->ifaces.p[order[i]])->unit);
     }
     for (int i = 0; i < c->body->stmts.n; i++)
         gen_stmt(c->body->stmts.p[i]);
