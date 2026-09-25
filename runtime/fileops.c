@@ -572,10 +572,13 @@ int pas_fread_int(struct pas_file_fcb *f, int32_t *out)
         die("runtime error: unexpected EOF while reading integer");
     ungetc(ch, h);              /* hand the token's first char back to stdio for fscanf */
     long v;
+    errno = 0;
     if (fscanf(h, "%ld", &v) != 1) {
         if (io_error(f, 14, "runtime error: malformed integer input"))
             return -1;
     }
+    if (errno == ERANGE || v < INT32_MIN || v > INT32_MAX)
+        return io_error(f, 14, "runtime error: integer out of range") ? -1 : 0;
     *out = (int32_t) v;
     return 0;
 }
@@ -618,9 +621,20 @@ static int fread_wide_decimal(struct pas_file_fcb *f, int bits, int64_t *out)
     token[n] = '\0';
     errno = 0;
     long long value = strtoll(token, NULL, 10);
-    if (overflow || errno == ERANGE || (bits == 32 && (value < INT32_MIN || value > INT32_MAX)))
+    if (overflow || errno == ERANGE || (bits == 32 && (value < INT32_MIN || value > INT32_MAX))
+        || (bits == 16 && (value < INT16_MIN || value > INT16_MAX)))
         return io_error(f, 14, "runtime error: integer out of range") ? -1 : 0;
     *out = (int64_t) value;
+    return 0;
+}
+
+/* File counterpart of pas_read_int16: range-checked, never wrapped. */
+int pas_fread_int16(struct pas_file_fcb *f, int16_t *out)
+{
+    int64_t value;
+    if (fread_wide_decimal(f, 16, &value) != 0)
+        return -1;
+    *out = (int16_t) value;
     return 0;
 }
 
@@ -640,8 +654,9 @@ int pas_fread_int64(struct pas_file_fcb *f, int64_t *out)
 
 int pas_fread_word(struct pas_file_fcb *f, uint16_t *out)
 {
-    int32_t v = 0;
-    if (pas_fread_int(f, &v) != 0)
+    /* As in pas_read_word, check the full value, not a 32-bit narrowing. */
+    int64_t v = 0;
+    if (fread_wide_decimal(f, 64, &v) != 0)
         return -1;
     if (v < 0 || v > 65535)
         die("runtime error: word out of range");

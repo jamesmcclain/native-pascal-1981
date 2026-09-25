@@ -501,6 +501,7 @@ VAR
   fread_int32_fnty, fread_int32_fn: ADRMEM;
   fread_int64_fnty, fread_int64_fn: ADRMEM;
   fread_word_fnty, fread_word_fn: ADRMEM;
+  fread_int16_fn: ADRMEM; { INTEGER READ; same (fcb*, i16*) shape as fread_word_fnty }
   fread_ptr_fnty, fread_ptr_fn: ADRMEM; { pointer-as-number READ, the manual's
     implementation-defined round-trip format (13620-13623). }
   fread_enum_name_fnty, fread_enum_name_fn: ADRMEM; { enum/BOOLEAN
@@ -517,6 +518,7 @@ VAR
   read_int_fnty, read_int_fn: ADRMEM; { stdin counterparts (readq.c), used by
     a bare READ/READLN with no leading file argument. }
   read_word_fnty, read_word_fn: ADRMEM;
+  read_int16_fn: ADRMEM; { INTEGER READ; same (i16*) shape as read_word_fnty }
   read_ptr_fnty, read_ptr_fn: ADRMEM; { stdin counterparts of the two above. }
   read_enum_name_fnty, read_enum_name_fn: ADRMEM;
   read_real_fnty, read_real_fn: ADRMEM;

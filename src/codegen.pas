@@ -459,6 +459,7 @@ BEGIN
   SetPtrArrayElem(param_arr, 1, LLVMPointerType(i16ty, 0));
   fread_word_fnty := LLVMFunctionType(i32ty, param_arr, 2, 0);
   fread_word_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_word'), fread_word_fnty);
+  fread_int16_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_int16'), fread_word_fnty);
 
   param_arr := AllocPtrArray(2);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
@@ -534,6 +535,7 @@ BEGIN
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(i16ty, 0));
   read_word_fnty := LLVMFunctionType(i32ty, param_arr, 1, 0);
   read_word_fn := LLVMAddFunction(modl, MakeCStr('pas_read_word'), read_word_fnty);
+  read_int16_fn := LLVMAddFunction(modl, MakeCStr('pas_read_int16'), read_word_fnty);
 
   param_arr := AllocPtrArray(1);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(i64ty, 0));

@@ -113,8 +113,11 @@ int pas_read_int(int32_t *out)
         die("unexpected EOF while reading integer");
     unread(ch);
     long v;
+    errno = 0;
     if (scanf("%ld", &v) != 1)
         die("malformed integer input");
+    if (errno == ERANGE || v < INT32_MIN || v > INT32_MAX)
+        die("integer out of range");
     *out = (int32_t) v;
     return 0;
 }
@@ -157,9 +160,18 @@ static int64_t read_wide_decimal(int bits)
     token[n] = '\0';
     errno = 0;
     long long value = strtoll(token, NULL, 10);
-    if (overflow || errno == ERANGE || (bits == 32 && (value < INT32_MIN || value > INT32_MAX)))
+    if (overflow || errno == ERANGE || (bits == 32 && (value < INT32_MIN || value > INT32_MAX))
+        || (bits == 16 && (value < INT16_MIN || value > INT16_MAX)))
         die("integer out of range");
     return (int64_t) value;
+}
+
+/* The 16-bit INTEGER reader: out-of-range input is an error, as it is for
+ * INTEGER32 and INTEGER64, rather than wrapping. */
+int pas_read_int16(int16_t *out)
+{
+    *out = (int16_t) read_wide_decimal(16);
+    return 0;
 }
 
 int pas_read_int32(int32_t *out)
@@ -176,9 +188,9 @@ int pas_read_int64(int64_t *out)
 
 int pas_read_word(uint16_t *out)
 {
-    int32_t v = 0;
-    if (pas_read_int(&v) != 0)
-        return -1;
+    /* Read the full value first: narrowing to 32 bits before the range
+     * check turned 4294967296 into 0. */
+    int64_t v = read_wide_decimal(64);
     if (v < 0 || v > 65535)
         die("word out of range");
     *out = (uint16_t) v;

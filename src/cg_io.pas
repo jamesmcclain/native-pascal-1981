@@ -439,13 +439,11 @@ VAR
 BEGIN
   IF TypeKind(tid) = TK_INTEGER THEN
   BEGIN
-    tmp32 := EntryAlloca(i32ty, '');
+    { pas_read_int16 range-checks the 16-bit INTEGER itself; reading an i32
+      and truncating it here used to wrap 65536 to 0. }
     call_args := AllocPtrArray(1);
-    SetPtrArrayElem(call_args, 0, tmp32);
-    loaded := LLVMBuildCall2(builder, read_int_fnty, read_int_fn, call_args, 1, MakeCStr(''));
-    loaded := LLVMBuildLoad2(builder, i32ty, tmp32, MakeCStr(''));
-    loaded := LLVMBuildTrunc(builder, loaded, i16ty, MakeCStr(''));
-    LLVMBuildStore(builder, loaded, addr);
+    SetPtrArrayElem(call_args, 0, addr);
+    loaded := LLVMBuildCall2(builder, read_word_fnty, read_int16_fn, call_args, 1, MakeCStr(''));
   END
   ELSE IF TypeKind(tid) = TK_WORD THEN
   BEGIN
@@ -687,23 +685,22 @@ BEGIN
 
     IF TypeKind(tid) = TK_INTEGER THEN
     BEGIN
-      tmp32 := EntryAlloca(i32ty, '');
+      { The int16 readers range-check the 16-bit INTEGER themselves (and a
+        trapped file error leaves it untouched); reading an i32 and
+        truncating it here used to wrap 65536 to 0. }
       IF using_file THEN
       BEGIN
         call_args := AllocPtrArray(2);
         SetPtrArrayElem(call_args, 0, fcb_ptr);
-        SetPtrArrayElem(call_args, 1, tmp32);
-        loaded := LLVMBuildCall2(builder, fread_int_fnty, fread_int_fn, call_args, 2, MakeCStr(''));
+        SetPtrArrayElem(call_args, 1, addr);
+        loaded := LLVMBuildCall2(builder, fread_word_fnty, fread_int16_fn, call_args, 2, MakeCStr(''));
       END
       ELSE
       BEGIN
         call_args := AllocPtrArray(1);
-        SetPtrArrayElem(call_args, 0, tmp32);
-        loaded := LLVMBuildCall2(builder, read_int_fnty, read_int_fn, call_args, 1, MakeCStr(''));
+        SetPtrArrayElem(call_args, 0, addr);
+        loaded := LLVMBuildCall2(builder, read_word_fnty, read_int16_fn, call_args, 1, MakeCStr(''));
       END;
-      loaded := LLVMBuildLoad2(builder, i32ty, tmp32, MakeCStr(''));
-      loaded := LLVMBuildTrunc(builder, loaded, i16ty, MakeCStr(''));
-      LLVMBuildStore(builder, loaded, addr);
     END
     ELSE IF TypeKind(tid) = TK_INTEGER32 THEN
     BEGIN
