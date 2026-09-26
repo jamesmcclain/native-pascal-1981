@@ -52,11 +52,15 @@ VAR
   cur_i, cmp_val, next_i: ADRMEM;
 BEGIN
   low_val := CodegenExpr(low_node);
-  IF last_val_tk = TK_CHAR THEN low_val := LLVMBuildZExt(builder, low_val, i16ty, MakeCStr(''))
-  ELSE IF last_val_tk <> TK_INTEGER THEN AbortWith('codegen: a set range bound must be INTEGER or CHAR');
+  IF (last_val_tk = TK_CHAR) OR (last_val_tk = TK_BOOLEAN) THEN
+    low_val := LLVMBuildZExt(builder, low_val, i16ty, MakeCStr(''))
+  ELSE IF last_val_tk <> TK_INTEGER THEN
+    AbortWith('codegen: a set range bound must be INTEGER, CHAR or BOOLEAN');
   high_val := CodegenExpr(high_node);
-  IF last_val_tk = TK_CHAR THEN high_val := LLVMBuildZExt(builder, high_val, i16ty, MakeCStr(''))
-  ELSE IF last_val_tk <> TK_INTEGER THEN AbortWith('codegen: a set range bound must be INTEGER or CHAR');
+  IF (last_val_tk = TK_CHAR) OR (last_val_tk = TK_BOOLEAN) THEN
+    high_val := LLVMBuildZExt(builder, high_val, i16ty, MakeCStr(''))
+  ELSE IF last_val_tk <> TK_INTEGER THEN
+    AbortWith('codegen: a set range bound must be INTEGER, CHAR or BOOLEAN');
 
   i_slot := EntryAlloca(i16ty, '');
   LLVMBuildStore(builder, low_val, i_slot);
@@ -100,10 +104,10 @@ BEGIN
     ELSE
     BEGIN
       ordv := CodegenExpr(el);
-      IF last_val_tk = TK_CHAR THEN
+      IF (last_val_tk = TK_CHAR) OR (last_val_tk = TK_BOOLEAN) THEN
         ordv := LLVMBuildZExt(builder, ordv, i16ty, MakeCStr(''))
       ELSE IF last_val_tk <> TK_INTEGER THEN
-        AbortWith('codegen: a set element must be INTEGER or CHAR');
+        AbortWith('codegen: a set element must be INTEGER, CHAR or BOOLEAN');
       SetRuntimeBit(slot, ordv);
     END;
   END;
