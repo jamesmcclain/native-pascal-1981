@@ -11,7 +11,7 @@ IMPLEMENTATION OF cg_symbols;
 { ============================ symbol table ============================== }
 
 PROCEDURE PushScope;
-{ Marks every table, not just symbols: a routine or CONST declared inside
+{ Marks every table, not just symbols: a routine, CONST or TYPE name declared inside
   this scope is no more visible after it ends than a variable is. A
   routine's entry is written before its own body pushes a scope, so a
   routine always survives its own PopScope and only its nested children
@@ -21,6 +21,7 @@ BEGIN
   scope_stack[scope_top] := nsymbols;
   routine_scope_stack[scope_top] := nroutines;
   const_scope_stack[scope_top] := nconsts;
+  type_name_scope_stack[scope_top] := ntype_names;
 END;
 
 PROCEDURE PopScope;
@@ -28,6 +29,7 @@ BEGIN
   nsymbols := scope_stack[scope_top];
   nroutines := routine_scope_stack[scope_top];
   nconsts := const_scope_stack[scope_top];
+  ntype_names := type_name_scope_stack[scope_top];
   scope_top := scope_top - 1;
 END;
 

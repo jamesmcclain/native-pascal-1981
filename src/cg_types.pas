@@ -51,21 +51,48 @@ BEGIN
     IF types[tid].is_subrange THEN SubrangeBaseTid := types[tid].elem_tid;
 END;
 
-FUNCTION LookupNamedType(name: Str255): INTEGER;
-{ Case-insensitive, per the manual's "Lowercase and uppercase letters are
+FUNCTION LookupTypeName(name: Str255): INTEGER32;
+{ The type_names index of the innermost visible TYPE of this name, or 0.
+  Case-insensitive, per the manual's "Lowercase and uppercase letters are
   interchangeable, except in string literals" (IBM Pascal, Aug 1981, Syntax
   and Vocabulary). Both sides are folded rather than the table being stored
-  folded, so types[].name keeps the spelling the program used for
-  diagnostics. }
+  folded, so type_names[].name keeps the spelling the program used. }
 VAR
-  i, found: INTEGER;
+  i, found: INTEGER32;
   uname: Str255;
 BEGIN
   found := 0;
   uname := UpperStr(name);
-  FOR i := 14 TO ntypes DO
-    IF UpperStr(types[i].name) = uname THEN found := i;
-  LookupNamedType := found;
+  FOR i := 1 TO ntype_names DO
+    IF UpperStr(type_names[i].name) = uname THEN found := i;
+  LookupTypeName := found;
+END;
+
+FUNCTION LookupNamedType(name: Str255): INTEGER;
+{ The tid a visible TYPE name denotes, or 0. The built-in scalar names are
+  not in type_names; ResolveTypeExpr falls back to them. }
+VAR
+  ni: INTEGER32;
+BEGIN
+  ni := LookupTypeName(name);
+  IF ni = 0 THEN LookupNamedType := 0
+  ELSE LookupNamedType := type_names[ni].tid;
+END;
+
+PROCEDURE DeclareTypeName(name: Str255; tid: INTEGER);
+BEGIN
+  IF ntype_names >= MAX_TYPE_NAMES THEN AbortWith('codegen: too many type names');
+  ntype_names := ntype_names + 1;
+  type_names[ntype_names].name := name;
+  type_names[ntype_names].tid := tid;
+END;
+
+FUNCTION CurTypeNameScopeBase: INTEGER32;
+{ type_names entries above this index were declared in the innermost open
+  scope. }
+BEGIN
+  IF scope_top = 0 THEN CurTypeNameScopeBase := 0
+  ELSE CurTypeNameScopeBase := type_name_scope_stack[scope_top];
 END;
 
 FUNCTION LookupField(rec_tid: INTEGER; fname: Str255): INTEGER;
@@ -82,7 +109,6 @@ FUNCTION RegisterType(tk, elem_tid: INTEGER; lo, hi: INTEGER32; llvm_ty: ADRMEM)
 BEGIN
   IF ntypes >= MAX_TYPES THEN AbortWith('codegen: too many types');
   ntypes := ntypes + 1;
-  types[ntypes].name := '';
   types[ntypes].tk := tk;
   types[ntypes].elem_tid := elem_tid;
   types[ntypes].lo := lo;

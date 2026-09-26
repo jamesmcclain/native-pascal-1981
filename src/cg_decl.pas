@@ -1789,17 +1789,15 @@ VAR
   tid: INTEGER;
 BEGIN
   name := GetStr(decl, 'name');
-  IF LookupNamedType(name) <> 0 THEN
+  { Only a TYPE of this same scope is a repeat; an outer one is shadowed. }
+  IF LookupTypeName(name) > CurTypeNameScopeBase THEN
   BEGIN
     { An IMPLEMENTATION repeats its own interface TYPE declarations. The
       interface was lowered first, so its type entry is already canonical.
-      Only a unit-level repeat is that case: `types` is one flat global table
-      (LookupNamedType scans 14..ntypes), so a routine-local TYPE cannot
-      shadow an outer name here -- silently keeping the outer entry would
-      compile the local declaration to the wrong layout. Diagnose it instead,
-      exactly as the PROGRAM path already does. The same goes for a repeat
-      seen while the spliced interface header itself is being lowered: that
-      one is a genuine duplicate inside the interface. }
+      Only a unit-level repeat is that case; a routine-local repeat in the
+      same scope is a plain duplicate. The same goes for a repeat seen while
+      the spliced interface header itself is being lowered: that one is a
+      genuine duplicate inside the interface. }
     IF (NOT in_local_scope) AND defining_implementation AND
        (NOT lowering_spliced_interface) THEN RETURN
     ELSE AbortWith2('codegen: duplicate type declaration: ', name);
@@ -1807,7 +1805,7 @@ BEGIN
   tid := ResolveTypeExpr(GetObj(decl, 'type_expr'));
   IF tid < 5 THEN
     AbortWith2('codegen: TYPE cannot alias a bare scalar name: ', name);
-  types[tid].name := name;
+  DeclareTypeName(name, tid);
 END;
 
 FUNCTION MaxConstInteger32: INTEGER64;

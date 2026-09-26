@@ -207,6 +207,14 @@ VAR
 
   const_tbl: ARRAY [1..MAX_CONSTS] OF ConstRec;
   nconsts: INTEGER32;
+  type_names: ARRAY [1..MAX_TYPE_NAMES] OF TypeNameRec;
+  ntype_names: INTEGER32;
+  type_name_scope_stack: ARRAY [1..MAX_SCOPES] OF INTEGER32;
+  { TYPE names live apart from `types`, whose entries outlive every scope:
+    a variable, field or routine signature keeps its tid after the TYPE
+    that named it goes out of scope. Only the name is scoped, and trimmed by
+    PopScope like the const table, so an inner TYPE may reuse an outer
+    name. An alias adds a second name for its target's tid, not a rename. }
   const_scope_stack: ARRAY [1..MAX_SCOPES] OF INTEGER32;
   { The const table's high-water mark per scope, kept in lockstep with
     scope_stack like routine_scope_stack. A routine-local CONST (or
