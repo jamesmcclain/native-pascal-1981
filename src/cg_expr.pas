@@ -373,7 +373,7 @@ BEGIN
     IF (ltk = TK_CHAR) OR (ltk = TK_BOOLEAN) THEN
       lval := LLVMBuildZExt(builder, lval, i16ty, MakeCStr(''))
     ELSE IF ltk <> TK_INTEGER THEN
-      AbortWith('codegen: IN requires an INTEGER or CHAR left operand');
+      AbortWith('codegen: IN requires an INTEGER, CHAR or BOOLEAN left operand');
     IF TypeKind(rtk) <> TK_SET THEN
       AbortWith('codegen: IN requires a SET right operand');
     res := CodegenSetMember(lval, rval);
