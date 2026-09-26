@@ -527,8 +527,15 @@ BEGIN
         AddError('Argument count mismatch')
       ELSE BEGIN
         warg := cJSON_GetArrayItem(args_arr, 0);
-        IF NodeType(warg) <> 'Identifier' THEN
-          AddError('NEW/DISPOSE argument must be a bare pointer variable')
+        IF NodeType(warg) = 'Designator' THEN
+        BEGIN
+          { A selected pointer such as q^.next or a[i]. }
+          cond_tk := CheckDesignator(warg);
+          IF (cond_tk <> TK_POINTER) AND (cond_tk <> TK_UNKNOWN) THEN
+            AddError('NEW/DISPOSE argument must be a POINTER variable');
+        END
+        ELSE IF NodeType(warg) <> 'Identifier' THEN
+          AddError('NEW/DISPOSE argument must be a pointer variable')
         ELSE BEGIN
           si := LookupSymbol(GetStr(warg, 'name'));
           IF si = 0 THEN
