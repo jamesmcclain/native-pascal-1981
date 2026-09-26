@@ -20,3 +20,8 @@ ctor [TRUE..FALSE] FALSE FALSE
 union TRUE TRUE
 intersection FALSE TRUE
 difference TRUE FALSE
+count h TRUE 1 1
+count m FALSE 1 1
+count e FALSE 1 1
+count u TRUE 1 2
+order 1 2
