@@ -216,13 +216,17 @@ BEGIN
 END;
 
 FUNCTION LookupConst(name: Str255): INTEGER32;
+{ Case-insensitive, like LookupSym and LookupRoutine: `CONST Big = 7' is
+  also BIG and big. }
 VAR
   i: INTEGER32;
   found: INTEGER32;
+  uname: Str255;
 BEGIN
+  uname := UpperStr(name);
   found := 0;
   FOR i := 1 TO nconsts DO
-    IF const_tbl[i].name = name THEN found := i;
+    IF UpperStr(const_tbl[i].name) = uname THEN found := i;
   LookupConst := found;
 END;
 
