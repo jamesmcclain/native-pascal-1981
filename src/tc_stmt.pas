@@ -399,12 +399,15 @@ BEGIN
         IF NodeType(wexpr) = 'Identifier' THEN
         BEGIN
           si := LookupSymbol(GetStr(wexpr, 'name'));
-          IF (si <> 0) AND (symbols[si].tk = TK_FILE) THEN
-          BEGIN
-            IF (symbols[si].aux <> TK_CHAR) OR (symbols[si].aux2 <> 1) THEN
-              AddError('WRITE/WRITELN/READ/READLN file selector must be a TEXT file');
-            start_arg := 1;
-          END;
+          { AND is eager in the native bootstrap: never index symbols[0]
+            for an undefined name. }
+          IF si <> 0 THEN
+            IF symbols[si].tk = TK_FILE THEN
+            BEGIN
+              IF (symbols[si].aux <> TK_CHAR) OR (symbols[si].aux2 <> 1) THEN
+                AddError('WRITE/WRITELN/READ/READLN file selector must be a TEXT file');
+              start_arg := 1;
+            END;
         END;
       END;
       FOR i := start_arg TO nargs - 1 DO

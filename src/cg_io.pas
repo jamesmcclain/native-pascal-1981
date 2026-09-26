@@ -664,12 +664,14 @@ BEGIN
     IF NodeType(arg0) = 'Identifier' THEN
     BEGIN
       symi := LookupSym(GetStr(arg0, 'name'));
-      IF (symi <> 0) AND (TypeKind(symbols[symi].tk) = TK_FILE) THEN
-      BEGIN
-        fcb_ptr := LoadFileFcbPtr(GetStr(arg0, 'name'));
-        using_file := TRUE;
-        start_idx := 1;
-      END;
+      { AND is eager in the native bootstrap: never index symbols[0]. }
+      IF symi <> 0 THEN
+        IF TypeKind(symbols[symi].tk) = TK_FILE THEN
+        BEGIN
+          fcb_ptr := LoadFileFcbPtr(GetStr(arg0, 'name'));
+          using_file := TRUE;
+          start_idx := 1;
+        END;
     END;
   END;
 

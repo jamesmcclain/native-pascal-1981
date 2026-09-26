@@ -853,7 +853,8 @@ BEGIN
       mismatch := TRUE
     ELSE
       FOR k := 1 TO a_nparams DO
-        IF (k <= MAX_PARAMS) AND (rs_param_tk[k] <> a_param_tk[k]) THEN mismatch := TRUE;
+        IF k <= MAX_PARAMS THEN
+          IF rs_param_tk[k] <> a_param_tk[k] THEN mismatch := TRUE;
     IF rs_ret_tk <> a_ret_tk THEN mismatch := TRUE;
     IF rs_is_vararg <> a_is_vararg THEN mismatch := TRUE;
     IF mismatch THEN

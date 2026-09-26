@@ -775,13 +775,15 @@ BEGIN
     IF NodeType(cJSON_GetArrayItem(args_arr, 0)) = 'Identifier' THEN
     BEGIN
       si := LookupSymbol(GetStr(cJSON_GetArrayItem(args_arr, 0), 'name'));
-      IF (si <> 0) AND (symbols[si].tk = TK_VECTOR) THEN
-      BEGIN
-        IF symbols[si].aux = TK_BOOLEAN THEN
-          AddError('VSUM/VPROD/VMIN/VMAX require a numeric VECTOR');
-        CheckFuncCall := symbols[si].aux;
-        RETURN;
-      END;
+      { AND is eager in the native bootstrap: never index symbols[0]. }
+      IF si <> 0 THEN
+        IF symbols[si].tk = TK_VECTOR THEN
+        BEGIN
+          IF symbols[si].aux = TK_BOOLEAN THEN
+            AddError('VSUM/VPROD/VMIN/VMAX require a numeric VECTOR');
+          CheckFuncCall := symbols[si].aux;
+          RETURN;
+        END;
     END;
     CheckFuncCall := TK_UNKNOWN;
     RETURN;
