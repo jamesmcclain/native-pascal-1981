@@ -1,0 +1,8 @@
+PROGRAM BooleanIn(OUTPUT);
+VAR
+  bs: SET OF BOOLEAN;
+BEGIN
+  bs := [TRUE];
+  WRITELN('TRUE IN [TRUE] ', TRUE IN bs);
+  WRITELN('FALSE IN [TRUE] ', FALSE IN bs)
+END.
