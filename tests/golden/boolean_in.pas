@@ -35,5 +35,13 @@ BEGIN
   hit := flag IN full;
   WRITELN('assign ', hit);
   hit := flag IN empty;
-  WRITELN('assign ', hit)
+  WRITELN('assign ', hit);
+  WRITELN('ctor [] ', FALSE IN [], ' ', TRUE IN []);
+  WRITELN('ctor [FALSE] ', FALSE IN [FALSE], ' ', TRUE IN [FALSE]);
+  WRITELN('ctor [TRUE] ', FALSE IN [TRUE], ' ', TRUE IN [TRUE]);
+  WRITELN('ctor [FALSE..TRUE] ', FALSE IN [FALSE..TRUE], ' ', TRUE IN [FALSE..TRUE]);
+  WRITELN('ctor [TRUE..FALSE] ', FALSE IN [TRUE..FALSE], ' ', TRUE IN [TRUE..FALSE]);
+  WRITELN('union ', FALSE IN falseOnly + trueOnly, ' ', TRUE IN falseOnly + trueOnly);
+  WRITELN('intersection ', FALSE IN full * trueOnly, ' ', TRUE IN full * trueOnly);
+  WRITELN('difference ', FALSE IN full - trueOnly, ' ', TRUE IN full - trueOnly)
 END.

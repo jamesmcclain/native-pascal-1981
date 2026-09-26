@@ -12,3 +12,11 @@ if hit
 if miss
 assign TRUE
 assign FALSE
+ctor [] FALSE FALSE
+ctor [FALSE] TRUE FALSE
+ctor [TRUE] FALSE TRUE
+ctor [FALSE..TRUE] TRUE TRUE
+ctor [TRUE..FALSE] FALSE FALSE
+union TRUE TRUE
+intersection FALSE TRUE
+difference TRUE FALSE
