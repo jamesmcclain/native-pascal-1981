@@ -38,6 +38,43 @@ PROCEDURE ResolveStringExprCharsLen(expr: ADRMEM; VAR chars_ptr: ADRMEM; VAR len
   a few more instructions in the emitted IR -- an acceptable tradeoff given
   this file's methodology is behavioral parity, not IR-shape parity. }
 
+FUNCTION SetElementOutside(v: ADRMEM): ADRMEM;
+{ TRUE when the i16 set ordinal v is outside 0..255. The compare is
+  unsigned, so a negative ordinal is outside too. }
+BEGIN
+  SetElementOutside := LLVMBuildICmp(builder, LLVMIntUGT, v,
+    LLVMConstInt(i16ty, 255, 0), MakeCStr(''));
+END;
+
+PROCEDURE EmitSetElementCheck(bad, v: ADRMEM);
+{ A set is a 256-bit bitvector, so when bad holds, call the noreturn
+  pas_set_element_error (runtime/set_element.c) with the i16 ordinal v from
+  a cold block instead of setting a bit outside the set. Leaves the builder
+  in the in-range block. Device code has no host runtime to call, so it is
+  not checked. }
+VAR
+  bad_bb, ok_bb, ps, fnty, fn, args, discard: ADRMEM;
+BEGIN
+  IF is_nvptx_device THEN RETURN;
+  bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('setelem.bad'));
+  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('setelem.ok'));
+  LLVMBuildCondBr(builder, bad, bad_bb, ok_bb);
+
+  LLVMPositionBuilderAtEnd(builder, bad_bb);
+  ps := AllocPtrArray(1);
+  SetPtrArrayElem(ps, 0, i64ty);
+  fnty := LLVMFunctionType(voidty, ps, 1, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_set_element_error'));
+  IF fn = NIL THEN
+    fn := LLVMAddFunction(modl, MakeCStr('pas_set_element_error'), fnty);
+  args := AllocPtrArray(1);
+  SetPtrArrayElem(args, 0, LLVMBuildSExt(builder, v, i64ty, MakeCStr('')));
+  discard := LLVMBuildCall2(builder, fnty, fn, args, 1, MakeCStr(''));
+  discard := LLVMBuildUnreachable(builder);
+
+  LLVMPositionBuilderAtEnd(builder, ok_bb);
+END;
+
 PROCEDURE EmitSetRangeLoop(slot: ADRMEM; low_node, high_node: ADRMEM);
 { FOR i := low TO high DO SetRuntimeBit(slot, i) -- same alloca-counter loop
   idiom as CodegenForStmt/EmitByteCopyLoop, done here instead of reusing
@@ -50,6 +87,7 @@ VAR
   i_slot: ADRMEM;
   loop_bb, body_bb, end_bb: ADRMEM;
   cur_i, cmp_val, next_i: ADRMEM;
+  low_bad, bad: ADRMEM;
 BEGIN
   low_val := CodegenExpr(low_node);
   IF (last_val_tk = TK_CHAR) OR (last_val_tk = TK_BOOLEAN) THEN
@@ -61,6 +99,16 @@ BEGIN
     high_val := LLVMBuildZExt(builder, high_val, i16ty, MakeCStr(''))
   ELSE IF last_val_tk <> TK_INTEGER THEN
     AbortWith('codegen: a set range bound must be INTEGER, CHAR or BOOLEAN');
+
+  { A nonempty range must lie in 0..255; this also keeps the i16 counter
+    from wrapping past 32767. An empty (reversed) range adds nothing. }
+  low_bad := SetElementOutside(low_val);
+  bad := LLVMBuildAnd(builder,
+    LLVMBuildICmp(builder, LLVMIntSLE, low_val, high_val, MakeCStr('')),
+    LLVMBuildOr(builder, low_bad, SetElementOutside(high_val), MakeCStr('')),
+    MakeCStr(''));
+  EmitSetElementCheck(bad,
+    LLVMBuildSelect(builder, low_bad, low_val, high_val, MakeCStr('')));
 
   i_slot := EntryAlloca(i16ty, '');
   LLVMBuildStore(builder, low_val, i_slot);
@@ -108,6 +156,7 @@ BEGIN
         ordv := LLVMBuildZExt(builder, ordv, i16ty, MakeCStr(''))
       ELSE IF last_val_tk <> TK_INTEGER THEN
         AbortWith('codegen: a set element must be INTEGER, CHAR or BOOLEAN');
+      EmitSetElementCheck(SetElementOutside(ordv), ordv);
       SetRuntimeBit(slot, ordv);
     END;
   END;

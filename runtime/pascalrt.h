@@ -239,6 +239,10 @@ void  pas_array_index_error(int64_t value, int32_t value_unsigned,
 void  pas_subrange_error(int64_t value, int32_t value_unsigned,
                          int64_t lo, int64_t hi) __attribute__((noreturn));
 
+/* ---- set constructor elements outside 0..255 (set_element.c) ---- */
+
+void  pas_set_element_error(int64_t value) __attribute__((noreturn));
+
 #ifdef __cplusplus
 }
 #endif
