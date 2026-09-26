@@ -113,6 +113,116 @@ BEGIN
     AddError('Subrange bounds must be of the same ordinal type');
 END;
 
+FUNCTION PendingFwdType(base_node: ADRMEM): INTEGER32;
+{ The fwd_types index of the not-yet-declared TYPE that a pointer's base
+  names, or 0. Standard Pascal lets a pointer type name a type declared
+  later in the same TYPE section, and that later declaration wins over an
+  outer type of the same name, so this is consulted before LookupType. The
+  declaration being checked counts as pending: `N = RECORD next: ^N END'. }
+VAR
+  k, found: INTEGER32;
+  uname: Str255;
+BEGIN
+  found := 0;
+  IF nfwd_types > 0 THEN
+    IF NodeType(base_node) = 'NamedType' THEN
+      IF GetObjOrNil(base_node, 'param') = NIL THEN
+      BEGIN
+        uname := UpperStr(GetStr(base_node, 'name'));
+        FOR k := nfwd_types DOWNTO fwd_cur DO
+          IF UpperStr(fwd_types[k].name) = uname THEN found := k;
+      END;
+  PendingFwdType := found;
+END;
+
+PROCEDURE ResolveFwdType(k: INTEGER32; VAR tk, aux, aux2, aux3, idx_tk: INTEGER);
+{ What a pointer's forward base resolves to. A record target gets its
+  record id now, which its own declaration adopts later (FwdRecordId), so
+  a record and a pointer to it can refer to each other. Any other target is
+  resolved once, here, and cached for its own declaration to reuse. }
+BEGIN
+  aux2 := 0;
+  aux3 := 0;
+  idx_tk := 0;
+  IF NodeType(fwd_types[k].node) = 'RecordType' THEN
+  BEGIN
+    IF fwd_types[k].rid = 0 THEN
+    BEGIN
+      fwd_types[k].rid := next_record_id;
+      next_record_id := next_record_id + 1;
+    END;
+    tk := TK_RECORD;
+    aux := fwd_types[k].rid;
+  END
+  ELSE IF fwd_types[k].state = 1 THEN
+  BEGIN
+    AddError2('Pointer type cycle through type: ', fwd_types[k].name);
+    tk := TK_UNKNOWN;
+    aux := 0;
+  END
+  ELSE
+  BEGIN
+    IF fwd_types[k].state = 0 THEN
+    BEGIN
+      fwd_types[k].state := 1;
+      ResolveTypeExpr(fwd_types[k].node, fwd_types[k].tk, fwd_types[k].aux,
+                      fwd_types[k].aux2, fwd_types[k].aux3, fwd_types[k].idx_tk);
+      fwd_types[k].state := 2;
+    END;
+    tk := fwd_types[k].tk;
+    aux := fwd_types[k].aux;
+    aux2 := fwd_types[k].aux2;
+    aux3 := fwd_types[k].aux3;
+    idx_tk := fwd_types[k].idx_tk;
+  END;
+END;
+
+FUNCTION RecordIdFor(node: ADRMEM): INTEGER;
+{ The record id for this RecordType: the one a forward pointer already
+  reserved for it, or a new one. A new id for a TYPE section's own record is
+  also recorded there before any field is resolved, so a field pointing
+  back at the record being declared (`next: ^N') shares it. }
+VAR
+  k, found: INTEGER32;
+  rid: INTEGER;
+BEGIN
+  found := 0;
+  FOR k := 1 TO nfwd_types DO
+    IF fwd_types[k].node = node THEN found := k;
+  rid := 0;
+  IF found <> 0 THEN rid := fwd_types[found].rid;
+  IF rid = 0 THEN
+  BEGIN
+    rid := next_record_id;
+    next_record_id := next_record_id + 1;
+    IF found <> 0 THEN fwd_types[found].rid := rid;
+  END;
+  RecordIdFor := rid;
+END;
+
+FUNCTION FwdCachedType(node: ADRMEM; VAR tk, aux, aux2, aux3, idx_tk: INTEGER): BOOLEAN;
+{ TRUE, with the resolution, when a forward pointer already resolved this
+  non-record type_expr: its declaration reuses that instead of resolving it
+  a second time (and reporting any error in it twice). }
+VAR
+  k: INTEGER32;
+  found: BOOLEAN;
+BEGIN
+  found := FALSE;
+  FOR k := 1 TO nfwd_types DO
+    IF fwd_types[k].node = node THEN
+      IF fwd_types[k].state = 2 THEN
+      BEGIN
+        found := TRUE;
+        tk := fwd_types[k].tk;
+        aux := fwd_types[k].aux;
+        aux2 := fwd_types[k].aux2;
+        aux3 := fwd_types[k].aux3;
+        idx_tk := fwd_types[k].idx_tk;
+      END;
+  FwdCachedType := found;
+END;
+
 PROCEDURE ResolveTypeExpr(node: ADRMEM; VAR tk, aux, aux2, aux3, idx_tk: INTEGER);
 VAR
   nt, name, uname: Str255;
@@ -120,7 +230,7 @@ VAR
   variants_arr, arm_node, tag_type_node: ADRMEM;
   inner_tk, inner_aux, inner_aux2, inner_aux3, inner_idx: INTEGER;
   lanes_v, pow2: INTEGER;
-  ti: INTEGER32;
+  ti, fwd_k: INTEGER32;
   rid: INTEGER;
   n, fi, nn, ni, bound_si: INTEGER32;
   nm: Str255;
@@ -267,7 +377,11 @@ BEGIN
   ELSE IF nt = 'PointerType' THEN
   BEGIN
     base_node := GetObj(node, 'base');
-    ResolveTypeExpr(base_node, inner_tk, inner_aux, inner_aux2, inner_aux3, inner_idx);
+    fwd_k := PendingFwdType(base_node);
+    IF fwd_k <> 0 THEN
+      ResolveFwdType(fwd_k, inner_tk, inner_aux, inner_aux2, inner_aux3, inner_idx)
+    ELSE
+      ResolveTypeExpr(base_node, inner_tk, inner_aux, inner_aux2, inner_aux3, inner_idx);
     tk := TK_POINTER;
     aux := inner_tk;
     IF (inner_tk = TK_STRING) AND (inner_aux2 = 1) THEN aux2 := 1
@@ -373,8 +487,7 @@ BEGIN
   END
   ELSE IF nt = 'RecordType' THEN
   BEGIN
-    rid := next_record_id;
-    next_record_id := next_record_id + 1;
+    rid := RecordIdFor(node);
     fields_arr := GetObj(node, 'fields');
     n := cJSON_GetArraySize(fields_arr);
     FOR fi := 0 TO n - 1 DO

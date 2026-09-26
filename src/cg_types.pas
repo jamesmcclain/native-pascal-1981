@@ -1224,12 +1224,93 @@ BEGIN
   TypeNameStrToTk := tid;
 END;
 
+FUNCTION PendingFwdType(base_node: ADRMEM): INTEGER32;
+{ The fwd_types index of the not-yet-declared TYPE that a pointer's base
+  names, or 0 -- the codegen twin of tc_types' PendingFwdType, and consulted
+  before LookupNamedType for the same reason: a later declaration in the
+  same TYPE section wins over an outer type of the same name. }
+VAR
+  k, found: INTEGER32;
+  uname: Str255;
+BEGIN
+  found := 0;
+  IF nfwd_types > 0 THEN
+    IF NodeType(base_node) = 'NamedType' THEN
+      IF GetObjOrNil(base_node, 'param') = NIL THEN
+      BEGIN
+        uname := UpperStr(GetStr(base_node, 'name'));
+        FOR k := nfwd_types DOWNTO fwd_cur DO
+          IF UpperStr(fwd_types[k].name) = uname THEN found := k;
+      END;
+  PendingFwdType := found;
+END;
+
+FUNCTION ResolveFwdType(k: INTEGER32): INTEGER;
+{ The tid a pointer's forward base denotes. A record target gets a
+  placeholder entry now, which its own RecordType fills in later
+  (FwdReservedTid), so a record and a pointer to it can refer to each
+  other. Any other target is resolved once, here, and its declaration
+  reuses the tid, so both names agree on one type. }
+BEGIN
+  IF fwd_types[k].tid = 0 THEN
+  BEGIN
+    IF NodeType(fwd_types[k].node) = 'RecordType' THEN
+      fwd_types[k].tid := RegisterType(TK_RECORD, 0, 0, 0, NIL)
+    ELSE
+    BEGIN
+      IF fwd_types[k].state = 1 THEN
+        AbortWith2('codegen: pointer type cycle through type: ', fwd_types[k].name);
+      fwd_types[k].state := 1;
+      fwd_types[k].tid := ResolveTypeExpr(fwd_types[k].node);
+      fwd_types[k].state := 2;
+    END;
+  END;
+  ResolveFwdType := fwd_types[k].tid;
+END;
+
+FUNCTION FwdReservedTid(node: ADRMEM): INTEGER;
+{ The tid a forward pointer already reserved or resolved for this
+  type_expr, or 0. }
+VAR
+  k: INTEGER32;
+  tid: INTEGER;
+BEGIN
+  tid := 0;
+  FOR k := 1 TO nfwd_types DO
+    IF fwd_types[k].node = node THEN tid := fwd_types[k].tid;
+  FwdReservedTid := tid;
+END;
+
+FUNCTION RecordTidFor(node: ADRMEM): INTEGER;
+{ The table entry for this RecordType: the placeholder a forward pointer
+  already reserved for it, or a new one. A new entry for a TYPE section's
+  own record is also recorded there before any field is resolved, so a
+  field pointing back at the record being declared (`next: ^N') shares
+  it. }
+VAR
+  k, found: INTEGER32;
+  tid: INTEGER;
+BEGIN
+  found := 0;
+  FOR k := 1 TO nfwd_types DO
+    IF fwd_types[k].node = node THEN found := k;
+  tid := 0;
+  IF found <> 0 THEN tid := fwd_types[found].tid;
+  IF tid = 0 THEN
+  BEGIN
+    tid := RegisterType(TK_RECORD, 0, 0, 0, NIL);
+    IF found <> 0 THEN fwd_types[found].tid := tid;
+  END;
+  RecordTidFor := tid;
+END;
+
 FUNCTION ResolveTypeExpr(te: ADRMEM): INTEGER;
 VAR
   nm, unm, flavor, space_name: Str255;
   nt: Str255;
   tid: INTEGER;
   elem_tid, space_code: INTEGER;
+  fwd_k: INTEGER32;
   lo, hi: INTEGER32;
   count: INTEGER32;
   arr_ty: ADRMEM;
@@ -1423,7 +1504,7 @@ BEGIN
     field_index := 0;
     fixed_off := 0;
     elem_llvm_types := AllocPtrArray(MAX_RECORD_FIELDS);
-    tid := RegisterType(TK_RECORD, 0, 0, 0, NIL); { patched below }
+    tid := RecordTidFor(te); { patched below }
     { Fixed fields, including a named discriminant, are real struct members. }
     FOR fi := 0 TO nfd - 1 DO
     BEGIN
@@ -1504,7 +1585,9 @@ BEGIN
       AbortWith('codegen: only POINTER and device ADS pointers are supported');
     IF (flavor = 'ADS') AND (NOT is_device_compiland) THEN
       AbortWith('codegen: ADS pointers require a DEVICE compiland');
-    elem_tid := ResolveTypeExpr(GetObj(te, 'base'));
+    fwd_k := PendingFwdType(GetObj(te, 'base'));
+    IF fwd_k <> 0 THEN elem_tid := ResolveFwdType(fwd_k)
+    ELSE elem_tid := ResolveTypeExpr(GetObj(te, 'base'));
     { A pointer's flavor and, for ADS, its space are part of its identity for
       assignment compatibility (PTR_SPACE_PLAIN and the PTR_SPACE_* codes are
       what TypesCompatibleForAssign compares), so they are resolved for every
@@ -1534,7 +1617,12 @@ BEGIN
       ELSE IF space_code = PTR_SPACE_CONSTANT THEN lo := 4
       ELSE IF space_code = PTR_SPACE_LOCAL THEN lo := 5;
     END;
-    arr_ty := LLVMPointerType(LLVMTypeForTk(elem_tid), lo);
+    { A forward record target has no LLVM type yet; pointers are opaque, so
+      any pointee gives the same `ptr'. AND is eager: test the kind first. }
+    arr_ty := NIL;
+    IF TypeKind(elem_tid) = TK_RECORD THEN
+      IF types[elem_tid].llvm_ty = NIL THEN arr_ty := LLVMPointerType(i8ty, lo);
+    IF arr_ty = NIL THEN arr_ty := LLVMPointerType(LLVMTypeForTk(elem_tid), lo);
     tid := RegisterType(TK_POINTER, elem_tid, 0, 0, arr_ty);
     types[tid].ptr_space := space_code;
   END

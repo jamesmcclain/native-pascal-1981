@@ -58,5 +58,6 @@ FUNCTION SysVCoercedPiecePtr(base: ADRMEM; cstruct_ty: ADRMEM; eb: INTEGER): ADR
 FUNCTION ResolveIntLiteral(node: ADRMEM): INTEGER32;
 FUNCTION TypeNameStrToTk(nm: Str255): INTEGER;
 FUNCTION ResolveTypeExpr(te: ADRMEM): INTEGER;
+FUNCTION FwdReservedTid(node: ADRMEM): INTEGER;
 
 END;

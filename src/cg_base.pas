@@ -210,6 +210,11 @@ VAR
   type_names: ARRAY [1..MAX_TYPE_NAMES] OF TypeNameRec;
   ntype_names: INTEGER32;
   type_name_scope_stack: ARRAY [1..MAX_SCOPES] OF INTEGER32;
+  fwd_types: ARRAY [1..MAX_FWD_TYPES] OF FwdTypeRec;
+  nfwd_types: INTEGER32; { entries of the TYPE section being lowered; 0
+                            outside one }
+  fwd_cur: INTEGER32;    { fwd_types index of the TYPE declaration being
+                            lowered; it and every later entry are pending }
   { TYPE names live apart from `types`, whose entries outlive every scope:
     a variable, field or routine signature keeps its tid after the TYPE
     that named it goes out of scope. Only the name is scoped, and trimmed by

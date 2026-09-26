@@ -257,6 +257,7 @@ CONST
   MAX_ROUTINES = 384;
   MAX_TYPES = 200;
   MAX_TYPE_NAMES = 200;
+  MAX_FWD_TYPES = 64;
   MAX_FIELDS = 500;
   MAX_RECORD_FIELDS = 32;
   MAX_LABELS = 64; { GOTO targets within a single routine -- generous against
@@ -297,6 +298,16 @@ TYPE
     file holds one of these; MAX_TYPES/MAX_FIELDS are both comfortably
     under INTEGER's 16-bit range, so plain INTEGER (not INTEGER32) is
     correct here, unlike a count/size/loop-index field. }
+
+  FwdTypeRec = RECORD
+    { One TYPE declaration of the TYPE section being lowered, which a
+      pointer type earlier in that section may name before it is declared. }
+    name: Str255;
+    node: ADRMEM;   { its type_expr }
+    tid: INTEGER;   { a placeholder reserved for a RecordType target, or a
+                      non-record target's resolved tid; 0 while unresolved }
+    state: INTEGER; { a non-record target: 0 unresolved, 1 resolving, 2 done }
+  END;
 
   TypeNameRec = RECORD
     name: Str255; { a TYPE declaration's name, in the program's spelling }
@@ -643,6 +654,11 @@ VAR
   type_names: ARRAY [1..MAX_TYPE_NAMES] OF TypeNameRec;
   ntype_names: INTEGER32;
   type_name_scope_stack: ARRAY [1..MAX_SCOPES] OF INTEGER32;
+  fwd_types: ARRAY [1..MAX_FWD_TYPES] OF FwdTypeRec;
+  nfwd_types: INTEGER32; { entries of the TYPE section being lowered; 0
+                            outside one }
+  fwd_cur: INTEGER32;    { fwd_types index of the TYPE declaration being
+                            lowered; it and every later entry are pending }
   { TYPE names live apart from `types`, whose entries outlive every scope:
     a variable, field or routine signature keeps its tid after the TYPE
     that named it goes out of scope. Only the name is scoped, and trimmed by

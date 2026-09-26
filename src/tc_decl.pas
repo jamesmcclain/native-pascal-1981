@@ -395,7 +395,8 @@ BEGIN
   BEGIN
     dname := GetStr(decl, 'name');
     type_expr := GetObj(decl, 'type_expr');
-    ResolveTypeExpr(type_expr, tk, aux, aux2, aux3, idx_tk);
+    IF NOT FwdCachedType(type_expr, tk, aux, aux2, aux3, idx_tk) THEN
+      ResolveTypeExpr(type_expr, tk, aux, aux2, aux3, idx_tk);
     IF ntypes < MAX_TYPES THEN
     BEGIN
       ntypes := ntypes + 1;
@@ -572,15 +573,82 @@ BEGIN
   END;
 END;
 
+PROCEDURE BeginTypeSection(decls_arr: ADRMEM; first: INTEGER32);
+{ Record the TYPE section that starts at decls_arr[first] -- the run of
+  consecutive TypeDecls -- so a pointer type in it can name a type the
+  section declares later (see tc_types' PendingFwdType). }
+VAR
+  n, j: INTEGER32;
+  d: ADRMEM;
+  done: BOOLEAN;
+BEGIN
+  nfwd_types := 0;
+  fwd_cur := 0;
+  n := cJSON_GetArraySize(decls_arr);
+  j := first;
+  done := FALSE;
+  WHILE NOT done DO
+    IF j >= n THEN done := TRUE
+    ELSE
+    BEGIN
+      d := cJSON_GetArrayItem(decls_arr, j);
+      IF NodeType(d) <> 'TypeDecl' THEN done := TRUE
+      ELSE
+      BEGIN
+        IF nfwd_types >= MAX_FWD_TYPES THEN
+        BEGIN
+          { Later declarations stay checkable; only forward references to
+            them are lost, and are reported as unknown types. }
+          AddError('Too many declarations in one TYPE section for forward pointer types');
+          done := TRUE;
+        END
+        ELSE
+        BEGIN
+          nfwd_types := nfwd_types + 1;
+          fwd_types[nfwd_types].name := GetStr(d, 'name');
+          fwd_types[nfwd_types].node := GetObj(d, 'type_expr');
+          fwd_types[nfwd_types].rid := 0;
+          fwd_types[nfwd_types].state := 0;
+          j := j + 1;
+        END;
+      END;
+    END;
+END;
+
+PROCEDURE CheckDeclList(decls_arr: ADRMEM);
+VAR
+  n, i: INTEGER32;
+  d: ADRMEM;
+  in_section: BOOLEAN;
+BEGIN
+  n := cJSON_GetArraySize(decls_arr);
+  in_section := FALSE;
+  FOR i := 0 TO n - 1 DO
+  BEGIN
+    d := cJSON_GetArrayItem(decls_arr, i);
+    IF NodeType(d) = 'TypeDecl' THEN
+    BEGIN
+      IF NOT in_section THEN BeginTypeSection(decls_arr, i);
+      in_section := TRUE;
+      fwd_cur := fwd_cur + 1;
+    END
+    ELSE
+    BEGIN
+      { A nested routine's own CheckDeclList reuses the table, so it is
+        rebuilt at the start of every section rather than kept open. }
+      in_section := FALSE;
+      nfwd_types := 0;
+    END;
+    CheckDecl(d);
+  END;
+  nfwd_types := 0;
+END;
+
 PROCEDURE CheckBlock(block: ADRMEM);
 VAR
-  decls_arr, body_arr: ADRMEM;
-  n, i: INTEGER32;
+  body_arr: ADRMEM;
 BEGIN
-  decls_arr := GetObj(block, 'decls');
-  n := cJSON_GetArraySize(decls_arr);
-  FOR i := 0 TO n - 1 DO
-    CheckDecl(cJSON_GetArrayItem(decls_arr, i));
+  CheckDeclList(GetObj(block, 'decls'));
   body_arr := GetObj(block, 'body');
   CheckStmtList(body_arr);
 END;
@@ -969,10 +1037,7 @@ BEGIN
   IF nt = 'ProgramUnit' THEN
     CheckBlock(GetObj(root, 'block'))
   ELSE BEGIN
-    decls_arr := GetObj(root, 'decls');
-    n := cJSON_GetArraySize(decls_arr);
-    FOR i := 0 TO n - 1 DO
-      CheckDecl(cJSON_GetArrayItem(decls_arr, i));
+    CheckDeclList(GetObj(root, 'decls'));
     IF nt = 'ImplementationUnit' THEN
     BEGIN
       ValidateImplementationContract(root,
@@ -1081,10 +1146,7 @@ BEGIN
       iface := cJSON_GetArrayItem(ifaces, ni);
       saved_device := is_device_compiland;
       is_device_compiland := GetBool(iface, 'is_device');
-      decls_arr := GetObj(iface, 'decls');
-      m := cJSON_GetArraySize(decls_arr);
-      FOR di := 0 TO m - 1 DO
-        CheckDecl(cJSON_GetArrayItem(decls_arr, di));
+      CheckDeclList(GetObj(iface, 'decls'));
       is_device_compiland := saved_device;
     END;
   END;

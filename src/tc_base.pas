@@ -111,6 +111,11 @@ VAR
   fields: ARRAY [1..MAX_FIELDS] OF FieldRec;
   nfields: INTEGER32;
   next_record_id: INTEGER;
+  fwd_types: ARRAY [1..MAX_FWD_TYPES] OF FwdTypeRec;
+  nfwd_types: INTEGER32; { entries of the TYPE section being checked; 0
+                            outside one }
+  fwd_cur: INTEGER32;    { fwd_types index of the TYPE declaration being
+                            checked; it and every later entry are pending }
 
   last_designator_super: BOOLEAN;
   last_designator_idx_tk: INTEGER;
@@ -376,6 +381,8 @@ BEGIN
   ntypes := 0;
   nfields := 0;
   next_record_id := 1;
+  nfwd_types := 0;
+  fwd_cur := 0;
   nerrors := 0;
   expr_depth := 0;
   stmt_depth := 0;

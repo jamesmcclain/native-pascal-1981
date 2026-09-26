@@ -35,13 +35,67 @@ BEGIN
     LLVMAddTargetDependentFunctionAttr(fn, MakeCStr('target-features'), target_features_cstr);
 END;
 
+PROCEDURE BeginTypeSection(decls_arr: ADRMEM; first: INTEGER32);
+{ Record the TYPE section that starts at decls_arr[first] -- the run of
+  consecutive TypeDecls -- so a pointer type in it can name a type the
+  section declares later (see cg_types' PendingFwdType). }
+VAR
+  n, j: INTEGER32;
+  d: ADRMEM;
+  done: BOOLEAN;
+BEGIN
+  nfwd_types := 0;
+  fwd_cur := 0;
+  n := ArrSize(decls_arr);
+  j := first;
+  done := FALSE;
+  WHILE NOT done DO
+    IF j >= n THEN done := TRUE
+    ELSE
+    BEGIN
+      d := ArrItem(decls_arr, j);
+      IF NodeType(d) <> 'TypeDecl' THEN done := TRUE
+      ELSE
+      BEGIN
+        IF nfwd_types >= MAX_FWD_TYPES THEN
+          AbortWith('codegen: too many declarations in one TYPE section');
+        nfwd_types := nfwd_types + 1;
+        fwd_types[nfwd_types].name := GetStr(d, 'name');
+        fwd_types[nfwd_types].node := GetObj(d, 'type_expr');
+        fwd_types[nfwd_types].tid := 0;
+        fwd_types[nfwd_types].state := 0;
+        j := j + 1;
+      END;
+    END;
+END;
+
 PROCEDURE CodegenDeclList(decls_arr: ADRMEM);
 VAR
   n, i: INTEGER32;
+  d: ADRMEM;
+  in_section: BOOLEAN;
 BEGIN
   n := ArrSize(decls_arr);
+  in_section := FALSE;
   FOR i := 0 TO n - 1 DO
-    CodegenDecl(ArrItem(decls_arr, i));
+  BEGIN
+    d := ArrItem(decls_arr, i);
+    IF NodeType(d) = 'TypeDecl' THEN
+    BEGIN
+      IF NOT in_section THEN BeginTypeSection(decls_arr, i);
+      in_section := TRUE;
+      fwd_cur := fwd_cur + 1;
+    END
+    ELSE
+    BEGIN
+      { A nested routine's own CodegenDeclList reuses the table, so it is
+        rebuilt at the start of every section rather than kept open. }
+      in_section := FALSE;
+      nfwd_types := 0;
+    END;
+    CodegenDecl(d);
+  END;
+  nfwd_types := 0;
 END;
 
 FUNCTION ConstExprIsChar(node: ADRMEM): BOOLEAN;
@@ -1802,7 +1856,13 @@ BEGIN
        (NOT lowering_spliced_interface) THEN RETURN
     ELSE AbortWith2('codegen: duplicate type declaration: ', name);
   END;
-  tid := ResolveTypeExpr(GetObj(decl, 'type_expr'));
+  { A forward pointer may already have resolved a non-record target; reuse
+    that tid so both names denote one type. A record fills in the
+    placeholder it reserved inside ResolveTypeExpr itself. }
+  tid := 0;
+  IF NodeType(GetObj(decl, 'type_expr')) <> 'RecordType' THEN
+    tid := FwdReservedTid(GetObj(decl, 'type_expr'));
+  IF tid = 0 THEN tid := ResolveTypeExpr(GetObj(decl, 'type_expr'));
   IF tid < 5 THEN
     AbortWith2('codegen: TYPE cannot alias a bare scalar name: ', name);
   DeclareTypeName(name, tid);
