@@ -369,7 +369,9 @@ BEGIN
   END
   ELSE IF op = 'IN' THEN
   BEGIN
-    IF ltk = TK_CHAR THEN lval := LLVMBuildZExt(builder, lval, i16ty, MakeCStr(''))
+    { Zero-extend so a BOOLEAN TRUE (i1) is ordinal 1, not -1. }
+    IF (ltk = TK_CHAR) OR (ltk = TK_BOOLEAN) THEN
+      lval := LLVMBuildZExt(builder, lval, i16ty, MakeCStr(''))
     ELSE IF ltk <> TK_INTEGER THEN
       AbortWith('codegen: IN requires an INTEGER or CHAR left operand');
     IF TypeKind(rtk) <> TK_SET THEN
