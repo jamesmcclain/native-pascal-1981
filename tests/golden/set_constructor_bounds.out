@@ -1,0 +1,6 @@
+full TRUE TRUE
+edges TRUE FALSE TRUE
+reversed high TRUE
+reversed low TRUE
+reversed both TRUE TRUE
+char TRUE TRUE

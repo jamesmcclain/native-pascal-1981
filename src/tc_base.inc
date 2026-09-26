@@ -31,6 +31,7 @@ CONST
 
   MAX_SYMBOLS = 2000;
   MAX_TYPES = 500;
+  MAX_FWD_TYPES = 64;
   MAX_FIELDS = 2000;
   MAX_ERRORS = 200;
   MAX_PARAMS = 16;
@@ -67,6 +68,16 @@ TYPE
     is_super: BOOLEAN;
   END;
 
+  FwdTypeRec = RECORD
+    { One TYPE declaration of the TYPE section being checked, which a
+      pointer type earlier in that section may name before it is declared. }
+    name: Str255;
+    node: ADRMEM;   { its type_expr }
+    rid: INTEGER;   { a record id reserved for a RecordType target, or 0 }
+    state: INTEGER; { a non-record target: 0 unresolved, 1 resolving, 2 cached }
+    tk, aux, aux2, aux3, idx_tk: INTEGER; { the cached resolution }
+  END;
+
   FieldRec = RECORD
     record_id: INTEGER;
     fname: Str255;
@@ -88,6 +99,11 @@ VAR
   fields: ARRAY [1..MAX_FIELDS] OF FieldRec;
   nfields: INTEGER32;
   next_record_id: INTEGER;
+  fwd_types: ARRAY [1..MAX_FWD_TYPES] OF FwdTypeRec;
+  nfwd_types: INTEGER32; { entries of the TYPE section being checked; 0
+                            outside one }
+  fwd_cur: INTEGER32;    { fwd_types index of the TYPE declaration being
+                            checked; it and every later entry are pending }
   last_designator_super: BOOLEAN;
   last_designator_idx_tk: INTEGER;
   last_designator_aux, last_designator_aux2: INTEGER;

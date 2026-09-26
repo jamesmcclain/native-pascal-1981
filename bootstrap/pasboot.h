@@ -287,6 +287,7 @@ Sym *lookup_innermost(const char *name);
 void define(Sym * s);
 Type *resolve_type(TypeExpr * te);
 void resolve_pending_pointers(void);
+void set_type_section(Vec *items, int pos);
 Sym *const_eval(Expr * e);
 Type *int_type_for(int64_t v);
 int is_int(Type * t);

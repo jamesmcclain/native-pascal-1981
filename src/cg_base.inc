@@ -256,6 +256,8 @@ CONST
     and the walker aborts loudly rather than truncating if it is ever hit. }
   MAX_ROUTINES = 384;
   MAX_TYPES = 200;
+  MAX_TYPE_NAMES = 200;
+  MAX_FWD_TYPES = 64;
   MAX_FIELDS = 500;
   MAX_RECORD_FIELDS = 32;
   MAX_LABELS = 64; { GOTO targets within a single routine -- generous against
@@ -297,9 +299,22 @@ TYPE
     under INTEGER's 16-bit range, so plain INTEGER (not INTEGER32) is
     correct here, unlike a count/size/loop-index field. }
 
+  FwdTypeRec = RECORD
+    { One TYPE declaration of the TYPE section being lowered, which a
+      pointer type earlier in that section may name before it is declared. }
+    name: Str255;
+    node: ADRMEM;   { its type_expr }
+    tid: INTEGER;   { a placeholder reserved for a RecordType target, or a
+                      non-record target's resolved tid; 0 while unresolved }
+    state: INTEGER; { a non-record target: 0 unresolved, 1 resolving, 2 done }
+  END;
+
+  TypeNameRec = RECORD
+    name: Str255; { a TYPE declaration's name, in the program's spelling }
+    tid: INTEGER; { the type it denotes; an alias shares its target's tid }
+  END;
+
   TypeRec = RECORD
-    name: Str255;    { the TYPE decl's name that introduced this entry, ''
-                        for an anonymous inline ARRAY/RECORD type_expr }
     tk: INTEGER;      { TK_ARRAY or TK_RECORD }
     elem_tid: INTEGER; { ARRAY only: the element type's id }
     lo, hi: INTEGER32; { ARRAY/SET bounds can include vintage WORD values }
@@ -636,6 +651,24 @@ VAR
 
   const_tbl: ARRAY [1..MAX_CONSTS] OF ConstRec;
   nconsts: INTEGER32;
+  type_names: ARRAY [1..MAX_TYPE_NAMES] OF TypeNameRec;
+  ntype_names: INTEGER32;
+  type_name_scope_stack: ARRAY [1..MAX_SCOPES] OF INTEGER32;
+  fwd_types: ARRAY [1..MAX_FWD_TYPES] OF FwdTypeRec;
+  nfwd_types: INTEGER32; { entries of the TYPE section being lowered; 0
+                            outside one }
+  fwd_cur: INTEGER32;    { fwd_types index of the TYPE declaration being
+                            lowered; it and every later entry are pending }
+  { TYPE names live apart from `types`, whose entries outlive every scope:
+    a variable, field or routine signature keeps its tid after the TYPE
+    that named it goes out of scope. Only the name is scoped, and trimmed by
+    PopScope like the const table, so an inner TYPE may reuse an outer
+    name. An alias adds a second name for its target's tid, not a rename. }
+  const_scope_stack: ARRAY [1..MAX_SCOPES] OF INTEGER32;
+  { The const table's high-water mark per scope, kept in lockstep with
+    scope_stack like routine_scope_stack. A routine-local CONST (or
+    enumeration member) is gone once its routine's body ends, and an inner
+    one may reuse an outer name. }
 
   cur_routine_name: Str255; { source name of the PROCEDURE/FUNCTION whose
                               body is currently being lowered; used to give

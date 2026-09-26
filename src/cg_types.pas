@@ -51,21 +51,48 @@ BEGIN
     IF types[tid].is_subrange THEN SubrangeBaseTid := types[tid].elem_tid;
 END;
 
-FUNCTION LookupNamedType(name: Str255): INTEGER;
-{ Case-insensitive, per the manual's "Lowercase and uppercase letters are
+FUNCTION LookupTypeName(name: Str255): INTEGER32;
+{ The type_names index of the innermost visible TYPE of this name, or 0.
+  Case-insensitive, per the manual's "Lowercase and uppercase letters are
   interchangeable, except in string literals" (IBM Pascal, Aug 1981, Syntax
   and Vocabulary). Both sides are folded rather than the table being stored
-  folded, so types[].name keeps the spelling the program used for
-  diagnostics. }
+  folded, so type_names[].name keeps the spelling the program used. }
 VAR
-  i, found: INTEGER;
+  i, found: INTEGER32;
   uname: Str255;
 BEGIN
   found := 0;
   uname := UpperStr(name);
-  FOR i := 14 TO ntypes DO
-    IF UpperStr(types[i].name) = uname THEN found := i;
-  LookupNamedType := found;
+  FOR i := 1 TO ntype_names DO
+    IF UpperStr(type_names[i].name) = uname THEN found := i;
+  LookupTypeName := found;
+END;
+
+FUNCTION LookupNamedType(name: Str255): INTEGER;
+{ The tid a visible TYPE name denotes, or 0. The built-in scalar names are
+  not in type_names; ResolveTypeExpr falls back to them. }
+VAR
+  ni: INTEGER32;
+BEGIN
+  ni := LookupTypeName(name);
+  IF ni = 0 THEN LookupNamedType := 0
+  ELSE LookupNamedType := type_names[ni].tid;
+END;
+
+PROCEDURE DeclareTypeName(name: Str255; tid: INTEGER);
+BEGIN
+  IF ntype_names >= MAX_TYPE_NAMES THEN AbortWith('codegen: too many type names');
+  ntype_names := ntype_names + 1;
+  type_names[ntype_names].name := name;
+  type_names[ntype_names].tid := tid;
+END;
+
+FUNCTION CurTypeNameScopeBase: INTEGER32;
+{ type_names entries above this index were declared in the innermost open
+  scope. }
+BEGIN
+  IF scope_top = 0 THEN CurTypeNameScopeBase := 0
+  ELSE CurTypeNameScopeBase := type_name_scope_stack[scope_top];
 END;
 
 FUNCTION LookupField(rec_tid: INTEGER; fname: Str255): INTEGER;
@@ -82,7 +109,6 @@ FUNCTION RegisterType(tk, elem_tid: INTEGER; lo, hi: INTEGER32; llvm_ty: ADRMEM)
 BEGIN
   IF ntypes >= MAX_TYPES THEN AbortWith('codegen: too many types');
   ntypes := ntypes + 1;
-  types[ntypes].name := '';
   types[ntypes].tk := tk;
   types[ntypes].elem_tid := elem_tid;
   types[ntypes].lo := lo;
@@ -215,17 +241,6 @@ BEGIN
     PointerSpacesCompatible(from_tid, to_tid);
 END;
 
-FUNCTION LookupConst(name: Str255): INTEGER32;
-VAR
-  i: INTEGER32;
-  found: INTEGER32;
-BEGIN
-  found := 0;
-  FOR i := 1 TO nconsts DO
-    IF const_tbl[i].name = name THEN found := i;
-  LookupConst := found;
-END;
-
 FUNCTION Real64ToInt64(val: REAL): INTEGER64;
 { Truncation toward zero, done in the runtime rather than with TRUNC.
 
@@ -332,16 +347,20 @@ BEGIN
   END;
 END;
 
-FUNCTION FoldsThroughShadowedRoutine(expr_node: ADRMEM): BOOLEAN;
+FUNCTION FoldsThroughShadowedName(expr_node: ADRMEM): BOOLEAN;
 { TRUE when FoldConstInt would reach its value through a spelling that a
-  visible user routine has taken over.  FoldConstInt itself folds ORD/CHR/
-  SUCC/PRED by name, deliberately: ps_expr.pas's ParseConstant admits exactly
-  those names in a constant expression and nothing else can appear there, so
-  a CONST value is the intrinsic whatever else is in scope -- which is also
-  what the Python reference's eval_const_expr/_fold_const_int do.  A general
-  expression is the opposite case: `y := ORD(''a'')' with a user ORD in scope
-  is an ordinary call, and folding it substitutes the builtin's value for the
-  callee the typechecker resolved. }
+  visible variable or user routine has taken over.  FoldConstInt itself
+  folds a CONST name and ORD/CHR/SUCC/PRED by name, deliberately: ps_expr.pas's
+  ParseConstant admits exactly those names in a constant expression and
+  nothing else can appear there, so a CONST value is the intrinsic whatever
+  else is in scope -- which is also what the Python reference's
+  eval_const_expr/_fold_const_int do.  A general expression is the opposite
+  case: `y := ORD(''a'')' with a user ORD in scope is an ordinary call, and
+  `a[big]' with a VAR big visible loads the variable (CodegenExpr asks
+  LookupSym first), so folding either substitutes a value the lowered code
+  never computes.  LookupConst already declines a CONST that a deeper
+  symbol hides; the Identifier arm also covers a symbol and CONST declared
+  in the same scope, which CodegenExpr resolves to the symbol. }
 VAR
   nt: Str255;
   args: ADRMEM;
@@ -350,33 +369,36 @@ VAR
 BEGIN
   found := FALSE;
   nt := NodeType(expr_node);
-  IF nt = 'FuncCall' THEN
+  IF nt = 'Identifier' THEN
+    found := LookupSym(GetStr(expr_node, 'name')) <> 0
+  ELSE IF nt = 'FuncCall' THEN
   BEGIN
     IF UserRoutineShadows(GetStr(expr_node, 'name')) THEN found := TRUE;
     args := GetObj(expr_node, 'args');
     n := ArrSize(args);
     FOR i := 0 TO n - 1 DO
-      IF FoldsThroughShadowedRoutine(ArrItem(args, i)) THEN found := TRUE;
+      IF FoldsThroughShadowedName(ArrItem(args, i)) THEN found := TRUE;
   END
   ELSE IF nt = 'UnaryOp' THEN
-    found := FoldsThroughShadowedRoutine(GetObj(expr_node, 'operand'))
+    found := FoldsThroughShadowedName(GetObj(expr_node, 'operand'))
   ELSE IF nt = 'BinOp' THEN
   BEGIN
-    IF FoldsThroughShadowedRoutine(GetObj(expr_node, 'left')) THEN found := TRUE;
-    IF FoldsThroughShadowedRoutine(GetObj(expr_node, 'right')) THEN found := TRUE;
+    IF FoldsThroughShadowedName(GetObj(expr_node, 'left')) THEN found := TRUE;
+    IF FoldsThroughShadowedName(GetObj(expr_node, 'right')) THEN found := TRUE;
   END;
-  FoldsThroughShadowedRoutine := found;
+  FoldsThroughShadowedName := found;
 END;
 
 FUNCTION IsIntLiteralLike(expr_node: ADRMEM): BOOLEAN;
 { True when FoldConstInt can produce a compile-time INTEGER value.  Every
   caller is a general-expression coercion (CoerceForAssign's narrowing arms,
-  cg_expr's mixed-width binop widening), never a constant declaration, so a
-  shadowed spelling must not fold here -- see FoldsThroughShadowedRoutine. }
+  cg_expr's mixed-width binop widening, index and VLOAD bound checks), never
+  a constant declaration, so a shadowed spelling must not fold here -- see
+  FoldsThroughShadowedName. }
 VAR
   folded: INTEGER64;
 BEGIN
-  IF FoldsThroughShadowedRoutine(expr_node) THEN
+  IF FoldsThroughShadowedName(expr_node) THEN
     IsIntLiteralLike := FALSE
   ELSE
     IsIntLiteralLike := FoldConstInt(expr_node, folded);
@@ -1202,12 +1224,93 @@ BEGIN
   TypeNameStrToTk := tid;
 END;
 
+FUNCTION PendingFwdType(base_node: ADRMEM): INTEGER32;
+{ The fwd_types index of the not-yet-declared TYPE that a pointer's base
+  names, or 0 -- the codegen twin of tc_types' PendingFwdType, and consulted
+  before LookupNamedType for the same reason: a later declaration in the
+  same TYPE section wins over an outer type of the same name. }
+VAR
+  k, found: INTEGER32;
+  uname: Str255;
+BEGIN
+  found := 0;
+  IF nfwd_types > 0 THEN
+    IF NodeType(base_node) = 'NamedType' THEN
+      IF GetObjOrNil(base_node, 'param') = NIL THEN
+      BEGIN
+        uname := UpperStr(GetStr(base_node, 'name'));
+        FOR k := nfwd_types DOWNTO fwd_cur DO
+          IF UpperStr(fwd_types[k].name) = uname THEN found := k;
+      END;
+  PendingFwdType := found;
+END;
+
+FUNCTION ResolveFwdType(k: INTEGER32): INTEGER;
+{ The tid a pointer's forward base denotes. A record target gets a
+  placeholder entry now, which its own RecordType fills in later
+  (FwdReservedTid), so a record and a pointer to it can refer to each
+  other. Any other target is resolved once, here, and its declaration
+  reuses the tid, so both names agree on one type. }
+BEGIN
+  IF fwd_types[k].tid = 0 THEN
+  BEGIN
+    IF NodeType(fwd_types[k].node) = 'RecordType' THEN
+      fwd_types[k].tid := RegisterType(TK_RECORD, 0, 0, 0, NIL)
+    ELSE
+    BEGIN
+      IF fwd_types[k].state = 1 THEN
+        AbortWith2('codegen: pointer type cycle through type: ', fwd_types[k].name);
+      fwd_types[k].state := 1;
+      fwd_types[k].tid := ResolveTypeExpr(fwd_types[k].node);
+      fwd_types[k].state := 2;
+    END;
+  END;
+  ResolveFwdType := fwd_types[k].tid;
+END;
+
+FUNCTION FwdReservedTid(node: ADRMEM): INTEGER;
+{ The tid a forward pointer already reserved or resolved for this
+  type_expr, or 0. }
+VAR
+  k: INTEGER32;
+  tid: INTEGER;
+BEGIN
+  tid := 0;
+  FOR k := 1 TO nfwd_types DO
+    IF fwd_types[k].node = node THEN tid := fwd_types[k].tid;
+  FwdReservedTid := tid;
+END;
+
+FUNCTION RecordTidFor(node: ADRMEM): INTEGER;
+{ The table entry for this RecordType: the placeholder a forward pointer
+  already reserved for it, or a new one. A new entry for a TYPE section's
+  own record is also recorded there before any field is resolved, so a
+  field pointing back at the record being declared (`next: ^N') shares
+  it. }
+VAR
+  k, found: INTEGER32;
+  tid: INTEGER;
+BEGIN
+  found := 0;
+  FOR k := 1 TO nfwd_types DO
+    IF fwd_types[k].node = node THEN found := k;
+  tid := 0;
+  IF found <> 0 THEN tid := fwd_types[found].tid;
+  IF tid = 0 THEN
+  BEGIN
+    tid := RegisterType(TK_RECORD, 0, 0, 0, NIL);
+    IF found <> 0 THEN fwd_types[found].tid := tid;
+  END;
+  RecordTidFor := tid;
+END;
+
 FUNCTION ResolveTypeExpr(te: ADRMEM): INTEGER;
 VAR
   nm, unm, flavor, space_name: Str255;
   nt: Str255;
   tid: INTEGER;
   elem_tid, space_code: INTEGER;
+  fwd_k: INTEGER32;
   lo, hi: INTEGER32;
   count: INTEGER32;
   arr_ty: ADRMEM;
@@ -1401,7 +1504,7 @@ BEGIN
     field_index := 0;
     fixed_off := 0;
     elem_llvm_types := AllocPtrArray(MAX_RECORD_FIELDS);
-    tid := RegisterType(TK_RECORD, 0, 0, 0, NIL); { patched below }
+    tid := RecordTidFor(te); { patched below }
     { Fixed fields, including a named discriminant, are real struct members. }
     FOR fi := 0 TO nfd - 1 DO
     BEGIN
@@ -1482,7 +1585,9 @@ BEGIN
       AbortWith('codegen: only POINTER and device ADS pointers are supported');
     IF (flavor = 'ADS') AND (NOT is_device_compiland) THEN
       AbortWith('codegen: ADS pointers require a DEVICE compiland');
-    elem_tid := ResolveTypeExpr(GetObj(te, 'base'));
+    fwd_k := PendingFwdType(GetObj(te, 'base'));
+    IF fwd_k <> 0 THEN elem_tid := ResolveFwdType(fwd_k)
+    ELSE elem_tid := ResolveTypeExpr(GetObj(te, 'base'));
     { A pointer's flavor and, for ADS, its space are part of its identity for
       assignment compatibility (PTR_SPACE_PLAIN and the PTR_SPACE_* codes are
       what TypesCompatibleForAssign compares), so they are resolved for every
@@ -1512,7 +1617,12 @@ BEGIN
       ELSE IF space_code = PTR_SPACE_CONSTANT THEN lo := 4
       ELSE IF space_code = PTR_SPACE_LOCAL THEN lo := 5;
     END;
-    arr_ty := LLVMPointerType(LLVMTypeForTk(elem_tid), lo);
+    { A forward record target has no LLVM type yet; pointers are opaque, so
+      any pointee gives the same `ptr'. AND is eager: test the kind first. }
+    arr_ty := NIL;
+    IF TypeKind(elem_tid) = TK_RECORD THEN
+      IF types[elem_tid].llvm_ty = NIL THEN arr_ty := LLVMPointerType(i8ty, lo);
+    IF arr_ty = NIL THEN arr_ty := LLVMPointerType(LLVMTypeForTk(elem_tid), lo);
     tid := RegisterType(TK_POINTER, elem_tid, 0, 0, arr_ty);
     types[tid].ptr_space := space_code;
   END
@@ -1603,7 +1713,7 @@ BEGIN
     FOR mi := 0 TO count - 1 DO
     BEGIN
       fname := CStrToStr255(cJSON_GetStringValue(ArrItem(values_arr, mi)));
-      IF LookupConst(fname) <> 0 THEN
+      IF LookupConst(fname) > CurConstScopeBase THEN
         AbortWith2('codegen: duplicate const declaration: ', fname);
       IF nconsts >= MAX_CONSTS THEN AbortWith('codegen: too many consts');
       nconsts := nconsts + 1;

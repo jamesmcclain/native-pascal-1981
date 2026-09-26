@@ -980,9 +980,11 @@ static void type_section(Decl *d)
         }
         Sym *s = new_sym(t->name, SY_TYPE, t->loc);
         s->from_iface = iface_unit != NULL;
+        set_type_section(&d->items, i);
         s->ty = resolve_type(t->te);
         define(s);
     }
+    set_type_section(NULL, 0);
     resolve_pending_pointers();
 }
 

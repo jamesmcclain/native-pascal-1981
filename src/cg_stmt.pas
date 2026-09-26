@@ -97,8 +97,12 @@ VAR
   i: INTEGER32;
 BEGIN
   i := nlabels;
-  WHILE (i >= 1) AND (labels[i].name <> name) DO
+  { Native AND is eager: do not read labels[0] when no label matches. }
+  WHILE i >= 1 DO
+  BEGIN
+    IF labels[i].name = name THEN BREAK;
     i := i - 1;
+  END;
   LookupLabel := i;
 END;
 
@@ -1335,7 +1339,7 @@ VAR
   args, arg0: ADRMEM;
   symi: INTEGER32;
   ptr_tid, pointee_tid: INTEGER;
-  raw, casted, call_args, bound, bytes, header: ADRMEM;
+  raw, casted, call_args, bound, bytes, header, ptr_slot: ADRMEM;
   narg: INTEGER32;
   fcb_ptr, assign_chars, assign_len: ADRMEM;
 BEGIN
@@ -1423,12 +1427,23 @@ BEGIN
        ((name = 'NEW') AND (narg <> 1) AND (narg <> 2)) THEN
       AbortWith2('codegen: wrong argument count for: ', name);
     arg0 := ArrItem(args, 0);
-    IF NodeType(arg0) <> 'Identifier' THEN
-      AbortWith2('codegen: argument must be a bare pointer variable: ', name);
-    symi := LookupSym(GetStr(arg0, 'name'));
-    IF symi = 0 THEN
-      AbortWith2('codegen: undefined variable: ', GetStr(arg0, 'name'));
-    ptr_tid := symbols[symi].tk;
+    IF NodeType(arg0) = 'Designator' THEN
+    BEGIN
+      { A selected pointer such as q^.next: the slot is computed once,
+        before any SUPER ARRAY bound is evaluated. }
+      ptr_slot := ComputeDesignatorAddress(arg0);
+      ptr_tid := last_val_tk;
+    END
+    ELSE IF NodeType(arg0) = 'Identifier' THEN
+    BEGIN
+      symi := LookupSym(GetStr(arg0, 'name'));
+      IF symi = 0 THEN
+        AbortWith2('codegen: undefined variable: ', GetStr(arg0, 'name'));
+      ptr_slot := symbols[symi].llvm_val;
+      ptr_tid := symbols[symi].tk;
+    END
+    ELSE
+      AbortWith2('codegen: argument must be a pointer variable: ', name);
     IF TypeKind(ptr_tid) <> TK_POINTER THEN
       AbortWith2('codegen: argument is not a POINTER variable: ', name);
     IF name = 'NEW' THEN
@@ -1456,11 +1471,11 @@ BEGIN
         raw := LLVMBuildCall2(builder, malloc_fnty, malloc_fn, call_args, 1, MakeCStr(''));
         casted := LLVMBuildBitCast(builder, raw, LLVMTypeForTk(ptr_tid), MakeCStr(''));
       END;
-      LLVMBuildStore(builder, casted, symbols[symi].llvm_val);
+      LLVMBuildStore(builder, casted, ptr_slot);
     END
     ELSE
     BEGIN
-      raw := LLVMBuildLoad2(builder, LLVMTypeForTk(ptr_tid), symbols[symi].llvm_val, MakeCStr(''));
+      raw := LLVMBuildLoad2(builder, LLVMTypeForTk(ptr_tid), ptr_slot, MakeCStr(''));
       casted := LLVMBuildBitCast(builder, raw, i8ptrty, MakeCStr(''));
       IF types[types[ptr_tid].elem_tid].is_super THEN
         casted := LLVMBuildGEP2(builder, i8ty, casted,

@@ -274,6 +274,44 @@ it from a routine, take its `SIZEOF` / `LOWER` / `UPPER`.
   compiles may use the syntax. See
   [`bootstrap_subset.md`](bootstrap_subset.md).
 
+## BOOLEAN set constructors **[native]**
+
+Both dialects accept BOOLEAN values in a set constructor. A value can be
+`FALSE`, `TRUE`, a BOOLEAN variable, or a named BOOLEAN constant. BOOLEAN
+range endpoints also work. `[FALSE..TRUE]` contains ordinals 0 and 1.
+`[TRUE..FALSE]` is empty. The compiler evaluates each element and each range
+endpoint once before it adds bits. An evaluated union such as
+`bs := bs + [TRUE]` works when `bs` is a `SET OF BOOLEAN`.
+
+The set still uses a 256-bit bitvector. An anonymous constructor keeps the
+generic INTEGER bounds 0..255. Thus, mixing a declared BOOLEAN set with a
+constructor in a set operation does not retain BOOLEAN bounds.
+
+## Set constructor element range **[native]**
+
+A set holds ordinals 0..255. Each element of a set constructor, and each
+endpoint of a nonempty range, must be in 0..255. If one is not, the program
+stops with `runtime error: set element V is outside 0..255`. The compiler
+does this check even for a constant element such as `[300]`, and even when
+`$RANGECK` is off. A reversed range such as `[300..0]` is empty, so the
+compiler does not check its endpoints. Device code does not do this check.
+
+## BOOLEAN membership **[native]**
+
+Both dialects accept a BOOLEAN value on the left of `IN`, for example
+`TRUE IN bs` or `flag IN [FALSE..TRUE]`. The compiler zero-extends the value
+before the bit test, so `FALSE` is ordinal 0 and `TRUE` is ordinal 1. It
+evaluates the left operand once and then the right operand once. This
+left-then-right order is a native choice; the 1981 manual does not specify
+it. The left operand of `IN` must be an INTEGER, CHAR or BOOLEAN value.
+Other ordinal types, such as enumerations, WORD and wide integers, are not
+supported there. The compiler does not check that the element type matches
+the declared set base.
+
+As the 1981 manual allows, the left operand can be outside the range of the
+set's base type. Then the result is FALSE. This includes a value outside
+0..255, such as -1 or 300, which cannot be in any set.
+
 ## Bound expressions **[native]**
 
 `LOWER(expression)` and `UPPER(expression)` accept the 1981 manual's array,
@@ -367,8 +405,54 @@ when it is stored.
 procedure calls and `CASE` statements. A statement that does not record it,
 such as a `FOR` loop or a function call in an `IF` condition, uses the
 setting of the last assignment, call or `CASE` compiled before it. Array
-indexes and string capacities are still not range-checked, and `DEVICE`
-code is never checked.
+indexes are not checked by `$RANGECK` (see `$INDEXCK` below); string
+capacities are still unchecked. NVPTX `DEVICE` code has no host-runtime
+subrange check; a `DEVICE` compiland targeting the CPU follows the host
+`$RANGECK` path.
+
+### Fixed-array index checks (`$INDEXCK`) **[native]**
+
+`$INDEXCK` defaults to on. The native parser snapshots it at the first token
+of **each** index expression (after `[` or a dimension comma), including indexes
+in assignments, calls, conditions, loops and nested selectors. The snapshot
+survives typechecking and a legacy AST without it defaults to on. `{$INDEXCK-}`
+disables subsequent snapshots and `{$INDEXCK+}` restores them, independently of
+`$RANGECK`; a directive later within an index expression does not change that
+index's snapshot, but does affect subsequent indexes.
+
+On host programs, an enabled snapshot guards a fixed `ARRAY [lo..hi] OF T`
+selector before computing its offset/address or accessing memory. This covers
+reads and writes through ordinary arrays, nested dimensions, record fields and
+pointers. Each index expression runs once. A checked out-of-range index,
+including a constant, fails **when the access runs**, not at compile time: the
+runtime flushes stdout, prints
+
+    runtime error: array index V is outside bounds LO..HI
+
+to stderr using the original signed or unsigned index value (including 64-bit
+values) and the declared bounds, flushes stderr, then aborts (normally status
+134 on Linux). An unchecked constant or variable index emits no fixed-array
+guard; this does not make an out-of-bounds access safe. `$RANGECK` does not
+control array indexes.
+
+This slice does **not** add checks to `SUPER ARRAY` dynamic-bound subscripts
+(the type table's high bound is a placeholder), `STRING`/`LSTRING` subscripts,
+or the capacities of `CONCAT`, `COPYLST`, `COPYSTR` and `INSERT`. Nor does it
+change `VECTOR` lane indexing or `VLOAD`/`VSTORE`: constant out-of-range vector
+lanes and fixed-array vector transfers retain their compile-time diagnostics;
+variable vector lanes and fixed-array transfer offsets do not use `$INDEXCK`.
+`VLOAD`/`VSTORE` through a `NEW`-allocated super-array pointer retain their
+separate whole-lane-range runtime check (see [Vectors (SIMD)](#vectors-simd-extended)).
+`DEVICE` compilands, whether CPU-targeted or NVPTX, do not get this host
+fixed-array runtime guard. The Python reference AST does not carry the native
+`indexck` snapshot.
+
+This is a deliberate **local fixed-array subset**, not exact IBM parity. The
+[IBM PC Pascal Compiler (August 1981)](https://www.bitsavers.org/pdf/ibm/pc/languages/IBM_Pascal_Compiler_Aug81.pdf)
+uses `$INDEXCK` for super arrays too and diagnoses a constant out-of-range
+array index at compile time (error 198). [Pascal/VS](https://www.bitsavers.org/pdf/ibm/370/pascal/SH20-6168-1_Pascal_VS_198112.pdf)
+uses `%CHECK SUBSCRIPT` instead and includes string subscripts. Neither
+historical contract implies that the unchecked cases above are safe.
 
 ## Integer widths
 

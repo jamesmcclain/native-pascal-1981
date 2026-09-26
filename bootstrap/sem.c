@@ -381,6 +381,31 @@ static int64_t const_int_value(Expr *e)
 
 static Vec pending_ptrs;
 
+/* The TYPE section being declared and the index of the declaration in it
+ * being resolved (see set_type_section). */
+static Vec *section_items;
+static int section_pos;
+
+void set_type_section(Vec *items, int pos)
+{
+    section_items = items;
+    section_pos = pos;
+}
+
+/* Whether name is declared by the current TYPE section at or after the
+ * declaration being resolved.  Such a declaration wins over an outer type of
+ * the same name, so a pointer to it waits for the end of the section instead
+ * of binding to whatever lookup() finds now. */
+static int declared_later_in_section(const char *name)
+{
+    if (!section_items)
+        return 0;
+    for (int i = section_pos; i < section_items->n; i++)
+        if (strcmp(((TypeDecl *) section_items->p[i])->name, name) == 0)
+            return 1;
+    return 0;
+}
+
 Type *resolve_type(TypeExpr *te)
 {
     Sym *s;
@@ -425,7 +450,7 @@ Type *resolve_type(TypeExpr *te)
     case TE_POINTER:
         t = new_type(TY_PTR);
         t->loc = te->loc;
-        s = lookup(te->name);
+        s = declared_later_in_section(te->name) ? NULL : lookup(te->name);
         if (s && s->kind == SY_TYPE) {
             t->target = s->ty;
         } else {
@@ -462,8 +487,20 @@ void resolve_pending_pointers(void)
         if (!s || s->kind != SY_TYPE)
             fatal(t->loc, "undeclared pointer target type '%s'", t->pending);
         t->target = s->ty;
-        t->pending = NULL;
     }
+    /* Pointers that only name each other never reach a real type, and would
+     * send ctype_ref round the loop forever. */
+    for (int i = 0; i < pending_ptrs.n; i++) {
+        Type *t = pending_ptrs.p[i];
+        Type *u = t->target;
+        for (int steps = 0; u && u->kind == TY_PTR && steps <= pending_ptrs.n; steps++) {
+            if (u == t)
+                fatal(t->loc, "pointer type cycle through type '%s'", t->pending);
+            u = u->target;
+        }
+    }
+    for (int i = 0; i < pending_ptrs.n; i++)
+        ((Type *) pending_ptrs.p[i])->pending = NULL;
     pending_ptrs.n = 0;
 }
 

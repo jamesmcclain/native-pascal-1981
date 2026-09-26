@@ -453,6 +453,14 @@ BEGIN
   CurValueStr := pt^.value_str;
 END;
 
+FUNCTION CurIndexCk: BOOLEAN;
+VAR
+  pt: PToken;
+BEGIN
+  pt := GetTok(0);
+  CurIndexCk := pt^.f_indexck;
+END;
+
 FUNCTION CurRangeCk: BOOLEAN;
 VAR
   pt: PToken;

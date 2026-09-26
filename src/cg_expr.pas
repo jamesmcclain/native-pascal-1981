@@ -38,6 +38,43 @@ PROCEDURE ResolveStringExprCharsLen(expr: ADRMEM; VAR chars_ptr: ADRMEM; VAR len
   a few more instructions in the emitted IR -- an acceptable tradeoff given
   this file's methodology is behavioral parity, not IR-shape parity. }
 
+FUNCTION SetElementOutside(v: ADRMEM): ADRMEM;
+{ TRUE when the i16 set ordinal v is outside 0..255. The compare is
+  unsigned, so a negative ordinal is outside too. }
+BEGIN
+  SetElementOutside := LLVMBuildICmp(builder, LLVMIntUGT, v,
+    LLVMConstInt(i16ty, 255, 0), MakeCStr(''));
+END;
+
+PROCEDURE EmitSetElementCheck(bad, v: ADRMEM);
+{ A set is a 256-bit bitvector, so when bad holds, call the noreturn
+  pas_set_element_error (runtime/set_element.c) with the i16 ordinal v from
+  a cold block instead of setting a bit outside the set. Leaves the builder
+  in the in-range block. Device code has no host runtime to call, so it is
+  not checked. }
+VAR
+  bad_bb, ok_bb, ps, fnty, fn, args, discard: ADRMEM;
+BEGIN
+  IF is_nvptx_device THEN RETURN;
+  bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('setelem.bad'));
+  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('setelem.ok'));
+  LLVMBuildCondBr(builder, bad, bad_bb, ok_bb);
+
+  LLVMPositionBuilderAtEnd(builder, bad_bb);
+  ps := AllocPtrArray(1);
+  SetPtrArrayElem(ps, 0, i64ty);
+  fnty := LLVMFunctionType(voidty, ps, 1, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_set_element_error'));
+  IF fn = NIL THEN
+    fn := LLVMAddFunction(modl, MakeCStr('pas_set_element_error'), fnty);
+  args := AllocPtrArray(1);
+  SetPtrArrayElem(args, 0, LLVMBuildSExt(builder, v, i64ty, MakeCStr('')));
+  discard := LLVMBuildCall2(builder, fnty, fn, args, 1, MakeCStr(''));
+  discard := LLVMBuildUnreachable(builder);
+
+  LLVMPositionBuilderAtEnd(builder, ok_bb);
+END;
+
 PROCEDURE EmitSetRangeLoop(slot: ADRMEM; low_node, high_node: ADRMEM);
 { FOR i := low TO high DO SetRuntimeBit(slot, i) -- same alloca-counter loop
   idiom as CodegenForStmt/EmitByteCopyLoop, done here instead of reusing
@@ -50,13 +87,28 @@ VAR
   i_slot: ADRMEM;
   loop_bb, body_bb, end_bb: ADRMEM;
   cur_i, cmp_val, next_i: ADRMEM;
+  low_bad, bad: ADRMEM;
 BEGIN
   low_val := CodegenExpr(low_node);
-  IF last_val_tk = TK_CHAR THEN low_val := LLVMBuildZExt(builder, low_val, i16ty, MakeCStr(''))
-  ELSE IF last_val_tk <> TK_INTEGER THEN AbortWith('codegen: a set range bound must be INTEGER or CHAR');
+  IF (last_val_tk = TK_CHAR) OR (last_val_tk = TK_BOOLEAN) THEN
+    low_val := LLVMBuildZExt(builder, low_val, i16ty, MakeCStr(''))
+  ELSE IF last_val_tk <> TK_INTEGER THEN
+    AbortWith('codegen: a set range bound must be INTEGER, CHAR or BOOLEAN');
   high_val := CodegenExpr(high_node);
-  IF last_val_tk = TK_CHAR THEN high_val := LLVMBuildZExt(builder, high_val, i16ty, MakeCStr(''))
-  ELSE IF last_val_tk <> TK_INTEGER THEN AbortWith('codegen: a set range bound must be INTEGER or CHAR');
+  IF (last_val_tk = TK_CHAR) OR (last_val_tk = TK_BOOLEAN) THEN
+    high_val := LLVMBuildZExt(builder, high_val, i16ty, MakeCStr(''))
+  ELSE IF last_val_tk <> TK_INTEGER THEN
+    AbortWith('codegen: a set range bound must be INTEGER, CHAR or BOOLEAN');
+
+  { A nonempty range must lie in 0..255; this also keeps the i16 counter
+    from wrapping past 32767. An empty (reversed) range adds nothing. }
+  low_bad := SetElementOutside(low_val);
+  bad := LLVMBuildAnd(builder,
+    LLVMBuildICmp(builder, LLVMIntSLE, low_val, high_val, MakeCStr('')),
+    LLVMBuildOr(builder, low_bad, SetElementOutside(high_val), MakeCStr('')),
+    MakeCStr(''));
+  EmitSetElementCheck(bad,
+    LLVMBuildSelect(builder, low_bad, low_val, high_val, MakeCStr('')));
 
   i_slot := EntryAlloca(i16ty, '');
   LLVMBuildStore(builder, low_val, i_slot);
@@ -100,10 +152,11 @@ BEGIN
     ELSE
     BEGIN
       ordv := CodegenExpr(el);
-      IF last_val_tk = TK_CHAR THEN
+      IF (last_val_tk = TK_CHAR) OR (last_val_tk = TK_BOOLEAN) THEN
         ordv := LLVMBuildZExt(builder, ordv, i16ty, MakeCStr(''))
       ELSE IF last_val_tk <> TK_INTEGER THEN
-        AbortWith('codegen: a set element must be INTEGER or CHAR');
+        AbortWith('codegen: a set element must be INTEGER, CHAR or BOOLEAN');
+      EmitSetElementCheck(SetElementOutside(ordv), ordv);
       SetRuntimeBit(slot, ordv);
     END;
   END;
@@ -365,9 +418,11 @@ BEGIN
   END
   ELSE IF op = 'IN' THEN
   BEGIN
-    IF ltk = TK_CHAR THEN lval := LLVMBuildZExt(builder, lval, i16ty, MakeCStr(''))
+    { Zero-extend so a BOOLEAN TRUE (i1) is ordinal 1, not -1. }
+    IF (ltk = TK_CHAR) OR (ltk = TK_BOOLEAN) THEN
+      lval := LLVMBuildZExt(builder, lval, i16ty, MakeCStr(''))
     ELSE IF ltk <> TK_INTEGER THEN
-      AbortWith('codegen: IN requires an INTEGER or CHAR left operand');
+      AbortWith('codegen: IN requires an INTEGER, CHAR or BOOLEAN left operand');
     IF TypeKind(rtk) <> TK_SET THEN
       AbortWith('codegen: IN requires a SET right operand');
     res := CodegenSetMember(lval, rval);
@@ -933,6 +988,9 @@ VAR
   fi: INTEGER;
   file_handle, file_fcb, file_call_args, file_raw_buf, discard: ADRMEM;
   folded: INTEGER64;
+  indexck, unsigned_idx: BOOLEAN;
+  idx128, i128ty, in_bounds, upper_ok, bad_bb, ok_bb: ADRMEM;
+  error_fn, error_fnty, error_params, error_args, discard_call: ADRMEM;
   deref_ptr_tid: INTEGER; { committed to last_desig_deref_ptr_tid only at
     the end, since index expressions below recurse through here }
 BEGIN
@@ -979,23 +1037,103 @@ BEGIN
       IF (TypeKind(cur_tid) <> TK_ARRAY) AND (TypeKind(cur_tid) <> TK_LSTRING)
         AND (TypeKind(cur_tid) <> TK_STRING) AND (TypeKind(cur_tid) <> TK_VECTOR) THEN
         AbortWith('codegen: an INDEX selector was applied to a non-array');
+      { Per-selector state, never inherited from CodegenStmt. Keep this
+        local across recursive CodegenExpr calls. Legacy ASTs omit the
+        snapshot and use the language default (on). }
+      indexck := TRUE;
+      IF HasKey(sel, 'indexck') THEN indexck := GetBool(sel, 'indexck');
       idx_expr := GetObj(sel, 'index_or_field');
       { A vector lane index is 0-based (types[].lo = 0). A constant lane
         index outside 0..lanes-1 is a compile-time error -- the same
         re-validation M0 does for the type itself, since this file also
-        lowers frozen ASTs the typechecker never saw. A variable index is
-        not range-checked (no $INDEXCK machinery; arrays are unchecked
-        too). }
-      IF (TypeKind(cur_tid) = TK_VECTOR) AND FoldConstInt(idx_expr, folded) THEN
+        lowers frozen ASTs the typechecker never saw. A variable vector
+        index is not range-checked. }
+      IF (TypeKind(cur_tid) = TK_VECTOR) AND IsIntLiteralLike(idx_expr) AND
+         FoldConstInt(idx_expr, folded) THEN
         IF (folded < 0) OR (folded > types[cur_tid].hi) THEN
           AbortWith('codegen: vector lane index out of range');
       idx_val := CodegenExpr(idx_expr);
+      { Only fixed ARRAY selectors are guarded. Even a constant outside
+        lo..hi takes the runtime failure branch when its access runs, not
+        a compile-time error. A SUPER ARRAY's stored hi is a placeholder,
+        not a runtime upper bound; string and vector selectors retain their
+        existing behavior. Compare the original index before narrowing or
+        subtracting lo, once per selector. }
+      IF indexck AND (NOT is_device_compiland) AND
+         (TypeKind(cur_tid) = TK_ARRAY) AND (NOT types[cur_tid].is_super) THEN
+      BEGIN
+        unsigned_idx := (last_val_tk = TK_CHAR) OR
+          (last_val_tk = TK_BOOLEAN) OR (TypeKind(last_val_tk) = TK_ENUM) OR
+          IsUnsignedWordTk(last_val_tk);
+        IF NOT (unsigned_idx OR IsIntegerFamilyTk(last_val_tk)) THEN
+          AbortWith('codegen: an array index must be an ordinal type');
+        i128ty := LLVMIntTypeInContext(ctx, 128);
+        { Only an INTEGER constant expression may have lost its mathematical
+          value when CodegenExpr materialized it as vintage i16 (e.g. 40000).
+          Never substitute a signed INTEGER64 fold for a typed WORD/CHAR/enum
+          value: in particular MAXWORD64 must zero-extend its live i64 bits.
+          IsIntLiteralLike refuses a name that CodegenExpr resolved to a
+          variable or user routine rather than to the CONST or intrinsic.
+          The expression itself was evaluated exactly once above. }
+        IF (last_val_tk = TK_INTEGER) AND IsIntLiteralLike(idx_expr) AND
+           FoldConstInt(idx_expr, folded) AND
+           ((folded < -32768) OR (folded > 32767)) THEN
+          idx128 := LLVMConstInt(i128ty, folded, 1)
+        ELSE IF unsigned_idx THEN
+          idx128 := LLVMBuildZExt(builder, idx_val, i128ty, MakeCStr(''))
+        ELSE
+          idx128 := LLVMBuildSExt(builder, idx_val, i128ty, MakeCStr(''));
+        in_bounds := LLVMBuildICmp(builder, LLVMIntSGE, idx128,
+          LLVMConstInt(i128ty, types[cur_tid].lo, 1), MakeCStr(''));
+        upper_ok := LLVMBuildICmp(builder, LLVMIntSLE, idx128,
+          LLVMConstInt(i128ty, types[cur_tid].hi, 1), MakeCStr(''));
+        in_bounds := LLVMBuildAnd(builder, in_bounds, upper_ok, MakeCStr(''));
+        bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('index.bad'));
+        ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('index.ok'));
+        LLVMBuildCondBr(builder, in_bounds, ok_bb, bad_bb);
+        LLVMPositionBuilderAtEnd(builder, bad_bb);
+        { Diagnose the original, full-width index before forming any GEP.
+          Pass its low 64 bits and signedness separately so WORD64 prints
+          as unsigned, just as the i128 guard compares it. DEVICE
+          compilands never enter this host-only path. }
+        error_params := AllocPtrArray(4);
+        SetPtrArrayElem(error_params, 0, i64ty);
+        SetPtrArrayElem(error_params, 1, i32ty);
+        SetPtrArrayElem(error_params, 2, i64ty);
+        SetPtrArrayElem(error_params, 3, i64ty);
+        error_fnty := LLVMFunctionType(voidty, error_params, 4, 0);
+        error_fn := LLVMGetNamedFunction(modl, MakeCStr('pas_array_index_error'));
+        IF error_fn = NIL THEN
+          error_fn := LLVMAddFunction(modl, MakeCStr('pas_array_index_error'), error_fnty);
+        error_args := AllocPtrArray(4);
+        SetPtrArrayElem(error_args, 0, LLVMBuildTrunc(builder, idx128, i64ty, MakeCStr('')));
+        IF unsigned_idx THEN
+          SetPtrArrayElem(error_args, 1, LLVMConstInt(i32ty, 1, 0))
+        ELSE
+          SetPtrArrayElem(error_args, 1, LLVMConstInt(i32ty, 0, 0));
+        SetPtrArrayElem(error_args, 2, LLVMConstInt(i64ty, types[cur_tid].lo, 1));
+        SetPtrArrayElem(error_args, 3, LLVMConstInt(i64ty, types[cur_tid].hi, 1));
+        discard_call := LLVMBuildCall2(builder, error_fnty, error_fn, error_args, 4, MakeCStr(''));
+        discard_call := LLVMBuildUnreachable(builder);
+        LLVMPositionBuilderAtEnd(builder, ok_bb);
+      END;
       { The reference codegen (resolve_designator_ptr_typed, types_map.py)
         accepts any integer-family index width -- it just subtracts the
         lower bound using a constant of the index's own LLVM type and lets
         GEP take an index of whatever width it is, not just a plain
         16-bit INTEGER. Match that here instead of requiring TK_INTEGER. }
-      IF (last_val_tk = TK_CHAR) OR (last_val_tk = TK_BOOLEAN) OR
+      IF indexck AND (NOT is_device_compiland) AND
+         (TypeKind(cur_tid) = TK_ARRAY) AND (NOT types[cur_tid].is_super) THEN
+      BEGIN
+        { A checked fixed-array offset is nonnegative and at most 65535.
+          Reuse the already-checked full value: GEP treats its index as
+          signed, so subtracting in i8/i16 would turn a legal WORD8/WORD
+          offset (e.g. 255) into a negative address. }
+        offset := LLVMBuildSub(builder,
+          LLVMBuildTrunc(builder, idx128, i64ty, MakeCStr('')),
+          LLVMConstInt(i64ty, types[cur_tid].lo, 1), MakeCStr(''));
+      END
+      ELSE IF (last_val_tk = TK_CHAR) OR (last_val_tk = TK_BOOLEAN) OR
          (TypeKind(last_val_tk) = TK_ENUM) THEN
       BEGIN
         { A CHAR (i8), BOOLEAN (i1) or enumeration (i32) index is unsigned:

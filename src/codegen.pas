@@ -745,6 +745,9 @@ BEGIN
   in_local_scope := FALSE;
   nroutines := 0;
   nconsts := 0;
+  ntype_names := 0;
+  nfwd_types := 0;
+  fwd_cur := 0;
   cur_routine_name := '';
   cur_func_name := '';
   loop_depth := 0;
