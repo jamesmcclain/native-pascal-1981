@@ -11,20 +11,23 @@ IMPLEMENTATION OF cg_symbols;
 { ============================ symbol table ============================== }
 
 PROCEDURE PushScope;
-{ Marks both tables, not just symbols: a routine declared inside this scope
-  is no more visible after it ends than a variable is. Its entry is written
-  before its own body pushes a scope, so a routine always survives its own
-  PopScope and only its nested children are discarded. }
+{ Marks every table, not just symbols: a routine or CONST declared inside
+  this scope is no more visible after it ends than a variable is. A
+  routine's entry is written before its own body pushes a scope, so a
+  routine always survives its own PopScope and only its nested children
+  are discarded. }
 BEGIN
   scope_top := scope_top + 1;
   scope_stack[scope_top] := nsymbols;
   routine_scope_stack[scope_top] := nroutines;
+  const_scope_stack[scope_top] := nconsts;
 END;
 
 PROCEDURE PopScope;
 BEGIN
   nsymbols := scope_stack[scope_top];
   nroutines := routine_scope_stack[scope_top];
+  nconsts := const_scope_stack[scope_top];
   scope_top := scope_top - 1;
 END;
 

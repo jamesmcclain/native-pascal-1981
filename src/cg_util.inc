@@ -22,6 +22,8 @@ PROCEDURE LeaveStmtLevel;
 FUNCTION DecodeStringLiteral(raw: Str255): Str255;
 PROCEDURE AppendChar(VAR s: Str255; ch: CHAR);
 FUNCTION UpperStr(s: Str255): Str255;
+FUNCTION LookupConst(name: Str255): INTEGER32;
+FUNCTION CurConstScopeBase: INTEGER32;
 FUNCTION LookupSym(name: Str255): INTEGER32;
 FUNCTION LookupRoutine(name: Str255): INTEGER32;
 FUNCTION UserRoutineShadows(name: Str255): BOOLEAN;

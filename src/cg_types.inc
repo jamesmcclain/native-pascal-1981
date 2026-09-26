@@ -27,7 +27,6 @@ FUNCTION EnsureBoolVectorType(n: INTEGER32): INTEGER;
 FUNCTION PointerSpacesCompatible(from_tid, to_tid: INTEGER): BOOLEAN;
 FUNCTION AggStringTypesInterchangeable(a, b: INTEGER): BOOLEAN;
 FUNCTION TypesCompatibleForAssign(from_tid, to_tid: INTEGER): BOOLEAN;
-FUNCTION LookupConst(name: Str255): INTEGER32;
 FUNCTION FoldConstInt(expr_node: ADRMEM; VAR folded: INTEGER64): BOOLEAN;
 FUNCTION IsIntLiteralLike(expr_node: ADRMEM): BOOLEAN;
 FUNCTION Real64ToInt64(val: REAL): INTEGER64;

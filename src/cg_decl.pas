@@ -1894,13 +1894,15 @@ BEGIN
     IF (NOT is_char) AND (enum_tid = 0) AND (integer_tid = 0) THEN
       integer_tid := ConstIntegerType(ival);
   END;
+  { Only a CONST of this same scope is a repeat; an outer one is shadowed. }
   existing := LookupConst(name);
+  IF existing <= CurConstScopeBase THEN existing := 0;
   IF existing <> 0 THEN
   BEGIN
     { As with TYPE, the matching INTERFACE declaration was lowered first --
-      and, as there, only a unit-level repeat can be that one: `const_tbl` is
-      flat and global, so a routine-local CONST cannot shadow an outer name.
-      An accepted repeat must also agree with what the interface said; keeping
+      and, as there, only a unit-level repeat can be that one: a routine-local
+      repeat in the same scope is a plain duplicate. An accepted repeat must
+      also agree with what the interface said; keeping
       the interface's value for a differing IMPLEMENTATION spelling would
       silently compile the two halves against different constants. }
     IF (NOT in_local_scope) AND defining_implementation AND

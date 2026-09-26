@@ -207,6 +207,11 @@ VAR
 
   const_tbl: ARRAY [1..MAX_CONSTS] OF ConstRec;
   nconsts: INTEGER32;
+  const_scope_stack: ARRAY [1..MAX_SCOPES] OF INTEGER32;
+  { The const table's high-water mark per scope, kept in lockstep with
+    scope_stack like routine_scope_stack. A routine-local CONST (or
+    enumeration member) is gone once its routine's body ends, and an inner
+    one may reuse an outer name. }
 
   cur_routine_name: Str255; { source name of the PROCEDURE/FUNCTION whose
                               body is currently being lowered; used to give

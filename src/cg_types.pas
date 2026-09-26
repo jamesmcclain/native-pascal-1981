@@ -215,21 +215,6 @@ BEGIN
     PointerSpacesCompatible(from_tid, to_tid);
 END;
 
-FUNCTION LookupConst(name: Str255): INTEGER32;
-{ Case-insensitive, like LookupSym and LookupRoutine: `CONST Big = 7' is
-  also BIG and big. }
-VAR
-  i: INTEGER32;
-  found: INTEGER32;
-  uname: Str255;
-BEGIN
-  uname := UpperStr(name);
-  found := 0;
-  FOR i := 1 TO nconsts DO
-    IF UpperStr(const_tbl[i].name) = uname THEN found := i;
-  LookupConst := found;
-END;
-
 FUNCTION Real64ToInt64(val: REAL): INTEGER64;
 { Truncation toward zero, done in the runtime rather than with TRUNC.
 
@@ -345,9 +330,11 @@ FUNCTION FoldsThroughShadowedName(expr_node: ADRMEM): BOOLEAN;
   else is in scope -- which is also what the Python reference's
   eval_const_expr/_fold_const_int do.  A general expression is the opposite
   case: `y := ORD(''a'')' with a user ORD in scope is an ordinary call, and
-  `a[big]' with a VAR big in scope loads the variable (CodegenExpr looks up
-  symbols before the flat const table), so folding either substitutes a
-  value the lowered code never computes. }
+  `a[big]' with a VAR big visible loads the variable (CodegenExpr asks
+  LookupSym first), so folding either substitutes a value the lowered code
+  never computes.  LookupConst already declines a CONST that a deeper
+  symbol hides; the Identifier arm also covers a symbol and CONST declared
+  in the same scope, which CodegenExpr resolves to the symbol. }
 VAR
   nt: Str255;
   args: ADRMEM;
@@ -1612,7 +1599,7 @@ BEGIN
     FOR mi := 0 TO count - 1 DO
     BEGIN
       fname := CStrToStr255(cJSON_GetStringValue(ArrItem(values_arr, mi)));
-      IF LookupConst(fname) <> 0 THEN
+      IF LookupConst(fname) > CurConstScopeBase THEN
         AbortWith2('codegen: duplicate const declaration: ', fname);
       IF nconsts >= MAX_CONSTS THEN AbortWith('codegen: too many consts');
       nconsts := nconsts + 1;
