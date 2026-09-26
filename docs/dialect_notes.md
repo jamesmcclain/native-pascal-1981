@@ -299,6 +299,10 @@ Other ordinal types, such as enumerations, WORD and wide integers, are not
 supported there. The compiler does not check that the element type matches
 the declared set base.
 
+As the 1981 manual allows, the left operand can be outside the range of the
+set's base type. Then the result is FALSE. This includes a value outside
+0..255, such as -1 or 300, which cannot be in any set.
+
 ## Bound expressions **[native]**
 
 `LOWER(expression)` and `UPPER(expression)` accept the 1981 manual's array,
