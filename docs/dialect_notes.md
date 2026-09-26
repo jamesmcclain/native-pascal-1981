@@ -285,9 +285,19 @@ endpoint once before it adds bits. An evaluated union such as
 
 The set still uses a 256-bit bitvector. An anonymous constructor keeps the
 generic INTEGER bounds 0..255. Thus, mixing a declared BOOLEAN set with a
-constructor in a set operation does not retain BOOLEAN bounds. BOOLEAN values
-on the left of `IN` remain unsupported; this change does not add BOOLEAN
-membership.
+constructor in a set operation does not retain BOOLEAN bounds.
+
+## BOOLEAN membership **[native]**
+
+Both dialects accept a BOOLEAN value on the left of `IN`, for example
+`TRUE IN bs` or `flag IN [FALSE..TRUE]`. The compiler zero-extends the value
+before the bit test, so `FALSE` is ordinal 0 and `TRUE` is ordinal 1. It
+evaluates the left operand once and then the right operand once. This
+left-then-right order is a native choice; the 1981 manual does not specify
+it. The left operand of `IN` must be an INTEGER, CHAR or BOOLEAN value.
+Other ordinal types, such as enumerations, WORD and wide integers, are not
+supported there. The compiler does not check that the element type matches
+the declared set base.
 
 ## Bound expressions **[native]**
 
