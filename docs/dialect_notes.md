@@ -274,6 +274,21 @@ it from a routine, take its `SIZEOF` / `LOWER` / `UPPER`.
   compiles may use the syntax. See
   [`bootstrap_subset.md`](bootstrap_subset.md).
 
+## BOOLEAN set constructors **[native]**
+
+Both dialects accept BOOLEAN values in a set constructor. A value can be
+`FALSE`, `TRUE`, a BOOLEAN variable, or a named BOOLEAN constant. BOOLEAN
+range endpoints also work. `[FALSE..TRUE]` contains ordinals 0 and 1.
+`[TRUE..FALSE]` is empty. The compiler evaluates each element and each range
+endpoint once before it adds bits. An evaluated union such as
+`bs := bs + [TRUE]` works when `bs` is a `SET OF BOOLEAN`.
+
+The set still uses a 256-bit bitvector. An anonymous constructor keeps the
+generic INTEGER bounds 0..255. Thus, mixing a declared BOOLEAN set with a
+constructor in a set operation does not retain BOOLEAN bounds. BOOLEAN values
+on the left of `IN` remain unsupported; this change does not add BOOLEAN
+membership.
+
 ## Bound expressions **[native]**
 
 `LOWER(expression)` and `UPPER(expression)` accept the 1981 manual's array,
