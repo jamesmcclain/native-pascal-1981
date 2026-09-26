@@ -1948,9 +1948,17 @@ BEGIN
         integer_tid := const_tbl[ci].integer_tid;
       END;
     END;
-    ival := IntLiteralValue(val_node);
-    IF (NOT is_char) AND (enum_tid = 0) AND (integer_tid = 0) THEN
-      integer_tid := ConstIntegerType(ival);
+    IF NodeType(val_node) = 'BoolLiteral' THEN
+    BEGIN
+      IF GetBool(val_node, 'value') THEN ival := 1 ELSE ival := 0;
+      integer_tid := TK_BOOLEAN;
+    END
+    ELSE
+    BEGIN
+      ival := IntLiteralValue(val_node);
+      IF (NOT is_char) AND (enum_tid = 0) AND (integer_tid = 0) THEN
+        integer_tid := ConstIntegerType(ival);
+    END;
   END;
   { Only a CONST of this same scope is a repeat; an outer one is shadowed. }
   existing := LookupConst(name);
