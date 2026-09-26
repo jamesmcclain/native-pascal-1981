@@ -2,3 +2,13 @@ empty FALSE FALSE
 false-only TRUE FALSE
 true-only FALSE TRUE
 full TRUE TRUE
+variable TRUE FALSE
+not TRUE FALSE
+constant TRUE FALSE
+comparison TRUE FALSE
+function TRUE FALSE
+subrange TRUE FALSE
+if hit
+if miss
+assign TRUE
+assign FALSE
