@@ -287,6 +287,15 @@ The set still uses a 256-bit bitvector. An anonymous constructor keeps the
 generic INTEGER bounds 0..255. Thus, mixing a declared BOOLEAN set with a
 constructor in a set operation does not retain BOOLEAN bounds.
 
+## Set constructor element range **[native]**
+
+A set holds ordinals 0..255. Each element of a set constructor, and each
+endpoint of a nonempty range, must be in 0..255. If one is not, the program
+stops with `runtime error: set element V is outside 0..255`. The compiler
+does this check even for a constant element such as `[300]`, and even when
+`$RANGECK` is off. A reversed range such as `[300..0]` is empty, so the
+compiler does not check its endpoints. Device code does not do this check.
+
 ## BOOLEAN membership **[native]**
 
 Both dialects accept a BOOLEAN value on the left of `IN`, for example
