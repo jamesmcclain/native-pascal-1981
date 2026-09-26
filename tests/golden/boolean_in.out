@@ -1,0 +1,27 @@
+empty FALSE FALSE
+false-only TRUE FALSE
+true-only FALSE TRUE
+full TRUE TRUE
+variable TRUE FALSE
+not TRUE FALSE
+constant TRUE FALSE
+comparison TRUE FALSE
+function TRUE FALSE
+subrange TRUE FALSE
+if hit
+if miss
+assign TRUE
+assign FALSE
+ctor [] FALSE FALSE
+ctor [FALSE] TRUE FALSE
+ctor [TRUE] FALSE TRUE
+ctor [FALSE..TRUE] TRUE TRUE
+ctor [TRUE..FALSE] FALSE FALSE
+union TRUE TRUE
+intersection FALSE TRUE
+difference TRUE FALSE
+count h TRUE 1 1
+count m FALSE 1 1
+count e FALSE 1 1
+count u TRUE 1 2
+order 1 2

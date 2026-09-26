@@ -1,0 +1,15 @@
+false TRUE
+true TRUE
+both TRUE
+variable false TRUE
+variable true TRUE
+constant TRUE
+range TRUE
+reversed range TRUE
+variable range TRUE
+variable reversed range TRUE
+element calls TRUE 1
+range calls TRUE 1 1
+reversed range calls TRUE 1 1
+mixed calls TRUE 1 1 1
+union TRUE 1

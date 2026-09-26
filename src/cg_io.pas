@@ -291,12 +291,15 @@ BEGIN
     IF NodeType(expr) = 'Identifier' THEN
     BEGIN
       symi := LookupSym(GetStr(expr, 'name'));
-      IF (symi <> 0) AND (TypeKind(symbols[symi].tk) = TK_FILE) THEN
-      BEGIN
-        fcb_ptr := LoadFileFcbPtr(GetStr(expr, 'name'));
-        using_file := TRUE;
-        start_idx := 1;
-      END;
+      { AND is eager in the native bootstrap: never index symbols[0]
+        for an unbound identifier (e.g. a named constant). }
+      IF symi <> 0 THEN
+        IF TypeKind(symbols[symi].tk) = TK_FILE THEN
+        BEGIN
+          fcb_ptr := LoadFileFcbPtr(GetStr(expr, 'name'));
+          using_file := TRUE;
+          start_idx := 1;
+        END;
     END;
   END;
   IF using_file THEN vi := 2 ELSE vi := 1;
@@ -661,12 +664,14 @@ BEGIN
     IF NodeType(arg0) = 'Identifier' THEN
     BEGIN
       symi := LookupSym(GetStr(arg0, 'name'));
-      IF (symi <> 0) AND (TypeKind(symbols[symi].tk) = TK_FILE) THEN
-      BEGIN
-        fcb_ptr := LoadFileFcbPtr(GetStr(arg0, 'name'));
-        using_file := TRUE;
-        start_idx := 1;
-      END;
+      { AND is eager in the native bootstrap: never index symbols[0]. }
+      IF symi <> 0 THEN
+        IF TypeKind(symbols[symi].tk) = TK_FILE THEN
+        BEGIN
+          fcb_ptr := LoadFileFcbPtr(GetStr(arg0, 'name'));
+          using_file := TRUE;
+          start_idx := 1;
+        END;
     END;
   END;
 

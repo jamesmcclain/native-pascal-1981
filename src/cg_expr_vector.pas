@@ -524,7 +524,7 @@ BEGIN
       to check against, so it is rejected rather than lowered unchecked. }
     IF NOT has_bound_hdr THEN
       AbortWith('codegen: VLOAD/VSTORE of a SUPER ARRAY has no runtime bound; use a NEW-allocated pointer dereference (p^)');
-    IF FoldConstInt(idx_node, folded) THEN
+    IF IsIntLiteralLike(idx_node) AND FoldConstInt(idx_node, folded) THEN
       IF folded < lo64 THEN
         AbortWith('codegen: VLOAD/VSTORE index is below the array lower bound');
     offset := SuperLaneRangeCheck(arr_ptr, arr_tid, idx_val, idx_tk, n, is_store);
@@ -539,7 +539,7 @@ BEGIN
       as folded > hi - (n-1) so a huge constant cannot overflow. }
     last_ok := types[arr_tid].hi;
     last_ok := last_ok - (n - 1);
-    IF FoldConstInt(idx_node, folded) THEN
+    IF IsIntLiteralLike(idx_node) AND FoldConstInt(idx_node, folded) THEN
       IF (folded < lo64) OR (folded > last_ok) THEN
         AbortWith('codegen: VLOAD/VSTORE runs past the end of the array');
     offset := LLVMBuildSub(builder, idx_val,

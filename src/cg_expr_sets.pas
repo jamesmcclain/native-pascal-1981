@@ -28,15 +28,23 @@ BEGIN
 END;
 
 FUNCTION CodegenSetMember(ordinal_val, set_val: ADRMEM): ADRMEM;
-{ Lowers ordinal IN set to a bit test, mirroring codegen_set_member. }
+{ Lowers ordinal IN set to a bit test, mirroring codegen_set_member.
+  The IBM manual lets the ordinal fall outside the set's base range, and
+  then the result is FALSE. An ordinal outside 0..255 (unsigned compare,
+  so negatives are out too) tests bit 0 instead of reading past the set,
+  and the range test is ANDed into the result. }
 VAR
   slot: ADRMEM;
+  in_range, safe_ord: ADRMEM;
   ord64, word_idx, bit_idx, mask, word_val, anded: ADRMEM;
   gep_idx, word_ptr: ADRMEM;
 BEGIN
   slot := EntryAlloca(setty, '');
   LLVMBuildStore(builder, set_val, slot);
   ord64 := LLVMBuildSExt(builder, ordinal_val, i64ty, MakeCStr(''));
+  in_range := LLVMBuildICmp(builder, LLVMIntULT, ord64, LLVMConstInt(i64ty, 256, 0), MakeCStr(''));
+  safe_ord := LLVMBuildSelect(builder, in_range, ord64, LLVMConstInt(i64ty, 0, 0), MakeCStr(''));
+  ord64 := safe_ord;
   word_idx := LLVMBuildUDiv(builder, ord64, LLVMConstInt(i64ty, 64, 0), MakeCStr(''));
   bit_idx := LLVMBuildURem(builder, ord64, LLVMConstInt(i64ty, 64, 0), MakeCStr(''));
   gep_idx := AllocPtrArray(2);
@@ -46,7 +54,8 @@ BEGIN
   word_val := LLVMBuildLoad2(builder, i64ty, word_ptr, MakeCStr(''));
   mask := LLVMBuildShl(builder, LLVMConstInt(i64ty, 1, 0), bit_idx, MakeCStr(''));
   anded := LLVMBuildAnd(builder, word_val, mask, MakeCStr(''));
-  CodegenSetMember := LLVMBuildICmp(builder, LLVMIntNE, anded, LLVMConstInt(i64ty, 0, 0), MakeCStr(''));
+  CodegenSetMember := LLVMBuildAnd(builder, in_range,
+    LLVMBuildICmp(builder, LLVMIntNE, anded, LLVMConstInt(i64ty, 0, 0), MakeCStr('')), MakeCStr(''));
 END;
 
 FUNCTION CodegenSetBinOp(op: Str255; lval, rval: ADRMEM): ADRMEM;

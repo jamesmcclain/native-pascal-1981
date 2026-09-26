@@ -187,11 +187,11 @@ BEGIN
   UpperStr := res;
 END;
 
-{ ============================ routine table =============================== }
-{ These two live here rather than in cg_symbols beside the rest of the routine
-  table because cg_types needs UserRoutineShadows -- see IsIntLiteralLike --
-  and sits below cg_symbols.  cg_util is the lowest unit that has both the
-  cg_base table and UpperStr. }
+{ ======================= symbol and routine lookup ======================== }
+{ These live here rather than in cg_symbols beside the rest of the symbol and
+  routine tables because cg_types needs UserRoutineShadows and LookupSym --
+  see IsIntLiteralLike -- and sits below cg_symbols.  cg_util is the lowest
+  unit that has both the cg_base tables and UpperStr. }
 
 FUNCTION LookupRoutine(name: Str255): INTEGER32;
 VAR
@@ -204,6 +204,117 @@ BEGIN
   FOR i := 1 TO nroutines DO
     IF UpperStr(routines[i].name) = uname THEN found := i;
   LookupRoutine := found;
+END;
+
+FUNCTION CurConstScopeBase: INTEGER32;
+{ The first const_tbl index that belongs to the innermost open scope, less
+  one: a CONST at a higher index was declared in this scope. }
+BEGIN
+  IF scope_top = 0 THEN CurConstScopeBase := 0
+  ELSE CurConstScopeBase := const_scope_stack[scope_top];
+END;
+
+FUNCTION SymScopeDepth(si: INTEGER32): INTEGER32;
+{ The scope level symbols[si] was declared at: 0 for the compiland, and the
+  deepest d whose scope_stack mark lies below si otherwise. }
+VAR
+  d: INTEGER32;
+  done: BOOLEAN;
+BEGIN
+  d := scope_top;
+  done := FALSE;
+  WHILE NOT done DO
+    IF d = 0 THEN done := TRUE
+    ELSE IF scope_stack[d] < si THEN done := TRUE
+    ELSE d := d - 1;
+  SymScopeDepth := d;
+END;
+
+FUNCTION ConstDeclaredDeeper(uname: Str255; depth: INTEGER32): BOOLEAN;
+{ Is a CONST spelled uname (already upper-cased) visible from a scope
+  deeper than depth? Only the consts that scope and its descendants
+  declared are scanned, so a symbol of the innermost scope costs nothing. }
+VAR
+  i: INTEGER32;
+  found: BOOLEAN;
+BEGIN
+  found := FALSE;
+  IF depth < scope_top THEN
+    FOR i := const_scope_stack[depth + 1] + 1 TO nconsts DO
+      IF UpperStr(const_tbl[i].name) = uname THEN found := TRUE;
+  ConstDeclaredDeeper := found;
+END;
+
+FUNCTION ConstScopeDepth(ci: INTEGER32): INTEGER32;
+{ The scope level const_tbl[ci] was declared at, as SymScopeDepth. }
+VAR
+  d: INTEGER32;
+  done: BOOLEAN;
+BEGIN
+  d := scope_top;
+  done := FALSE;
+  WHILE NOT done DO
+    IF d = 0 THEN done := TRUE
+    ELSE IF const_scope_stack[d] < ci THEN done := TRUE
+    ELSE d := d - 1;
+  ConstScopeDepth := d;
+END;
+
+FUNCTION NameDeclaredDeeper(uname: Str255; depth: INTEGER32): BOOLEAN;
+{ Is a symbol or routine spelled uname (already upper-cased) visible from a
+  scope deeper than depth? }
+VAR
+  i: INTEGER32;
+  found: BOOLEAN;
+BEGIN
+  found := FALSE;
+  IF depth < scope_top THEN
+  BEGIN
+    FOR i := scope_stack[depth + 1] + 1 TO nsymbols DO
+      IF UpperStr(symbols[i].name) = uname THEN found := TRUE;
+    FOR i := routine_scope_stack[depth + 1] + 1 TO nroutines DO
+      IF UpperStr(routines[i].name) = uname THEN found := TRUE;
+  END;
+  NameDeclaredDeeper := found;
+END;
+
+FUNCTION LookupConst(name: Str255): INTEGER32;
+{ The CONST (or enumeration member) this name denotes here, or 0. Lookup is
+  case-insensitive, like LookupSym and LookupRoutine: `CONST Big = 7' is
+  also BIG and big. A variable or routine declared in a deeper scope than
+  the innermost such CONST hides it. }
+VAR
+  i: INTEGER32;
+  found: INTEGER32;
+  uname: Str255;
+BEGIN
+  uname := UpperStr(name);
+  found := 0;
+  FOR i := 1 TO nconsts DO
+    IF UpperStr(const_tbl[i].name) = uname THEN found := i;
+  IF found <> 0 THEN
+    IF NameDeclaredDeeper(uname, ConstScopeDepth(found)) THEN found := 0;
+  LookupConst := found;
+END;
+
+FUNCTION LookupSym(name: Str255): INTEGER32;
+{ The variable (or parameter, or WITH field) this name denotes here, or 0.
+  A CONST declared in a deeper scope than the innermost such symbol hides
+  it, so the name denotes that CONST instead and every caller falls through
+  to LookupConst -- CodegenExpr, CASE labels, FOR bounds and the constant
+  folder's shadowing guard alike. }
+VAR
+  i: INTEGER32;
+  found: INTEGER32;
+  uname: Str255;
+BEGIN
+  uname := UpperStr(name);
+  found := 0;
+  FOR i := 1 TO nsymbols DO
+    IF UpperStr(symbols[i].name) = uname THEN found := i;
+  IF found <> 0 THEN
+    IF ConstDeclaredDeeper(uname, SymScopeDepth(found)) THEN found := 0;
+  LookupSym := found;
 END;
 
 FUNCTION UserRoutineShadows(name: Str255): BOOLEAN;

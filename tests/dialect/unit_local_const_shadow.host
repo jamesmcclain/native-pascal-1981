@@ -1,0 +1,7 @@
+(*$INCLUDE:'unit_local_const_shadow.inc'*)
+{ Host PROGRAM for unit_local_const_shadow.pas; see its build.sh. }
+PROGRAM unit_local_const_shadow_host(OUTPUT);
+USES shadowconst;
+BEGIN
+  Show;
+END.

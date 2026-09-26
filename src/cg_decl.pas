@@ -35,13 +35,67 @@ BEGIN
     LLVMAddTargetDependentFunctionAttr(fn, MakeCStr('target-features'), target_features_cstr);
 END;
 
+PROCEDURE BeginTypeSection(decls_arr: ADRMEM; first: INTEGER32);
+{ Record the TYPE section that starts at decls_arr[first] -- the run of
+  consecutive TypeDecls -- so a pointer type in it can name a type the
+  section declares later (see cg_types' PendingFwdType). }
+VAR
+  n, j: INTEGER32;
+  d: ADRMEM;
+  done: BOOLEAN;
+BEGIN
+  nfwd_types := 0;
+  fwd_cur := 0;
+  n := ArrSize(decls_arr);
+  j := first;
+  done := FALSE;
+  WHILE NOT done DO
+    IF j >= n THEN done := TRUE
+    ELSE
+    BEGIN
+      d := ArrItem(decls_arr, j);
+      IF NodeType(d) <> 'TypeDecl' THEN done := TRUE
+      ELSE
+      BEGIN
+        IF nfwd_types >= MAX_FWD_TYPES THEN
+          AbortWith('codegen: too many declarations in one TYPE section');
+        nfwd_types := nfwd_types + 1;
+        fwd_types[nfwd_types].name := GetStr(d, 'name');
+        fwd_types[nfwd_types].node := GetObj(d, 'type_expr');
+        fwd_types[nfwd_types].tid := 0;
+        fwd_types[nfwd_types].state := 0;
+        j := j + 1;
+      END;
+    END;
+END;
+
 PROCEDURE CodegenDeclList(decls_arr: ADRMEM);
 VAR
   n, i: INTEGER32;
+  d: ADRMEM;
+  in_section: BOOLEAN;
 BEGIN
   n := ArrSize(decls_arr);
+  in_section := FALSE;
   FOR i := 0 TO n - 1 DO
-    CodegenDecl(ArrItem(decls_arr, i));
+  BEGIN
+    d := ArrItem(decls_arr, i);
+    IF NodeType(d) = 'TypeDecl' THEN
+    BEGIN
+      IF NOT in_section THEN BeginTypeSection(decls_arr, i);
+      in_section := TRUE;
+      fwd_cur := fwd_cur + 1;
+    END
+    ELSE
+    BEGIN
+      { A nested routine's own CodegenDeclList reuses the table, so it is
+        rebuilt at the start of every section rather than kept open. }
+      in_section := FALSE;
+      nfwd_types := 0;
+    END;
+    CodegenDecl(d);
+  END;
+  nfwd_types := 0;
 END;
 
 FUNCTION ConstExprIsChar(node: ADRMEM): BOOLEAN;
@@ -1789,25 +1843,29 @@ VAR
   tid: INTEGER;
 BEGIN
   name := GetStr(decl, 'name');
-  IF LookupNamedType(name) <> 0 THEN
+  { Only a TYPE of this same scope is a repeat; an outer one is shadowed. }
+  IF LookupTypeName(name) > CurTypeNameScopeBase THEN
   BEGIN
     { An IMPLEMENTATION repeats its own interface TYPE declarations. The
       interface was lowered first, so its type entry is already canonical.
-      Only a unit-level repeat is that case: `types` is one flat global table
-      (LookupNamedType scans 14..ntypes), so a routine-local TYPE cannot
-      shadow an outer name here -- silently keeping the outer entry would
-      compile the local declaration to the wrong layout. Diagnose it instead,
-      exactly as the PROGRAM path already does. The same goes for a repeat
-      seen while the spliced interface header itself is being lowered: that
-      one is a genuine duplicate inside the interface. }
+      Only a unit-level repeat is that case; a routine-local repeat in the
+      same scope is a plain duplicate. The same goes for a repeat seen while
+      the spliced interface header itself is being lowered: that one is a
+      genuine duplicate inside the interface. }
     IF (NOT in_local_scope) AND defining_implementation AND
        (NOT lowering_spliced_interface) THEN RETURN
     ELSE AbortWith2('codegen: duplicate type declaration: ', name);
   END;
-  tid := ResolveTypeExpr(GetObj(decl, 'type_expr'));
+  { A forward pointer may already have resolved a non-record target; reuse
+    that tid so both names denote one type. A record fills in the
+    placeholder it reserved inside ResolveTypeExpr itself. }
+  tid := 0;
+  IF NodeType(GetObj(decl, 'type_expr')) <> 'RecordType' THEN
+    tid := FwdReservedTid(GetObj(decl, 'type_expr'));
+  IF tid = 0 THEN tid := ResolveTypeExpr(GetObj(decl, 'type_expr'));
   IF tid < 5 THEN
     AbortWith2('codegen: TYPE cannot alias a bare scalar name: ', name);
-  types[tid].name := name;
+  DeclareTypeName(name, tid);
 END;
 
 FUNCTION MaxConstInteger32: INTEGER64;
@@ -1890,17 +1948,27 @@ BEGIN
         integer_tid := const_tbl[ci].integer_tid;
       END;
     END;
-    ival := IntLiteralValue(val_node);
-    IF (NOT is_char) AND (enum_tid = 0) AND (integer_tid = 0) THEN
-      integer_tid := ConstIntegerType(ival);
+    IF NodeType(val_node) = 'BoolLiteral' THEN
+    BEGIN
+      IF GetBool(val_node, 'value') THEN ival := 1 ELSE ival := 0;
+      integer_tid := TK_BOOLEAN;
+    END
+    ELSE
+    BEGIN
+      ival := IntLiteralValue(val_node);
+      IF (NOT is_char) AND (enum_tid = 0) AND (integer_tid = 0) THEN
+        integer_tid := ConstIntegerType(ival);
+    END;
   END;
+  { Only a CONST of this same scope is a repeat; an outer one is shadowed. }
   existing := LookupConst(name);
+  IF existing <= CurConstScopeBase THEN existing := 0;
   IF existing <> 0 THEN
   BEGIN
     { As with TYPE, the matching INTERFACE declaration was lowered first --
-      and, as there, only a unit-level repeat can be that one: `const_tbl` is
-      flat and global, so a routine-local CONST cannot shadow an outer name.
-      An accepted repeat must also agree with what the interface said; keeping
+      and, as there, only a unit-level repeat can be that one: a routine-local
+      repeat in the same scope is a plain duplicate. An accepted repeat must
+      also agree with what the interface said; keeping
       the interface's value for a differing IMPLEMENTATION spelling would
       silently compile the two halves against different constants. }
     IF (NOT in_local_scope) AND defining_implementation AND

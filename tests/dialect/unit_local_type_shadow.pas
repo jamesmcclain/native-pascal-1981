@@ -1,18 +1,27 @@
 (*$INCLUDE:'unit_local_type_shadow.inc'*)
-{ codegen's `types` is one flat global table (LookupNamedType scans it whole),
-  so a routine-local TYPE cannot shadow an outer one. Accepting this silently
-  would lay out `b` with the outer four-element bound and let b[9] write past
-  the allocation. }
+{ A routine-local TYPE shadows a unit-level one of the same name inside that
+  routine only, in an IMPLEMENTATION exactly as in a PROGRAM: `b' gets the
+  local nine-element layout, so b[9] is in bounds, and the unit-level Buf
+  keeps its four elements. This used to be rejected as a duplicate because
+  codegen scoped no TYPE names. unit_local_type_shadow.host is the PROGRAM
+  that calls it. }
 IMPLEMENTATION OF shadowtype;
 
 TYPE Buf = ARRAY [1..4] OF INTEGER;
+
+PROCEDURE ShowOuter;
+VAR a: Buf;
+BEGIN
+  WRITELN(UPPER(a));
+END;
 
 PROCEDURE Show;
 TYPE Buf = ARRAY [1..9] OF INTEGER;
 VAR b: Buf;
 BEGIN
   b[9] := 7;
-  WRITELN(b[9]);
+  WRITELN(b[9], ' ', UPPER(b));
+  ShowOuter;
 END;
 
 BEGIN

@@ -1,0 +1,4 @@
+Type checking failed:
+NEW/DISPOSE argument must be a POINTER variable
+NEW/DISPOSE argument must be a POINTER variable
+Error: Failed to parse input AST JSON

@@ -260,6 +260,51 @@ BEGIN
     ShadowedWriteArg := arg;
 END;
 
+PROCEDURE CheckNewDispose(args_arr: ADRMEM; pname: Str255);
+{ Kept out of CheckStmt so its recursive frame stays small (tests/depth.sh). }
+VAR
+  nargs, si: INTEGER32;
+  warg: ADRMEM;
+  cond_tk: INTEGER;
+BEGIN
+  nargs := cJSON_GetArraySize(args_arr);
+  { Mirrors codegen.pas's own arity/shape checks (its NEW/DISPOSE case
+    is the only place this dialect's short-form allocation is actually
+    lowered) so a well-typed NEW/DISPOSE call reaches codegen instead
+    of being rejected here first as "Undefined procedure" -- this file
+    previously had no handling of either name at all. NEW's second
+    (SUPER ARRAY upper-bound) argument isn't modeled here -- this file
+    has no is_super concept -- so it's checked leniently, same as
+    CONCAT below: codegen itself decides whether a second argument is
+    actually required or accepted for a given pointee type. }
+  IF is_device_compiland THEN
+    AddError2('Dynamic memory allocation is not supported in DEVICE code: ', pname);
+  IF ((pname = 'DISPOSE') AND (nargs <> 1)) OR
+     ((pname = 'NEW') AND (nargs <> 1) AND (nargs <> 2)) THEN
+    AddError('Argument count mismatch')
+  ELSE BEGIN
+    warg := cJSON_GetArrayItem(args_arr, 0);
+    IF NodeType(warg) = 'Designator' THEN
+    BEGIN
+      { A selected pointer such as q^.next or a[i]. }
+      cond_tk := CheckDesignator(warg);
+      IF (cond_tk <> TK_POINTER) AND (cond_tk <> TK_UNKNOWN) THEN
+        AddError('NEW/DISPOSE argument must be a POINTER variable');
+    END
+    ELSE IF NodeType(warg) <> 'Identifier' THEN
+      AddError('NEW/DISPOSE argument must be a pointer variable')
+    ELSE BEGIN
+      si := LookupSymbol(GetStr(warg, 'name'));
+      IF si = 0 THEN
+        AddError('Undefined identifier')
+      ELSE IF symbols[si].tk <> TK_POINTER THEN
+        AddError('NEW/DISPOSE argument must be a POINTER variable');
+    END;
+    IF nargs = 2 THEN
+      cond_tk := CheckExpr(cJSON_GetArrayItem(args_arr, 1));
+  END;
+END;
+
 PROCEDURE CheckStmt(node: ADRMEM);
 VAR
   nt, varname: Str255;
@@ -399,12 +444,15 @@ BEGIN
         IF NodeType(wexpr) = 'Identifier' THEN
         BEGIN
           si := LookupSymbol(GetStr(wexpr, 'name'));
-          IF (si <> 0) AND (symbols[si].tk = TK_FILE) THEN
-          BEGIN
-            IF (symbols[si].aux <> TK_CHAR) OR (symbols[si].aux2 <> 1) THEN
-              AddError('WRITE/WRITELN/READ/READLN file selector must be a TEXT file');
-            start_arg := 1;
-          END;
+          { AND is eager in the native bootstrap: never index symbols[0]
+            for an undefined name. }
+          IF si <> 0 THEN
+            IF symbols[si].tk = TK_FILE THEN
+            BEGIN
+              IF (symbols[si].aux <> TK_CHAR) OR (symbols[si].aux2 <> 1) THEN
+                AddError('WRITE/WRITELN/READ/READLN file selector must be a TEXT file');
+              start_arg := 1;
+            END;
         END;
       END;
       FOR i := start_arg TO nargs - 1 DO
@@ -507,36 +555,7 @@ BEGIN
       END;
     END
     ELSE IF (pname = 'NEW') OR (pname = 'DISPOSE') THEN
-    BEGIN
-      { Mirrors codegen.pas's own arity/shape checks (its NEW/DISPOSE case
-        is the only place this dialect's short-form allocation is actually
-        lowered) so a well-typed NEW/DISPOSE call reaches codegen instead
-        of being rejected here first as "Undefined procedure" -- this file
-        previously had no handling of either name at all. NEW's second
-        (SUPER ARRAY upper-bound) argument isn't modeled here -- this file
-        has no is_super concept -- so it's checked leniently, same as
-        CONCAT below: codegen itself decides whether a second argument is
-        actually required or accepted for a given pointee type. }
-      IF is_device_compiland THEN
-        AddError2('Dynamic memory allocation is not supported in DEVICE code: ', pname);
-      IF ((pname = 'DISPOSE') AND (nargs <> 1)) OR
-         ((pname = 'NEW') AND (nargs <> 1) AND (nargs <> 2)) THEN
-        AddError('Argument count mismatch')
-      ELSE BEGIN
-        warg := cJSON_GetArrayItem(args_arr, 0);
-        IF NodeType(warg) <> 'Identifier' THEN
-          AddError('NEW/DISPOSE argument must be a bare pointer variable')
-        ELSE BEGIN
-          si := LookupSymbol(GetStr(warg, 'name'));
-          IF si = 0 THEN
-            AddError('Undefined identifier')
-          ELSE IF symbols[si].tk <> TK_POINTER THEN
-            AddError('NEW/DISPOSE argument must be a POINTER variable');
-        END;
-        IF nargs = 2 THEN
-          cond_tk := CheckExpr(cJSON_GetArrayItem(args_arr, 1));
-      END;
-    END
+      CheckNewDispose(args_arr, pname)
     ELSE IF pname = 'CONCAT' THEN
     BEGIN
       { CONCAT(VAR d: LSTRING-or-STRING-or-Str255; CONST s: STRING-or-

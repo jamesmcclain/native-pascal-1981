@@ -1,0 +1,15 @@
+(*$INCLUDE:'unit_forward_pointer.inc'*)
+{ Host PROGRAM for unit_forward_pointer.pas; see its build.sh. }
+PROGRAM unit_forward_pointer_host(OUTPUT);
+USES fwdlist;
+VAR
+  a, b: PN;
+BEGIN
+  NEW(a);
+  NEW(b);
+  a^.v := 2;
+  b^.v := 5;
+  a^.nx := b;
+  b^.nx := NIL;
+  WRITELN(Count(a));
+END.

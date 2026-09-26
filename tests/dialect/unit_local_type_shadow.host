@@ -1,0 +1,7 @@
+(*$INCLUDE:'unit_local_type_shadow.inc'*)
+{ Host PROGRAM for unit_local_type_shadow.pas; see its build.sh. }
+PROGRAM unit_local_type_shadow_host(OUTPUT);
+USES shadowtype;
+BEGIN
+  Show;
+END.

@@ -89,8 +89,10 @@ check_frozen_ast() {
   local actual_ast="$work_dir/$name.ast.json"
   local actual_typed="$work_dir/$name.typed.json"
 
+  # The reference predates native per-index flag snapshots; those are checked
+  # separately by indexck_metadata.sh, not treated as reference parity.
   if bin/lexer < "$reference.pas" | bin/parser > "$actual_ast" &&
-     bin/astcompare --ignore-key leading_comments --ignore-key trailing_comment \
+     bin/astcompare --ignore-key indexck --ignore-key leading_comments --ignore-key trailing_comment \
        "$reference.ast.json" "$actual_ast"; then
     pass "native parser matches the frozen $label AST"
   else
@@ -98,7 +100,7 @@ check_frozen_ast() {
   fi
 
   if bin/typechecker < "$actual_ast" > "$actual_typed" &&
-     bin/astcompare --ignore-key resolved_type \
+     bin/astcompare --ignore-key resolved_type --ignore-key indexck \
        --ignore-key leading_comments --ignore-key trailing_comment \
        "$reference.typed.json" "$actual_typed"; then
     pass "native typechecker matches the frozen $label AST"
