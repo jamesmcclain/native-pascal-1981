@@ -1,2 +1,4 @@
-TRUE IN [TRUE] TRUE
-FALSE IN [TRUE] FALSE
+empty FALSE FALSE
+false-only TRUE FALSE
+true-only FALSE TRUE
+full TRUE TRUE
