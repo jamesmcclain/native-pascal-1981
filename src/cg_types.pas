@@ -1199,6 +1199,104 @@ BEGIN
   END;
 END;
 
+PROCEDURE ResolveNamedIndexDomain(index_node: ADRMEM; VAR lo, hi: INTEGER32; VAR host_tid: INTEGER);
+{ A fixed array's index_range may be a type name (NamedType) or a reserved
+  ordinal name (BuiltinType) instead of an explicit subrange -- the parser's
+  named-index shape. Lower it to the same lo/hi and index host its explicit
+  counterpart would produce: a subrange (traced through aliases) keeps its
+  declared bounds and host, an enum contributes its ordinal range and its
+  own tid, and a builtin contributes its full domain. This file also
+  resolves frozen .check ASTs the typechecker never saw, so non-ordinal,
+  undeclared, and too-wide domains abort here with a codegen diagnostic. }
+VAR
+  nm, unm: Str255;
+  tid, k: INTEGER;
+BEGIN
+  nm := GetStr(index_node, 'name');
+  unm := UpperStr(nm);
+  { A user TYPE of the name wins over the predeclared meaning, the same
+    precedence ResolveTypeExpr's NamedType arm applies. Both node shapes
+    carry a bare name: NamedType for identifier spellings (BOOLEAN is a
+    predeclared identifier, not a keyword, so `ARRAY [BOOLEAN]` arrives
+    here) and BuiltinType for the keyword spellings the parser maps. }
+  tid := 0;
+  IF NodeType(index_node) = 'NamedType' THEN
+    tid := LookupNamedType(nm);
+  IF tid = 0 THEN
+  BEGIN
+    { A predeclared scalar name, or an undeclared name (REAL and ADRMEM
+      map to non-ordinal kinds so the dispatch below rejects them). }
+    IF unm = 'BOOLEAN' THEN tid := TK_BOOLEAN
+    ELSE IF unm = 'CHAR' THEN tid := TK_CHAR
+    ELSE IF unm = 'INTEGER' THEN tid := TK_INTEGER
+    ELSE IF unm = 'WORD' THEN tid := TK_WORD
+    ELSE IF unm = 'INTEGER8' THEN tid := TK_INTEGER8
+    ELSE IF unm = 'WORD8' THEN tid := TK_WORD8
+    ELSE IF unm = 'INTEGER32' THEN tid := TK_INTEGER32
+    ELSE IF unm = 'WORD32' THEN tid := TK_WORD32
+    ELSE IF unm = 'INTEGER64' THEN tid := TK_INTEGER64
+    ELSE IF unm = 'WORD64' THEN tid := TK_WORD64
+    ELSE IF unm = 'REAL' THEN tid := TK_REAL
+    ELSE IF unm = 'ADRMEM' THEN tid := TK_ADRMEM
+    ELSE IF NodeType(index_node) = 'NamedType' THEN
+    BEGIN
+      AbortWith2('codegen: array index type is undeclared: ', nm);
+      tid := TK_INTEGER;
+    END
+    ELSE
+    BEGIN
+      AbortWith2('codegen: array index type must be ordinal: ', nm);
+      tid := TK_INTEGER;
+    END;
+  END;
+  k := TypeKind(tid);
+  IF (tid >= 14) AND types[tid].is_subrange THEN
+  BEGIN
+    lo := types[tid].lo;
+    hi := types[tid].hi;
+    host_tid := SubrangeBaseTid(tid);
+  END
+  ELSE IF k = TK_ENUM THEN
+  BEGIN
+    lo := types[tid].lo;
+    hi := types[tid].hi;
+    host_tid := tid;
+  END
+  ELSE IF k = TK_INTEGER32 THEN
+  BEGIN
+    AbortWith2('codegen: array index domain is too large: ', nm);
+    lo := 0; hi := 0; host_tid := TK_INTEGER;
+  END
+  ELSE IF k = TK_WORD32 THEN
+  BEGIN
+    AbortWith2('codegen: array index domain is too large: ', nm);
+    lo := 0; hi := 0; host_tid := TK_INTEGER;
+  END
+  ELSE IF k = TK_INTEGER64 THEN
+  BEGIN
+    AbortWith2('codegen: array index domain is too large: ', nm);
+    lo := 0; hi := 0; host_tid := TK_INTEGER;
+  END
+  ELSE IF k = TK_WORD64 THEN
+  BEGIN
+    AbortWith2('codegen: array index domain is too large: ', nm);
+    lo := 0; hi := 0; host_tid := TK_INTEGER;
+  END
+  ELSE IF k = TK_BOOLEAN THEN BEGIN lo := 0; hi := 1; host_tid := TK_BOOLEAN; END
+  ELSE IF k = TK_CHAR THEN BEGIN lo := 0; hi := 255; host_tid := TK_CHAR; END
+  ELSE IF k = TK_INTEGER THEN BEGIN lo := -32768; hi := 32767; host_tid := TK_INTEGER; END
+  ELSE IF k = TK_WORD THEN BEGIN lo := 0; hi := 65535; host_tid := TK_WORD; END
+  ELSE IF k = TK_INTEGER8 THEN BEGIN lo := -128; hi := 127; host_tid := TK_INTEGER8; END
+  ELSE IF k = TK_WORD8 THEN BEGIN lo := 0; hi := 255; host_tid := TK_WORD8; END
+  ELSE
+  BEGIN
+    AbortWith2('codegen: array index type must be ordinal: ', nm);
+    lo := 0; hi := 0; host_tid := TK_INTEGER;
+  END;
+  IF lo > hi THEN
+    AbortWith('codegen: invalid array index range');
+END;
+
 FUNCTION TypeNameStrToTk(nm: Str255): INTEGER;
 { Maps a RetypeExpr node's bare type_id string (e.g. 'INTEGER') to a tk.
   Only the scalar integer-family names RETYPE is actually used with across
@@ -1344,6 +1442,7 @@ VAR
   values_arr: ADRMEM; { EnumType's member identifier list }
   mi: INTEGER32;
   named_tid: INTEGER;
+  idx_host: INTEGER; { named array index: the index type's host tid }
 BEGIN
   nt := NodeType(te);
   IF nt = 'NamedType' THEN
@@ -1442,6 +1541,28 @@ BEGIN
   BEGIN
     IF GetBool(te, 'packed') THEN
       AbortWith('codegen: PACKED arrays are not supported');
+    IF (NodeType(GetObj(te, 'index_range')) = 'NamedType') OR
+       (NodeType(GetObj(te, 'index_range')) = 'BuiltinType') THEN
+    BEGIN
+      { A named ordinal index type lowers to the same range, element count,
+        and index representation as its explicit counterpart: bounds come
+        from the named type's own declaration (enum ordinal range, subrange
+        endpoints, or a builtin's full domain), and index_tid carries the
+        index host so LOWER/UPPER and the $INDEXCK guard use the same kind
+        an explicit range's BoundHostTid would give. The parser only emits
+        this shape for fixed arrays; a SUPER ARRAY still needs lo..*. }
+      IF GetBool(te, 'super') THEN
+        AbortWith('codegen: SUPER ARRAY requires an explicit index range');
+      ResolveNamedIndexDomain(GetObj(te, 'index_range'), lo, hi, idx_host);
+      elem_tid := ResolveTypeExpr(GetObj(te, 'element_type'));
+      count := hi - lo + 1;
+      arr_ty := LLVMArrayType(LLVMTypeForTk(elem_tid), count);
+      tid := RegisterType(TK_ARRAY, elem_tid, lo, hi, arr_ty);
+      IF idx_host <> TK_INTEGER THEN
+        types[tid].index_tid := idx_host;
+    END
+    ELSE
+    BEGIN
     lo := ResolveIntLiteral(GetObj(GetObj(te, 'index_range'), 'low'));
     elem_tid := ResolveTypeExpr(GetObj(te, 'element_type'));
     IF GetBool(te, 'super') THEN
@@ -1467,6 +1588,7 @@ BEGIN
       ELSE IF (NodeType(GetObj(GetObj(te, 'index_range'), 'low')) <> 'Identifier')
               AND (hi > 32767) THEN
         types[tid].index_tid := TK_WORD;
+    END;
     END;
   END
   ELSE IF nt = 'VectorType' THEN
