@@ -1200,8 +1200,9 @@ BEGIN
 END;
 
 PROCEDURE ResolveNamedIndexDomain(index_node: ADRMEM; VAR lo, hi: INTEGER32; VAR host_tid: INTEGER);
-{ A fixed array's index_range may be a type name (NamedType) or a reserved
-  ordinal name (BuiltinType) instead of an explicit subrange -- the parser's
+{ A fixed array's index_range may be a type name (NamedType) or a
+  predeclared ordinal name (BuiltinType, a legacy shape the parser no
+  longer emits) instead of an explicit subrange -- the parser's
   named-index shape. Lower it to the same lo/hi and index host its explicit
   counterpart would produce: a subrange (traced through aliases) keeps its
   declared bounds and host, an enum contributes its ordinal range and its
@@ -1216,9 +1217,10 @@ BEGIN
   unm := UpperStr(nm);
   { A user TYPE of the name wins over the predeclared meaning, the same
     precedence ResolveTypeExpr's NamedType arm applies. Both node shapes
-    carry a bare name: NamedType for identifier spellings (BOOLEAN is a
-    predeclared identifier, not a keyword, so `ARRAY [BOOLEAN]` arrives
-    here) and BuiltinType for the keyword spellings the parser maps. }
+    carry a bare name: the parser emits NamedType for every bare index
+    spelling (BOOLEAN is a predeclared identifier, not a keyword, so
+    `ARRAY [BOOLEAN]` arrives here); a BuiltinType index node is accepted
+    defensively for that legacy AST shape but is not produced today. }
   tid := 0;
   IF NodeType(index_node) = 'NamedType' THEN
     tid := LookupNamedType(nm);

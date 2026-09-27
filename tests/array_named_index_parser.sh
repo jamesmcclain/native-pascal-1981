@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Parser-only coverage while named array index types are not yet resolved by
-# the typechecker/codegen. The corresponding run goldens remain deliberately red.
+# Parser coverage for named ordinal array index types: every bare index
+# name parses to a NamedType node, pretty81 round-trips it losslessly, and
+# the SUPER ARRAY lo..* grammar is unchanged.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

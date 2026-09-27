@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Stage-only checks: full named-index goldens still require codegen lowering.
+# Typecheck-only coverage for named ordinal array index types: the named
+# bounds resolve through aliases while value, non-ordinal, reversed and
+# missing names are rejected at this stage. Run goldens cover codegen.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 work=$(mktemp -d)

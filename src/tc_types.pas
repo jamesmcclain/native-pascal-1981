@@ -329,8 +329,10 @@ BEGIN
       ELSE IF tk = TK_WORD8 THEN BEGIN low := 0; high := 255; END
       ELSE IF tk = TK_INTEGER32 THEN BEGIN low := -2147483647 - 1; high := 2147483647; END
       ELSE IF tk = TK_WORD32 THEN BEGIN low := 0; high := 4294967295; END
-      ELSE IF tk = TK_INTEGER64 THEN
-      BEGIN low := -9223372036854775807 - 1; high := 9223372036854775807; END
+      { INTEGER64 and WORD64 fall through to RETURN: their domains are not
+        representable in this function's INTEGER32 bounds, so they are
+        rejected at typecheck like any other unresolvable domain, before
+        codegen would have to reject the size. }
       ELSE RETURN;
       NamedArrayIndexBounds := TRUE;
       RETURN;
