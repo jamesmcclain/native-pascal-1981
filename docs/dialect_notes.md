@@ -485,6 +485,49 @@ array index at compile time (error 198). [Pascal/VS](https://www.bitsavers.org/p
 uses `%CHECK SUBSCRIPT` instead and includes string subscripts. Neither
 historical contract implies that the unchecked cases above are safe.
 
+## Named ordinal array index types **[native]**
+
+The 1981 manual (printed pp. 6-11/6-12, 10-3) says a fixed array's index
+type is ordinal and shows `ARRAY [COLOR]` and `ARRAY[INDEX] OF REAL` with
+a named subrange. The native compiler now accepts a bare ordinal type name
+in the brackets, and it lowers to **exactly** the array the spelled-out range
+would give — same bounds, element count, index representation, `LOWER`/
+`UPPER` result types, and `$INDEXCK` guard domain:
+
+```pascal
+TYPE Color = (red, green, blue);
+     Shade = Color;          { an alias resolves to Color's domain }
+     Small = green..blue;    { 1..2, an enum subrange }
+     Index = 2..4;
+VAR a: ARRAY [Color] OF INTEGER;    { same as ARRAY [red..blue] }
+    b: ARRAY [Shade] OF INTEGER;    { alias of the enum }
+    c: ARRAY [Small] OF INTEGER;    { 1..2, not INTEGER's full range }
+    d: ARRAY [Index] OF REAL;       { 2..4 }
+    e: ARRAY [BOOLEAN] OF INTEGER;  { FALSE..TRUE, TRUE is ordinal 1 }
+    f: ARRAY [WORD] OF INTEGER;     { 0..65535, LOWER/UPPER are WORD }
+```
+
+The name must be a **type**: a `CONST` or variable identifier in the
+brackets is a typecheck error (`Array index requires a type name, not a
+value: V`), as are an undeclared name (`Unknown type name`) and a
+non-ordinal type such as `REAL` or a `RECORD` (`Array index type must be
+ordinal`). A named array index whose subrange bounds are reversed
+(`TYPE Bad = 4..2; ARRAY [Bad]`) is rejected at typecheck
+(`Array index type has reversed ordinal bounds`); a bare reversed
+subrange declaration outside array-index position is caught by codegen. `INTEGER64`/`WORD64` domains are rejected as unrepresentable
+by the typechecker; `INTEGER32`/`WORD32` pass it (the type is ordinal with
+knowable bounds) and are rejected by codegen as
+`codegen: array index domain is too large` — the lowering cannot build a
+2^32-element fixed array. A `SUPER ARRAY` still requires the explicit
+`lo..*` form, and `PACKED` arrays remain unsupported.
+
+The index **expression** contract is unchanged from explicit ranges: the
+expression must be ordinal (a `REAL` or string index fails
+`Array index must be an ordinal type`), but kind identity is not enforced —
+`e[1]` into the BOOLEAN array above compiles exactly as `ARRAY
+[FALSE..TRUE]` indexed by `1` does, and the `$INDEXCK` runtime guard holds
+the domain.
+
 ## Integer widths
 
 `INTEGER` and `WORD` are **[both]**. Every wide type in this table is
