@@ -52,7 +52,12 @@ TYPE
     idx_tk: INTEGER;
     set_sem_base: INTEGER;
     scalar_sem_base: INTEGER;
+    type_node: ADRMEM; { original type expression for aggregate selector traversal }
     nparams: INTEGER;
+    param_set_sem_base: ARRAY [1..MAX_PARAMS] OF INTEGER;
+    ret_set_sem_base: INTEGER;
+    ret_scalar_sem_base: INTEGER;
+    ret_type_node: ADRMEM;
     param_tk: ARRAY [1..MAX_PARAMS] OF INTEGER;
     ret_tk: INTEGER;
     ret_aux, ret_aux2, ret_aux3, ret_idx_tk: INTEGER;
@@ -72,6 +77,7 @@ TYPE
     idx_tk: INTEGER;
     set_sem_base: INTEGER;
     scalar_sem_base: INTEGER;
+    type_node: ADRMEM;
     is_super: BOOLEAN;
   END;
 
@@ -93,6 +99,9 @@ TYPE
     faux2: INTEGER;
     faux3: INTEGER;
     fidx_tk: INTEGER;
+    set_sem_base: INTEGER;
+    scalar_sem_base: INTEGER;
+    type_node: ADRMEM;
     is_super: BOOLEAN;
   END;
 
@@ -114,12 +123,15 @@ VAR
                             checked; it and every later entry are pending }
   last_designator_super: BOOLEAN;
   last_designator_idx_tk: INTEGER;
+  last_designator_set_sem_base: INTEGER;
+  last_designator_scalar_sem_base: INTEGER;
   last_designator_aux, last_designator_aux2: INTEGER;
   errors: ARRAY [1..MAX_ERRORS] OF Str255;
   nerrors: INTEGER32;
   expr_depth, stmt_depth: INTEGER;
   cur_func_ret_tk: INTEGER;
   cur_func_aux, cur_func_aux2: INTEGER;
+  cur_func_set_sem_base: INTEGER;
   cur_func_name: Str255;
   active_features: FeatureSet;
   is_device_compiland: BOOLEAN;

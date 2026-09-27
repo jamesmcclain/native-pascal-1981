@@ -19,9 +19,8 @@ FUNCTION CheckFuncCall(node: ADRMEM): INTEGER; FORWARD;
 VAR
   expr_context_tk: INTEGER;
   last_set_base_tk: INTEGER; { bounds-only base; see SetBaseAfterCheck. }
-  last_sem_set_base: INTEGER; { independent semantic base of the last SET
-    expression: SB_EMPTY for [], SB_UNKNOWN on error/unresolved paths. The
-    subsequent propagation work must snapshot this across recursive checks. }
+  expr_context_set_base: INTEGER; { expected SET base, independent of bounds }
+  last_sem_set_base, last_sem_scalar_base: INTEGER;
 
 FUNCTION IsDeviceIndexName(name: Str255): BOOLEAN;
 VAR
@@ -291,19 +290,23 @@ BEGIN
   ELSE IntegerResultType := right_tk;
 END;
 
-FUNCTION CheckExprForTarget(node: ADRMEM; target_tk: INTEGER): INTEGER;
+FUNCTION CheckExprForSetTarget(node: ADRMEM; target_tk, target_set_base: INTEGER): INTEGER;
 VAR
-  saved_context, result_tk: INTEGER;
+  saved_context, saved_set_context, result_tk: INTEGER;
   folded_value: INTEGER64;
   errors_before: INTEGER32;
 BEGIN
   saved_context := expr_context_tk;
+  saved_set_context := expr_context_set_base;
+  IF target_tk = TK_SET THEN expr_context_set_base := target_set_base
+  ELSE expr_context_set_base := SB_UNKNOWN;
   IF IsInteger(target_tk) OR (target_tk = TK_REAL32) THEN
     expr_context_tk := target_tk
   ELSE expr_context_tk := TK_UNKNOWN;
   errors_before := nerrors;
   result_tk := CheckExpr(node);
   expr_context_tk := saved_context;
+  expr_context_set_base := saved_set_context;
   IF IsInteger(target_tk) AND IsInteger(result_tk) AND FoldConstInt(node, folded_value) THEN
   BEGIN
     IF (nerrors = errors_before) AND NOT IntegerConstantFits(target_tk, folded_value) THEN
@@ -315,9 +318,17 @@ BEGIN
       result_tk := TK_UNKNOWN;
     END
     ELSE IF nerrors = errors_before THEN
+    BEGIN
       result_tk := target_tk;
+      last_sem_scalar_base := SemanticOrdinalBase(target_tk, 0);
+    END;
   END;
-  CheckExprForTarget := result_tk;
+  CheckExprForSetTarget := result_tk;
+END;
+
+FUNCTION CheckExprForTarget(node: ADRMEM; target_tk: INTEGER): INTEGER;
+BEGIN
+  CheckExprForTarget := CheckExprForSetTarget(node, target_tk, SB_UNKNOWN);
 END;
 
 FUNCTION CheckDesignator(node: ADRMEM): INTEGER;
@@ -335,7 +346,11 @@ VAR
   lane_ct: INTEGER;
   folded_value: INTEGER64;
   super_value: BOOLEAN;
+  sem_node: ADRMEM;
+  sem_set, sem_scalar: INTEGER;
 BEGIN
+  last_designator_set_sem_base := SB_UNKNOWN;
+  last_designator_scalar_sem_base := SB_UNKNOWN;
   IF NodeType(node) = 'PostfixExpr' THEN
   BEGIN
     name := GetStr(GetObj(node, 'base'), 'name');
@@ -351,6 +366,9 @@ BEGIN
     aux3 := symbols[si].ret_aux3;
     current_idx_tk := symbols[si].ret_idx_tk;
     super_value := symbols[si].ret_is_super;
+    sem_node := symbols[si].ret_type_node;
+    sem_set := symbols[si].ret_set_sem_base;
+    sem_scalar := symbols[si].ret_scalar_sem_base;
   END
   ELSE BEGIN
     name := GetStr(node, 'name');
@@ -373,6 +391,9 @@ BEGIN
       aux3 := symbols[si].ret_aux3;
       current_idx_tk := symbols[si].ret_idx_tk;
       super_value := symbols[si].ret_is_super;
+      sem_node := symbols[si].ret_type_node;
+      sem_set := symbols[si].ret_set_sem_base;
+      sem_scalar := symbols[si].ret_scalar_sem_base;
     END
     ELSE BEGIN
       tk := symbols[si].tk;
@@ -381,6 +402,9 @@ BEGIN
       aux3 := symbols[si].aux3;
       current_idx_tk := symbols[si].idx_tk;
       super_value := symbols[si].is_super;
+      sem_node := symbols[si].type_node;
+      sem_set := symbols[si].set_sem_base;
+      sem_scalar := symbols[si].scalar_sem_base;
     END;
   END;
   sel_arr := GetObj(node, 'selectors');
@@ -429,11 +453,17 @@ BEGIN
           aux3 := fields[fi].faux3;
           current_idx_tk := fields[fi].fidx_tk;
           super_value := fields[fi].is_super;
+          sem_node := fields[fi].type_node;
+          sem_set := fields[fi].set_sem_base;
+          sem_scalar := fields[fi].scalar_sem_base;
         END;
       END;
     END
     ELSE IF skind = 'INDEX' THEN
     BEGIN
+      sem_node := SemanticChildTypeNode(sem_node);
+      sem_set := SemanticSetBaseType(sem_node);
+      sem_scalar := SemanticBaseOfOrdinalType(sem_node);
       IF tk = TK_STRING THEN
       BEGIN
         { s[i] on a STRING/LSTRING indexes its characters (Str255[0] is the
@@ -506,6 +536,9 @@ BEGIN
     END
     ELSE IF skind = 'DEREF' THEN
     BEGIN
+      sem_node := SemanticChildTypeNode(sem_node);
+      sem_set := SemanticSetBaseType(sem_node);
+      sem_scalar := SemanticBaseOfOrdinalType(sem_node);
       IF tk = TK_FILE THEN
       BEGIN
         { F^: the file's buffer variable (the standard READ/WRITE-underlying
@@ -546,6 +579,13 @@ BEGIN
   last_designator_idx_tk := current_idx_tk;
   last_designator_aux := aux;
   last_designator_aux2 := aux2;
+  IF tk = TK_SET THEN last_designator_set_sem_base := sem_set;
+  IF IsOrdinal(tk) THEN
+  BEGIN
+    last_designator_scalar_sem_base := sem_scalar;
+    IF (sem_scalar = SB_UNKNOWN) AND (tk <> TK_ENUM) THEN
+      last_designator_scalar_sem_base := SemanticOrdinalBase(tk, 0);
+  END;
   CheckDesignator := tk;
 END;
 
@@ -903,8 +943,8 @@ BEGIN
     FOR i := 0 TO nargs - 1 DO
     BEGIN
       IF i < symbols[si].nparams THEN
-        atk := CheckExprForTarget(cJSON_GetArrayItem(args_arr, i),
-                                  symbols[si].param_tk[i + 1])
+        atk := CheckExprForSetTarget(cJSON_GetArrayItem(args_arr, i),
+          symbols[si].param_tk[i + 1], symbols[si].param_set_sem_base[i + 1])
       ELSE
         atk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
       IF i < symbols[si].nparams THEN
@@ -912,6 +952,10 @@ BEGIN
           AddError2('Argument type mismatch or implicit narrowing in call to ', orig_name);
     END;
   CheckFuncCall := symbols[si].ret_tk;
+  IF symbols[si].ret_tk = TK_SET THEN
+    last_sem_set_base := symbols[si].ret_set_sem_base;
+  IF IsOrdinal(symbols[si].ret_tk) THEN
+    last_sem_scalar_base := symbols[si].ret_scalar_sem_base;
 END;
 
 FUNCTION SetBaseAfterCheck(node: ADRMEM): INTEGER;
@@ -947,7 +991,7 @@ VAR
   si: INTEGER32;
   left_node, right_node, operand_node, type_node: ADRMEM;
   lt, rt, ot, op_kind, aux, aux2, aux3, idx_tk, bound_base_tk: INTEGER;
-  set_base_l, set_base_r: INTEGER;
+  set_base_l, set_base_r, sem_set_l, sem_set_r: INTEGER;
   op: Str255;
   elems_arr, elem_node, bound_selectors, bound_sel: ADRMEM;
   n_elems, ei, bound_n: INTEGER32;
@@ -958,13 +1002,20 @@ BEGIN
   IF expr_depth > MAX_EXPR_DEPTH THEN
   BEGIN
     AddError('expression too complex (nesting deeper than 64); try breaking it up with intermediate value assigns');
+    last_sem_set_base := SB_UNKNOWN;
+    last_sem_scalar_base := SB_UNKNOWN;
     CheckExpr := TK_UNKNOWN;
   END
   ELSE BEGIN
   nt := NodeType(node);
   last_sem_set_base := SB_UNKNOWN;
+  last_sem_scalar_base := SB_UNKNOWN;
   IF nt = 'IntLiteral' THEN
-    CheckExpr := CheckIntegerConstant(node, JsonIntegerValue(node))
+  BEGIN
+    ot := CheckIntegerConstant(node, JsonIntegerValue(node));
+    CheckExpr := ot;
+    last_sem_scalar_base := SemanticOrdinalBase(ot, 0);
+  END
   ELSE IF nt = 'RealLiteral' THEN
   BEGIN
     IF expr_context_tk = TK_REAL32 THEN
@@ -977,8 +1028,16 @@ BEGIN
       CheckExpr := TK_REAL;
     END;
   END
-  ELSE IF nt = 'BoolLiteral' THEN CheckExpr := TK_BOOLEAN
-  ELSE IF nt = 'CharLiteral' THEN CheckExpr := TK_CHAR
+  ELSE IF nt = 'BoolLiteral' THEN
+  BEGIN
+    CheckExpr := TK_BOOLEAN;
+    last_sem_scalar_base := TK_BOOLEAN;
+  END
+  ELSE IF nt = 'CharLiteral' THEN
+  BEGIN
+    CheckExpr := TK_CHAR;
+    last_sem_scalar_base := TK_CHAR;
+  END
   ELSE IF nt = 'StringLiteral' THEN CheckExpr := TK_STRING
   ELSE IF nt = 'NilLiteral' THEN CheckExpr := TK_POINTER
   ELSE IF nt = 'SizeofExpr' THEN CheckExpr := TK_INTEGER
@@ -1019,9 +1078,16 @@ BEGIN
         CheckExpr := TK_UNKNOWN;
       END
       ELSE IF symbols[si].kind = 'FUNC' THEN
-        CheckExpr := symbols[si].ret_tk
-      ELSE
+      BEGIN
+        CheckExpr := symbols[si].ret_tk;
+        last_sem_set_base := symbols[si].ret_set_sem_base;
+        last_sem_scalar_base := symbols[si].ret_scalar_sem_base;
+      END
+      ELSE BEGIN
         CheckExpr := symbols[si].tk;
+        last_sem_set_base := symbols[si].set_sem_base;
+        last_sem_scalar_base := symbols[si].scalar_sem_base;
+      END;
     END;
   END
   ELSE IF nt = 'SetConstructor' THEN
@@ -1059,7 +1125,11 @@ BEGIN
     CheckExpr := TK_SET;
   END
   ELSE IF (nt = 'Designator') OR (nt = 'PostfixExpr') THEN
-    CheckExpr := CheckDesignator(node)
+  BEGIN
+    CheckExpr := CheckDesignator(node);
+    last_sem_set_base := last_designator_set_sem_base;
+    last_sem_scalar_base := last_designator_scalar_sem_base;
+  END
   ELSE IF (nt = 'UpperExpr') OR (nt = 'LowerExpr') THEN
   BEGIN
     operand_node := GetObj(node, 'operand');
@@ -1154,7 +1224,10 @@ BEGIN
       ELSE IF (ot = TK_ARRAY) AND bound_idx_unknown THEN
         CheckExpr := TK_UNKNOWN
       ELSE IF (ot = TK_SET) OR (ot = TK_ARRAY) THEN
-        CheckExpr := bound_base_tk
+      BEGIN
+        CheckExpr := bound_base_tk;
+        last_sem_scalar_base := SemanticOrdinalBase(bound_base_tk, 0);
+      END
       ELSE IF (ot = TK_ENUM) OR bound_subrange THEN
         CheckExpr := ot
       ELSE
@@ -1167,7 +1240,12 @@ BEGIN
     END;
   END
   ELSE IF nt = 'FuncCall' THEN
-    CheckExpr := CheckFuncCall(node)
+  BEGIN
+    ot := CheckFuncCall(node);
+    CheckExpr := ot;
+    IF IsOrdinal(ot) AND (ot <> TK_ENUM) THEN
+      last_sem_scalar_base := SemanticOrdinalBase(ot, 0);
+  END
   ELSE IF nt = 'RetypeExpr' THEN
   BEGIN
     { RETYPE(TypeName, expr) is a language construct, not a function call.
@@ -1178,6 +1256,8 @@ BEGIN
     AddStringField(type_node, 'name', GetStr(node, 'type_id'));
     ResolveTypeExpr(type_node, lt, aux, aux2, aux3, idx_tk);
     CheckExpr := lt;
+    IF lt = TK_SET THEN last_sem_set_base := SemanticSetBaseType(type_node);
+    IF IsOrdinal(lt) THEN last_sem_scalar_base := SemanticBaseOfOrdinalType(type_node);
   END
   ELSE IF nt = 'BinOp' THEN
   BEGIN
@@ -1185,10 +1265,20 @@ BEGIN
     right_node := GetObj(node, 'right');
     set_base_l := TK_INTEGER;
     set_base_r := TK_INTEGER;
+    sem_set_l := SB_UNKNOWN;
+    sem_set_r := SB_UNKNOWN;
     lt := CheckExpr(left_node);
-    IF lt = TK_SET THEN set_base_l := SetBaseAfterCheck(left_node);
+    IF lt = TK_SET THEN
+    BEGIN
+      set_base_l := SetBaseAfterCheck(left_node);
+      sem_set_l := last_sem_set_base;
+    END;
     rt := CheckExpr(right_node);
-    IF rt = TK_SET THEN set_base_r := SetBaseAfterCheck(right_node);
+    IF rt = TK_SET THEN
+    BEGIN
+      set_base_r := SetBaseAfterCheck(right_node);
+      sem_set_r := last_sem_set_base;
+    END;
     op := GetStr(node, 'op');
     IF (lt = TK_UNKNOWN) OR (rt = TK_UNKNOWN) THEN
       CheckExpr := TK_UNKNOWN
@@ -1230,6 +1320,7 @@ BEGIN
       IF NOT (IsNumeric(lt) AND IsNumeric(rt)) AND (lt <> rt) THEN
         AddError('Comparison operands are not comparable');
       CheckExpr := TK_BOOLEAN;
+      last_sem_scalar_base := TK_BOOLEAN;
     END
     ELSE IF op = 'IN' THEN
     BEGIN
@@ -1238,6 +1329,7 @@ BEGIN
       IF rt <> TK_SET THEN
         AddError('IN requires a SET right operand');
       CheckExpr := TK_BOOLEAN;
+      last_sem_scalar_base := TK_BOOLEAN;
     END
     ELSE IF (lt = TK_SET) OR (rt = TK_SET) THEN
     BEGIN
@@ -1257,6 +1349,12 @@ BEGIN
           generic INTEGER set. }
         IF set_base_l = set_base_r THEN last_set_base_tk := set_base_l
         ELSE last_set_base_tk := TK_INTEGER;
+        { Metadata unification only; rejecting mismatches is the next item.
+          An empty constructor contributes no semantic constraint. }
+        IF sem_set_l = SB_EMPTY THEN last_sem_set_base := sem_set_r
+        ELSE IF sem_set_r = SB_EMPTY THEN last_sem_set_base := sem_set_l
+        ELSE IF sem_set_l = sem_set_r THEN last_sem_set_base := sem_set_l
+        ELSE last_sem_set_base := SB_UNKNOWN;
         CheckExpr := TK_SET;
       END
       ELSE
@@ -1287,8 +1385,10 @@ BEGIN
         CheckExpr := TK_REAL32;
         TagResolvedType(node, 'Real32Type');
       END
-      ELSE
+      ELSE BEGIN
         CheckExpr := IntegerResultType(lt, rt);
+        last_sem_scalar_base := SemanticOrdinalBase(IntegerResultType(lt, rt), 0);
+      END;
     END;
   END
   ELSE IF nt = 'UnaryOp' THEN
@@ -1314,8 +1414,12 @@ BEGIN
         CheckExpr := TK_BOOLEAN;
       END;
     END
-    ELSE
+    ELSE BEGIN
       CheckExpr := ot;
+      IF IsOrdinal(ot) AND (ot <> TK_ENUM) THEN
+        last_sem_scalar_base := SemanticOrdinalBase(ot, 0);
+    END;
+    IF op = 'NOT' THEN last_sem_scalar_base := TK_BOOLEAN;
   END
   ELSE
     CheckExpr := TK_UNKNOWN;

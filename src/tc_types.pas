@@ -140,6 +140,31 @@ BEGIN
   END;
 END;
 
+FUNCTION SemanticChildTypeNode(node: ADRMEM): ADRMEM;
+{ Follow exactly one array index, pointer/file dereference. A NamedType
+  is expanded only on demand, so forward pointer targets can be resolved
+  after their TYPE section is complete; do not recursively expand records
+  here (self-referential records are legal). }
+VAR
+  nt: Str255;
+  ti: INTEGER32;
+BEGIN
+  SemanticChildTypeNode := NIL;
+  IF node = NIL THEN RETURN;
+  nt := NodeType(node);
+  IF (nt = 'NamedType') OR (nt = 'BuiltinType') THEN
+  BEGIN
+    ti := LookupType(GetStr(node, 'name'));
+    IF ti <> 0 THEN SemanticChildTypeNode := SemanticChildTypeNode(types[ti].type_node);
+  END
+  ELSE IF nt = 'ArrayType' THEN
+    SemanticChildTypeNode := GetObj(node, 'element_type')
+  ELSE IF nt = 'PointerType' THEN
+    SemanticChildTypeNode := GetObj(node, 'base')
+  ELSE IF nt = 'FileType' THEN
+    SemanticChildTypeNode := GetObj(node, 'element_type');
+END;
+
 FUNCTION SubrangeEndpointClass(node: ADRMEM): INTEGER;
 { The ordinal kind of a subrange endpoint that is a literal or a named
   constant or enumeration member: TK_INTEGER for any integer, else TK_CHAR,
@@ -571,6 +596,11 @@ BEGIN
         nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, ni)));
         AddUniqueRecordField(rid, nm, inner_tk, inner_aux, inner_aux2, inner_aux3, inner_idx);
         fields[nfields].is_super := IsSuperTypeExpr(ftype_node);
+        fields[nfields].type_node := ftype_node;
+        IF inner_tk = TK_SET THEN
+          fields[nfields].set_sem_base := SemanticSetBaseType(ftype_node);
+        IF IsOrdinal(inner_tk) THEN
+          fields[nfields].scalar_sem_base := SemanticBaseOfOrdinalType(ftype_node);
       END;
     END;
     variants_arr := GetObj(node, 'variants');
@@ -584,6 +614,9 @@ BEGIN
       BEGIN
         nm := GetStr(node, 'tag_name');
         AddUniqueRecordField(rid, nm, inner_tk, inner_aux, inner_aux2, inner_aux3, inner_idx);
+        fields[nfields].type_node := tag_type_node;
+        IF IsOrdinal(inner_tk) THEN
+          fields[nfields].scalar_sem_base := SemanticBaseOfOrdinalType(tag_type_node);
       END;
       FOR fi := 0 TO cJSON_GetArraySize(variants_arr) - 1 DO
       BEGIN
@@ -602,6 +635,11 @@ BEGIN
             nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, n)));
             AddUniqueRecordField(rid, nm, inner_tk, inner_aux, inner_aux2, inner_aux3, inner_idx);
             fields[nfields].is_super := IsSuperTypeExpr(ftype_node);
+            fields[nfields].type_node := ftype_node;
+            IF inner_tk = TK_SET THEN
+              fields[nfields].set_sem_base := SemanticSetBaseType(ftype_node);
+            IF IsOrdinal(inner_tk) THEN
+              fields[nfields].scalar_sem_base := SemanticBaseOfOrdinalType(ftype_node);
           END;
         END;
       END;
