@@ -101,7 +101,10 @@ type = [ "PACKED" ] ( array_type | record_type ) | set_type | file_type | enum_t
 subrange_type = constant ".." constant ;
 array_type = "ARRAY" "[" fixed_index_range "]" "OF" type
            | "SUPER" "ARRAY" "[" super_index_range "]" "OF" type ;
-fixed_index_range = constant ".." constant ;
+fixed_index_range = constant ".." constant | identifier | builtin_type ;
+(* A bare identifier in fixed_index_range is parsed as a type name; the
+   typechecker must distinguish type aliases from value identifiers and
+   reject non-ordinal types. SUPER ARRAY still requires lo..*. *)
 super_index_range = constant ".." "*" ;
 vector_type = "VECTOR" "[" constant "]" "OF" type ;
 (* VECTOR is a contextual keyword, like DEVICE above: recognized in type
