@@ -126,9 +126,9 @@ FUNCTION EnsureGenericSetType: INTEGER;
 { Lazily registers (once) a canonical TK_SET table entry with no declared
   base range, for set-typed values that have no single named declared type
   of their own -- a set constructor's result, or a set binop's result.
-  Every SET type shares the exact same physical layout (setty), so this is
-  always a safe stand-in tid; see TypesCompatibleForAssign, which is the
-  part that actually allows mixing this with a specifically-named SET type. }
+  Every SET type shares the exact same physical layout (setty), but this
+  representation tid carries no semantic host. The typechecker must approve
+  mixing an anonymous expression with a declared SET. }
 BEGIN
   IF generic_set_tid = 0 THEN
     generic_set_tid := RegisterType(TK_SET, TK_INTEGER, 0, 255, setty);
@@ -139,6 +139,19 @@ PROCEDURE RejectNvptxVector;
 BEGIN
   IF is_nvptx_device THEN
     AbortWith('codegen: VECTOR types are not supported in DEVICE code compiled for NVPTX; NVPTX is SIMT and scalarizes vector arithmetic 1:1');
+END;
+
+FUNCTION DeclaredSetBasesConflict(a, b: INTEGER): BOOLEAN;
+{ A codegen backstop for two concrete declared sets: their ordinal base
+  representation kinds must agree. Generic constructor/binop tids erase the
+  semantic host, so only the typechecker can decide those cases (including
+  WORD versus INTEGER, which this table represents identically). Never use
+  this physical-type check to waive the typechecker's semantic comparison. }
+BEGIN
+  DeclaredSetBasesConflict := FALSE;
+  IF (TypeKind(a) = TK_SET) AND (TypeKind(b) = TK_SET) AND
+     (a <> generic_set_tid) AND (b <> generic_set_tid) THEN
+    DeclaredSetBasesConflict := types[a].elem_tid <> types[b].elem_tid;
 END;
 
 FUNCTION EnsureBoolVectorType(n: INTEGER32): INTEGER;
@@ -187,7 +200,7 @@ FUNCTION AggStringTypesInterchangeable(a, b: INTEGER): BOOLEAN;
   `ArgStr`, all LSTRING(255), interoperate freely). Verified against
   `python3 -m pascal1981`: cross-named LSTRING/STRING `:=` and VAR/value
   param passing are accepted, while a capacity mismatch is still rejected.
-  Mirrors the TK_SET looseness in TypesCompatibleForAssign below. A
+  This structural STRING rule does not apply to semantic SET bases. A
   TypeKind of TK_LSTRING/TK_STRING implies a registered tid (>= 14), so
   reading types[].hi here is safe. }
 BEGIN
@@ -198,11 +211,11 @@ BEGIN
 END;
 
 FUNCTION TypesCompatibleForAssign(from_tid, to_tid: INTEGER): BOOLEAN;
-{ Exact tid equality is the normal rule everywhere else in this file, but
-  two SET types are freely assignment-compatible with each other regardless
-  of which specific TYPE declaration (or none, for a constructor/binop
-  result) produced their tid, since every SET physically is the same
-  [4 x i64] bitvector -- see EnsureGenericSetType. }
+{ Physical [4 x i64] compatibility is not semantic base compatibility.
+  The typechecker enforces semantic hosts for assignments and arguments;
+  for two concrete declared SET types, reject visibly distinct base kinds
+  here as an additional backstop. Generic constructor/binop tids cannot
+  encode their host, so the typechecker is indispensable for those. }
 BEGIN
   { The vintage "INTEGER constant changes to WORD" rule (manual): the
     Python reference only allows this for a *constant* INTEGER expression
@@ -233,7 +246,8 @@ BEGIN
        (TypeKind(to_tid) = TK_BOOLEAN))) OR
     ((TypeKind(from_tid) = TK_ENUM) AND (TypeKind(to_tid) = TK_ENUM)
        AND (types[from_tid].enum_values = types[to_tid].enum_values)) OR
-    ((TypeKind(from_tid) = TK_SET) AND (TypeKind(to_tid) = TK_SET)) OR
+    ((TypeKind(from_tid) = TK_SET) AND (TypeKind(to_tid) = TK_SET)
+       AND NOT DeclaredSetBasesConflict(from_tid, to_tid)) OR
     ((from_tid = TK_INTEGER) AND (to_tid = TK_WORD)) OR
     ((from_tid = TK_ADRMEM) AND (TypeKind(to_tid) = TK_POINTER)) OR
     ((TypeKind(from_tid) = TK_POINTER) AND (to_tid = TK_ADRMEM)) OR

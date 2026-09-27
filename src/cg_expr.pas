@@ -425,11 +425,22 @@ BEGIN
       AbortWith('codegen: IN requires an INTEGER, CHAR or BOOLEAN left operand');
     IF TypeKind(rtk) <> TK_SET THEN
       AbortWith('codegen: IN requires a SET right operand');
+    { A declared SET exposes its representation base. Anonymous sets carry
+      only a generic tid; their semantic host was checked before codegen. }
+    IF rtk <> generic_set_tid THEN
+      IF types[rtk].elem_tid <> SubrangeBaseTid(ltk) THEN
+        AbortWith('codegen: incompatible declared SET base in IN');
     res := CodegenSetMember(lval, rval);
     last_val_tk := TK_BOOLEAN;
   END
   ELSE IF (TypeKind(ltk) = TK_SET) AND (TypeKind(rtk) = TK_SET) THEN
-    res := CodegenSetBinOp(op, lval, rval)
+  BEGIN
+    { Both values have already been evaluated once, left then right. No
+      operand is revisited to check the representable declared bases. }
+    IF DeclaredSetBasesConflict(ltk, rtk) THEN
+      AbortWith('codegen: incompatible declared SET bases');
+    res := CodegenSetBinOp(op, lval, rval);
+  END
   ELSE IF (op = 'PLUS') AND ((ltk = TK_ADRMEM) OR (TypeKind(ltk) = TK_POINTER)) AND IsIntegerFamilyTk(rtk) THEN
   BEGIN
     { ADRMEM and ^CHAR are byte-addressed, but a general POINTER must use
@@ -1511,6 +1522,10 @@ VAR
   lo, hi: INTEGER32;
   ti, found: INTEGER;
 BEGIN
+  { LOWER/UPPER's static type walk must not turn a visibly incompatible
+    declared pair into generic bounds if the checker was bypassed. }
+  IF DeclaredSetBasesConflict(lt, rt) THEN
+    AbortWith('codegen: incompatible declared SET bases');
   IF lt = rt THEN
     SetOpResultType := lt
   ELSE IF types[lt].elem_tid <> types[rt].elem_tid THEN

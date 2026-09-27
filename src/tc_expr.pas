@@ -290,6 +290,17 @@ BEGIN
   ELSE IntegerResultType := right_tk;
 END;
 
+PROCEDURE CheckCompatibleSetBases(a, b: INTEGER);
+{ Fail closed when the coarse checker has a SET value but no semantic host.
+  Empty constructors are known-unconstrained, not unknown. Codegen's
+  generic bitvector tid cannot recover this information later. }
+BEGIN
+  IF (a = SB_UNKNOWN) OR (b = SB_UNKNOWN) THEN
+    AddError('Cannot determine set element base type')
+  ELSE IF SemanticBasesConflict(a, b) THEN
+    AddError('Incompatible set base types');
+END;
+
 FUNCTION CheckExprForSetTarget(node: ADRMEM; target_tk, target_set_base: INTEGER): INTEGER;
 VAR
   saved_context, saved_set_context, result_tk: INTEGER;
@@ -311,9 +322,8 @@ BEGIN
     constructors. A diagnostic inside the expression already explains its
     own incompatibility; don't report it a second time at the target. }
   IF (nerrors = errors_before) AND (target_tk = TK_SET) AND
-     (result_tk = TK_SET) AND
-     SemanticBasesConflict(target_set_base, last_sem_set_base) THEN
-    AddError('Incompatible set base types');
+     (result_tk = TK_SET) THEN
+    CheckCompatibleSetBases(target_set_base, last_sem_set_base);
   IF IsInteger(target_tk) AND IsInteger(result_tk) AND FoldConstInt(node, folded_value) THEN
   BEGIN
     IF (nerrors = errors_before) AND NOT IntegerConstantFits(target_tk, folded_value) THEN
@@ -878,7 +888,8 @@ BEGIN
       entry is mandatory: an untyped builtin falls through to the
       'Undefined function' arm below. The result kind is bare TK_VECTOR --
       this stage's model carries no lane count / element kind through a
-      call result (codegen's table is the backstop, as for SETs). }
+      call result (codegen's table is the VECTOR backstop; SET semantic
+      bases are checked here instead). }
     IF nargs <> 2 THEN
       AddError('VSPLAT requires exactly two arguments (a scalar and a VECTOR type name)')
     ELSE
@@ -1037,7 +1048,7 @@ VAR
   elems_arr, elem_node, bound_selectors, bound_sel: ADRMEM;
   n_elems, ei, bound_n: INTEGER32;
   constructor_base, expected_set_base: INTEGER;
-  constructor_errors_before: INTEGER32;
+  constructor_errors_before, operands_errors_before: INTEGER32;
   folded_value: INTEGER64;
   bound_subrange, bound_super, bound_idx_unknown: BOOLEAN;
 BEGIN
@@ -1311,6 +1322,7 @@ BEGIN
     set_base_r := TK_INTEGER;
     sem_set_l := SB_UNKNOWN;
     sem_set_r := SB_UNKNOWN;
+    operands_errors_before := nerrors;
     lt := CheckExpr(left_node);
     sem_scalar_l := last_sem_scalar_base;
     IF (sem_scalar_l = SB_UNKNOWN) AND IsOrdinal(lt) AND
@@ -1366,8 +1378,8 @@ BEGIN
     BEGIN
       IF (lt = TK_SET) AND (rt = TK_SET) THEN
       BEGIN
-        IF SemanticBasesConflict(sem_set_l, sem_set_r) THEN
-          AddError('Incompatible set base types');
+        IF nerrors = operands_errors_before THEN
+          CheckCompatibleSetBases(sem_set_l, sem_set_r);
       END
       ELSE IF NOT (IsNumeric(lt) AND IsNumeric(rt)) AND (lt <> rt) THEN
         AddError('Comparison operands are not comparable');
@@ -1381,8 +1393,8 @@ BEGIN
       IF rt <> TK_SET THEN
         AddError('IN requires a SET right operand');
       IF IsOrdinal(lt) AND (rt = TK_SET) AND
-         SemanticBasesConflict(sem_scalar_l, sem_set_r) THEN
-        AddError('Incompatible set base types');
+         (nerrors = operands_errors_before) THEN
+        CheckCompatibleSetBases(sem_scalar_l, sem_set_r);
       CheckExpr := TK_BOOLEAN;
       last_sem_scalar_base := TK_BOOLEAN;
     END
@@ -1404,8 +1416,8 @@ BEGIN
           this representation fallback. }
         IF set_base_l = set_base_r THEN last_set_base_tk := set_base_l
         ELSE last_set_base_tk := TK_INTEGER;
-        IF SemanticBasesConflict(sem_set_l, sem_set_r) THEN
-          AddError('Incompatible set base types');
+        IF nerrors = operands_errors_before THEN
+          CheckCompatibleSetBases(sem_set_l, sem_set_r);
         { An empty constructor contributes no semantic constraint. }
         IF sem_set_l = SB_EMPTY THEN last_sem_set_base := sem_set_r
         ELSE IF sem_set_r = SB_EMPTY THEN last_sem_set_base := sem_set_l
