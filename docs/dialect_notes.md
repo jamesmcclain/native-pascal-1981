@@ -287,6 +287,37 @@ The set still uses a 256-bit bitvector. An anonymous constructor keeps the
 generic INTEGER bounds 0..255. Thus, mixing a declared BOOLEAN set with a
 constructor in a set operation does not retain BOOLEAN bounds.
 
+## Set base compatibility **[native]**
+
+Sets are compatible when their ordinal hosts agree: INTEGER, CHAR, BOOLEAN,
+or the **same enum declaration**. Aliases and subranges keep their host;
+distinct enums with identical ordinals do not become interchangeable. All
+constructor elements and both range endpoints must agree on a host, even
+when a range is reversed. The empty constructor `[]` is unconstrained.
+Assignment, value arguments/results, comparisons, union/difference/
+intersection and `IN` check hosts before code generation. The stricter
+VAR-parameter identity and lvalue rules remain. A same-host ordinal outside
+a set's declared range gives FALSE for `IN`, not a type error. Both dialects
+support enum sets over a named enum, its alias/subrange, or enum endpoints;
+constructor enum values and membership use their ordinal values (0..255).
+The ABI remains a 256-bit bitvector with BOOLEAN values zero-extended;
+set operands are evaluated once in left-to-right order. Anonymous
+constructors and any operation mixing one in keep generic INTEGER 0..255
+`LOWER`/`UPPER` bounds, regardless of their semantic host; compatible
+declared-set operations widen their bounds.
+
+This is **host compatibility**, not the separate rule that every member
+assigned to a declared set fits its *declared* base range (IBM diagnostic
+2181, `$RANGECK`); that value-range check is deferred. PACKED set
+compatibility is also deferred: the parser discards PACKED on set types and
+the representation is unchanged. `SET OF WORD` still shares codegen's
+INTEGER representation despite distinct semantic identities; the manual's
+INTEGER-constant-to-WORD exception needs separate treatment. Wide integer
+set bases/membership and compile-time diagnostics for constant ordinals
+outside the 0..255 representation are not implemented. The existing runtime
+0..255 constructor guards remain, including their reversed-range and
+device-code exclusions.
+
 ## Set constructor element range **[native]**
 
 A set holds ordinals 0..255. Each element of a set constructor, and each
@@ -303,10 +334,9 @@ Both dialects accept a BOOLEAN value on the left of `IN`, for example
 before the bit test, so `FALSE` is ordinal 0 and `TRUE` is ordinal 1. It
 evaluates the left operand once and then the right operand once. This
 left-then-right order is a native choice; the 1981 manual does not specify
-it. The left operand of `IN` must be an INTEGER, CHAR or BOOLEAN value.
-Other ordinal types, such as enumerations, WORD and wide integers, are not
-supported there. The compiler does not check that the element type matches
-the declared set base.
+it. The left operand of `IN` must be an INTEGER, CHAR, BOOLEAN or supported
+enum value compatible with the right set's host. WORD and wide integers
+remain unsupported.
 
 As the 1981 manual allows, the left operand can be outside the range of the
 set's base type. Then the result is FALSE. This includes a value outside
@@ -337,7 +367,8 @@ generic SET representation (`INTEGER` index bounds 0..255). A set union,
 intersection or difference whose operands share a base type keeps that base,
 with bounds that cover both operands' declared ranges (`UPPER(bs + bs)` is
 TRUE for a `SET OF BOOLEAN`, and `SET OF 3..9 + SET OF 1..5` has bounds
-1..9); mixing bases, or mixing in a constructor, gives the generic set. A
+1..9); mixing in a constructor gives the generic set. Incompatible bases
+are rejected by the typechecker rather than producing generic bounds. A
 named set value or function result retains its declared bounds, including a
 parameterless function named without an argument list (`UPPER(getset)`). String literals have no declared fixed capacity and are
 rejected as bound operands.
@@ -453,6 +484,49 @@ uses `$INDEXCK` for super arrays too and diagnoses a constant out-of-range
 array index at compile time (error 198). [Pascal/VS](https://www.bitsavers.org/pdf/ibm/370/pascal/SH20-6168-1_Pascal_VS_198112.pdf)
 uses `%CHECK SUBSCRIPT` instead and includes string subscripts. Neither
 historical contract implies that the unchecked cases above are safe.
+
+## Named ordinal array index types **[native]**
+
+The 1981 manual (printed pp. 6-11/6-12, 10-3) says a fixed array's index
+type is ordinal and shows `ARRAY [COLOR]` and `ARRAY[INDEX] OF REAL` with
+a named subrange. The native compiler now accepts a bare ordinal type name
+in the brackets, and it lowers to **exactly** the array the spelled-out range
+would give — same bounds, element count, index representation, `LOWER`/
+`UPPER` result types, and `$INDEXCK` guard domain:
+
+```pascal
+TYPE Color = (red, green, blue);
+     Shade = Color;          { an alias resolves to Color's domain }
+     Small = green..blue;    { 1..2, an enum subrange }
+     Index = 2..4;
+VAR a: ARRAY [Color] OF INTEGER;    { same as ARRAY [red..blue] }
+    b: ARRAY [Shade] OF INTEGER;    { alias of the enum }
+    c: ARRAY [Small] OF INTEGER;    { 1..2, not INTEGER's full range }
+    d: ARRAY [Index] OF REAL;       { 2..4 }
+    e: ARRAY [BOOLEAN] OF INTEGER;  { FALSE..TRUE, TRUE is ordinal 1 }
+    f: ARRAY [WORD] OF INTEGER;     { 0..65535, LOWER/UPPER are WORD }
+```
+
+The name must be a **type**: a `CONST` or variable identifier in the
+brackets is a typecheck error (`Array index requires a type name, not a
+value: V`), as are an undeclared name (`Unknown type name`) and a
+non-ordinal type such as `REAL` or a `RECORD` (`Array index type must be
+ordinal`). A named array index whose subrange bounds are reversed
+(`TYPE Bad = 4..2; ARRAY [Bad]`) is rejected at typecheck
+(`Array index type has reversed ordinal bounds`); a bare reversed
+subrange declaration outside array-index position is caught by codegen. `INTEGER64`/`WORD64` domains are rejected as unrepresentable
+by the typechecker; `INTEGER32`/`WORD32` pass it (the type is ordinal with
+knowable bounds) and are rejected by codegen as
+`codegen: array index domain is too large` — the lowering cannot build a
+2^32-element fixed array. A `SUPER ARRAY` still requires the explicit
+`lo..*` form, and `PACKED` arrays remain unsupported.
+
+The index **expression** contract is unchanged from explicit ranges: the
+expression must be ordinal (a `REAL` or string index fails
+`Array index must be an ordinal type`), but kind identity is not enforced —
+`e[1]` into the BOOLEAN array above compiles exactly as `ARRAY
+[FALSE..TRUE]` indexed by `1` does, and the `$INDEXCK` runtime guard holds
+the domain.
 
 ## Integer widths
 

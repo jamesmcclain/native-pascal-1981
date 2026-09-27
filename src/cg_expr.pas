@@ -79,9 +79,8 @@ PROCEDURE EmitSetRangeLoop(slot: ADRMEM; low_node, high_node: ADRMEM);
 { FOR i := low TO high DO SetRuntimeBit(slot, i) -- same alloca-counter loop
   idiom as CodegenForStmt/EmitByteCopyLoop, done here instead of reusing
   CodegenForStmt directly since there is no surface-syntax FOR loop AST node
-  to hand it (RangeExpr's bounds are arbitrary INTEGER expressions, not
-  necessarily a declared loop variable). A reversed range (low > high) is
-  simply empty, exactly like the Python reference. }
+  to hand it (RangeExpr's bounds are arbitrary compatible ordinal expressions,
+  not necessarily a declared loop variable). A reversed range is empty. }
 VAR
   low_val, high_val: ADRMEM;
   i_slot: ADRMEM;
@@ -92,13 +91,17 @@ BEGIN
   low_val := CodegenExpr(low_node);
   IF (last_val_tk = TK_CHAR) OR (last_val_tk = TK_BOOLEAN) THEN
     low_val := LLVMBuildZExt(builder, low_val, i16ty, MakeCStr(''))
+  ELSE IF TypeKind(last_val_tk) = TK_ENUM THEN
+    low_val := LLVMBuildTrunc(builder, low_val, i16ty, MakeCStr(''))
   ELSE IF last_val_tk <> TK_INTEGER THEN
-    AbortWith('codegen: a set range bound must be INTEGER, CHAR or BOOLEAN');
+    AbortWith('codegen: a set range bound must be INTEGER, CHAR, BOOLEAN or an enumeration');
   high_val := CodegenExpr(high_node);
   IF (last_val_tk = TK_CHAR) OR (last_val_tk = TK_BOOLEAN) THEN
     high_val := LLVMBuildZExt(builder, high_val, i16ty, MakeCStr(''))
+  ELSE IF TypeKind(last_val_tk) = TK_ENUM THEN
+    high_val := LLVMBuildTrunc(builder, high_val, i16ty, MakeCStr(''))
   ELSE IF last_val_tk <> TK_INTEGER THEN
-    AbortWith('codegen: a set range bound must be INTEGER, CHAR or BOOLEAN');
+    AbortWith('codegen: a set range bound must be INTEGER, CHAR, BOOLEAN or an enumeration');
 
   { A nonempty range must lie in 0..255; this also keeps the i16 counter
     from wrapping past 32767. An empty (reversed) range adds nothing. }
@@ -154,8 +157,10 @@ BEGIN
       ordv := CodegenExpr(el);
       IF (last_val_tk = TK_CHAR) OR (last_val_tk = TK_BOOLEAN) THEN
         ordv := LLVMBuildZExt(builder, ordv, i16ty, MakeCStr(''))
+      ELSE IF TypeKind(last_val_tk) = TK_ENUM THEN
+        ordv := LLVMBuildTrunc(builder, ordv, i16ty, MakeCStr(''))
       ELSE IF last_val_tk <> TK_INTEGER THEN
-        AbortWith('codegen: a set element must be INTEGER, CHAR or BOOLEAN');
+        AbortWith('codegen: a set element must be INTEGER, CHAR, BOOLEAN or an enumeration');
       EmitSetElementCheck(SetElementOutside(ordv), ordv);
       SetRuntimeBit(slot, ordv);
     END;
@@ -421,15 +426,28 @@ BEGIN
     { Zero-extend so a BOOLEAN TRUE (i1) is ordinal 1, not -1. }
     IF (ltk = TK_CHAR) OR (ltk = TK_BOOLEAN) THEN
       lval := LLVMBuildZExt(builder, lval, i16ty, MakeCStr(''))
+    ELSE IF TypeKind(ltk) = TK_ENUM THEN
+      lval := LLVMBuildTrunc(builder, lval, i16ty, MakeCStr(''))
     ELSE IF ltk <> TK_INTEGER THEN
-      AbortWith('codegen: IN requires an INTEGER, CHAR or BOOLEAN left operand');
+      AbortWith('codegen: IN requires an INTEGER, CHAR, BOOLEAN or enum left operand');
     IF TypeKind(rtk) <> TK_SET THEN
       AbortWith('codegen: IN requires a SET right operand');
+    { A declared SET exposes its representation base. Anonymous sets carry
+      only a generic tid; their semantic host was checked before codegen. }
+    IF rtk <> generic_set_tid THEN
+      IF types[rtk].elem_tid <> SubrangeBaseTid(ltk) THEN
+        AbortWith('codegen: incompatible declared SET base in IN');
     res := CodegenSetMember(lval, rval);
     last_val_tk := TK_BOOLEAN;
   END
   ELSE IF (TypeKind(ltk) = TK_SET) AND (TypeKind(rtk) = TK_SET) THEN
-    res := CodegenSetBinOp(op, lval, rval)
+  BEGIN
+    { Both values have already been evaluated once, left then right. No
+      operand is revisited to check the representable declared bases. }
+    IF DeclaredSetBasesConflict(ltk, rtk) THEN
+      AbortWith('codegen: incompatible declared SET bases');
+    res := CodegenSetBinOp(op, lval, rval);
+  END
   ELSE IF (op = 'PLUS') AND ((ltk = TK_ADRMEM) OR (TypeKind(ltk) = TK_POINTER)) AND IsIntegerFamilyTk(rtk) THEN
   BEGIN
     { ADRMEM and ^CHAR are byte-addressed, but a general POINTER must use
@@ -1499,15 +1517,22 @@ BEGIN
 END;
 
 FUNCTION SetOpResultType(lt, rt: INTEGER): INTEGER;
-{ The static type of a set union, intersection or difference. Operands of
-  the same base type keep it, with bounds that cover both declared ranges
-  (so SET OF BOOLEAN + SET OF BOOLEAN is still FALSE..TRUE); an existing
-  entry with that shape is reused. Mixed bases, or a constructor's generic
-  set, give the generic INTEGER set, as the typechecker does. }
+{ Bounds/representation type of a set operation, not semantic compatibility.
+  Matching declared representation bases retain and widen their ranges;
+  anonymous constructors contribute generic INTEGER 0..255 bounds even
+  when their members have a BOOLEAN, CHAR or enum semantic host. Different
+  representation bases also fall back to generic bounds, but incompatible
+  semantic hosts have already been rejected by the typechecker. Reuse an
+  existing widened type when possible. LOWER/UPPER calls this static walk
+  without evaluating either operand. }
 VAR
   lo, hi: INTEGER32;
   ti, found: INTEGER;
 BEGIN
+  { LOWER/UPPER's static type walk must not turn a visibly incompatible
+    declared pair into generic bounds if the checker was bypassed. }
+  IF DeclaredSetBasesConflict(lt, rt) THEN
+    AbortWith('codegen: incompatible declared SET bases');
   IF lt = rt THEN
     SetOpResultType := lt
   ELSE IF types[lt].elem_tid <> types[rt].elem_tid THEN

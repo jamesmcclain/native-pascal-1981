@@ -353,7 +353,7 @@ VAR
   ptk, paux, paux2, paux3, pidx: INTEGER;
   pn, pj: INTEGER32;
   saved_func_name: Str255;
-  saved_func_ret_tk, saved_func_aux, saved_func_aux2: INTEGER;
+  saved_func_ret_tk, saved_func_aux, saved_func_aux2, saved_func_set_sem_base: INTEGER;
   attrs_arr, attr_item: ADRMEM;
   nattrs, ai: INTEGER32;
   is_vararg, has_c: BOOLEAN;
@@ -373,6 +373,9 @@ BEGIN
     BEGIN
       nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, i)));
       si := DefineSymbol(nm, 'VAR', tk, aux, aux2, aux3, idx_tk);
+      IF tk = TK_SET THEN symbols[si].set_sem_base := SemanticSetBaseType(type_expr);
+      IF IsOrdinal(tk) THEN symbols[si].scalar_sem_base := SemanticBaseOfOrdinalType(type_expr);
+      symbols[si].type_node := type_expr;
       symbols[si].is_super := IsSuperTypeExpr(type_expr);
     END;
   END
@@ -385,6 +388,8 @@ BEGIN
     tk := CheckExpr(GetObj(decl, 'value'));
     CheckConstOrdinalBounds(GetObj(decl, 'value'));
     si := DefineSymbol(dname, 'CONST', tk, 0, 0, 0, 0);
+    IF tk = TK_SET THEN symbols[si].set_sem_base := last_sem_set_base;
+    IF IsOrdinal(tk) THEN symbols[si].scalar_sem_base := last_sem_scalar_base;
     IF FoldConstInt(GetObj(decl, 'value'), const_value) THEN
     BEGIN
       symbols[si].has_const_int := TRUE;
@@ -406,6 +411,14 @@ BEGIN
       types[ntypes].aux2 := aux2;
       types[ntypes].aux3 := aux3;
       types[ntypes].idx_tk := idx_tk;
+      types[ntypes].set_sem_base := SB_UNKNOWN;
+      IF tk = TK_SET THEN types[ntypes].set_sem_base := SemanticSetBaseType(type_expr);
+      types[ntypes].scalar_sem_base := SB_UNKNOWN;
+      IF NodeType(type_expr) = 'EnumType' THEN
+        types[ntypes].scalar_sem_base := SemanticOrdinalBase(tk, aux)
+      ELSE IF IsOrdinal(tk) THEN
+        types[ntypes].scalar_sem_base := SemanticBaseOfOrdinalType(type_expr);
+      types[ntypes].type_node := type_expr;
       types[ntypes].is_super := IsSuperTypeExpr(type_expr);
     END;
     IF NodeType(type_expr) = 'EnumType' THEN
@@ -419,7 +432,7 @@ BEGIN
       FOR i := 0 TO n - 1 DO
       BEGIN
         nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, i)));
-        si := DefineSymbol(nm, 'CONST', TK_ENUM, 0, 0, 0, 0);
+        si := DefineSymbol(nm, 'CONST', TK_ENUM, aux, 0, 0, 0);
       END;
     END;
   END
@@ -479,6 +492,11 @@ BEGIN
       symbols[si].ret_aux3 := aux3;
       symbols[si].ret_idx_tk := idx_tk;
       symbols[si].ret_is_super := IsSuperTypeExpr(ret_type_node);
+      symbols[si].ret_type_node := ret_type_node;
+      IF ret_tk = TK_SET THEN
+        symbols[si].ret_set_sem_base := SemanticSetBaseType(ret_type_node);
+      IF IsOrdinal(ret_tk) THEN
+        symbols[si].ret_scalar_sem_base := SemanticBaseOfOrdinalType(ret_type_node);
     END;
     symbols[si].is_extern := HasExternMarkerDecl(decl);
     ppi := 0;
@@ -492,7 +510,13 @@ BEGIN
       BEGIN
         ppi := ppi + 1;
         IF ppi <= MAX_PARAMS THEN
+        BEGIN
           symbols[si].param_tk[ppi] := ptk;
+          symbols[si].param_set_sem_base[ppi] := SB_UNKNOWN;
+          IF ptk = TK_SET THEN
+            symbols[si].param_set_sem_base[ppi] :=
+              SemanticSetBaseType(GetObj(param, 'type_expr'));
+        END;
       END;
     END;
     { ppi (a parameter count, always small) is INTEGER32; nparams is
@@ -541,12 +565,14 @@ BEGIN
       saved_func_ret_tk := cur_func_ret_tk;
       saved_func_aux := cur_func_aux;
       saved_func_aux2 := cur_func_aux2;
+      saved_func_set_sem_base := cur_func_set_sem_base;
       IF nt = 'FuncDecl' THEN
       BEGIN
         cur_func_name := dname;
         cur_func_ret_tk := ret_tk;
         cur_func_aux := aux;
         cur_func_aux2 := aux2;
+        cur_func_set_sem_base := symbols[si].ret_set_sem_base;
       END
       ELSE
         cur_func_name := '';
@@ -561,6 +587,11 @@ BEGIN
         BEGIN
           nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(pnames, pj)));
           si := DefineSymbol(nm, 'VAR', ptk, paux, paux2, paux3, pidx);
+          symbols[si].type_node := GetObj(param, 'type_expr');
+          IF ptk = TK_SET THEN
+            symbols[si].set_sem_base := SemanticSetBaseType(symbols[si].type_node);
+          IF IsOrdinal(ptk) THEN
+            symbols[si].scalar_sem_base := SemanticBaseOfOrdinalType(symbols[si].type_node);
         END;
       END;
       CheckBlock(body);
@@ -568,6 +599,7 @@ BEGIN
       cur_func_ret_tk := saved_func_ret_tk;
       cur_func_aux := saved_func_aux;
       cur_func_aux2 := saved_func_aux2;
+      cur_func_set_sem_base := saved_func_set_sem_base;
       PopScope;
     END;
   END;
@@ -1071,9 +1103,18 @@ BEGIN
     ai := DefineSymbol(alias, symbols[si].kind, symbols[si].tk,
       symbols[si].aux, symbols[si].aux2, symbols[si].aux3, symbols[si].idx_tk);
     symbols[ai].nparams := symbols[si].nparams;
+    symbols[ai].set_sem_base := symbols[si].set_sem_base;
+    symbols[ai].scalar_sem_base := symbols[si].scalar_sem_base;
+    symbols[ai].type_node := symbols[si].type_node;
     FOR pi := 1 TO symbols[si].nparams DO
+    BEGIN
       symbols[ai].param_tk[pi] := symbols[si].param_tk[pi];
+      symbols[ai].param_set_sem_base[pi] := symbols[si].param_set_sem_base[pi];
+    END;
     symbols[ai].ret_tk := symbols[si].ret_tk;
+    symbols[ai].ret_set_sem_base := symbols[si].ret_set_sem_base;
+    symbols[ai].ret_scalar_sem_base := symbols[si].ret_scalar_sem_base;
+    symbols[ai].ret_type_node := symbols[si].ret_type_node;
     symbols[ai].ret_aux := symbols[si].ret_aux;
     symbols[ai].ret_aux2 := symbols[si].ret_aux2;
     symbols[ai].ret_aux3 := symbols[si].ret_aux3;

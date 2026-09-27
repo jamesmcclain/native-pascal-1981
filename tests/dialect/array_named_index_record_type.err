@@ -1,0 +1,3 @@
+Type checking failed:
+Array index type must be ordinal
+Error: Failed to parse input AST JSON

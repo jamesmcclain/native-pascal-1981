@@ -26,28 +26,28 @@ END;
 
 BEGIN
   bs := [FALSE];
-  WRITELN('false ', bs = [0]);
+  WRITELN('false ', bs = [FALSE]);
   bs := [TRUE];
-  WRITELN('true ', bs = [1]);
+  WRITELN('true ', bs = [TRUE]);
   bs := [FALSE, TRUE];
-  WRITELN('both ', bs = [0, 1]);
+  WRITELN('both ', bs = [FALSE, TRUE]);
   flag := FALSE;
   bs := [flag];
-  WRITELN('variable false ', bs = [0]);
+  WRITELN('variable false ', bs = [FALSE]);
   flag := TRUE;
   bs := [flag];
-  WRITELN('variable true ', bs = [1]);
+  WRITELN('variable true ', bs = [TRUE]);
   bs := [Yes];
-  WRITELN('constant ', bs = [1]);
+  WRITELN('constant ', bs = [TRUE]);
 
   bs := [FALSE..TRUE];
-  WRITELN('range ', bs = [0, 1]);
+  WRITELN('range ', bs = [FALSE, TRUE]);
   bs := [TRUE..FALSE];
   WRITELN('reversed range ', bs = []);
   lo := FALSE;
   hi := TRUE;
   bs := [lo..hi];
-  WRITELN('variable range ', bs = [0, 1]);
+  WRITELN('variable range ', bs = [FALSE, TRUE]);
   lo := TRUE;
   hi := FALSE;
   bs := [lo..hi];
@@ -55,11 +55,11 @@ BEGIN
 
   elementCalls := 0;
   bs := [Element(TRUE)];
-  WRITELN('element calls ', bs = [1], ' ', elementCalls);
+  WRITELN('element calls ', bs = [TRUE], ' ', elementCalls);
   lowCalls := 0;
   highCalls := 0;
   bs := [LowBound(FALSE)..HighBound(TRUE)];
-  WRITELN('range calls ', bs = [0, 1], ' ', lowCalls, ' ', highCalls);
+  WRITELN('range calls ', bs = [FALSE, TRUE], ' ', lowCalls, ' ', highCalls);
   lowCalls := 0;
   highCalls := 0;
   bs := [LowBound(TRUE)..HighBound(FALSE)];
@@ -69,10 +69,10 @@ BEGIN
   lowCalls := 0;
   highCalls := 0;
   bs := [Element(FALSE), LowBound(TRUE)..HighBound(FALSE)];
-  WRITELN('mixed calls ', bs = [0], ' ', elementCalls, ' ', lowCalls, ' ', highCalls);
+  WRITELN('mixed calls ', bs = [FALSE], ' ', elementCalls, ' ', lowCalls, ' ', highCalls);
 
   bs := [FALSE];
   elementCalls := 0;
   bs := bs + [Element(TRUE)];
-  WRITELN('union ', bs = [0, 1], ' ', elementCalls)
+  WRITELN('union ', bs = [FALSE, TRUE], ' ', elementCalls)
 END.

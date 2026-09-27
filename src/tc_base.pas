@@ -28,9 +28,15 @@ CONST
     TK_CHAR, TK_WORD, or TK_BOOLEAN), mirroring codegen.pas's own SET
     representation, minus the exact lo/hi bounds this coarse v1 model
     doesn't need to track for element/IN/set-operator checking. }
-  TK_ENUM     = 13; { a user-declared enumerated type. This coarse model
-    doesn't distinguish one enum type from another (or from its members'
-    constant symbols): every enum and enum constant carries TK_ENUM. }
+  TK_ENUM     = 13; { aux holds a unique enum declaration id, shared by
+    aliases and members. This is independent of the members' ordinals. }
+  { Semantic set bases are NOT the SET aux slot (which is used for bounds).
+    Zero means unresolved/error, -1 means the unconstrained empty set, and
+    positive values identify the host ordinal type. Enum ids are offset so
+    they cannot collide with any built-in TK, including extension kinds. }
+  SB_UNKNOWN = 0;
+  SB_EMPTY = -1;
+  SB_ENUM_OFFSET = 100;
   { Exact integer-family kinds preserve the declaration width and signedness
     needed for contextual literal checks. INTEGER16 and WORD16 use the vintage
     TK_INTEGER and TK_WORD kinds. These values need not match codegen's private
@@ -60,7 +66,14 @@ TYPE
     aux2: INTEGER;       { next aggregate's aux, or LSTRING .LEN marker }
     aux3: INTEGER;       { third level: e.g. pointer -> array -> record id }
     idx_tk: INTEGER;     { array index TK }
+    set_sem_base: INTEGER; { semantic host, not set bounds/representation }
+    scalar_sem_base: INTEGER; { ordinal host even when aux is a subrange marker }
+    type_node: ADRMEM; { source type for aggregate selector traversal }
     nparams: INTEGER;
+    param_set_sem_base: ARRAY [1..MAX_PARAMS] OF INTEGER;
+    ret_set_sem_base: INTEGER;
+    ret_scalar_sem_base: INTEGER;
+    ret_type_node: ADRMEM;
     param_tk: ARRAY [1..MAX_PARAMS] OF INTEGER;
     ret_tk: INTEGER;
     ret_aux, ret_aux2, ret_aux3, ret_idx_tk: INTEGER;
@@ -85,6 +98,9 @@ TYPE
     aux2: INTEGER;
     aux3: INTEGER;
     idx_tk: INTEGER;
+    set_sem_base: INTEGER; { for named SET types; aliases copy this identity }
+    scalar_sem_base: INTEGER; { enum/subrange host independent of aux }
+    type_node: ADRMEM;
     is_super: BOOLEAN;
   END;
 
@@ -96,6 +112,9 @@ TYPE
     faux2: INTEGER;
     faux3: INTEGER;
     fidx_tk: INTEGER;
+    set_sem_base: INTEGER;
+    scalar_sem_base: INTEGER;
+    type_node: ADRMEM;
     is_super: BOOLEAN;
   END;
 
@@ -111,6 +130,7 @@ VAR
   fields: ARRAY [1..MAX_FIELDS] OF FieldRec;
   nfields: INTEGER32;
   next_record_id: INTEGER;
+  next_enum_id: INTEGER; { monotonic across scopes: distinct declarations stay distinct }
   fwd_types: ARRAY [1..MAX_FWD_TYPES] OF FwdTypeRec;
   nfwd_types: INTEGER32; { entries of the TYPE section being checked; 0
                             outside one }
@@ -119,6 +139,8 @@ VAR
 
   last_designator_super: BOOLEAN;
   last_designator_idx_tk: INTEGER;
+  last_designator_set_sem_base: INTEGER;
+  last_designator_scalar_sem_base: INTEGER;
   last_designator_aux, last_designator_aux2: INTEGER; { side channel set by
     CheckDesignator on every call, mirroring codegen.pas's last_val_tk
     convention -- lets WithStmt recover the resolved record's id (aux) to
@@ -131,6 +153,7 @@ VAR
 
   cur_func_ret_tk: INTEGER; { TK_VOID when not inside a function }
   cur_func_aux, cur_func_aux2: INTEGER;
+  cur_func_set_sem_base: INTEGER;
   active_features: FeatureSet;
   is_device_compiland: BOOLEAN;
 
@@ -256,8 +279,22 @@ BEGIN
   symbols[nsymbols].aux2 := aux2;
   symbols[nsymbols].aux3 := aux3;
   symbols[nsymbols].idx_tk := idx_tk;
+  symbols[nsymbols].set_sem_base := SB_UNKNOWN;
+  symbols[nsymbols].scalar_sem_base := SB_UNKNOWN;
+  IF tk = TK_ENUM THEN
+  BEGIN
+    IF aux > 0 THEN symbols[nsymbols].scalar_sem_base := SB_ENUM_OFFSET + aux;
+  END
+  ELSE IF (tk = TK_INTEGER) OR (tk = TK_WORD) OR (tk = TK_CHAR) OR
+          (tk = TK_BOOLEAN) OR (tk = TK_INTEGER8) OR (tk = TK_INTEGER32) OR
+          (tk = TK_INTEGER64) OR (tk = TK_WORD8) OR (tk = TK_WORD32) OR
+          (tk = TK_WORD64) THEN symbols[nsymbols].scalar_sem_base := tk;
+  symbols[nsymbols].type_node := NIL;
   symbols[nsymbols].nparams := 0;
   symbols[nsymbols].ret_tk := TK_VOID;
+  symbols[nsymbols].ret_set_sem_base := SB_UNKNOWN;
+  symbols[nsymbols].ret_scalar_sem_base := SB_UNKNOWN;
+  symbols[nsymbols].ret_type_node := NIL;
   symbols[nsymbols].is_super := FALSE;
   symbols[nsymbols].ret_is_super := FALSE;
   symbols[nsymbols].is_vararg := FALSE;
@@ -307,6 +344,9 @@ BEGIN
     fields[nfields].faux2 := faux2;
     fields[nfields].faux3 := faux3;
     fields[nfields].fidx_tk := fidx_tk;
+    fields[nfields].set_sem_base := SB_UNKNOWN;
+    fields[nfields].scalar_sem_base := SB_UNKNOWN;
+    fields[nfields].type_node := NIL;
     fields[nfields].is_super := FALSE;
   END;
 END;
@@ -360,6 +400,14 @@ BEGIN
   IsOrdinal := IsInteger(tk) OR (tk = TK_CHAR) OR (tk = TK_BOOLEAN) OR (tk = TK_ENUM);
 END;
 
+FUNCTION SemanticBasesConflict(left_base, right_base: INTEGER): BOOLEAN;
+{ Both must be known identities before a mismatch can be proved. An empty
+  constructor imposes no constraint; unknown/error is not an INTEGER base. }
+BEGIN
+  SemanticBasesConflict := (left_base > 0) AND (right_base > 0) AND
+    (left_base <> right_base);
+END;
+
 FUNCTION IsReal(tk: INTEGER): BOOLEAN;
 BEGIN
   IsReal := (tk = TK_REAL) OR (tk = TK_REAL32);
@@ -381,6 +429,7 @@ BEGIN
   ntypes := 0;
   nfields := 0;
   next_record_id := 1;
+  next_enum_id := 0;
   nfwd_types := 0;
   fwd_cur := 0;
   nerrors := 0;
@@ -389,6 +438,9 @@ BEGIN
   cur_func_ret_tk := TK_VOID;
   cur_func_aux := 0;
   cur_func_aux2 := 0;
+  cur_func_set_sem_base := SB_UNKNOWN;
+  last_designator_set_sem_base := SB_UNKNOWN;
+  last_designator_scalar_sem_base := SB_UNKNOWN;
   cur_func_name := '';
   si := DefineSymbol('MAXINT', 'CONST', TK_INTEGER, 0, 0, 0, 0);
   symbols[si].has_const_int := TRUE;

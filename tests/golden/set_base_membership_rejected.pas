@@ -1,0 +1,11 @@
+PROGRAM SetBaseMembershipRejected(OUTPUT);
+VAR
+  s: SET OF 0..9;
+  bs: SET OF BOOLEAN;
+BEGIN
+  WRITELN('A' IN s);
+  WRITELN(1 IN bs);
+  WRITELN(TRUE IN s);
+  WRITELN(0 IN [TRUE]);
+  WRITELN(FALSE IN [0])
+END.
