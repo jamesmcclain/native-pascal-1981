@@ -79,9 +79,8 @@ PROCEDURE EmitSetRangeLoop(slot: ADRMEM; low_node, high_node: ADRMEM);
 { FOR i := low TO high DO SetRuntimeBit(slot, i) -- same alloca-counter loop
   idiom as CodegenForStmt/EmitByteCopyLoop, done here instead of reusing
   CodegenForStmt directly since there is no surface-syntax FOR loop AST node
-  to hand it (RangeExpr's bounds are arbitrary INTEGER expressions, not
-  necessarily a declared loop variable). A reversed range (low > high) is
-  simply empty, exactly like the Python reference. }
+  to hand it (RangeExpr's bounds are arbitrary compatible ordinal expressions,
+  not necessarily a declared loop variable). A reversed range is empty. }
 VAR
   low_val, high_val: ADRMEM;
   i_slot: ADRMEM;
