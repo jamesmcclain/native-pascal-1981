@@ -51,7 +51,7 @@ GEN4_BINS := $(addprefix $(BUILD_DIR)/gen4/,$(STAGES))
 BOOTSTRAP_BINS := $(addprefix $(BIN_DIR)/,$(STAGES))
 FIXED_POINT := $(BUILD_DIR)/.fixed-point-verified
 
-.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-driver test-native test-sysutil test-proxy test-gpu test-reference-parity test-elisp test-bootstrap test-pasboot check-bootstrap-subset
+.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-driver test-native test-parser-named-index test-typecheck-named-index test-sysutil test-proxy test-gpu test-reference-parity test-elisp test-bootstrap test-pasboot check-bootstrap-subset
 
 all: runtime driver bootstrap $(PROXY_BIN) $(PRETTY81_BIN)
 
@@ -162,7 +162,13 @@ test-pasboot: $(PASBOOT) $(RUNTIME_LIB)
 test-driver: $(DRIVER_BIN)
 	./tests/driver.sh
 
-test-native: test-driver test-sysutil $(ASTCOMPARE_BIN) $(PROXY_BIN)
+test-parser-named-index: $(PRETTY81_BIN)
+	./tests/array_named_index_parser.sh
+
+test-typecheck-named-index: $(BIN_DIR)/typechecker $(BIN_DIR)/parser $(BIN_DIR)/lexer
+	./tests/array_named_index_typecheck.sh
+
+test-native: test-driver test-sysutil test-parser-named-index test-typecheck-named-index $(ASTCOMPARE_BIN) $(PROXY_BIN)
 	$(CC) -o $(BUILD_DIR)/read_wide_runtime tests/read_wide_runtime.c $(RUNTIME_LIB)
 	$(BUILD_DIR)/read_wide_runtime
 	./tests/run.sh
@@ -172,6 +178,8 @@ test-native: test-driver test-sysutil $(ASTCOMPARE_BIN) $(PROXY_BIN)
 	./tests/astcompare.sh
 	./tests/indexck_metadata.sh
 	./tests/indexck_guard_ir.sh
+	./tests/codegen_set_base_guard.sh
+	./tests/set_enum_typecheck.sh
 
 # Reusable POSIX filesystem and process primitives, exercised from Pascal.
 test-sysutil: $(DRIVER_BIN) runtime

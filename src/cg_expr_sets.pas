@@ -28,7 +28,8 @@ BEGIN
 END;
 
 FUNCTION CodegenSetMember(ordinal_val, set_val: ADRMEM): ADRMEM;
-{ Lowers ordinal IN set to a bit test, mirroring codegen_set_member.
+{ Lowers ordinal IN set to a bit test. Semantic host compatibility is
+  checked by the typechecker; the call site also guards declared bases.
   The IBM manual lets the ordinal fall outside the set's base range, and
   then the result is FALSE. An ordinal outside 0..255 (unsigned compare,
   so negatives are out too) tests bit 0 instead of reading past the set,
@@ -59,7 +60,9 @@ BEGIN
 END;
 
 FUNCTION CodegenSetBinOp(op: Str255; lval, rval: ADRMEM): ADRMEM;
-{ Extracts all 4 words of each operand via compile-time-constant-index
+{ The typechecker approved semantic base compatibility, and the call site
+  guards representable declared bases without evaluating operands again.
+  Extracts all 4 words of each operand via compile-time-constant-index
   ExtractValue (no loop needed, unlike the constructor/membership paths
   above), combines them per-word, and (for +/-/*) reassembles a result set
   via InsertValue starting from an all-zero aggregate. Sets last_val_tk

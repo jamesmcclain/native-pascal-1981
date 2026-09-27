@@ -21,8 +21,9 @@
   WRITE/WRITELN, 1-based character indexing s[i], no length prefix); and
   CONCAT(VAR D: LSTRING; CONST S: STRING-or-LSTRING-or-literal), appending
   S onto D via a runtime byte-copy loop (S's length is not always known at
-  compile time, unlike a literal assignment's); SET OF lo..hi variables
-  (TYPE-declared, over an INTEGER subrange base only), set constructors
+  compile time, unlike a literal assignment's); SET variables
+  (TYPE-declared, over INTEGER, CHAR, BOOLEAN and supported named enum,
+  alias or subrange bases), set constructors
   (`[..]`, both single elements and lo..hi ranges, constant or dynamic --
   all lowered as runtime bit-set instructions rather than the Python
   reference's compile-time-constant-folded words, a deliberate behavioral-

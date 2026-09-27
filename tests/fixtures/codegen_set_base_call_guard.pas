@@ -1,0 +1,7 @@
+PROGRAM CodegenSetBaseCallGuard(OUTPUT);
+VAR s: SET OF 0..9;
+PROCEDURE P(x: SET OF BOOLEAN);
+BEGIN END;
+BEGIN
+  P(s)
+END.

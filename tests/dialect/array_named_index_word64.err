@@ -1,0 +1,3 @@
+Type checking failed:
+Array index type has unresolved or unrepresentable ordinal bounds
+Error: Failed to parse input AST JSON

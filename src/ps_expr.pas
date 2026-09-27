@@ -655,7 +655,28 @@ END;
 FUNCTION ParseIndexRange(allow_star: BOOLEAN): ADRMEM;
 VAR
   node: ADRMEM;
+  nm: Str255;
 BEGIN
+  { A fixed array can use an ordinal type identifier instead of an explicit
+    subrange. Do not resolve the name here: CONSTs and variables have the
+    same token, and the typechecker must reject them in type position. The
+    builtins (BOOLEAN, CHAR, INTEGER, WORD, ...) are predeclared identifiers,
+    not keywords, so they lex as IDENTIFIER and take the same NamedType
+    path; later stages fall back to the predeclared names. SUPER ARRAY
+    bounds still require lo..*; a named type is not a lower bound. }
+  IF NOT allow_star THEN
+  BEGIN
+    IF (CurKind = 'IDENTIFIER') AND (NextKind = 'RBRACKET') THEN
+    BEGIN
+      nm := CurLex;
+      node := CreateTriviaNode('NamedType');
+      AddStringField(node, 'name', nm);
+      AddNullField(node, 'param');
+      Expect('IDENTIFIER');
+      ParseIndexRange := node;
+      RETURN;
+    END;
+  END;
   node := CreateTriviaNode('IndexRange');
   AddField(node, 'low', ParseConstant);
   Expect('RANGE');

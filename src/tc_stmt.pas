@@ -138,8 +138,8 @@ BEGIN
             start_arg := start_arg + 1;
             FOR i := 0 TO symbols[si].nparams - 1 DO
             BEGIN
-              expr_tk := CheckExprForTarget(cJSON_GetArrayItem(args_arr, start_arg + i),
-                                            symbols[si].param_tk[i + 1]);
+              expr_tk := CheckExprForSetTarget(cJSON_GetArrayItem(args_arr, start_arg + i),
+                symbols[si].param_tk[i + 1], symbols[si].param_set_sem_base[i + 1]);
               IF (symbols[si].param_tk[i + 1] = TK_POINTER) AND
                  IsAddressLikeType(expr_tk) THEN
                 BEGIN END
@@ -309,7 +309,7 @@ PROCEDURE CheckStmt(node: ADRMEM);
 VAR
   nt, varname: Str255;
   target_node, expr_node, cond_node, args_arr, warg, wexpr: ADRMEM;
-  target_tk, expr_tk, cond_tk, vi: INTEGER;
+  target_tk, expr_tk, cond_tk, vi, target_set_sem_base: INTEGER;
   si: INTEGER32;
   nargs, i, start_arg: INTEGER32;
   pname: Str255;
@@ -339,10 +339,15 @@ BEGIN
         either miss it (no such VAR symbol) or, worse, collide with a
         same-named callable symbol). }
       target_tk := cur_func_ret_tk;
+      target_set_sem_base := cur_func_set_sem_base;
     END
-    ELSE
+    ELSE BEGIN
       target_tk := CheckDesignator(target_node);
-    expr_tk := CheckExprForTarget(expr_node, target_tk);
+      target_set_sem_base := last_designator_set_sem_base;
+    END;
+    { Snapshot before descending into the RHS: nested designators and calls
+      overwrite their global result channels. }
+    expr_tk := CheckExprForSetTarget(expr_node, target_tk, target_set_sem_base);
     IF NOT CanAssign(target_tk, expr_tk) THEN
       AddError2('Cannot assign incompatible type without narrowing: ', varname);
   END
@@ -419,7 +424,8 @@ BEGIN
           BEGIN
             warg := ShadowedWriteArg(cJSON_GetArrayItem(args_arr, i), pname);
             IF i < symbols[si].nparams THEN
-              expr_tk := CheckExprForTarget(warg, symbols[si].param_tk[i + 1])
+              expr_tk := CheckExprForSetTarget(warg, symbols[si].param_tk[i + 1],
+                symbols[si].param_set_sem_base[i + 1])
             ELSE
               expr_tk := CheckExpr(warg);
             IF i < symbols[si].nparams THEN
@@ -549,7 +555,7 @@ BEGIN
            (GetObjOrNil(warg, 'type_name') = NIL) AND
            (NOT active_features.readset_set_literal) THEN
           AddError('Character Set Expected: READSET set argument must be a declared SET OF CHAR value');
-        cond_tk := CheckExpr(warg);
+        cond_tk := CheckExprForSetTarget(warg, TK_SET, TK_CHAR);
         IF cond_tk <> TK_SET THEN
           AddError('READSET set argument must be a SET OF CHAR value');
       END;
@@ -618,8 +624,8 @@ BEGIN
           FOR i := 0 TO nargs - 1 DO
           BEGIN
             IF i < symbols[si].nparams THEN
-              expr_tk := CheckExprForTarget(cJSON_GetArrayItem(args_arr, i),
-                                            symbols[si].param_tk[i + 1])
+              expr_tk := CheckExprForSetTarget(cJSON_GetArrayItem(args_arr, i),
+                symbols[si].param_tk[i + 1], symbols[si].param_set_sem_base[i + 1])
             ELSE
               expr_tk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
             IF i < symbols[si].nparams THEN
@@ -668,7 +674,12 @@ BEGIN
         pushed := pushed + 1;
         FOR fi := 1 TO nfields DO
           IF fields[fi].record_id = rec_id THEN
+          BEGIN
             si := DefineSymbol(fields[fi].fname, 'VAR', fields[fi].ftk, fields[fi].faux, fields[fi].faux2, fields[fi].faux3, fields[fi].fidx_tk);
+            symbols[si].type_node := fields[fi].type_node;
+            symbols[si].set_sem_base := fields[fi].set_sem_base;
+            symbols[si].scalar_sem_base := fields[fi].scalar_sem_base;
+          END;
       END
       ELSE IF with_tk <> TK_UNKNOWN THEN
         AddError('WITH target must be a record');

@@ -126,9 +126,9 @@ FUNCTION EnsureGenericSetType: INTEGER;
 { Lazily registers (once) a canonical TK_SET table entry with no declared
   base range, for set-typed values that have no single named declared type
   of their own -- a set constructor's result, or a set binop's result.
-  Every SET type shares the exact same physical layout (setty), so this is
-  always a safe stand-in tid; see TypesCompatibleForAssign, which is the
-  part that actually allows mixing this with a specifically-named SET type. }
+  Every SET type shares the exact same physical layout (setty), but this
+  representation tid carries no semantic host. The typechecker must approve
+  mixing an anonymous expression with a declared SET. }
 BEGIN
   IF generic_set_tid = 0 THEN
     generic_set_tid := RegisterType(TK_SET, TK_INTEGER, 0, 255, setty);
@@ -139,6 +139,19 @@ PROCEDURE RejectNvptxVector;
 BEGIN
   IF is_nvptx_device THEN
     AbortWith('codegen: VECTOR types are not supported in DEVICE code compiled for NVPTX; NVPTX is SIMT and scalarizes vector arithmetic 1:1');
+END;
+
+FUNCTION DeclaredSetBasesConflict(a, b: INTEGER): BOOLEAN;
+{ A codegen backstop for two concrete declared sets: their ordinal base
+  representation kinds must agree. Generic constructor/binop tids erase the
+  semantic host, so only the typechecker can decide those cases (including
+  WORD versus INTEGER, which this table represents identically). Never use
+  this physical-type check to waive the typechecker's semantic comparison. }
+BEGIN
+  DeclaredSetBasesConflict := FALSE;
+  IF (TypeKind(a) = TK_SET) AND (TypeKind(b) = TK_SET) AND
+     (a <> generic_set_tid) AND (b <> generic_set_tid) THEN
+    DeclaredSetBasesConflict := types[a].elem_tid <> types[b].elem_tid;
 END;
 
 FUNCTION EnsureBoolVectorType(n: INTEGER32): INTEGER;
@@ -187,7 +200,7 @@ FUNCTION AggStringTypesInterchangeable(a, b: INTEGER): BOOLEAN;
   `ArgStr`, all LSTRING(255), interoperate freely). Verified against
   `python3 -m pascal1981`: cross-named LSTRING/STRING `:=` and VAR/value
   param passing are accepted, while a capacity mismatch is still rejected.
-  Mirrors the TK_SET looseness in TypesCompatibleForAssign below. A
+  This structural STRING rule does not apply to semantic SET bases. A
   TypeKind of TK_LSTRING/TK_STRING implies a registered tid (>= 14), so
   reading types[].hi here is safe. }
 BEGIN
@@ -198,11 +211,11 @@ BEGIN
 END;
 
 FUNCTION TypesCompatibleForAssign(from_tid, to_tid: INTEGER): BOOLEAN;
-{ Exact tid equality is the normal rule everywhere else in this file, but
-  two SET types are freely assignment-compatible with each other regardless
-  of which specific TYPE declaration (or none, for a constructor/binop
-  result) produced their tid, since every SET physically is the same
-  [4 x i64] bitvector -- see EnsureGenericSetType. }
+{ Physical [4 x i64] compatibility is not semantic base compatibility.
+  The typechecker enforces semantic hosts for assignments and arguments;
+  for two concrete declared SET types, reject visibly distinct base kinds
+  here as an additional backstop. Generic constructor/binop tids cannot
+  encode their host, so the typechecker is indispensable for those. }
 BEGIN
   { The vintage "INTEGER constant changes to WORD" rule (manual): the
     Python reference only allows this for a *constant* INTEGER expression
@@ -233,7 +246,8 @@ BEGIN
        (TypeKind(to_tid) = TK_BOOLEAN))) OR
     ((TypeKind(from_tid) = TK_ENUM) AND (TypeKind(to_tid) = TK_ENUM)
        AND (types[from_tid].enum_values = types[to_tid].enum_values)) OR
-    ((TypeKind(from_tid) = TK_SET) AND (TypeKind(to_tid) = TK_SET)) OR
+    ((TypeKind(from_tid) = TK_SET) AND (TypeKind(to_tid) = TK_SET)
+       AND NOT DeclaredSetBasesConflict(from_tid, to_tid)) OR
     ((from_tid = TK_INTEGER) AND (to_tid = TK_WORD)) OR
     ((from_tid = TK_ADRMEM) AND (TypeKind(to_tid) = TK_POINTER)) OR
     ((TypeKind(from_tid) = TK_POINTER) AND (to_tid = TK_ADRMEM)) OR
@@ -1180,8 +1194,109 @@ BEGIN
     ci := LookupConst(GetStr(node, 'name'));
     IF ci <> 0 THEN
       IF const_tbl[ci].enum_tid <> 0 THEN BoundHostTid := const_tbl[ci].enum_tid
-      ELSE IF const_tbl[ci].is_char THEN BoundHostTid := TK_CHAR;
+      ELSE IF const_tbl[ci].is_char THEN BoundHostTid := TK_CHAR
+      ELSE IF const_tbl[ci].integer_tid = TK_BOOLEAN THEN BoundHostTid := TK_BOOLEAN;
   END;
+END;
+
+PROCEDURE ResolveNamedIndexDomain(index_node: ADRMEM; VAR lo, hi: INTEGER32; VAR host_tid: INTEGER);
+{ A fixed array's index_range may be a type name (NamedType) or a
+  predeclared ordinal name (BuiltinType, a legacy shape the parser no
+  longer emits) instead of an explicit subrange -- the parser's
+  named-index shape. Lower it to the same lo/hi and index host its explicit
+  counterpart would produce: a subrange (traced through aliases) keeps its
+  declared bounds and host, an enum contributes its ordinal range and its
+  own tid, and a builtin contributes its full domain. This file also
+  resolves frozen .check ASTs the typechecker never saw, so non-ordinal,
+  undeclared, and too-wide domains abort here with a codegen diagnostic. }
+VAR
+  nm, unm: Str255;
+  tid, k: INTEGER;
+BEGIN
+  nm := GetStr(index_node, 'name');
+  unm := UpperStr(nm);
+  { A user TYPE of the name wins over the predeclared meaning, the same
+    precedence ResolveTypeExpr's NamedType arm applies. Both node shapes
+    carry a bare name: the parser emits NamedType for every bare index
+    spelling (BOOLEAN is a predeclared identifier, not a keyword, so
+    `ARRAY [BOOLEAN]` arrives here); a BuiltinType index node is accepted
+    defensively for that legacy AST shape but is not produced today. }
+  tid := 0;
+  IF NodeType(index_node) = 'NamedType' THEN
+    tid := LookupNamedType(nm);
+  IF tid = 0 THEN
+  BEGIN
+    { A predeclared scalar name, or an undeclared name (REAL and ADRMEM
+      map to non-ordinal kinds so the dispatch below rejects them). }
+    IF unm = 'BOOLEAN' THEN tid := TK_BOOLEAN
+    ELSE IF unm = 'CHAR' THEN tid := TK_CHAR
+    ELSE IF unm = 'INTEGER' THEN tid := TK_INTEGER
+    ELSE IF unm = 'WORD' THEN tid := TK_WORD
+    ELSE IF unm = 'INTEGER8' THEN tid := TK_INTEGER8
+    ELSE IF unm = 'WORD8' THEN tid := TK_WORD8
+    ELSE IF unm = 'INTEGER32' THEN tid := TK_INTEGER32
+    ELSE IF unm = 'WORD32' THEN tid := TK_WORD32
+    ELSE IF unm = 'INTEGER64' THEN tid := TK_INTEGER64
+    ELSE IF unm = 'WORD64' THEN tid := TK_WORD64
+    ELSE IF unm = 'REAL' THEN tid := TK_REAL
+    ELSE IF unm = 'ADRMEM' THEN tid := TK_ADRMEM
+    ELSE IF NodeType(index_node) = 'NamedType' THEN
+    BEGIN
+      AbortWith2('codegen: array index type is undeclared: ', nm);
+      tid := TK_INTEGER;
+    END
+    ELSE
+    BEGIN
+      AbortWith2('codegen: array index type must be ordinal: ', nm);
+      tid := TK_INTEGER;
+    END;
+  END;
+  k := TypeKind(tid);
+  IF (tid >= 14) AND types[tid].is_subrange THEN
+  BEGIN
+    lo := types[tid].lo;
+    hi := types[tid].hi;
+    host_tid := SubrangeBaseTid(tid);
+  END
+  ELSE IF k = TK_ENUM THEN
+  BEGIN
+    lo := types[tid].lo;
+    hi := types[tid].hi;
+    host_tid := tid;
+  END
+  ELSE IF k = TK_INTEGER32 THEN
+  BEGIN
+    AbortWith2('codegen: array index domain is too large: ', nm);
+    lo := 0; hi := 0; host_tid := TK_INTEGER;
+  END
+  ELSE IF k = TK_WORD32 THEN
+  BEGIN
+    AbortWith2('codegen: array index domain is too large: ', nm);
+    lo := 0; hi := 0; host_tid := TK_INTEGER;
+  END
+  ELSE IF k = TK_INTEGER64 THEN
+  BEGIN
+    AbortWith2('codegen: array index domain is too large: ', nm);
+    lo := 0; hi := 0; host_tid := TK_INTEGER;
+  END
+  ELSE IF k = TK_WORD64 THEN
+  BEGIN
+    AbortWith2('codegen: array index domain is too large: ', nm);
+    lo := 0; hi := 0; host_tid := TK_INTEGER;
+  END
+  ELSE IF k = TK_BOOLEAN THEN BEGIN lo := 0; hi := 1; host_tid := TK_BOOLEAN; END
+  ELSE IF k = TK_CHAR THEN BEGIN lo := 0; hi := 255; host_tid := TK_CHAR; END
+  ELSE IF k = TK_INTEGER THEN BEGIN lo := -32768; hi := 32767; host_tid := TK_INTEGER; END
+  ELSE IF k = TK_WORD THEN BEGIN lo := 0; hi := 65535; host_tid := TK_WORD; END
+  ELSE IF k = TK_INTEGER8 THEN BEGIN lo := -128; hi := 127; host_tid := TK_INTEGER8; END
+  ELSE IF k = TK_WORD8 THEN BEGIN lo := 0; hi := 255; host_tid := TK_WORD8; END
+  ELSE
+  BEGIN
+    AbortWith2('codegen: array index type must be ordinal: ', nm);
+    lo := 0; hi := 0; host_tid := TK_INTEGER;
+  END;
+  IF lo > hi THEN
+    AbortWith('codegen: invalid array index range');
 END;
 
 FUNCTION TypeNameStrToTk(nm: Str255): INTEGER;
@@ -1325,10 +1440,11 @@ VAR
   elem_llvm_types: ADRMEM;
   struct_ty, payload_ty: ADRMEM;
   field_index: INTEGER;
-  has_variants: BOOLEAN;
+  has_variants, set_base_is_subrange: BOOLEAN;
   values_arr: ADRMEM; { EnumType's member identifier list }
   mi: INTEGER32;
   named_tid: INTEGER;
+  idx_host: INTEGER; { named array index: the index type's host tid }
 BEGIN
   nt := NodeType(te);
   IF nt = 'NamedType' THEN
@@ -1427,6 +1543,28 @@ BEGIN
   BEGIN
     IF GetBool(te, 'packed') THEN
       AbortWith('codegen: PACKED arrays are not supported');
+    IF (NodeType(GetObj(te, 'index_range')) = 'NamedType') OR
+       (NodeType(GetObj(te, 'index_range')) = 'BuiltinType') THEN
+    BEGIN
+      { A named ordinal index type lowers to the same range, element count,
+        and index representation as its explicit counterpart: bounds come
+        from the named type's own declaration (enum ordinal range, subrange
+        endpoints, or a builtin's full domain), and index_tid carries the
+        index host so LOWER/UPPER and the $INDEXCK guard use the same kind
+        an explicit range's BoundHostTid would give. The parser only emits
+        this shape for fixed arrays; a SUPER ARRAY still needs lo..*. }
+      IF GetBool(te, 'super') THEN
+        AbortWith('codegen: SUPER ARRAY requires an explicit index range');
+      ResolveNamedIndexDomain(GetObj(te, 'index_range'), lo, hi, idx_host);
+      elem_tid := ResolveTypeExpr(GetObj(te, 'element_type'));
+      count := hi - lo + 1;
+      arr_ty := LLVMArrayType(LLVMTypeForTk(elem_tid), count);
+      tid := RegisterType(TK_ARRAY, elem_tid, lo, hi, arr_ty);
+      IF idx_host <> TK_INTEGER THEN
+        types[tid].index_tid := idx_host;
+    END
+    ELSE
+    BEGIN
     lo := ResolveIntLiteral(GetObj(GetObj(te, 'index_range'), 'low'));
     elem_tid := ResolveTypeExpr(GetObj(te, 'element_type'));
     IF GetBool(te, 'super') THEN
@@ -1452,6 +1590,7 @@ BEGIN
       ELSE IF (NodeType(GetObj(GetObj(te, 'index_range'), 'low')) <> 'Identifier')
               AND (hi > 32767) THEN
         types[tid].index_tid := TK_WORD;
+    END;
     END;
   END
   ELSE IF nt = 'VectorType' THEN
@@ -1659,34 +1798,56 @@ BEGIN
   END
   ELSE IF nt = 'SetType' THEN
   BEGIN
-    { Every SET type shares the same physical [4 x i64] 256-bit-bitvector
-      representation regardless of declared base range (matching the Python
-      reference's set_llvm_type) -- only the base's low/high are kept, and
-      only to know the ordinal's legal range, not to size the storage.
-      Two base shapes: a SubrangeType (SET OF lo..hi, always an INTEGER
-      ordinal here since this dialect only lexes plain-integer subrange
-      bounds in this position) or a bare ordinal type name -- CHAR, WORD,
-      BOOLEAN, or INTEGER -- parsed by ParseSetBase as either a NamedType
-      (e.g. a bare identifier) or a BuiltinType node (a reserved-word type
-      name). The manual's own worked example (djvu.txt:7107-7126) is
-      `SET OF CHAR`, so this case has to exist, not just SubrangeType. }
+    { Every SET uses [4 x i64]. Its elem_tid identifies the ordinal host
+      for declared-base checks and static bounds; aliases and subranges of
+      an enum must keep their original declaration tid, not just TK_ENUM. }
     IF NodeType(GetObj(te, 'base')) = 'SubrangeType' THEN
     BEGIN
+      elem_tid := BoundHostTid(GetObj(GetObj(te, 'base'), 'low'));
+      IF BoundHostTid(GetObj(GetObj(te, 'base'), 'high')) <> elem_tid THEN
+        AbortWith('codegen: SET subrange bounds must share an ordinal host');
       lo := ResolveIntLiteral(GetObj(GetObj(te, 'base'), 'low'));
       hi := ResolveIntLiteral(GetObj(GetObj(te, 'base'), 'high'));
-      tid := RegisterType(TK_SET, TK_INTEGER, lo, hi, setty);
+      tid := RegisterType(TK_SET, elem_tid, lo, hi, setty);
     END
     ELSE IF (NodeType(GetObj(te, 'base')) = 'NamedType') OR (NodeType(GetObj(te, 'base')) = 'BuiltinType') THEN
     BEGIN
       nm := GetStr(GetObj(te, 'base'), 'name');
-      unm := UpperStr(nm);
-      IF unm = 'CHAR' THEN tid := RegisterType(TK_SET, TK_CHAR, 0, 255, setty)
-      ELSE IF unm = 'BOOLEAN' THEN tid := RegisterType(TK_SET, TK_BOOLEAN, 0, 1, setty)
-      ELSE IF (unm = 'INTEGER') OR (unm = 'WORD') THEN tid := RegisterType(TK_SET, TK_INTEGER, 0, 255, setty)
+      named_tid := LookupNamedType(nm);
+      IF named_tid <> 0 THEN
+      BEGIN
+        elem_tid := SubrangeBaseTid(named_tid);
+        IF (TypeKind(elem_tid) <> TK_ENUM) AND (elem_tid <> TK_INTEGER)
+           AND (elem_tid <> TK_CHAR) AND (elem_tid <> TK_BOOLEAN) THEN
+          AbortWith2('codegen: SET OF <base> requires an ordinal base type, got: ', nm);
+        set_base_is_subrange := FALSE;
+        IF named_tid >= 14 THEN
+          set_base_is_subrange := types[named_tid].is_subrange;
+        IF set_base_is_subrange THEN
+        BEGIN
+          lo := types[named_tid].lo;
+          hi := types[named_tid].hi;
+        END
+        ELSE IF TypeKind(elem_tid) = TK_ENUM THEN
+        BEGIN
+          lo := types[elem_tid].lo;
+          hi := types[elem_tid].hi;
+        END
+        ELSE IF elem_tid = TK_BOOLEAN THEN BEGIN lo := 0; hi := 1 END
+        ELSE BEGIN lo := 0; hi := 255 END;
+        tid := RegisterType(TK_SET, elem_tid, lo, hi, setty);
+      END
       ELSE
       BEGIN
-        AbortWith2('codegen: SET OF <base> requires an ordinal base type (INTEGER subrange, CHAR, WORD, or BOOLEAN), got: ', nm);
-        tid := TK_UNKNOWN;
+        unm := UpperStr(nm);
+        IF unm = 'CHAR' THEN tid := RegisterType(TK_SET, TK_CHAR, 0, 255, setty)
+        ELSE IF unm = 'BOOLEAN' THEN tid := RegisterType(TK_SET, TK_BOOLEAN, 0, 1, setty)
+        ELSE IF (unm = 'INTEGER') OR (unm = 'WORD') THEN tid := RegisterType(TK_SET, TK_INTEGER, 0, 255, setty)
+        ELSE
+        BEGIN
+          AbortWith2('codegen: SET OF <base> requires an ordinal base type, got: ', nm);
+          tid := TK_UNKNOWN;
+        END;
       END;
     END
     ELSE

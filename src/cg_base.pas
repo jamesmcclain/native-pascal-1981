@@ -17,12 +17,10 @@ VAR
                    with no single declared named type" is produced (a set
                    constructor's result, or a set binop's result) -- see
                    EnsureGenericSetType. Every SET type shares the same
-                   physical layout, so operations that mix two differently
-                   *named* set types (or an anonymous constructor value with
-                   a named one) are still valid; TypesCompatibleForAssign
-                   below is what actually allows that, this tid just needs
-                   to be *some* valid registered TK_SET entry to satisfy
-                   TypeKind's table lookup. }
+                   physical layout, but semantic base compatibility is
+                   checked by the typechecker. This tid is only a valid
+                   registered TK_SET entry for representation/bounds; it
+                   cannot identify the host of a constructor or binop. }
   main_fnty, main_fn, entry_bb: ADRMEM;
   printf_fnty, printf_fn: ADRMEM;
   malloc_fnty, malloc_fn, free_fnty, free_fn: ADRMEM; { the *target program's*

@@ -1,0 +1,3 @@
+Type checking failed:
+Array index requires a type name, not a value: V
+Error: Failed to parse input AST JSON

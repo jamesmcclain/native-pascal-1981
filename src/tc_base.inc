@@ -28,6 +28,9 @@ CONST
   TK_VECTOR = 20;
   { Keep this appended: stage-local ids are mirrored in codegen. }
   TK_REAL32 = 21;
+  SB_UNKNOWN = 0;
+  SB_EMPTY = -1;
+  SB_ENUM_OFFSET = 100;
 
   MAX_SYMBOLS = 2000;
   MAX_TYPES = 500;
@@ -47,7 +50,14 @@ TYPE
     aux2: INTEGER;
     aux3: INTEGER;
     idx_tk: INTEGER;
+    set_sem_base: INTEGER;
+    scalar_sem_base: INTEGER;
+    type_node: ADRMEM; { original type expression for aggregate selector traversal }
     nparams: INTEGER;
+    param_set_sem_base: ARRAY [1..MAX_PARAMS] OF INTEGER;
+    ret_set_sem_base: INTEGER;
+    ret_scalar_sem_base: INTEGER;
+    ret_type_node: ADRMEM;
     param_tk: ARRAY [1..MAX_PARAMS] OF INTEGER;
     ret_tk: INTEGER;
     ret_aux, ret_aux2, ret_aux3, ret_idx_tk: INTEGER;
@@ -65,6 +75,9 @@ TYPE
     aux2: INTEGER;
     aux3: INTEGER;
     idx_tk: INTEGER;
+    set_sem_base: INTEGER;
+    scalar_sem_base: INTEGER;
+    type_node: ADRMEM;
     is_super: BOOLEAN;
   END;
 
@@ -86,6 +99,9 @@ TYPE
     faux2: INTEGER;
     faux3: INTEGER;
     fidx_tk: INTEGER;
+    set_sem_base: INTEGER;
+    scalar_sem_base: INTEGER;
+    type_node: ADRMEM;
     is_super: BOOLEAN;
   END;
 
@@ -99,6 +115,7 @@ VAR
   fields: ARRAY [1..MAX_FIELDS] OF FieldRec;
   nfields: INTEGER32;
   next_record_id: INTEGER;
+  next_enum_id: INTEGER;
   fwd_types: ARRAY [1..MAX_FWD_TYPES] OF FwdTypeRec;
   nfwd_types: INTEGER32; { entries of the TYPE section being checked; 0
                             outside one }
@@ -106,12 +123,15 @@ VAR
                             checked; it and every later entry are pending }
   last_designator_super: BOOLEAN;
   last_designator_idx_tk: INTEGER;
+  last_designator_set_sem_base: INTEGER;
+  last_designator_scalar_sem_base: INTEGER;
   last_designator_aux, last_designator_aux2: INTEGER;
   errors: ARRAY [1..MAX_ERRORS] OF Str255;
   nerrors: INTEGER32;
   expr_depth, stmt_depth: INTEGER;
   cur_func_ret_tk: INTEGER;
   cur_func_aux, cur_func_aux2: INTEGER;
+  cur_func_set_sem_base: INTEGER;
   cur_func_name: Str255;
   active_features: FeatureSet;
   is_device_compiland: BOOLEAN;
@@ -136,6 +156,7 @@ FUNCTION IsSignedInteger(tk: INTEGER): BOOLEAN;
 FUNCTION IsUnsignedInteger(tk: INTEGER): BOOLEAN;
 FUNCTION IntegerBits(tk: INTEGER): INTEGER;
 FUNCTION IsOrdinal(tk: INTEGER): BOOLEAN;
+FUNCTION SemanticBasesConflict(left_base, right_base: INTEGER): BOOLEAN;
 FUNCTION IsNumeric(tk: INTEGER): BOOLEAN;
 FUNCTION IsReal(tk: INTEGER): BOOLEAN;
 
