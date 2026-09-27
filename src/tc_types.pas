@@ -206,6 +206,138 @@ BEGIN
     AddError('Subrange bounds must be of the same ordinal type');
 END;
 
+FUNCTION ArrayNameEqual(a, b: Str255): BOOLEAN;
+VAR
+  i: INTEGER;
+BEGIN
+  a := UpperStr(a);
+  b := UpperStr(b);
+  ArrayNameEqual := FALSE;
+  IF ORD(a[0]) <> ORD(b[0]) THEN RETURN;
+  FOR i := 1 TO ORD(a[0]) DO
+    IF a[i] <> b[i] THEN RETURN;
+  ArrayNameEqual := TRUE;
+END;
+
+FUNCTION ArrayIndexBound(node: ADRMEM; enum_id: INTEGER; VAR ordinal_value: INTEGER64): BOOLEAN;
+{ Evaluate an ordinal endpoint in its declaration's domain, not as an
+  unrelated integer CONST. Enum member ordinals come from the defining enum. }
+VAR
+  nt, nm, member_name: Str255;
+  si, ti, i, n: INTEGER32;
+  vals: ADRMEM;
+BEGIN
+  ArrayIndexBound := TRUE;
+  nt := NodeType(node);
+  IF nt = 'IntLiteral' THEN ordinal_value := GetInt(node, 'value')
+  ELSE IF nt = 'BoolLiteral' THEN
+  BEGIN
+    ordinal_value := 0;
+    IF GetBool(node, 'value') THEN ordinal_value := 1;
+  END
+  ELSE IF nt = 'CharLiteral' THEN
+  BEGIN
+    nm := GetStr(node, 'value');
+    ordinal_value := ORD(nm[1]);
+  END
+  ELSE IF nt = 'Identifier' THEN
+  BEGIN
+    nm := GetStr(node, 'name');
+    si := LookupSymbol(nm);
+    IF si = 0 THEN ArrayIndexBound := FALSE
+    ELSE IF symbols[si].has_const_int THEN ordinal_value := symbols[si].const_int
+    ELSE IF (enum_id > 0) AND (symbols[si].tk = TK_ENUM) AND
+            (symbols[si].aux = enum_id) THEN
+    BEGIN
+      ArrayIndexBound := FALSE;
+      FOR ti := 1 TO ntypes DO
+        IF (types[ti].tk = TK_ENUM) AND (types[ti].aux = enum_id) AND
+           (NodeType(types[ti].type_node) = 'EnumType') THEN
+        BEGIN
+          vals := GetObj(types[ti].type_node, 'values');
+          n := cJSON_GetArraySize(vals);
+          FOR i := 0 TO n - 1 DO
+          BEGIN
+            member_name := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(vals, i)));
+            IF ArrayNameEqual(member_name, nm) THEN
+            BEGIN
+              ordinal_value := i;
+              ArrayIndexBound := TRUE;
+            END;
+          END;
+        END;
+    END
+    ELSE ArrayIndexBound := FALSE;
+  END
+  ELSE ArrayIndexBound := FALSE;
+END;
+
+FUNCTION NamedArrayIndexBounds(node: ADRMEM; tk, enum_id: INTEGER;
+                               VAR low, high: INTEGER64): BOOLEAN;
+{ Follow aliases to the declaration that owns the domain. For a subrange
+  retain its endpoints; for an enum use the declaration's member count. }
+VAR
+  nt, name: Str255;
+  ti, n, depth: INTEGER32;
+  vals: ADRMEM;
+  ok_low, ok_high: BOOLEAN;
+BEGIN
+  NamedArrayIndexBounds := FALSE;
+  FOR depth := 1 TO MAX_TYPES DO
+  BEGIN
+    nt := NodeType(node);
+    IF nt = 'NamedType' THEN
+    BEGIN
+      name := GetStr(node, 'name');
+      ti := LookupType(name);
+      IF ti <> 0 THEN node := types[ti].type_node
+      ELSE BEGIN
+        node := NIL;
+        nt := 'BuiltinType';
+      END;
+    END;
+    IF nt = 'SubrangeType' THEN
+    BEGIN
+      IF tk = TK_ENUM THEN
+        IF NodeType(GetObj(node, 'low')) = 'Identifier' THEN
+        BEGIN
+          ti := LookupSymbol(GetStr(GetObj(node, 'low'), 'name'));
+          IF ti <> 0 THEN enum_id := symbols[ti].aux;
+        END;
+      ok_low := ArrayIndexBound(GetObj(node, 'low'), enum_id, low);
+      ok_high := ArrayIndexBound(GetObj(node, 'high'), enum_id, high);
+      NamedArrayIndexBounds := ok_low AND ok_high;
+      RETURN;
+    END
+    ELSE IF nt = 'EnumType' THEN
+    BEGIN
+      vals := GetObj(node, 'values');
+      n := cJSON_GetArraySize(vals);
+      low := 0;
+      high := n - 1;
+      NamedArrayIndexBounds := n > 0;
+      RETURN;
+    END
+    ELSE IF nt = 'BuiltinType' THEN node := NIL;
+    IF node = NIL THEN
+    BEGIN
+      IF tk = TK_BOOLEAN THEN BEGIN low := 0; high := 1; END
+      ELSE IF tk = TK_CHAR THEN BEGIN low := 0; high := 255; END
+      ELSE IF tk = TK_INTEGER THEN BEGIN low := -32768; high := 32767; END
+      ELSE IF tk = TK_WORD THEN BEGIN low := 0; high := 65535; END
+      ELSE IF tk = TK_INTEGER8 THEN BEGIN low := -128; high := 127; END
+      ELSE IF tk = TK_WORD8 THEN BEGIN low := 0; high := 255; END
+      ELSE IF tk = TK_INTEGER32 THEN BEGIN low := -2147483647 - 1; high := 2147483647; END
+      ELSE IF tk = TK_WORD32 THEN BEGIN low := 0; high := 4294967295; END
+      ELSE IF tk = TK_INTEGER64 THEN
+      BEGIN low := -9223372036854775807 - 1; high := 9223372036854775807; END
+      ELSE RETURN;
+      NamedArrayIndexBounds := TRUE;
+      RETURN;
+    END;
+  END;
+END;
+
 FUNCTION PendingFwdType(base_node: ADRMEM): INTEGER32;
 { The fwd_types index of the not-yet-declared TYPE that a pointer's base
   names, or 0. Standard Pascal lets a pointer type name a type declared
@@ -322,7 +454,8 @@ VAR
   base_node, elem_node, index_node, bound_node, fields_arr, tup, items, names_arr, ftype_node: ADRMEM;
   variants_arr, arm_node, tag_type_node: ADRMEM;
   inner_tk, inner_aux, inner_aux2, inner_aux3, inner_idx: INTEGER;
-  lanes_v, pow2: INTEGER;
+  lanes_v, pow2, index_kind, index_aux, index_aux2, index_aux3, index_idx: INTEGER;
+  index_low, index_high: INTEGER64;
   ti, fwd_k: INTEGER32;
   rid: INTEGER;
   n, fi, nn, ni, bound_si: INTEGER32;
@@ -503,6 +636,35 @@ BEGIN
     aux3 := inner_aux2;
     idx_tk := TK_INTEGER;
     index_node := GetObj(node, 'index_range');
+    IF (NodeType(index_node) = 'NamedType') OR
+       (NodeType(index_node) = 'BuiltinType') THEN
+    BEGIN
+      { Resolve through TYPE declarations, never through a value symbol.
+        Keep the enum declaration id while tracing the bounds through
+        aliases; idx_tk itself stores only the coarse scalar kind, as for
+        explicit index ranges. A NamedType has no `low` field. }
+      IF (NodeType(index_node) = 'NamedType') AND
+         (LookupType(GetStr(index_node, 'name')) = 0) AND
+         (LookupSymbol(GetStr(index_node, 'name')) <> 0) THEN
+        AddError2('Array index requires a type name, not a value: ', GetStr(index_node, 'name'))
+      ELSE
+      BEGIN
+        ResolveTypeExpr(index_node, index_kind, index_aux, index_aux2,
+                        index_aux3, index_idx);
+        IF (index_kind <> TK_UNKNOWN) AND NOT IsOrdinal(index_kind) THEN
+          AddError('Array index type must be ordinal')
+        ELSE IF IsOrdinal(index_kind) THEN
+        BEGIN
+          idx_tk := index_kind;
+          IF NOT NamedArrayIndexBounds(index_node, index_kind, index_aux,
+                                       index_low, index_high) THEN
+            AddError('Array index type has unresolved or unrepresentable ordinal bounds')
+          ELSE IF index_low > index_high THEN
+            AddError('Array index type has reversed ordinal bounds');
+        END;
+      END;
+      RETURN;
+    END;
     CheckSubrangeEndpoints(index_node);
     bound_node := GetObj(index_node, 'low');
     IF NodeType(bound_node) = 'CharLiteral' THEN idx_tk := TK_CHAR
