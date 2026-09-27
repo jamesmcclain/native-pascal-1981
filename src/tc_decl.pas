@@ -373,6 +373,8 @@ BEGIN
     BEGIN
       nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, i)));
       si := DefineSymbol(nm, 'VAR', tk, aux, aux2, aux3, idx_tk);
+      IF tk = TK_SET THEN symbols[si].set_sem_base := SemanticSetBaseType(type_expr);
+      IF IsOrdinal(tk) THEN symbols[si].scalar_sem_base := SemanticBaseOfOrdinalType(type_expr);
       symbols[si].is_super := IsSuperTypeExpr(type_expr);
     END;
   END
@@ -406,6 +408,13 @@ BEGIN
       types[ntypes].aux2 := aux2;
       types[ntypes].aux3 := aux3;
       types[ntypes].idx_tk := idx_tk;
+      types[ntypes].set_sem_base := SB_UNKNOWN;
+      IF tk = TK_SET THEN types[ntypes].set_sem_base := SemanticSetBaseType(type_expr);
+      types[ntypes].scalar_sem_base := SB_UNKNOWN;
+      IF NodeType(type_expr) = 'EnumType' THEN
+        types[ntypes].scalar_sem_base := SemanticOrdinalBase(tk, aux)
+      ELSE IF IsOrdinal(tk) THEN
+        types[ntypes].scalar_sem_base := SemanticBaseOfOrdinalType(type_expr);
       types[ntypes].is_super := IsSuperTypeExpr(type_expr);
     END;
     IF NodeType(type_expr) = 'EnumType' THEN
@@ -419,7 +428,7 @@ BEGIN
       FOR i := 0 TO n - 1 DO
       BEGIN
         nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, i)));
-        si := DefineSymbol(nm, 'CONST', TK_ENUM, 0, 0, 0, 0);
+        si := DefineSymbol(nm, 'CONST', TK_ENUM, aux, 0, 0, 0);
       END;
     END;
   END

@@ -28,9 +28,15 @@ CONST
     TK_CHAR, TK_WORD, or TK_BOOLEAN), mirroring codegen.pas's own SET
     representation, minus the exact lo/hi bounds this coarse v1 model
     doesn't need to track for element/IN/set-operator checking. }
-  TK_ENUM     = 13; { a user-declared enumerated type. This coarse model
-    doesn't distinguish one enum type from another (or from its members'
-    constant symbols): every enum and enum constant carries TK_ENUM. }
+  TK_ENUM     = 13; { aux holds a unique enum declaration id, shared by
+    aliases and members. This is independent of the members' ordinals. }
+  { Semantic set bases are NOT the SET aux slot (which is used for bounds).
+    Zero means unresolved/error, -1 means the unconstrained empty set, and
+    positive values identify the host ordinal type. Enum ids are offset so
+    they cannot collide with any built-in TK, including extension kinds. }
+  SB_UNKNOWN = 0;
+  SB_EMPTY = -1;
+  SB_ENUM_OFFSET = 100;
   { Exact integer-family kinds preserve the declaration width and signedness
     needed for contextual literal checks. INTEGER16 and WORD16 use the vintage
     TK_INTEGER and TK_WORD kinds. These values need not match codegen's private
@@ -60,6 +66,8 @@ TYPE
     aux2: INTEGER;       { next aggregate's aux, or LSTRING .LEN marker }
     aux3: INTEGER;       { third level: e.g. pointer -> array -> record id }
     idx_tk: INTEGER;     { array index TK }
+    set_sem_base: INTEGER; { semantic host, not set bounds/representation }
+    scalar_sem_base: INTEGER; { ordinal host even when aux is a subrange marker }
     nparams: INTEGER;
     param_tk: ARRAY [1..MAX_PARAMS] OF INTEGER;
     ret_tk: INTEGER;
@@ -85,6 +93,8 @@ TYPE
     aux2: INTEGER;
     aux3: INTEGER;
     idx_tk: INTEGER;
+    set_sem_base: INTEGER; { for named SET types; aliases copy this identity }
+    scalar_sem_base: INTEGER; { enum/subrange host independent of aux }
     is_super: BOOLEAN;
   END;
 
@@ -111,6 +121,7 @@ VAR
   fields: ARRAY [1..MAX_FIELDS] OF FieldRec;
   nfields: INTEGER32;
   next_record_id: INTEGER;
+  next_enum_id: INTEGER; { monotonic across scopes: distinct declarations stay distinct }
   fwd_types: ARRAY [1..MAX_FWD_TYPES] OF FwdTypeRec;
   nfwd_types: INTEGER32; { entries of the TYPE section being checked; 0
                             outside one }
@@ -256,6 +267,16 @@ BEGIN
   symbols[nsymbols].aux2 := aux2;
   symbols[nsymbols].aux3 := aux3;
   symbols[nsymbols].idx_tk := idx_tk;
+  symbols[nsymbols].set_sem_base := SB_UNKNOWN;
+  symbols[nsymbols].scalar_sem_base := SB_UNKNOWN;
+  IF tk = TK_ENUM THEN
+  BEGIN
+    IF aux > 0 THEN symbols[nsymbols].scalar_sem_base := SB_ENUM_OFFSET + aux;
+  END
+  ELSE IF (tk = TK_INTEGER) OR (tk = TK_WORD) OR (tk = TK_CHAR) OR
+          (tk = TK_BOOLEAN) OR (tk = TK_INTEGER8) OR (tk = TK_INTEGER32) OR
+          (tk = TK_INTEGER64) OR (tk = TK_WORD8) OR (tk = TK_WORD32) OR
+          (tk = TK_WORD64) THEN symbols[nsymbols].scalar_sem_base := tk;
   symbols[nsymbols].nparams := 0;
   symbols[nsymbols].ret_tk := TK_VOID;
   symbols[nsymbols].is_super := FALSE;
@@ -381,6 +402,7 @@ BEGIN
   ntypes := 0;
   nfields := 0;
   next_record_id := 1;
+  next_enum_id := 0;
   nfwd_types := 0;
   fwd_cur := 0;
   nerrors := 0;

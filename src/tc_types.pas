@@ -72,6 +72,74 @@ BEGIN
   END;
 END;
 
+FUNCTION SemanticOrdinalBase(tk, aux: INTEGER): INTEGER;
+{ The host of an ordinal type. Subranges keep their host TK; enum types
+  additionally carry the declaration id in aux. Never infer a host from a
+  numeric ordinal, or treat missing enum identity as generic INTEGER. }
+BEGIN
+  SemanticOrdinalBase := SB_UNKNOWN;
+  IF tk = TK_ENUM THEN
+  BEGIN
+    IF aux > 0 THEN SemanticOrdinalBase := SB_ENUM_OFFSET + aux;
+  END
+  ELSE IF IsOrdinal(tk) THEN SemanticOrdinalBase := tk;
+END;
+
+FUNCTION SemanticBaseOfOrdinalType(node: ADRMEM): INTEGER;
+{ Resolve the semantic host without re-running ResolveTypeExpr (which can
+  emit diagnostics and allocate enum ids). This also handles the SubrangeType
+  syntax used as a SET base, whose low endpoint determines its host. }
+VAR
+  nt, name: Str255;
+  ti: INTEGER32;
+  low_node: ADRMEM;
+BEGIN
+  SemanticBaseOfOrdinalType := SB_UNKNOWN;
+  nt := NodeType(node);
+  IF (nt = 'NamedType') OR (nt = 'BuiltinType') THEN
+  BEGIN
+    name := UpperStr(GetStr(node, 'name'));
+    ti := LookupType(name);
+    IF ti <> 0 THEN
+      SemanticBaseOfOrdinalType := types[ti].scalar_sem_base
+    ELSE IF name = 'INTEGER' THEN SemanticBaseOfOrdinalType := TK_INTEGER
+    ELSE IF name = 'WORD' THEN SemanticBaseOfOrdinalType := TK_WORD
+    ELSE IF name = 'BOOLEAN' THEN SemanticBaseOfOrdinalType := TK_BOOLEAN
+    ELSE IF name = 'CHAR' THEN SemanticBaseOfOrdinalType := TK_CHAR;
+  END
+  ELSE IF nt = 'SubrangeType' THEN
+  BEGIN
+    low_node := GetObj(node, 'low');
+    nt := NodeType(low_node);
+    IF nt = 'IntLiteral' THEN SemanticBaseOfOrdinalType := TK_INTEGER
+    ELSE IF nt = 'CharLiteral' THEN SemanticBaseOfOrdinalType := TK_CHAR
+    ELSE IF nt = 'BoolLiteral' THEN SemanticBaseOfOrdinalType := TK_BOOLEAN
+    ELSE IF nt = 'Identifier' THEN
+    BEGIN
+      ti := LookupSymbol(GetStr(low_node, 'name'));
+      IF ti <> 0 THEN
+        SemanticBaseOfOrdinalType := symbols[ti].scalar_sem_base;
+    END;
+  END;
+END;
+
+FUNCTION SemanticSetBaseType(node: ADRMEM): INTEGER;
+{ Set semantic identity is deliberately separate from the existing aux TK
+  used by LOWER/UPPER. Named aliases inherit the declaration's identity. }
+VAR
+  ti: INTEGER32;
+BEGIN
+  SemanticSetBaseType := SB_UNKNOWN;
+  IF NodeType(node) = 'SetType' THEN
+    SemanticSetBaseType := SemanticBaseOfOrdinalType(GetObj(node, 'base'))
+  ELSE IF NodeType(node) = 'NamedType' THEN
+  BEGIN
+    ti := LookupType(GetStr(node, 'name'));
+    IF ti <> 0 THEN
+      IF types[ti].tk = TK_SET THEN SemanticSetBaseType := types[ti].set_sem_base;
+  END;
+END;
+
 FUNCTION SubrangeEndpointClass(node: ADRMEM): INTEGER;
 { The ordinal kind of a subrange endpoint that is a literal or a named
   constant or enumeration member: TK_INTEGER for any integer, else TK_CHAR,
@@ -595,7 +663,11 @@ BEGIN
     END;
   END
   ELSE IF nt = 'EnumType' THEN
-    tk := TK_ENUM
+  BEGIN
+    next_enum_id := next_enum_id + 1;
+    tk := TK_ENUM;
+    aux := next_enum_id;
+  END
   ELSE IF nt = 'SetType' THEN
   BEGIN
     base_node := GetObj(node, 'base');

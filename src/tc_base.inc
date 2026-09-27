@@ -28,6 +28,9 @@ CONST
   TK_VECTOR = 20;
   { Keep this appended: stage-local ids are mirrored in codegen. }
   TK_REAL32 = 21;
+  SB_UNKNOWN = 0;
+  SB_EMPTY = -1;
+  SB_ENUM_OFFSET = 100;
 
   MAX_SYMBOLS = 2000;
   MAX_TYPES = 500;
@@ -47,6 +50,8 @@ TYPE
     aux2: INTEGER;
     aux3: INTEGER;
     idx_tk: INTEGER;
+    set_sem_base: INTEGER;
+    scalar_sem_base: INTEGER;
     nparams: INTEGER;
     param_tk: ARRAY [1..MAX_PARAMS] OF INTEGER;
     ret_tk: INTEGER;
@@ -65,6 +70,8 @@ TYPE
     aux2: INTEGER;
     aux3: INTEGER;
     idx_tk: INTEGER;
+    set_sem_base: INTEGER;
+    scalar_sem_base: INTEGER;
     is_super: BOOLEAN;
   END;
 
@@ -99,6 +106,7 @@ VAR
   fields: ARRAY [1..MAX_FIELDS] OF FieldRec;
   nfields: INTEGER32;
   next_record_id: INTEGER;
+  next_enum_id: INTEGER;
   fwd_types: ARRAY [1..MAX_FWD_TYPES] OF FwdTypeRec;
   nfwd_types: INTEGER32; { entries of the TYPE section being checked; 0
                             outside one }

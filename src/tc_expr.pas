@@ -18,8 +18,10 @@ FUNCTION CheckFuncCall(node: ADRMEM): INTEGER; FORWARD;
 
 VAR
   expr_context_tk: INTEGER;
-  last_set_base_tk: INTEGER; { base kind of the last set operation checked;
-    see SetBaseAfterCheck. }
+  last_set_base_tk: INTEGER; { bounds-only base; see SetBaseAfterCheck. }
+  last_sem_set_base: INTEGER; { independent semantic base of the last SET
+    expression: SB_EMPTY for [], SB_UNKNOWN on error/unresolved paths. The
+    subsequent propagation work must snapshot this across recursive checks. }
 
 FUNCTION IsDeviceIndexName(name: Str255): BOOLEAN;
 VAR
@@ -960,6 +962,7 @@ BEGIN
   END
   ELSE BEGIN
   nt := NodeType(node);
+  last_sem_set_base := SB_UNKNOWN;
   IF nt = 'IntLiteral' THEN
     CheckExpr := CheckIntegerConstant(node, JsonIntegerValue(node))
   ELSE IF nt = 'RealLiteral' THEN
@@ -1049,6 +1052,10 @@ BEGIN
           AddError('Set element must be an ordinal type');
       END;
     END;
+    { Empty is not an INTEGER set: it can take any expected semantic base.
+      Nonempty constructors are constrained by their elements in the next
+      punchlist step; until then unknown must not be silently INTEGER. }
+    IF n_elems = 0 THEN last_sem_set_base := SB_EMPTY;
     CheckExpr := TK_SET;
   END
   ELSE IF (nt = 'Designator') OR (nt = 'PostfixExpr') THEN

@@ -6,6 +6,9 @@ USES jsonutil, features, tc_base;
 
 PROCEDURE ResolveTypeExpr(node: ADRMEM; VAR tk, aux, aux2, aux3, idx_tk: INTEGER);
 FUNCTION IsSuperTypeExpr(node: ADRMEM): BOOLEAN;
+FUNCTION SemanticOrdinalBase(tk, aux: INTEGER): INTEGER;
+FUNCTION SemanticBaseOfOrdinalType(node: ADRMEM): INTEGER;
+FUNCTION SemanticSetBaseType(node: ADRMEM): INTEGER;
 FUNCTION FwdCachedType(node: ADRMEM; VAR tk, aux, aux2, aux3, idx_tk: INTEGER): BOOLEAN;
 
 END;
