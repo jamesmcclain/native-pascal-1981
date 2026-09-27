@@ -400,6 +400,14 @@ BEGIN
   IsOrdinal := IsInteger(tk) OR (tk = TK_CHAR) OR (tk = TK_BOOLEAN) OR (tk = TK_ENUM);
 END;
 
+FUNCTION SemanticBasesConflict(left_base, right_base: INTEGER): BOOLEAN;
+{ Both must be known identities before a mismatch can be proved. An empty
+  constructor imposes no constraint; unknown/error is not an INTEGER base. }
+BEGIN
+  SemanticBasesConflict := (left_base > 0) AND (right_base > 0) AND
+    (left_base <> right_base);
+END;
+
 FUNCTION IsReal(tk: INTEGER): BOOLEAN;
 BEGIN
   IsReal := (tk = TK_REAL) OR (tk = TK_REAL32);

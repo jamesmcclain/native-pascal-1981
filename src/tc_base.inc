@@ -156,6 +156,7 @@ FUNCTION IsSignedInteger(tk: INTEGER): BOOLEAN;
 FUNCTION IsUnsignedInteger(tk: INTEGER): BOOLEAN;
 FUNCTION IntegerBits(tk: INTEGER): INTEGER;
 FUNCTION IsOrdinal(tk: INTEGER): BOOLEAN;
+FUNCTION SemanticBasesConflict(left_base, right_base: INTEGER): BOOLEAN;
 FUNCTION IsNumeric(tk: INTEGER): BOOLEAN;
 FUNCTION IsReal(tk: INTEGER): BOOLEAN;
 

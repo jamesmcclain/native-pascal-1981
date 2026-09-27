@@ -331,6 +331,40 @@ BEGIN
   CheckExprForTarget := CheckExprForSetTarget(node, target_tk, SB_UNKNOWN);
 END;
 
+PROCEDURE CheckConstructorMember(node: ADRMEM; VAR base: INTEGER;
+                                 ordinal_error: Str255);
+VAR
+  tk, member_base: INTEGER;
+BEGIN
+  tk := CheckExpr(node);
+  { Capture this result before checking the next element or range endpoint. }
+  member_base := last_sem_scalar_base;
+  IF tk = TK_UNKNOWN THEN
+  BEGIN
+    base := SB_UNKNOWN;
+    RETURN;
+  END;
+  IF NOT IsOrdinal(tk) THEN
+  BEGIN
+    AddError(ordinal_error);
+    base := SB_UNKNOWN;
+    RETURN;
+  END;
+  IF (member_base = SB_UNKNOWN) AND (tk <> TK_ENUM) THEN
+    member_base := SemanticOrdinalBase(tk, 0);
+  IF member_base = SB_UNKNOWN THEN
+  BEGIN
+    AddError('Cannot determine set element base type');
+    base := SB_UNKNOWN;
+  END
+  ELSE IF base = SB_EMPTY THEN base := member_base
+  ELSE IF SemanticBasesConflict(base, member_base) THEN
+  BEGIN
+    AddError('Incompatible set base types');
+    base := SB_UNKNOWN; { one mismatch diagnostic per constructor }
+  END;
+END;
+
 FUNCTION CheckDesignator(node: ADRMEM): INTEGER;
 { Thread aggregate metadata through selectors. aux3 retains the record id
   through pointer -> array -> record, including pointers stored in fields. }
@@ -995,6 +1029,8 @@ VAR
   op: Str255;
   elems_arr, elem_node, bound_selectors, bound_sel: ADRMEM;
   n_elems, ei, bound_n: INTEGER32;
+  constructor_base, expected_set_base: INTEGER;
+  constructor_errors_before: INTEGER32;
   folded_value: INTEGER64;
   bound_subrange, bound_super, bound_idx_unknown: BOOLEAN;
 BEGIN
@@ -1092,36 +1128,37 @@ BEGIN
   END
   ELSE IF nt = 'SetConstructor' THEN
   BEGIN
-    { Element/range-bound ordinal checking only; this v1 type-kind model has
-      no way to carry a SET's declared base ordinal kind through CheckExpr's
-      bare-tk return value (unlike codegen.pas's richer type table), so a
-      mismatched base across elements (e.g. mixing CHAR and INTEGER) is not
-      caught here -- codegen.pas is the enforcement backstop for that, same
-      division of labor as elsewhere in this file (see the header comment). }
+    { Check both endpoints even if the range is statically reversed: its
+      element type is independent of the number of members it produces. }
     elems_arr := GetObj(node, 'elements');
     n_elems := cJSON_GetArraySize(elems_arr);
+    expected_set_base := expr_context_set_base;
+    constructor_errors_before := nerrors;
+    constructor_base := SB_EMPTY;
     FOR ei := 0 TO n_elems - 1 DO
     BEGIN
       elem_node := cJSON_GetArrayItem(elems_arr, ei);
       IF NodeType(elem_node) = 'RangeExpr' THEN
       BEGIN
-        lt := CheckExpr(GetObj(elem_node, 'low'));
-        rt := CheckExpr(GetObj(elem_node, 'high'));
-        IF (lt <> TK_UNKNOWN) AND NOT IsOrdinal(lt) THEN
-          AddError('Set range bound must be an ordinal type');
-        IF (rt <> TK_UNKNOWN) AND NOT IsOrdinal(rt) THEN
-          AddError('Set range bound must be an ordinal type');
+        CheckConstructorMember(GetObj(elem_node, 'low'), constructor_base,
+          'Set range bound must be an ordinal type');
+        CheckConstructorMember(GetObj(elem_node, 'high'), constructor_base,
+          'Set range bound must be an ordinal type');
       END
-      ELSE BEGIN
-        ot := CheckExpr(elem_node);
-        IF (ot <> TK_UNKNOWN) AND NOT IsOrdinal(ot) THEN
-          AddError('Set element must be an ordinal type');
-      END;
+      ELSE
+        CheckConstructorMember(elem_node, constructor_base,
+          'Set element must be an ordinal type');
     END;
-    { Empty is not an INTEGER set: it can take any expected semantic base.
-      Nonempty constructors are constrained by their elements in the next
-      punchlist step; until then unknown must not be silently INTEGER. }
-    IF n_elems = 0 THEN last_sem_set_base := SB_EMPTY;
+    { Context constrains nonempty syntax but never reinterprets BOOLEAN,
+      CHAR or enum ordinals as INTEGER. [] remains polymorphic. A constructor
+      already diagnosed internally needs no second context diagnostic. }
+    IF (n_elems > 0) AND (nerrors = constructor_errors_before) AND
+       SemanticBasesConflict(constructor_base, expected_set_base) THEN
+      AddError('Incompatible set base types');
+    IF nerrors <> constructor_errors_before THEN
+      last_sem_set_base := SB_UNKNOWN
+    ELSE
+      last_sem_set_base := constructor_base;
     CheckExpr := TK_SET;
   END
   ELSE IF (nt = 'Designator') OR (nt = 'PostfixExpr') THEN
