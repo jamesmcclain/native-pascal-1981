@@ -1499,11 +1499,14 @@ BEGIN
 END;
 
 FUNCTION SetOpResultType(lt, rt: INTEGER): INTEGER;
-{ The static type of a set union, intersection or difference. Operands of
-  the same base type keep it, with bounds that cover both declared ranges
-  (so SET OF BOOLEAN + SET OF BOOLEAN is still FALSE..TRUE); an existing
-  entry with that shape is reused. Mixed bases, or a constructor's generic
-  set, give the generic INTEGER set, as the typechecker does. }
+{ Bounds/representation type of a set operation, not semantic compatibility.
+  Matching declared representation bases retain and widen their ranges;
+  anonymous constructors contribute generic INTEGER 0..255 bounds even
+  when their members have a BOOLEAN, CHAR or enum semantic host. Different
+  representation bases also fall back to generic bounds, but incompatible
+  semantic hosts have already been rejected by the typechecker. Reuse an
+  existing widened type when possible. LOWER/UPPER calls this static walk
+  without evaluating either operand. }
 VAR
   lo, hi: INTEGER32;
   ti, found: INTEGER;

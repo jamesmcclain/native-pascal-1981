@@ -18,7 +18,7 @@ FUNCTION CheckFuncCall(node: ADRMEM): INTEGER; FORWARD;
 
 VAR
   expr_context_tk: INTEGER;
-  last_set_base_tk: INTEGER; { bounds-only base; see SetBaseAfterCheck. }
+  last_set_base_tk: INTEGER; { bounds-only base; see SetBoundsBaseAfterCheck. }
   expr_context_set_base: INTEGER; { expected SET base, independent of bounds }
   last_sem_set_base, last_sem_scalar_base: INTEGER;
 
@@ -999,31 +999,31 @@ BEGIN
     last_sem_scalar_base := symbols[si].ret_scalar_sem_base;
 END;
 
-FUNCTION SetBaseAfterCheck(node: ADRMEM): INTEGER;
-{ The base ordinal kind of a set-valued expression, read right after
-  CheckExpr has checked it (a designator's comes from the side channel that
-  check just set). A set constructor has no declared base, so it is the
-  generic INTEGER one, as in codegen. }
+FUNCTION SetBoundsBaseAfterCheck(node: ADRMEM): INTEGER;
+{ Bounds/representation kind only, immediately after CheckExpr. The
+  independent last_sem_set_base channel determines compatibility. Every
+  anonymous constructor retains INTEGER 0..255 LOWER/UPPER bounds, even
+  when its members semantically constrain it to BOOLEAN, CHAR or an enum. }
 VAR
   nt: Str255;
   si: INTEGER32;
 BEGIN
-  SetBaseAfterCheck := TK_INTEGER;
+  SetBoundsBaseAfterCheck := TK_INTEGER;
   nt := NodeType(node);
   IF (nt = 'Designator') OR (nt = 'PostfixExpr') THEN
-    SetBaseAfterCheck := last_designator_aux
+    SetBoundsBaseAfterCheck := last_designator_aux
   ELSE IF nt = 'Identifier' THEN
   BEGIN
     si := LookupSymbol(GetStr(node, 'name'));
-    IF si <> 0 THEN SetBaseAfterCheck := symbols[si].aux;
+    IF si <> 0 THEN SetBoundsBaseAfterCheck := symbols[si].aux;
   END
   ELSE IF nt = 'FuncCall' THEN
   BEGIN
     si := LookupSymbol(GetStr(node, 'name'));
-    IF si <> 0 THEN SetBaseAfterCheck := symbols[si].ret_aux;
+    IF si <> 0 THEN SetBoundsBaseAfterCheck := symbols[si].ret_aux;
   END
   ELSE IF nt = 'BinOp' THEN
-    SetBaseAfterCheck := last_set_base_tk;
+    SetBoundsBaseAfterCheck := last_set_base_tk;
 END;
 
 FUNCTION CheckExpr(node: ADRMEM): INTEGER;
@@ -1317,13 +1317,13 @@ BEGIN
        (lt <> TK_ENUM) THEN sem_scalar_l := SemanticOrdinalBase(lt, 0);
     IF lt = TK_SET THEN
     BEGIN
-      set_base_l := SetBaseAfterCheck(left_node);
+      set_base_l := SetBoundsBaseAfterCheck(left_node);
       sem_set_l := last_sem_set_base;
     END;
     rt := CheckExpr(right_node);
     IF rt = TK_SET THEN
     BEGIN
-      set_base_r := SetBaseAfterCheck(right_node);
+      set_base_r := SetBoundsBaseAfterCheck(right_node);
       sem_set_r := last_sem_set_base;
     END;
     op := GetStr(node, 'op');
@@ -1397,9 +1397,11 @@ BEGIN
       END
       ELSE IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') THEN
       BEGIN
-        { Preserve existing bounds behavior: same-base declared operands
-          widen, while anonymous operands use generic bounds. A mixed-base
-          expression is diagnosed here, never legalized by generic bounds. }
+        { Bounds only: same-representation declared operands retain their
+          base (codegen widens their ranges); anonymous operands contribute
+          generic INTEGER 0..255 bounds, regardless of semantic host. A
+          mixed semantic host is diagnosed below, not made compatible by
+          this representation fallback. }
         IF set_base_l = set_base_r THEN last_set_base_tk := set_base_l
         ELSE last_set_base_tk := TK_INTEGER;
         IF SemanticBasesConflict(sem_set_l, sem_set_r) THEN
