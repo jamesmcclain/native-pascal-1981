@@ -23,5 +23,11 @@ BEGIN
   p^ := a[0].bits;
   IF (Pick IN p^) AND (c = d) AND ([] <> c) AND (c <> []) THEN
     WRITELN('enum host');
+  WRITELN('membership ', red IN e, ' ', blue IN e,
+          ' ', [blue..red] = []);
+  WRITELN('bounds ', ORD(LOWER(c)), ' ', ORD(UPPER(c)),
+          ' ', ORD(LOWER(d)), ' ', ORD(UPPER(d)),
+          ' ', ORD(LOWER(e)), ' ', ORD(UPPER(e)),
+          ' ', LOWER(c + []), ' ', UPPER(c + []));
   DISPOSE(p)
 END.
