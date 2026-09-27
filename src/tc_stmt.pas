@@ -555,7 +555,7 @@ BEGIN
            (GetObjOrNil(warg, 'type_name') = NIL) AND
            (NOT active_features.readset_set_literal) THEN
           AddError('Character Set Expected: READSET set argument must be a declared SET OF CHAR value');
-        cond_tk := CheckExpr(warg);
+        cond_tk := CheckExprForSetTarget(warg, TK_SET, TK_CHAR);
         IF cond_tk <> TK_SET THEN
           AddError('READSET set argument must be a SET OF CHAR value');
       END;

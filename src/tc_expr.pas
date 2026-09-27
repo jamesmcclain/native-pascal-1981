@@ -307,6 +307,13 @@ BEGIN
   result_tk := CheckExpr(node);
   expr_context_tk := saved_context;
   expr_context_set_base := saved_set_context;
+  { This checks copies and function/procedure value arguments as well as
+    constructors. A diagnostic inside the expression already explains its
+    own incompatibility; don't report it a second time at the target. }
+  IF (nerrors = errors_before) AND (target_tk = TK_SET) AND
+     (result_tk = TK_SET) AND
+     SemanticBasesConflict(target_set_base, last_sem_set_base) THEN
+    AddError('Incompatible set base types');
   IF IsInteger(target_tk) AND IsInteger(result_tk) AND FoldConstInt(node, folded_value) THEN
   BEGIN
     IF (nerrors = errors_before) AND NOT IntegerConstantFits(target_tk, folded_value) THEN
@@ -1025,7 +1032,7 @@ VAR
   si: INTEGER32;
   left_node, right_node, operand_node, type_node: ADRMEM;
   lt, rt, ot, op_kind, aux, aux2, aux3, idx_tk, bound_base_tk: INTEGER;
-  set_base_l, set_base_r, sem_set_l, sem_set_r: INTEGER;
+  set_base_l, set_base_r, sem_set_l, sem_set_r, sem_scalar_l: INTEGER;
   op: Str255;
   elems_arr, elem_node, bound_selectors, bound_sel: ADRMEM;
   n_elems, ei, bound_n: INTEGER32;
@@ -1305,6 +1312,9 @@ BEGIN
     sem_set_l := SB_UNKNOWN;
     sem_set_r := SB_UNKNOWN;
     lt := CheckExpr(left_node);
+    sem_scalar_l := last_sem_scalar_base;
+    IF (sem_scalar_l = SB_UNKNOWN) AND IsOrdinal(lt) AND
+       (lt <> TK_ENUM) THEN sem_scalar_l := SemanticOrdinalBase(lt, 0);
     IF lt = TK_SET THEN
     BEGIN
       set_base_l := SetBaseAfterCheck(left_node);
@@ -1354,7 +1364,12 @@ BEGIN
     END
     ELSE IF (op = 'EQ') OR (op = 'NEQ') OR (op = 'LT') OR (op = 'LE') OR (op = 'GT') OR (op = 'GE') THEN
     BEGIN
-      IF NOT (IsNumeric(lt) AND IsNumeric(rt)) AND (lt <> rt) THEN
+      IF (lt = TK_SET) AND (rt = TK_SET) THEN
+      BEGIN
+        IF SemanticBasesConflict(sem_set_l, sem_set_r) THEN
+          AddError('Incompatible set base types');
+      END
+      ELSE IF NOT (IsNumeric(lt) AND IsNumeric(rt)) AND (lt <> rt) THEN
         AddError('Comparison operands are not comparable');
       CheckExpr := TK_BOOLEAN;
       last_sem_scalar_base := TK_BOOLEAN;
@@ -1365,15 +1380,16 @@ BEGIN
         AddError('IN requires an ordinal left operand');
       IF rt <> TK_SET THEN
         AddError('IN requires a SET right operand');
+      IF IsOrdinal(lt) AND (rt = TK_SET) AND
+         SemanticBasesConflict(sem_scalar_l, sem_set_r) THEN
+        AddError('Incompatible set base types');
       CheckExpr := TK_BOOLEAN;
       last_sem_scalar_base := TK_BOOLEAN;
     END
     ELSE IF (lt = TK_SET) OR (rt = TK_SET) THEN
     BEGIN
-      { Set union/intersection/difference (PLUS/MINUS/MUL): both operands
-        must be SET. Base-kind mismatch (e.g. SET OF CHAR + SET OF INTEGER)
-        is not caught here -- see the SetConstructor case's comment on why
-        this coarse model can't carry a SET's base ordinal kind. }
+      { Set union/intersection/difference: compare semantic hosts separately
+        from the bounds/representation base below. }
       IF (lt <> TK_SET) OR (rt <> TK_SET) THEN
       BEGIN
         AddError('Set operator requires SET operands');
@@ -1381,13 +1397,14 @@ BEGIN
       END
       ELSE IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') THEN
       BEGIN
-        { Operands with the same base keep it (codegen keeps the base and
-          widens the bounds to cover both); a mixed-base result is the
-          generic INTEGER set. }
+        { Preserve existing bounds behavior: same-base declared operands
+          widen, while anonymous operands use generic bounds. A mixed-base
+          expression is diagnosed here, never legalized by generic bounds. }
         IF set_base_l = set_base_r THEN last_set_base_tk := set_base_l
         ELSE last_set_base_tk := TK_INTEGER;
-        { Metadata unification only; rejecting mismatches is the next item.
-          An empty constructor contributes no semantic constraint. }
+        IF SemanticBasesConflict(sem_set_l, sem_set_r) THEN
+          AddError('Incompatible set base types');
+        { An empty constructor contributes no semantic constraint. }
         IF sem_set_l = SB_EMPTY THEN last_sem_set_base := sem_set_r
         ELSE IF sem_set_r = SB_EMPTY THEN last_sem_set_base := sem_set_l
         ELSE IF sem_set_l = sem_set_r THEN last_sem_set_base := sem_set_l
