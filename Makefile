@@ -173,6 +173,7 @@ test-native: test-driver test-sysutil $(ASTCOMPARE_BIN) $(PROXY_BIN)
 	./tests/indexck_metadata.sh
 	./tests/indexck_guard_ir.sh
 	./tests/codegen_set_base_guard.sh
+	./tests/set_enum_typecheck.sh
 
 # Reusable POSIX filesystem and process primitives, exercised from Pascal.
 test-sysutil: $(DRIVER_BIN) runtime

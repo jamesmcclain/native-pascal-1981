@@ -1194,7 +1194,8 @@ BEGIN
     ci := LookupConst(GetStr(node, 'name'));
     IF ci <> 0 THEN
       IF const_tbl[ci].enum_tid <> 0 THEN BoundHostTid := const_tbl[ci].enum_tid
-      ELSE IF const_tbl[ci].is_char THEN BoundHostTid := TK_CHAR;
+      ELSE IF const_tbl[ci].is_char THEN BoundHostTid := TK_CHAR
+      ELSE IF const_tbl[ci].integer_tid = TK_BOOLEAN THEN BoundHostTid := TK_BOOLEAN;
   END;
 END;
 
@@ -1339,7 +1340,7 @@ VAR
   elem_llvm_types: ADRMEM;
   struct_ty, payload_ty: ADRMEM;
   field_index: INTEGER;
-  has_variants: BOOLEAN;
+  has_variants, set_base_is_subrange: BOOLEAN;
   values_arr: ADRMEM; { EnumType's member identifier list }
   mi: INTEGER32;
   named_tid: INTEGER;
@@ -1673,34 +1674,56 @@ BEGIN
   END
   ELSE IF nt = 'SetType' THEN
   BEGIN
-    { Every SET type shares the same physical [4 x i64] 256-bit-bitvector
-      representation regardless of declared base range (matching the Python
-      reference's set_llvm_type) -- only the base's low/high are kept, and
-      only to know the ordinal's legal range, not to size the storage.
-      Two base shapes: a SubrangeType (SET OF lo..hi, always an INTEGER
-      ordinal here since this dialect only lexes plain-integer subrange
-      bounds in this position) or a bare ordinal type name -- CHAR, WORD,
-      BOOLEAN, or INTEGER -- parsed by ParseSetBase as either a NamedType
-      (e.g. a bare identifier) or a BuiltinType node (a reserved-word type
-      name). The manual's own worked example (djvu.txt:7107-7126) is
-      `SET OF CHAR`, so this case has to exist, not just SubrangeType. }
+    { Every SET uses [4 x i64]. Its elem_tid identifies the ordinal host
+      for declared-base checks and static bounds; aliases and subranges of
+      an enum must keep their original declaration tid, not just TK_ENUM. }
     IF NodeType(GetObj(te, 'base')) = 'SubrangeType' THEN
     BEGIN
+      elem_tid := BoundHostTid(GetObj(GetObj(te, 'base'), 'low'));
+      IF BoundHostTid(GetObj(GetObj(te, 'base'), 'high')) <> elem_tid THEN
+        AbortWith('codegen: SET subrange bounds must share an ordinal host');
       lo := ResolveIntLiteral(GetObj(GetObj(te, 'base'), 'low'));
       hi := ResolveIntLiteral(GetObj(GetObj(te, 'base'), 'high'));
-      tid := RegisterType(TK_SET, TK_INTEGER, lo, hi, setty);
+      tid := RegisterType(TK_SET, elem_tid, lo, hi, setty);
     END
     ELSE IF (NodeType(GetObj(te, 'base')) = 'NamedType') OR (NodeType(GetObj(te, 'base')) = 'BuiltinType') THEN
     BEGIN
       nm := GetStr(GetObj(te, 'base'), 'name');
-      unm := UpperStr(nm);
-      IF unm = 'CHAR' THEN tid := RegisterType(TK_SET, TK_CHAR, 0, 255, setty)
-      ELSE IF unm = 'BOOLEAN' THEN tid := RegisterType(TK_SET, TK_BOOLEAN, 0, 1, setty)
-      ELSE IF (unm = 'INTEGER') OR (unm = 'WORD') THEN tid := RegisterType(TK_SET, TK_INTEGER, 0, 255, setty)
+      named_tid := LookupNamedType(nm);
+      IF named_tid <> 0 THEN
+      BEGIN
+        elem_tid := SubrangeBaseTid(named_tid);
+        IF (TypeKind(elem_tid) <> TK_ENUM) AND (elem_tid <> TK_INTEGER)
+           AND (elem_tid <> TK_CHAR) AND (elem_tid <> TK_BOOLEAN) THEN
+          AbortWith2('codegen: SET OF <base> requires an ordinal base type, got: ', nm);
+        set_base_is_subrange := FALSE;
+        IF named_tid >= 14 THEN
+          set_base_is_subrange := types[named_tid].is_subrange;
+        IF set_base_is_subrange THEN
+        BEGIN
+          lo := types[named_tid].lo;
+          hi := types[named_tid].hi;
+        END
+        ELSE IF TypeKind(elem_tid) = TK_ENUM THEN
+        BEGIN
+          lo := types[elem_tid].lo;
+          hi := types[elem_tid].hi;
+        END
+        ELSE IF elem_tid = TK_BOOLEAN THEN BEGIN lo := 0; hi := 1 END
+        ELSE BEGIN lo := 0; hi := 255 END;
+        tid := RegisterType(TK_SET, elem_tid, lo, hi, setty);
+      END
       ELSE
       BEGIN
-        AbortWith2('codegen: SET OF <base> requires an ordinal base type (INTEGER subrange, CHAR, WORD, or BOOLEAN), got: ', nm);
-        tid := TK_UNKNOWN;
+        unm := UpperStr(nm);
+        IF unm = 'CHAR' THEN tid := RegisterType(TK_SET, TK_CHAR, 0, 255, setty)
+        ELSE IF unm = 'BOOLEAN' THEN tid := RegisterType(TK_SET, TK_BOOLEAN, 0, 1, setty)
+        ELSE IF (unm = 'INTEGER') OR (unm = 'WORD') THEN tid := RegisterType(TK_SET, TK_INTEGER, 0, 255, setty)
+        ELSE
+        BEGIN
+          AbortWith2('codegen: SET OF <base> requires an ordinal base type, got: ', nm);
+          tid := TK_UNKNOWN;
+        END;
       END;
     END
     ELSE

@@ -92,13 +92,17 @@ BEGIN
   low_val := CodegenExpr(low_node);
   IF (last_val_tk = TK_CHAR) OR (last_val_tk = TK_BOOLEAN) THEN
     low_val := LLVMBuildZExt(builder, low_val, i16ty, MakeCStr(''))
+  ELSE IF TypeKind(last_val_tk) = TK_ENUM THEN
+    low_val := LLVMBuildTrunc(builder, low_val, i16ty, MakeCStr(''))
   ELSE IF last_val_tk <> TK_INTEGER THEN
-    AbortWith('codegen: a set range bound must be INTEGER, CHAR or BOOLEAN');
+    AbortWith('codegen: a set range bound must be INTEGER, CHAR, BOOLEAN or an enumeration');
   high_val := CodegenExpr(high_node);
   IF (last_val_tk = TK_CHAR) OR (last_val_tk = TK_BOOLEAN) THEN
     high_val := LLVMBuildZExt(builder, high_val, i16ty, MakeCStr(''))
+  ELSE IF TypeKind(last_val_tk) = TK_ENUM THEN
+    high_val := LLVMBuildTrunc(builder, high_val, i16ty, MakeCStr(''))
   ELSE IF last_val_tk <> TK_INTEGER THEN
-    AbortWith('codegen: a set range bound must be INTEGER, CHAR or BOOLEAN');
+    AbortWith('codegen: a set range bound must be INTEGER, CHAR, BOOLEAN or an enumeration');
 
   { A nonempty range must lie in 0..255; this also keeps the i16 counter
     from wrapping past 32767. An empty (reversed) range adds nothing. }
@@ -154,8 +158,10 @@ BEGIN
       ordv := CodegenExpr(el);
       IF (last_val_tk = TK_CHAR) OR (last_val_tk = TK_BOOLEAN) THEN
         ordv := LLVMBuildZExt(builder, ordv, i16ty, MakeCStr(''))
+      ELSE IF TypeKind(last_val_tk) = TK_ENUM THEN
+        ordv := LLVMBuildTrunc(builder, ordv, i16ty, MakeCStr(''))
       ELSE IF last_val_tk <> TK_INTEGER THEN
-        AbortWith('codegen: a set element must be INTEGER, CHAR or BOOLEAN');
+        AbortWith('codegen: a set element must be INTEGER, CHAR, BOOLEAN or an enumeration');
       EmitSetElementCheck(SetElementOutside(ordv), ordv);
       SetRuntimeBit(slot, ordv);
     END;
@@ -421,8 +427,10 @@ BEGIN
     { Zero-extend so a BOOLEAN TRUE (i1) is ordinal 1, not -1. }
     IF (ltk = TK_CHAR) OR (ltk = TK_BOOLEAN) THEN
       lval := LLVMBuildZExt(builder, lval, i16ty, MakeCStr(''))
+    ELSE IF TypeKind(ltk) = TK_ENUM THEN
+      lval := LLVMBuildTrunc(builder, lval, i16ty, MakeCStr(''))
     ELSE IF ltk <> TK_INTEGER THEN
-      AbortWith('codegen: IN requires an INTEGER, CHAR or BOOLEAN left operand');
+      AbortWith('codegen: IN requires an INTEGER, CHAR, BOOLEAN or enum left operand');
     IF TypeKind(rtk) <> TK_SET THEN
       AbortWith('codegen: IN requires a SET right operand');
     { A declared SET exposes its representation base. Anonymous sets carry
