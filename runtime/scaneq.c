@@ -16,7 +16,9 @@
  *                   0 (SCANNE) stops at the first character not equal to P.
  *
  * A positive L scans forward and returns a non-negative count; a negative L
- * scans backward and returns a non-positive count. The previous version read
+ * scans backward and returns a non-positive count. If no stop character is
+ * found before the count or string boundary, return L (IBM 11-21), without
+ * reading outside the string. The previous version read
  * chars[0] as a length byte and indexed chars[idx], which started one
  * character late and mis-derived the length (and was meaningless for STRING).
  */
@@ -30,17 +32,17 @@ static int32_t scan_impl(int32_t L, char P, const char *chars, int32_t length, i
         for (int32_t i = I; i <= length && skipped < L; ++i, ++skipped) {
             char ch = chars[i - 1];
             if ((stop_on_equal && ch == P) || (!stop_on_equal && ch != P))
-                break;
+                return skipped;
         }
-        return skipped;
+        return L;
     }
     /* L < 0: scan backward toward the start of the string. */
     for (int32_t i = I; i >= 1 && skipped > L; --i, --skipped) {
         char ch = chars[i - 1];
         if ((stop_on_equal && ch == P) || (!stop_on_equal && ch != P))
-            break;
+            return skipped;
     }
-    return skipped;
+    return L;
 }
 
 int32_t scaneq(int32_t L, char P, const char *chars, int32_t length, int32_t I, int32_t stop_on_equal)

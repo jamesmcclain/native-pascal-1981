@@ -153,9 +153,10 @@ else
 fi
 sed 's/"column":[[:space:]]*[0-9][0-9]*/"column":40000/g' \
   "$work_dir/wide_cap.tokens" > "$work_dir/wide_col.tokens"
-# Columns reach the AST only as read-site coordinates (here the body's closing
-# END, an INITCK fallthrough-return site): they must carry 40000 exactly and
-# leave everything else unchanged.
+# Columns reach the AST as source coordinates (read sites such as the body's
+# closing END, an INITCK fallthrough-return site, and statement/declaration
+# locations): they must carry 40000 exactly and leave everything else
+# unchanged.
 if bin/parser < "$work_dir/wide_col.tokens" > "$work_dir/wide_col.ast" 2> "$work_dir/wide_col.err" \
    && python3 - "$work_dir/wide_cap.ast" "$work_dir/wide_col.ast" <<'PY'
 import json, sys
@@ -163,9 +164,10 @@ narrow, wide = (json.load(open(p)) for p in sys.argv[1:])
 columns = []
 def strip(node, keep):
     if isinstance(node, dict):
-        loc = node.get('read_location')
-        if isinstance(loc, dict) and 'column' in loc:
-            keep.append(loc.pop('column'))
+        for key in ('read_location', 'op_location', 'location'):
+            loc = node.get(key)
+            if isinstance(loc, dict) and 'column' in loc:
+                keep.append(loc.pop('column'))
         for value in node.values():
             strip(value, keep)
     elif isinstance(node, list):

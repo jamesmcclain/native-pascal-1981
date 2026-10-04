@@ -1,3 +1,2 @@
 Type checking failed:
-Procedure expects no arguments: SYNCTHREADS
-Error: Failed to parse input AST JSON
+Procedure expects no arguments: SYNCTHREADS at line 5 column 3

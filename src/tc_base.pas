@@ -149,6 +149,9 @@ VAR
 
   errors: ARRAY [1..MAX_ERRORS] OF Str255;
   nerrors: INTEGER32;
+  { Source position AddError appends: the innermost node being checked
+    that carries one (TcEnterLocation); 0 when none is known. }
+  err_line, err_col: INTEGER32;
   expr_depth, stmt_depth: INTEGER;
 
   cur_func_ret_tk: INTEGER; { TK_VOID when not inside a function }
@@ -172,10 +175,56 @@ VAR
 { ============================== utilities ============================== }
 { NodeType/GetObj/GetStr/GetInt/ReadAllStdin now live in jsonutil. }
 
+PROCEDURE TcAppendChar(VAR s: Str255; ch: CHAR);
+{ Append, silently stopping at the 255-character capacity. }
+VAR
+  len: INTEGER;
+BEGIN
+  len := ORD(s[0]);
+  IF len < 255 THEN
+  BEGIN
+    s[len + 1] := ch;
+    s[0] := CHR(len + 1);
+  END;
+END;
+
+PROCEDURE TcAppendText(VAR s: Str255; t: Str255);
+VAR
+  i: INTEGER;
+BEGIN
+  FOR i := 1 TO ORD(t[0]) DO TcAppendChar(s, t[i]);
+END;
+
+FUNCTION TcIntText(n: INTEGER32): Str255;
+VAR
+  tmp, t: Str255;
+  i: INTEGER;
+BEGIN
+  tmp := '';
+  TcAppendChar(tmp, CHR(RETYPE(INTEGER, ORD('0') + n MOD 10)));
+  n := n DIV 10;
+  WHILE n > 0 DO
+  BEGIN
+    TcAppendChar(tmp, CHR(RETYPE(INTEGER, ORD('0') + n MOD 10)));
+    n := n DIV 10;
+  END;
+  t := '';
+  FOR i := ORD(tmp[0]) DOWNTO 1 DO TcAppendChar(t, tmp[i]);
+  TcIntText := t;
+END;
+
 PROCEDURE AddError(msg: Str255);
+{ Codegen's located diagnostics use the same ` at line L column C` suffix. }
 BEGIN
   IF nerrors < MAX_ERRORS THEN
   BEGIN
+    IF (err_line > 0) AND (err_col > 0) THEN
+    BEGIN
+      TcAppendText(msg, ' at line ');
+      TcAppendText(msg, TcIntText(err_line));
+      TcAppendText(msg, ' column ');
+      TcAppendText(msg, TcIntText(err_col));
+    END;
     nerrors := nerrors + 1;
     errors[nerrors] := msg;
   END;
@@ -190,6 +239,41 @@ BEGIN
   buf := msg;
   CONCAT(buf, name);
   AddError(buf);
+END;
+
+PROCEDURE AddUndefinedIdentifier(node: ADRMEM);
+{ `Undefined identifier: <name>' for an Identifier node. A separate routine
+  keeps GetStr's string temporaries out of the deeply recursive checker
+  frames (CheckStmtBody), which the statement depth test fills. }
+BEGIN
+  AddError2('Undefined identifier: ', GetStr(node, 'name'));
+END;
+
+PROCEDURE TcEnterLocation(node: ADRMEM; VAR saved_line, saved_col: INTEGER32);
+{ Save the current error position and move it to node's own, if the parser
+  recorded one: `location' (statements, declarations, designators), else
+  `op_location' (operators), else `read_location' (reads). Pair with
+  TcLeaveLocation, so a parent's later diagnostics point at the parent
+  again rather than at its last child. }
+VAR
+  loc: ADRMEM;
+BEGIN
+  saved_line := err_line;
+  saved_col := err_col;
+  loc := GetObj(node, 'location');
+  IF loc = NIL THEN loc := GetObj(node, 'op_location');
+  IF loc = NIL THEN loc := GetObj(node, 'read_location');
+  IF loc <> NIL THEN
+  BEGIN
+    err_line := GetInt(loc, 'line');
+    err_col := GetInt(loc, 'column');
+  END;
+END;
+
+PROCEDURE TcLeaveLocation(saved_line, saved_col: INTEGER32);
+BEGIN
+  err_line := saved_line;
+  err_col := saved_col;
 END;
 
 { ============================ symbol table ============================= }
@@ -433,6 +517,8 @@ BEGIN
   nfwd_types := 0;
   fwd_cur := 0;
   nerrors := 0;
+  err_line := 0;
+  err_col := 0;
   expr_depth := 0;
   stmt_depth := 0;
   cur_func_ret_tk := TK_VOID;

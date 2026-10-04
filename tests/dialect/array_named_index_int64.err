@@ -1,3 +1,2 @@
 Type checking failed:
-Array index type has unresolved or unrepresentable ordinal bounds
-Error: Failed to parse input AST JSON
+Array index type has unresolved or unrepresentable ordinal bounds at line 7 column 3

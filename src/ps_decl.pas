@@ -145,16 +145,18 @@ END;
 
 PROCEDURE ParseConstSection(decls_arr: ADRMEM);
 VAR
-  node: ADRMEM;
+  node, location: ADRMEM;
   nm: Str255;
 BEGIN
   Expect('CONST');
   WHILE CurKind = 'IDENTIFIER' DO
   BEGIN
+    location := CurLocation;
     nm := CurLex;
     Expect('IDENTIFIER');
     Expect('EQ');
     node := CreateTriviaNode('ConstDecl');
+    AddField(node, 'location', location);
     AddStringField(node, 'name', nm);
     AddField(node, 'value', ParseConstant);
     PinTrailingCommentTarget(node);
@@ -165,16 +167,18 @@ END;
 
 PROCEDURE ParseTypeSection(decls_arr: ADRMEM);
 VAR
-  node: ADRMEM;
+  node, location: ADRMEM;
   nm: Str255;
 BEGIN
   Expect('TYPE');
   WHILE CurKind = 'IDENTIFIER' DO
   BEGIN
+    location := CurLocation;
     nm := CurLex;
     Expect('IDENTIFIER');
     Expect('EQ');
     node := CreateTriviaNode('TypeDecl');
+    AddField(node, 'location', location);
     AddStringField(node, 'name', nm);
     AddField(node, 'type_expr', ParseType);
     PinTrailingCommentTarget(node);
@@ -185,7 +189,7 @@ END;
 
 PROCEDURE ParseVarSection(decls_arr: ADRMEM);
 VAR
-  node, names_arr, attrs_arr, meta_flags: ADRMEM;
+  node, names_arr, attrs_arr, meta_flags, location: ADRMEM;
 BEGIN
   Expect('VAR');
   WHILE (CurKind = 'IDENTIFIER') OR (CurKind = 'LBRACKET') DO
@@ -193,10 +197,12 @@ BEGIN
     { Snapshot the declaration's first token, not the next declaration or
       BEGIN token reached after consuming its semicolon. }
     meta_flags := BuildMetaFlagsNode();
+    location := CurLocation;
     attrs_arr := ParseAttributeSectionOptional;
     names_arr := ParseIdentListArr;
     Expect('COLON');
     node := CreateTriviaNode('VarDecl');
+    AddField(node, 'location', location);
     AddField(node, 'names', names_arr);
     AddField(node, 'type_expr', ParseType);
     AddField(node, 'attributes', attrs_arr);
@@ -234,11 +240,12 @@ END;
 
 FUNCTION ParseProcDecl: ADRMEM;
 VAR
-  node, params_arr, attrs_arr, body_node: ADRMEM;
+  location, node, params_arr, attrs_arr, body_node: ADRMEM;
   nm, directive_str: Str255;
   has_directive: BOOLEAN;
 BEGIN
   Expect('PROCEDURE');
+  location := CurLocation;
   nm := CurLex;
   Expect('IDENTIFIER');
   params_arr := cJSON_CreateArray;
@@ -251,6 +258,7 @@ BEGIN
   Expect('SEMICOLON');
   has_directive := FALSE;
   node := CreateTriviaNode('ProcDecl');
+  AddField(node, 'location', location);
   AddStringField(node, 'name', nm);
   AddField(node, 'params', params_arr);
   AddField(node, 'attributes', attrs_arr);
@@ -278,11 +286,12 @@ END;
 
 FUNCTION ParseFuncDecl: ADRMEM;
 VAR
-  node, params_arr, attrs_arr, body_node, ret_type: ADRMEM;
+  location, node, params_arr, attrs_arr, body_node, ret_type: ADRMEM;
   nm, directive_str: Str255;
   has_directive: BOOLEAN;
 BEGIN
   Expect('FUNCTION');
+  location := CurLocation;
   nm := CurLex;
   Expect('IDENTIFIER');
   params_arr := cJSON_CreateArray;
@@ -297,6 +306,7 @@ BEGIN
   Expect('SEMICOLON');
   has_directive := FALSE;
   node := CreateTriviaNode('FuncDecl');
+  AddField(node, 'location', location);
   AddStringField(node, 'name', nm);
   AddField(node, 'params', params_arr);
   AddField(node, 'return_type', ret_type);
@@ -373,10 +383,11 @@ END;
 
 FUNCTION ParseInterfaceProcDecl: ADRMEM;
 VAR
-  node, params_arr, attrs_arr: ADRMEM;
+  location, node, params_arr, attrs_arr: ADRMEM;
   nm: Str255;
 BEGIN
   Expect('PROCEDURE');
+  location := CurLocation;
   nm := CurLex;
   Expect('IDENTIFIER');
   params_arr := cJSON_CreateArray;
@@ -388,6 +399,7 @@ BEGIN
   attrs_arr := ParseAttributeSectionOptional;
   Expect('SEMICOLON');
   node := CreateTriviaNode('ProcDecl');
+  AddField(node, 'location', location);
   AddStringField(node, 'name', nm);
   AddField(node, 'params', params_arr);
   AddField(node, 'attributes', attrs_arr);
@@ -399,10 +411,11 @@ END;
 
 FUNCTION ParseInterfaceFuncDecl: ADRMEM;
 VAR
-  node, params_arr, attrs_arr, ret_type: ADRMEM;
+  location, node, params_arr, attrs_arr, ret_type: ADRMEM;
   nm: Str255;
 BEGIN
   Expect('FUNCTION');
+  location := CurLocation;
   nm := CurLex;
   Expect('IDENTIFIER');
   params_arr := cJSON_CreateArray;
@@ -416,6 +429,7 @@ BEGIN
   attrs_arr := ParseAttributeSectionOptional;
   Expect('SEMICOLON');
   node := CreateTriviaNode('FuncDecl');
+  AddField(node, 'location', location);
   AddStringField(node, 'name', nm);
   AddField(node, 'params', params_arr);
   AddField(node, 'return_type', ret_type);

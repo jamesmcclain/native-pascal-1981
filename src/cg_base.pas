@@ -276,11 +276,11 @@ VAR
   cur_routine_has_labels: BOOLEAN; { CodegenStmtArray consults this to decide
     whether code after a terminated block might still be a live GOTO target
     (see its own comment) rather than genuinely dead. }
-  cur_rangeck: BOOLEAN; { the $RANGECK setting for subrange checks: set by
-    CodegenStmt from each statement that records it (assignment, procedure
-    call, CASE), so a statement that does not -- a FOR, or an IF condition's
-    function call -- uses the last one seen in source order; on by default,
-    like the lexer's own flag. }
+  cur_rangeck: BOOLEAN; { scoped operation context: CodegenStmt applies the
+    first-token statement snapshot; CodegenExpr applies the consumer's
+    read_flags snapshot. Both restore the enclosing context on return, so
+    children/siblings cannot leak policy. Legacy nodes without metadata
+    inherit that enclosing context; the root default is on. }
   pending_loop_label: Str255; { set by CodegenLabelStmt just before it
     descends into an inner WhileStmt/RepeatStmt/ForStmt, consumed (and
     cleared) by that loop's own codegen procedure when it pushes loop_depth;

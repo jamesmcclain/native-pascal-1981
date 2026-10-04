@@ -1,3 +1,2 @@
 Type checking failed:
-a CASE label range (lo..hi) is not yet supported
-Error: Failed to parse input AST JSON
+a CASE label range (lo..hi) is not yet supported at line 10 column 3

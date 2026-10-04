@@ -1,6 +1,5 @@
 Type checking failed:
-Type requires the extended dialect: INTEGER8
-Type requires the extended dialect: INTEGER16
-Type requires the extended dialect: INTEGER32
-Type requires the extended dialect: INTEGER64
-Error: Failed to parse input AST JSON
+Type requires the extended dialect: INTEGER8 at line 3 column 3
+Type requires the extended dialect: INTEGER16 at line 4 column 3
+Type requires the extended dialect: INTEGER32 at line 5 column 3
+Type requires the extended dialect: INTEGER64 at line 6 column 3

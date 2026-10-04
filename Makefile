@@ -209,7 +209,7 @@ NATIVE_SUITES := mathck_mixed_width initck_heap mathck_twins initck_aggregates \
   mathck_device stage_cli indexck_metadata mathck_boundary_values \
   mathck_diagnostics mathck_address_arith mathck_optimization initck_state \
   mathck_overflow astcompare indexck_guard_ir codegen_set_base_guard \
-  set_enum_typecheck
+  set_enum_typecheck scan_contract rangeck_scope
 NATIVE_SUITE_TARGETS := $(addprefix native-suite-,$(NATIVE_SUITES))
 
 # Build every tool with BUILD_JOBS parallel jobs (the runtime objects,
@@ -223,14 +223,18 @@ test-native:
 	$(MAKE) -j$(BUILD_JOBS) $(NATIVE_TEST_TOOLS)
 	$(MAKE) -j$(TEST_SUITE_JOBS) --output-sync=target native-suites
 
-.PHONY: native-suites native-golden native-read-wide native-no-core native-temp-hygiene $(NATIVE_SUITE_TARGETS)
+.PHONY: native-suites native-golden native-scan-runtime native-read-wide native-no-core native-temp-hygiene $(NATIVE_SUITE_TARGETS)
 native-suites: native-golden $(word 1,$(NATIVE_SUITE_TARGETS)) $(word 2,$(NATIVE_SUITE_TARGETS)) \
   $(word 3,$(NATIVE_SUITE_TARGETS)) test-descriptor-contract test-sysutil test-driver test-parser-named-index \
   test-typecheck-named-index test-super-new native-read-wide \
-  $(NATIVE_SUITE_TARGETS) native-no-core native-temp-hygiene
+  $(NATIVE_SUITE_TARGETS) native-scan-runtime native-no-core native-temp-hygiene
 
 native-golden: $(DRIVER_BIN) bootstrap
 	$(TEST_ENV) ./tests/run.sh -j $(TEST_JOBS)
+
+native-scan-runtime: $(RUNTIME_LIB)
+	$(CC) -o $(BUILD_DIR)/scan_runtime tests/scan_runtime.c $(RUNTIME_LIB)
+	$(TEST_ENV) $(BUILD_DIR)/scan_runtime
 
 native-read-wide: $(RUNTIME_LIB)
 	$(CC) -o $(BUILD_DIR)/read_wide_runtime tests/read_wide_runtime.c $(RUNTIME_LIB)

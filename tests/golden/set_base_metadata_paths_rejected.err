@@ -1,16 +1,15 @@
 Type checking failed:
-Incompatible set base types
-Incompatible set base types
-Incompatible set base types
-Incompatible set base types
-Incompatible set base types
-Incompatible set base types
-Incompatible set base types
-Incompatible set base types
-Incompatible set base types
-Incompatible set base types
-Incompatible set base types
-Incompatible set base types
-Incompatible set base types
-Incompatible set base types
-Error: Failed to parse input AST JSON
+Incompatible set base types at line 12 column 7
+Incompatible set base types at line 18 column 3
+Incompatible set base types at line 19 column 3
+Incompatible set base types at line 21 column 3
+Incompatible set base types at line 22 column 13
+Incompatible set base types at line 23 column 3
+Incompatible set base types at line 24 column 3
+Incompatible set base types at line 25 column 9
+Incompatible set base types at line 26 column 3
+Incompatible set base types at line 27 column 3
+Incompatible set base types at line 28 column 8
+Incompatible set base types at line 29 column 13
+Incompatible set base types at line 30 column 3
+Incompatible set base types at line 30 column 3

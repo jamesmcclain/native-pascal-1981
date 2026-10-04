@@ -247,6 +247,29 @@ lifecycle guarantees. Existing temporary-infrastructure regression gaps remain o
 may be bounded separately without removing support, reducing matrices or
 rerunning unchanged optional parity during every documentation slice.
 
+## RANGECK context isolation regressions
+
+`tests/rangeck_scope.sh` (native suite `rangeck_scope`) checks first-token
+FOR/CASE and expression-call snapshots in parsed and typed ASTs using the
+native `rangeck_metadata_check.pas` probe. Independent O0 IR guard counts
+cover opposite inner/outer settings, branch/sibling independence and checked
+value actuals. All four prior-assignment/FOR policy combinations execute
+only valid bounds in both dialects at O0–O3; invalid checked endpoints must
+abort before body output. Frozen legacy typed ASTs remain accepted. No invalid
+unchecked loops are executed, and CASE no-match enforcement is not added.
+
+## Scan builtin and small-string ABI regressions
+
+`tests/scan_contract.sh` (native suite `scan_contract`) tests SCANEQ/SCANNE
+in both dialects at O0–O3 against independent expected outputs, including
+signed skip counts, no-match boundary returns, empty/zero/out-of-range inputs,
+selected strings, once-only ordered argument evaluation and user shadowing.
+It also checks arity/type errors and explicit INITCK/DEVICE boundaries with
+no published IR. `native-scan-runtime` runs `tests/scan_runtime.c` directly
+against the runtime, including the negative count endpoint.
+`tests/golden/small_string_abi.pas` covers small STRING/LSTRING native
+arguments/results, record wrapping and exhausted argument registers.
+
 ## Validation cost and concurrency
 
 `make -jN` parallelizes Make targets, not shell loops. `make test-native`

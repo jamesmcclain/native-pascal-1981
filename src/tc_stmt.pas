@@ -296,7 +296,7 @@ BEGIN
     ELSE BEGIN
       si := LookupSymbol(GetStr(warg, 'name'));
       IF si = 0 THEN
-        AddError('Undefined identifier')
+        AddUndefinedIdentifier(warg)
       ELSE IF symbols[si].tk <> TK_POINTER THEN
         AddError('NEW/DISPOSE argument must be a POINTER variable');
     END;
@@ -305,7 +305,7 @@ BEGIN
   END;
 END;
 
-PROCEDURE CheckStmt(node: ADRMEM);
+PROCEDURE CheckStmtBody(node: ADRMEM);
 VAR
   nt, varname: Str255;
   target_node, expr_node, cond_node, args_arr, warg, wexpr: ADRMEM;
@@ -381,7 +381,7 @@ BEGIN
     varname := GetStr(node, 'var');
     si := LookupSymbol(varname);
     IF si = 0 THEN
-      AddError('Undefined identifier')
+      AddError2('Undefined identifier: ', varname)
     ELSE BEGIN
       vi := symbols[si].tk;
       IF NOT IsOrdinal(vi) THEN
@@ -486,7 +486,7 @@ BEGIN
         ELSE BEGIN
           si := LookupSymbol(GetStr(warg, 'name'));
           IF si = 0 THEN
-            AddError('Undefined identifier')
+            AddUndefinedIdentifier(warg)
           ELSE IF symbols[si].tk <> TK_FILE THEN
             AddError('file primitive argument must be a FILE variable');
         END;
@@ -503,7 +503,7 @@ BEGIN
         ELSE BEGIN
           si := LookupSymbol(GetStr(warg, 'name'));
           IF si = 0 THEN
-            AddError('Undefined identifier')
+            AddUndefinedIdentifier(warg)
           ELSE IF symbols[si].tk <> TK_FILE THEN
             AddError('ASSIGN argument 1 must be a FILE variable');
         END;
@@ -534,7 +534,7 @@ BEGIN
           ELSE BEGIN
             si := LookupSymbol(GetStr(warg, 'name'));
             IF si = 0 THEN
-              AddError('Undefined identifier')
+              AddUndefinedIdentifier(warg)
             ELSE IF (symbols[si].tk <> TK_FILE) OR (symbols[si].aux <> TK_CHAR) OR (symbols[si].aux2 <> 1) THEN
               AddError('READSET file argument must be a TEXT file');
           END;
@@ -546,7 +546,7 @@ BEGIN
         ELSE BEGIN
           si := LookupSymbol(GetStr(warg, 'name'));
           IF si = 0 THEN
-            AddError('Undefined identifier')
+            AddUndefinedIdentifier(warg)
           ELSE IF symbols[si].tk <> TK_STRING THEN
             AddError('READSET destination must be STRING or LSTRING');
         END;
@@ -609,7 +609,7 @@ BEGIN
       si := LookupSymbol(pname);
       IF si = 0 THEN
       BEGIN
-        AddError('Undefined procedure');
+        AddError2('Undefined procedure: ', pname);
         FOR i := 0 TO nargs - 1 DO
           cond_tk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
       END
@@ -690,6 +690,17 @@ BEGIN
   END;
   END;
   stmt_depth := stmt_depth - 1;
+END;
+
+PROCEDURE CheckStmt(node: ADRMEM);
+{ CheckStmtBody with the error position at this statement while it is
+  checked. }
+VAR
+  saved_line, saved_col: INTEGER32;
+BEGIN
+  TcEnterLocation(node, saved_line, saved_col);
+  CheckStmtBody(node);
+  TcLeaveLocation(saved_line, saved_col);
 END;
 
 BEGIN

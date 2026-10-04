@@ -88,8 +88,10 @@ rejected() { # kind label message dialect-args...: exact stderr, no executable
        > "$dir/stdout" 2> "$dir/stderr"; then
     die "accepted: $label"
   fi
-  printf 'Type checking failed:\n%s\nError: Failed to parse input AST JSON\n' \
-    "$message" | diff -u - "$dir/stderr" || die "stderr: $label"
+  # Positions vary with each generated statement; locations are pinned by
+  # the goldens, so compare the message without its ` at line L column C'.
+  printf 'Type checking failed:\n%s\n' \
+    "$message" | diff -u - <(sed -E 's/ at line [0-9]+ column [0-9]+$//' "$dir/stderr") || die "stderr: $label"
   [ ! -s "$dir/stdout" ] || die "stdout: $label"
   [ ! -e "$dir/reject" ] || die "executable published: $label"
   count "$kind"

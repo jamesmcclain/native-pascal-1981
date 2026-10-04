@@ -1,4 +1,3 @@
 Type checking failed:
-Integer constant is outside the native 16-bit range -32768..65535
-Integer constant is outside the native 16-bit range -32768..65535
-Error: Failed to parse input AST JSON
+Integer constant is outside the native 16-bit range -32768..65535 at line 3 column 3
+Integer constant is outside the native 16-bit range -32768..65535 at line 4 column 3

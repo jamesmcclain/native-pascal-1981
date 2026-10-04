@@ -1157,10 +1157,18 @@ enumeration value past its first or last value fails, and so does a result
 outside the declared bounds of a subrange variable or designator argument.
 
 `{$RANGECK-}` turns the check off for the statements that follow it, and
-`{$RANGECK+}` turns it back on. The setting is recorded on assignments,
-procedure calls and `CASE` statements. A statement that does not record it,
-such as a `FOR` loop or a function call in an `IF` condition, uses the
-setting of the last assignment, call or `CASE` compiled before it. Array
+`{$RANGECK+}` turns it back on. Every statement records the setting at its
+first token, including `FOR` and `CASE` (not after its END). Expression
+consumers, including function calls in conditions and SUCC/PRED, use their
+own first-token `read_flags` snapshot. Codegen scopes and restores this
+context around every statement and expression: nested actuals, branch
+bodies and earlier siblings cannot toggle an enclosing operation's checks.
+A directive inside FOR bounds or call actuals therefore does not
+retroactively alter the FOR/call policy. Legacy AST nodes without the
+snapshot inherit the enclosing scoped context; the root defaults to on.
+This isolates existing checks only: CASE's no-match trap remains unimplemented,
+and FOR's existing nonempty-loop endpoint/publication policy is unchanged.
+Regression: `tests/rangeck_scope.sh`. Array
 indexes are not checked by `$RANGECK` (see `$INDEXCK` below); string
 capacities are still unchecked. NVPTX `DEVICE` code has no host-runtime
 subrange check; a `DEVICE` compiland targeting the CPU follows the host
@@ -1195,7 +1203,11 @@ to stderr using the original signed or unsigned index value (including 64-bit
 values) and the declared bounds, flushes stderr, then aborts (normally status
 134 on Linux). An unchecked constant or variable index emits no fixed-array
 guard; this does not make an out-of-bounds access safe. `$RANGECK` does not
-control array indexes.
+control array indexes. Integer-family indexes are widened with their own
+signedness before lower-bound subtraction even when checking is disabled;
+legal high-bit unsigned indexes and full-span signed offsets therefore retain
+correct addresses without guards. This also applies to DEVICE address arithmetic,
+without adding host diagnostics there.
 
 This slice does **not** add checks to `STRING`/`LSTRING` subscripts,
 or the capacities of `CONCAT`, `COPYLST`, `COPYSTR` and `INSERT`. Nor does it
@@ -1606,7 +1618,7 @@ is an ordinary call, outside this classification.
 | RANGECK gap | `CHR` | IBM: "error if ORD (X) > 255 or ORD (X) < 0 (if $RANGECK on)" (11-8). **Not checked:** `CHR(300)` is `CHR(44)` and `CHR(-1)` is `CHR(255)`, also for a constant `CHR(300)`. Part of the range-checks-beyond-subranges gap, not MATHCK. |
 | Separate contract | `TRUNC`, `ROUND` | Always-on range check, independent of MATHCK and RANGECK (G26, [TRUNC section](#trunc-and-round-return-integer-so-they-narrow-to-16-bits-both)). |
 | Separate contract | `CONCAT` (LSTRING length byte) | Compiler-generated length update under the capacity contract. **No capacity check:** with `t: LSTRING(3) := 'ab'`, `CONCAT(t, 'xyzw')` stores length 6 and overwrites the next variable. |
-| Separate contract | `INSERT`, `DELETE`, `COPYLST`, `COPYSTR`, `POSITN`, `SCANEQ`, `SCANNE`, `ENCODE`, `DECODE` | **Unreachable:** codegen lowers them, but the typechecker rejects every call as an undefined procedure or function. When enabled, their internal length and position arithmetic (`pos - 1`, `len - pos`) needs capacity and position checks, not MATHCK; DECODE is a text-to-number conversion. |
+| Separate contract | `INSERT`, `DELETE`, `COPYLST`, `COPYSTR`, `POSITN`, `ENCODE`, `DECODE` | **Unreachable:** codegen lowers them, but the typechecker rejects every call as an undefined procedure or function. When enabled, their internal length and position arithmetic (`pos - 1`, `len - pos`) needs capacity and position checks, not MATHCK; DECODE is a text-to-number conversion. |
 | Separate contract | `NEW` bounds, `DEVALLOC`, `SIZEOF`, `LOWER`, `UPPER` | Descriptor and layout arithmetic; layouts above 2147483647 bytes are rejected (`TypeSizeBytes`). |
 | Separate contract | `READ`/`READLN` of integers | Text conversion, checked independently of MATHCK (G29). |
 | No check | `ORD` | Same value and width; an enumeration gives its ordinal as INTEGER, so `ORD(e) * 20000` is checked 16-bit arithmetic. [`ORD(WORD)`](#deferred-ordword-conversion-gap-g25) stays WORD (G25). |
@@ -1633,6 +1645,24 @@ does not link). Any user declaration of the name takes precedence. There are
 no wide variants: extended mode has the same 16-bit functions. Under INITCK+,
 like the other builtins outside INITCK's model, a call stops at the
 `call consumer` boundary.
+
+### SCANEQ and SCANNE **[both]**
+
+`SCANEQ(L, P, S, I)` and `SCANNE(L, P, S, I)` are host builtins returning
+INTEGER. Count `L` and 1-based position `I` must fit INTEGER; `P` is CHAR,
+and `S` is STRING or LSTRING. SCANEQ stops at equality, SCANNE at inequality.
+They return the signed count of skipped characters; negative `L` scans
+backward. With no stopping character they return `L`, even when a string
+boundary is reached first, without reading outside the string. A zero count,
+empty string or starting position outside `1..length(S)` returns zero.
+Arguments evaluate once, left to right. User declarations shadow the builtins.
+
+Literal, variable, selected-string and native string-function sources are
+supported. DEVICE calls are rejected: these are host runtime functions.
+INITCK-enabled calls retain the explicit `call consumer` unsupported boundary;
+string initialization tracking is not implemented. These scans neither write
+the string nor add MATHCK instrumentation. Tests: `scan_builtins.pas`,
+`scan_contract.sh`, and `scan_runtime.c`.
 
 ### MATHCK VECTOR, DEVICE and unsupported boundaries
 
@@ -1800,7 +1830,7 @@ with an unsigned one merely because WORD data can reach it:
 
 | Site | Predicate/domain invariant |
 | --- | --- |
-| Scalar ordering | WORD uses unsigned predicates at the adapted/promoted width; INTEGER controls stay signed. |
+| Scalar ordering | WORD uses unsigned predicates at the adapted/promoted width; INTEGER controls stay signed. A signed/unsigned pair compares exact values (negative below all unsigned), not one shared predicate. |
 | CASE | Labels are coerced to selector type and compared with `icmp eq`; high-bit/max labels work at each width. CASE label ranges remain unsupported. |
 | Set membership | Admitted ordinals normalize to i16, then sign-extend to i64; unsigned `< 256` excludes negative/high-bit patterns before safe bit lookup. WORD in an INTEGER set is a type error; even a matching WORD set reaches codegen rejection. These are admission limits, not WORD membership support. |
 | Set constructors/ranges | Unsigned i16 `> 255` guards elements. Signed range comparisons operate on admitted INTEGER/CHAR/BOOLEAN/enum bounds, not WORD; equality/subset checks compare bitvectors. |
@@ -1866,11 +1896,28 @@ exists.
 Operands of different widths in the same family widen to the wider operand,
 which is the result type: `INTEGER32 * INTEGER` is INTEGER32 arithmetic,
 checked (MATHCK+) or wrapped (MATHCK-) at 32 bits, so `100000 * 20000` is
-2000000000. Comparisons are not covered by this rule and still mishandle
-signed/unsigned mixtures (a known gap): an INTEGER compared with a WORD32
-compares the sign-extended bit pattern as unsigned, so `i < d` with `i = -1`
-and `d = 5` is FALSE, and INTEGER32 against WORD32 (or INTEGER8 against
-WORD8) fails in codegen with `mixed-type operands are not supported`.
+2000000000. Comparisons are not covered by this rule. A relational between a
+nonconstant INTEGER-family and WORD-family operand, at any pair of widths,
+compares exact mathematical values: a negative signed operand is below every
+unsigned value, even one with the same bit pattern (`-1 < 65535` and
+`-1 <> 65535` are TRUE for INTEGER and WORD), and otherwise the values compare
+unsigned at the wider width. IBM only warns about such a mixture and leaves
+its signedness arbitrary (manual lines 6188–6190); exact comparison is a
+deterministic choice within that latitude. A bare INTEGER literal still
+adapts to the other operand's type first, as above (`CodegenBinOp` and
+`CodegenMixedSignCompare`, `src/cg_expr.pas`;
+`tests/golden/mixed_sign_compare.pas`).
+
+Real division `/` produces `REAL` for any combination of integer-family
+(`INTEGER`, `WORD`, extended wide types) or floating-point operands and
+literals; integer operands are promoted to `REAL` before division
+(`CodegenBinOp`, `src/cg_expr.pas`; `CheckExpr`, `src/tc_expr.pas`;
+`tests/golden/slash_integer_family.pas`,
+`tests/golden/slash_wide_integers.pas`). Assigning the result of `/` to an
+integer variable is rejected as a type mismatch without narrowing
+(`tests/golden/slash_assign_to_int_rejected.pas`), and so is assigning it to
+a `REAL32` variable, the same as any other `REAL` value
+(`tests/golden/slash_assign_to_real32_rejected.pas`).
 
 In extended mode, a literal can use a wide target type. These examples are
 valid:
@@ -1887,6 +1934,16 @@ BEGIN
 ```
 
 `tests/golden/19_wide_int_literals.pas` pins this behavior.
+
+Outside an assignment context a literal has its own type: 32768..65535 is a
+WORD constant (both dialects), and a larger extended literal is INTEGER32
+up to MAXINT32, then WORD32 up to 4294967295, then INTEGER64, so
+`WRITELN(40000)` prints 40000 and `i < 40000` with INTEGER `i = -1` is TRUE
+(an exact mixed-sign comparison). A literal of plain INTEGER range still
+adapts to the other operand of a binary operation. `tests/golden/literal_word_range.pas`
+and `tests/golden/literal_wide_range.pas` pin this. Literals of more than 15 digits
+(beyond the precision of a printed JSON double) are preserved exactly across compiler
+stages via companion decimal representation (`tests/golden/literal_int64_exact.pas`).
 
 A literal too large for its target type is an error:
 
@@ -2010,9 +2067,26 @@ context. The native compiler keeps the 16-bit pattern. For example, it converts
 The Python command line supports individual `-f` feature overrides. The native
 command line supports only the `vintage` and `extended` feature sets.
 
+## Small string native calls **[native]**
+
+Small `STRING` and `LSTRING` values use the native SysV aggregate call ABI,
+including when nested in records. Their leaves are contiguous CHAR bytes;
+the LSTRING length byte is included. Arguments and function results preserve
+the whole value, including when argument registers are exhausted. Larger
+strings retain the existing MEMORY-class transport. Regression:
+`tests/golden/small_string_abi.pas`.
+
 ## Native limitations **[native]**
 
 These are implementation limitations, not vintage-language restrictions.
+
+- **Compile-time diagnostic positions [both].** Typechecker errors end with
+  ` at line L column C`, the same suffix codegen's located errors use. The
+  position is the innermost node that carries one: an operator, a read, a
+  designator, a statement's first token, or a declaration's name. It is a
+  line and column only, with no file name, so an error inside an included
+  file is ambiguous. Typed ASTs from older parsers without `location` fields
+  get positions only where `read_location`/`op_location` exist.
 
 - **Very large unsigned literals [extended].** The JSON AST stores numbers as
   `REAL`, so decimal `WORD64` literals above `2^53` cannot preserve every bit.

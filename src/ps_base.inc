@@ -87,6 +87,7 @@ FUNCTION CurHasUnroll: BOOLEAN;
 FUNCTION CurUnrollVal: INTEGER;
 FUNCTION BuildMetaFlagsNode: ADRMEM;
 PROCEDURE RelayTokenTrivia;
+FUNCTION CurLocation: ADRMEM;
 FUNCTION CreateTriviaNode(type_name: Str255): ADRMEM;
 PROCEDURE PinTrailingCommentTarget(node: ADRMEM);
 FUNCTION StrToIntVal(s: Str255): INTEGER;

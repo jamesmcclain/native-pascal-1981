@@ -1,3 +1,2 @@
 Type checking failed:
-Positive integer constant out of range for INTEGER
-Error: Failed to parse input AST JSON
+Positive integer constant out of range for INTEGER at line 4 column 14

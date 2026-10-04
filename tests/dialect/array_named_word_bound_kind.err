@@ -1,3 +1,2 @@
 Type checking failed:
-Cannot assign incompatible type without narrowing: i
-Error: Failed to parse input AST JSON
+Cannot assign incompatible type without narrowing: i at line 9 column 3

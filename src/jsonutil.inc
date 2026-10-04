@@ -6,7 +6,8 @@
 INTERFACE;
 UNIT jsonutil (MakeCStr, CStrToStr255, CreateNode, AddField, AddStringField,
                AddIntField, AddRealField, AddBoolField, AddNullField,
-               ParseJson, NodeType, GetObj, GetStr, GetInt, GetReal, GetBool,
+               ParseJson, NodeType, GetObj, GetStr, GetInt, GetInt64, GetReal,
+               GetBool,
                ArrSize, ArrItem, HasKey, EPrint, EPrintC, ReadAllStdin);
 
 TYPE
@@ -29,6 +30,7 @@ FUNCTION NodeType(obj: ADRMEM): Str255;
 FUNCTION GetObj(obj: ADRMEM; key: Str255): ADRMEM;
 FUNCTION GetStr(obj: ADRMEM; key: Str255): Str255;
 FUNCTION GetInt(obj: ADRMEM; key: Str255): INTEGER32;
+FUNCTION GetInt64(obj: ADRMEM; key: Str255): INTEGER64;
 FUNCTION GetReal(obj: ADRMEM; key: Str255): REAL;
 FUNCTION GetBool(obj: ADRMEM; key: Str255): BOOLEAN;
 FUNCTION ArrSize(arr: ADRMEM): INTEGER32;

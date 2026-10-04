@@ -1,3 +1,2 @@
 Type checking failed:
-Field width specifier is not allowed in a call to the user-declared WRITELN
-Error: Failed to parse input AST JSON
+Field width specifier is not allowed in a call to the user-declared WRITELN at line 6 column 3

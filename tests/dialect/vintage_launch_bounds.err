@@ -1,3 +1,2 @@
 Type checking failed:
-Launch-bound attribute requires the extended dialect: MAXNTID
-Error: Failed to parse input AST JSON
+Launch-bound attribute requires the extended dialect: MAXNTID at line 2 column 11

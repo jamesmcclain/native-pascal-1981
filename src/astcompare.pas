@@ -37,8 +37,7 @@ CONST
   MAX_COMPARE_DEPTH = 512;
 
 VAR
-  ignore_keys: ARRAY [1..8] OF ADRMEM;
-  ignore_key_count: INTEGER;
+  ignore_key_count: INTEGER32;
   compare_depth: INTEGER;
 
 FUNCTION Join(left, right: Str255): Str255;
@@ -106,11 +105,13 @@ END;
 
 FUNCTION IsIgnored(key: ADRMEM): BOOLEAN;
 VAR
-  i: INTEGER;
+  i: INTEGER32;
 BEGIN
   IsIgnored := FALSE;
+  { Keys remain owned by argv; do not silently discard options after a
+    fixed-size local array fills. Each option occupies argv[2*i-1..2*i]. }
   FOR i := 1 TO ignore_key_count DO
-    IF strcmp(key, ignore_keys[i]) = 0 THEN IsIgnored := TRUE;
+    IF strcmp(key, pas_arg_value(2 * i)) = 0 THEN IsIgnored := TRUE;
 END;
 
 FUNCTION CompareNodes(expected, actual: ADRMEM; path: Str255): BOOLEAN;
@@ -246,11 +247,7 @@ BEGIN
   idx := 1;
   WHILE (idx + 1 < argc) AND (strcmp(pas_arg_value(idx), ignore_key_flag) = 0) DO
   BEGIN
-    IF ignore_key_count < 8 THEN
-    BEGIN
-      ignore_key_count := ignore_key_count + 1;
-      ignore_keys[ignore_key_count] := pas_arg_value(idx + 1);
-    END;
+    ignore_key_count := ignore_key_count + 1;
     idx := idx + 2;
   END;
   IF idx <> argc - 2 THEN

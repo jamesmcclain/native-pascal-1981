@@ -406,7 +406,9 @@ BEGIN
   FoldConstInt := FALSE;
   IF nt = 'IntLiteral' THEN
   BEGIN
-    folded := Real64ToInt64(GetReal(expr_node, 'value'));
+    { Exact, not Real64ToInt64(GetReal(...)): a JSON number keeps 15 digits,
+      so 9223372036854775805 used to compile as 9223372036854775807. }
+    folded := GetInt64(expr_node, 'value');
     FoldConstInt := TRUE;
   END
   ELSE IF nt = 'CharLiteral' THEN
@@ -463,11 +465,33 @@ BEGIN
   BEGIN
     ci := LookupConst(GetStr(expr_node, 'name'));
     IF ci <> 0 THEN
+    BEGIN
       IF NOT const_tbl[ci].is_real THEN
       BEGIN
         folded := const_tbl[ci].ival;
         FoldConstInt := TRUE;
       END;
+    END
+    ELSE
+    BEGIN
+      { The predeclared signed maxima are constants to the typechecker
+        (tc_base.pas) but live in CodegenExpr rather than const_tbl; without
+        them `w + MAXINT` missed the constant-adaptation rule. The WORD
+        maxima stay unfolded: MAXWORD64 has no INTEGER64 value. }
+      nm := UpperStr(GetStr(expr_node, 'name'));
+      IF nm = 'MAXINT' THEN
+      BEGIN
+        folded := 32767; FoldConstInt := TRUE;
+      END
+      ELSE IF nm = 'MAXINT32' THEN
+      BEGIN
+        folded := 2147483647; FoldConstInt := TRUE;
+      END
+      ELSE IF nm = 'MAXINT64' THEN
+      BEGIN
+        folded := 9223372036854775807; FoldConstInt := TRUE;
+      END;
+    END;
   END
   ELSE IF nt = 'FuncCall' THEN
   BEGIN
@@ -1122,6 +1146,15 @@ BEGIN
       IF fields[i].rec_tid = tid THEN
         WalkTypeLeaves(fields[i].field_tid, base_off + fields[i].byte_offset,
                        nleaves, leaf_off, leaf_tid);
+  END
+  ELSE IF (TypeKind(tid) = TK_STRING) OR (TypeKind(tid) = TK_LSTRING) THEN
+  BEGIN
+    { String storage is contiguous CHAR bytes, including the LSTRING
+      length byte. Small native aggregates need the same SysV byte-leaf
+      classification as an array; larger strings use the MEMORY path. }
+    n := TypeSizeBytes(tid);
+    FOR k := 0 TO n - 1 DO
+      WalkTypeLeaves(TK_CHAR, base_off + k, nleaves, leaf_off, leaf_tid);
   END
   ELSE
     AbortWith('codegen: WalkTypeLeaves: unsupported type in C aggregate');

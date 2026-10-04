@@ -1,3 +1,2 @@
 Type checking failed:
-Undefined identifier
-Error: Failed to parse input AST JSON
+Undefined identifier: zz at line 6 column 11

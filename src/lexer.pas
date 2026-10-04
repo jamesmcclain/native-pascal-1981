@@ -12,6 +12,7 @@ FUNCTION cJSON_CreateObject: ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateString(val: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateNumber(num: REAL): ADRMEM [C]; EXTERN;
 FUNCTION pas_int64_to_double(v: INTEGER64): REAL [C]; EXTERN;
+PROCEDURE pas_cjson_add_int64(obj: ADRMEM; key: ADRMEM; val: INTEGER64) [C]; EXTERN;
 FUNCTION cJSON_CreateBool(b: CINT): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateNull: ADRMEM [C]; EXTERN;
 PROCEDURE cJSON_AddItemToArray(arr: ADRMEM; item: ADRMEM) [C]; EXTERN;
@@ -180,9 +181,15 @@ BEGIN
   fieldName := 'lexeme'; key_ptr := MakeCStr(fieldName);
   cJSON_AddItemToObject(tok_obj, key_ptr, cJSON_CreateString(lex_ptr));
 
-  { Value field handling: 0=null, 1=int, 2=real, 3=str, 4=bool }
+  { Value field handling: 0=null, 1=int, 2=real, 3=str, 4=bool. An integer
+    goes through pas_cjson_add_int64, which adds an exact decimal companion
+    when the JSON number cannot (over 15 digits); val_item stays NIL. }
+  val_item := NIL;
   IF val_type = 1 THEN
-    val_item := cJSON_CreateNumber(pas_int64_to_double(int_val))
+  BEGIN
+    fieldName := 'value'; key_ptr := MakeCStr(fieldName);
+    pas_cjson_add_int64(tok_obj, key_ptr, int_val);
+  END
   ELSE IF val_type = 2 THEN
     val_item := cJSON_CreateNumber(real_val)
   ELSE IF val_type = 3 THEN
@@ -195,8 +202,11 @@ BEGIN
   ELSE
     val_item := cJSON_CreateNull;
 
-  fieldName := 'value'; key_ptr := MakeCStr(fieldName);
-  cJSON_AddItemToObject(tok_obj, key_ptr, val_item);
+  IF val_item <> NIL THEN
+  BEGIN
+    fieldName := 'value'; key_ptr := MakeCStr(fieldName);
+    cJSON_AddItemToObject(tok_obj, key_ptr, val_item);
+  END;
 
   fieldName := 'line'; key_ptr := MakeCStr(fieldName);
   cJSON_AddItemToObject(tok_obj, key_ptr, cJSON_CreateNumber(line));

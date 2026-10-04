@@ -73,7 +73,9 @@ rejected() { # label op dialect: exact G24 stderr, no published output
        > "$dir/stdout" 2> "$dir/stderr"; then
     die "accepted: $1"
   fi
-  diff -u "$dir/expected" "$dir/stderr" || die "stderr: $1"
+  # Positions vary with each generated statement; locations are pinned by
+  # the goldens, so compare the message without its ` at line L column C'.
+  sed -E 's/ at line [0-9]+ column [0-9]+$//' "$dir/stderr" | diff -u "$dir/expected" - || die "stderr: $1"
   [ ! -s "$dir/stdout" ] || die "stdout: $1"
   [ ! -s "$dir/out" ] || die "output published: $1"
 }

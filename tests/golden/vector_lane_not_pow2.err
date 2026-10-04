@@ -1,3 +1,2 @@
 Type checking failed:
-Vector lane count must be a power of two between 2 and 64
-Error: Failed to parse input AST JSON
+Vector lane count must be a power of two between 2 and 64 at line 5 column 6

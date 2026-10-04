@@ -1,4 +1,3 @@
 Type checking failed:
-NEW/DISPOSE argument must be a POINTER variable
-NEW/DISPOSE argument must be a POINTER variable
-Error: Failed to parse input AST JSON
+NEW/DISPOSE argument must be a POINTER variable at line 6 column 11
+NEW/DISPOSE argument must be a POINTER variable at line 6 column 22
