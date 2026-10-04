@@ -1,0 +1,445 @@
+#!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/harness.sh"
+# Tests for the tracked pre-commit hook and beautify.sh.
+set +e
+
+HOOK="$ROOT/scripts/hooks/pre-commit"
+BEAUTIFY="$ROOT/scripts/beautify.sh"
+
+assert_status() {
+    local name=$1 expected=$2 actual=$3
+    if [ "$actual" -eq "$expected" ]; then
+        pass "$name"
+    else
+        fail "$name" "expected status $expected, got $actual"
+    fi
+}
+
+assert_failure_contains() {
+    local name=$1 status=$2 needle=$3 output=$4
+    if [ "$status" -eq 0 ]; then
+        fail "$name" "command succeeded"
+    elif ! grep -qF -- "$needle" "$output"; then
+        fail "$name" "output did not contain '$needle'"
+        cat "$output" >&2
+    else
+        pass "$name"
+    fi
+}
+
+write_ugly_files() {
+    local repo=$1
+    printf 'int   f( int x ){return x   ;}\n' > "$repo/runtime/a.c"
+    printf 'x = {   "a":1 }\n' > "$repo/tests/z.py"
+}
+
+make_tool_path() {
+    local dir=$1
+    shift
+    mkdir -p "$dir"
+    local tool path
+    for tool in "$@"; do
+        path=$(command -v "$tool") || return 1
+        ln -s "$path" "$dir/$tool"
+    done
+}
+
+setup_beautify_repo() {
+    local name=$1
+    BEAUTIFY_REPO="$work/$name/repo"
+    mkdir -p "$BEAUTIFY_REPO/runtime" "$BEAUTIFY_REPO/tests" "$BEAUTIFY_REPO/scripts"
+    cp "$BEAUTIFY" "$BEAUTIFY_REPO/scripts/beautify.sh"
+    write_ugly_files "$BEAUTIFY_REPO"
+}
+
+run_beautify() {
+    local repo=$1 path=$2
+    local status=0
+    PATH="$path" /bin/bash "$repo/scripts/beautify.sh" > "$repo/stdout" 2> "$repo/stderr" || status=$?
+    return "$status"
+}
+
+test_hook_is_executable() {
+    local name='hook is executable'
+    if [ -x "$HOOK" ]; then
+        pass "$name"
+    else
+        fail "$name" 'scripts/hooks/pre-commit is not executable'
+    fi
+}
+
+test_hook_has_executable_git_mode() {
+    local name='hook has executable Git mode'
+    if ! command -v git >/dev/null 2>&1; then
+        skip "$name" 'git is not available'
+        return
+    fi
+    if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        skip "$name" 'source tree has no Git metadata'
+        return
+    fi
+
+    local record
+    record=$(git ls-files -s scripts/hooks/pre-commit)
+    if [ -z "$record" ]; then
+        fail "$name" 'scripts/hooks/pre-commit is not tracked'
+    elif [ "${record%% *}" != 100755 ]; then
+        fail "$name" "expected mode 100755, got ${record%% *}"
+    else
+        pass "$name"
+    fi
+}
+
+test_broken_indent() {
+    local name='broken indent fails with an actionable message'
+    setup_beautify_repo broken-indent
+    local tools="$work/broken-indent/tools"
+    make_tool_path "$tools" bash dirname find grep
+    cat > "$tools/indent" <<'EOF'
+#!/usr/bin/env bash
+echo "indent: broken" >&2
+exit 1
+EOF
+    chmod +x "$tools/indent"
+
+    local status=0
+    run_beautify "$BEAUTIFY_REPO" "$tools" || status=$?
+    if [ "$status" -eq 0 ] || ! grep -qF 'indent' "$BEAUTIFY_REPO/stderr" ||
+       ! grep -qF 'does not run' "$BEAUTIFY_REPO/stderr"; then
+        fail "$name" 'the expected diagnostic was not produced'
+    elif ! grep -qF 'int   f( int x ){return x   ;}' "$BEAUTIFY_REPO/runtime/a.c"; then
+        fail "$name" 'the C file changed'
+    else
+        pass "$name"
+    fi
+}
+
+test_missing_indent() {
+    local name='missing indent fails with an actionable message'
+    setup_beautify_repo missing-indent
+    local tools="$work/missing-indent/tools"
+    make_tool_path "$tools" bash dirname find grep
+
+    local status=0
+    run_beautify "$BEAUTIFY_REPO" "$tools" || status=$?
+    if [ "$status" -eq 0 ] || ! grep -qF 'indent' "$BEAUTIFY_REPO/stderr" ||
+       ! grep -qF 'not found on PATH' "$BEAUTIFY_REPO/stderr"; then
+        fail "$name" 'the expected diagnostic was not produced'
+    elif ! grep -qF 'int   f( int x ){return x   ;}' "$BEAUTIFY_REPO/runtime/a.c"; then
+        fail "$name" 'the C file changed'
+    else
+        pass "$name"
+    fi
+}
+
+test_broken_isort() {
+    local name='broken isort fails even though it is optional'
+    if ! command -v indent >/dev/null 2>&1; then
+        skip "$name" 'indent is not available'
+        return
+    fi
+
+    setup_beautify_repo broken-isort
+    local tools="$work/broken-isort/tools"
+    make_tool_path "$tools" bash dirname find grep indent
+    cat > "$tools/isort" <<'EOF'
+#!/usr/bin/env bash
+echo "ModuleNotFoundError: No module named 'isort'" >&2
+exit 1
+EOF
+    chmod +x "$tools/isort"
+
+    local status=0
+    run_beautify "$BEAUTIFY_REPO" "$tools" || status=$?
+    if [ "$status" -eq 0 ] || ! grep -qF 'isort' "$BEAUTIFY_REPO/stderr" ||
+       ! grep -qF 'does not run' "$BEAUTIFY_REPO/stderr"; then
+        fail "$name" 'the expected diagnostic was not produced'
+    elif ! grep -qF 'x = {   "a":1 }' "$BEAUTIFY_REPO/tests/z.py"; then
+        fail "$name" 'the Python file changed'
+    else
+        pass "$name"
+    fi
+}
+
+test_missing_python_formatters() {
+    local name='missing isort and yapf is not fatal'
+    if ! command -v indent >/dev/null 2>&1; then
+        skip "$name" 'indent is not available'
+        return
+    fi
+
+    setup_beautify_repo missing-python-formatters
+    local tools="$work/missing-python-formatters/tools"
+    make_tool_path "$tools" bash dirname find grep indent
+
+    local status=0
+    run_beautify "$BEAUTIFY_REPO" "$tools" || status=$?
+    if [ "$status" -ne 0 ]; then
+        fail "$name" "beautify.sh returned $status"
+        cat "$BEAUTIFY_REPO/stderr" >&2
+    elif ! grep -qF 'int f(int x)' "$BEAUTIFY_REPO/runtime/a.c"; then
+        fail "$name" 'the C file was not formatted'
+    elif ! grep -qF 'x = {   "a":1 }' "$BEAUTIFY_REPO/tests/z.py"; then
+        fail "$name" 'the Python file changed'
+    else
+        pass "$name"
+    fi
+}
+
+test_formatted_c_keeps_mtime() {
+    local name='already formatted C file is not rewritten'
+    if ! command -v indent >/dev/null 2>&1; then
+        skip "$name" 'indent is not available'
+        return
+    fi
+
+    setup_beautify_repo keep-mtime
+    local tools="$work/keep-mtime/tools"
+    make_tool_path "$tools" bash dirname find grep indent
+    write_tidy_c "$BEAUTIFY_REPO/runtime/tidy.c"
+    touch -d '2001-01-01 00:00:00' "$BEAUTIFY_REPO/runtime/tidy.c"
+    local before after status=0
+    before=$(stat -c %Y "$BEAUTIFY_REPO/runtime/tidy.c")
+
+    run_beautify "$BEAUTIFY_REPO" "$tools" || status=$?
+    after=$(stat -c %Y "$BEAUTIFY_REPO/runtime/tidy.c")
+    write_tidy_c "$work/keep-mtime/expected.c"
+    if [ "$status" -ne 0 ]; then
+        fail "$name" "beautify.sh returned $status"
+        cat "$BEAUTIFY_REPO/stderr" >&2
+    elif [ "$before" != "$after" ]; then
+        fail "$name" 'the formatted file was rewritten (mtime changed)'
+    elif ! cmp -s "$work/keep-mtime/expected.c" "$BEAUTIFY_REPO/runtime/tidy.c"; then
+        fail "$name" 'the formatted file changed'
+    elif ! grep -qF 'int f(int x)' "$BEAUTIFY_REPO/runtime/a.c"; then
+        fail "$name" 'the unformatted file was not formatted'
+    else
+        pass "$name"
+    fi
+}
+
+have_tools() {
+    local tool
+    for tool in "$@"; do
+        command -v "$tool" >/dev/null 2>&1 || return 1
+    done
+}
+
+setup_git_repo() {
+    local name=$1
+    TEST_REPO="$work/$name/repo"
+    TEST_HOME="$work/$name/home"
+    TEST_LOG_DIR="$work/$name/log"
+    mkdir -p "$TEST_REPO/runtime" "$TEST_REPO/tests" \
+        "$TEST_REPO/scripts/hooks" "$TEST_HOME" "$TEST_LOG_DIR"
+    cp "$BEAUTIFY" "$TEST_REPO/scripts/beautify.sh"
+    cp "$HOOK" "$TEST_REPO/scripts/hooks/pre-commit"
+
+    git_run init -q || return 1
+    git_run config user.email test@example.invalid || return 1
+    git_run config user.name Test || return 1
+    git_run config commit.gpgsign false || return 1
+    git_run config core.hooksPath scripts/hooks || return 1
+    git_run add -A || return 1
+    git_run commit -m initial || return 1
+}
+
+git_run() {
+    GIT_STATUS=0
+    GIT_CONFIG_NOSYSTEM=1 HOME="$TEST_HOME" GIT_TERMINAL_PROMPT=0 \
+        env -u GIT_DIR git -C "$TEST_REPO" "$@" \
+        > "$TEST_LOG_DIR/git.stdout" 2> "$TEST_LOG_DIR/git.stderr" || GIT_STATUS=$?
+    return "$GIT_STATUS"
+}
+
+write_ugly_c() {
+    printf 'int   f( int x ){return x   ;}\n' > "$1"
+}
+
+write_tidy_c() {
+    printf 'int f(int x)\n{\n    return x;\n}\n' > "$1"
+}
+
+# The end-to-end tests commit C files, which need only git and indent:
+# beautify.sh skips Python formatting when isort and yapf are absent. Only
+# the Python restaging test needs the Python formatters themselves.
+skip_end_to_end_test() {
+    local name=$1
+    if ! have_tools git indent; then
+        skip "$name" 'git and indent are required'
+        return 0
+    fi
+    return 1
+}
+
+skip_python_formatter_test() {
+    local name=$1
+    if ! have_tools git indent isort yapf; then
+        skip "$name" 'git, indent, isort, and yapf are required'
+        return 0
+    fi
+    return 1
+}
+
+test_reformats_and_restages_staged_file() {
+    local name='staged file is reformatted and restaged'
+    skip_end_to_end_test "$name" && return
+    setup_git_repo restage || { fail "$name" 'repository setup failed'; return; }
+    write_ugly_c "$TEST_REPO/runtime/a.c"
+    git_run add runtime/a.c
+    if ! git_run commit -m 'add a.c'; then
+        fail "$name" "commit returned $GIT_STATUS"
+        cat "$TEST_LOG_DIR/git.stderr" >&2
+        return
+    fi
+    git_run show HEAD:runtime/a.c
+    write_tidy_c "$TEST_REPO/expected.c"
+    if cmp -s "$TEST_REPO/expected.c" "$TEST_LOG_DIR/git.stdout"; then
+        pass "$name"
+    else
+        fail "$name" 'committed content was not formatted'
+    fi
+}
+
+test_worktree_clean_after_commit() {
+    local name='worktree is clean after commit'
+    skip_end_to_end_test "$name" && return
+    setup_git_repo clean-worktree || { fail "$name" 'repository setup failed'; return; }
+    write_ugly_c "$TEST_REPO/runtime/a.c"
+    git_run add runtime/a.c
+    git_run commit -m 'add a.c'
+    git_run status --porcelain
+    if [ "$GIT_STATUS" -eq 0 ] && [ ! -s "$TEST_LOG_DIR/git.stdout" ]; then
+        pass "$name"
+    else
+        fail "$name" 'the worktree is not clean'
+        cat "$TEST_LOG_DIR/git.stdout" >&2
+    fi
+}
+
+test_unstaged_file_is_not_committed() {
+    local name='unstaged file is not added to commit'
+    skip_end_to_end_test "$name" && return
+    setup_git_repo loose-file || { fail "$name" 'repository setup failed'; return; }
+    write_ugly_c "$TEST_REPO/runtime/staged.c"
+    write_ugly_c "$TEST_REPO/runtime/loose.c"
+    git_run add runtime/staged.c
+    git_run commit -m 'add staged.c'
+    git_run show --name-only --format= HEAD
+    local files
+    files=$(tr -d '\r' < "$TEST_LOG_DIR/git.stdout")
+    git_run status --porcelain
+    if [ "$files" != 'runtime/staged.c' ]; then
+        fail "$name" "unexpected committed paths: $files"
+    elif ! grep -qF '?? runtime/loose.c' "$TEST_LOG_DIR/git.stdout"; then
+        fail "$name" 'the loose file is not untracked'
+    else
+        pass "$name"
+    fi
+}
+
+test_python_file_is_restaged() {
+    local name='formatted Python file is restaged'
+    skip_python_formatter_test "$name" && return
+    setup_git_repo python-restage || { fail "$name" 'repository setup failed'; return; }
+    printf 'x = {   "a":1 }\n' > "$TEST_REPO/tests/z_fmt.py"
+    printf 'x = {   "a":1 }\n' > "$TEST_LOG_DIR/expected.py"
+    HOME="$TEST_HOME" yapf -i "$TEST_LOG_DIR/expected.py"
+    git_run add tests/z_fmt.py
+    if ! git_run commit -m 'add py'; then
+        fail "$name" "commit returned $GIT_STATUS"
+        cat "$TEST_LOG_DIR/git.stderr" >&2
+        return
+    fi
+    git_run show HEAD:tests/z_fmt.py
+    if ! cmp -s "$TEST_LOG_DIR/expected.py" "$TEST_LOG_DIR/git.stdout"; then
+        fail "$name" 'committed Python content does not match yapf output'
+        diff -u "$TEST_LOG_DIR/expected.py" "$TEST_LOG_DIR/git.stdout" >&2 || true
+    else
+        git_run status --porcelain
+        if [ -s "$TEST_LOG_DIR/git.stdout" ]; then
+            fail "$name" 'the worktree is not clean'
+        else
+            pass "$name"
+        fi
+    fi
+}
+
+test_formatted_file_is_quiet() {
+    local name='formatted file produces no hook output'
+    skip_end_to_end_test "$name" && return
+    setup_git_repo quiet || { fail "$name" 'repository setup failed'; return; }
+    write_tidy_c "$TEST_REPO/runtime/tidy.c"
+    git_run add runtime/tidy.c
+    git_run commit -m 'add tidy.c'
+    local status=$GIT_STATUS
+    cat "$TEST_LOG_DIR/git.stdout" "$TEST_LOG_DIR/git.stderr" > "$TEST_LOG_DIR/commit.output"
+    if [ "$status" -ne 0 ]; then
+        fail "$name" "commit returned $status"
+    elif grep -qF 're-staged' "$TEST_LOG_DIR/commit.output"; then
+        fail "$name" 'the hook reported a restaged file'
+    else
+        git_run status --porcelain
+        if [ -s "$TEST_LOG_DIR/git.stdout" ]; then
+            fail "$name" 'the worktree is not clean'
+        else
+            pass "$name"
+        fi
+    fi
+}
+
+test_empty_stage() {
+    local name='empty stage does not fail under set -u'
+    skip_end_to_end_test "$name" && return
+    setup_git_repo empty-stage || { fail "$name" 'repository setup failed'; return; }
+    git_run commit --allow-empty -m empty
+    assert_status "$name" 0 "$GIT_STATUS"
+}
+
+test_partially_staged_file_warns() {
+    local name='partially staged file warns and commits'
+    skip_end_to_end_test "$name" && return
+    setup_git_repo partial || { fail "$name" 'repository setup failed'; return; }
+    write_tidy_c "$TEST_REPO/runtime/p.c"
+    git_run add runtime/p.c
+    git_run commit -m 'seed p.c'
+
+    { write_tidy_c /dev/stdout; echo; write_ugly_c /dev/stdout; } > "$TEST_REPO/runtime/p.c"
+    git_run add runtime/p.c
+    {
+        write_tidy_c /dev/stdout
+        echo
+        write_ugly_c /dev/stdout
+        echo
+        printf 'int c(void)\n{\n    return 3;\n}\n'
+    } > "$TEST_REPO/runtime/p.c"
+
+    git_run commit -m partial
+    local status=$GIT_STATUS
+    if [ "$status" -ne 0 ]; then
+        fail "$name" "commit returned $status"
+    elif ! grep -qF 'partially staged' "$TEST_LOG_DIR/git.stderr" ||
+         ! grep -qF 'runtime/p.c' "$TEST_LOG_DIR/git.stderr"; then
+        fail "$name" 'the expected warning was not produced'
+        cat "$TEST_LOG_DIR/git.stderr" >&2
+    else
+        pass "$name"
+    fi
+}
+
+test_hook_is_executable
+test_hook_has_executable_git_mode
+test_broken_indent
+test_missing_indent
+test_broken_isort
+test_missing_python_formatters
+test_formatted_c_keeps_mtime
+test_reformats_and_restages_staged_file
+test_worktree_clean_after_commit
+test_unstaged_file_is_not_committed
+test_python_file_is_restaged
+test_formatted_file_is_quiet
+test_empty_stage
+test_partially_staged_file_warns
+
+finish "pre-commit hook"

@@ -1,0 +1,4 @@
+{ A named char index type typechecks in both dialects. }
+{ DIALECT: vintage extended }
+{ CHECK-INPUT: tests/corpus/golden/array_named_char.pas }
+{ CHECK-STAGES: lexer parser typechecker }

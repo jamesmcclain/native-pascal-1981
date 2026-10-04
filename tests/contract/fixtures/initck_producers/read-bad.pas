@@ -1,0 +1,10 @@
+PROGRAM readbad;
+PROCEDURE probe;
+VAR n, m: INTEGER;
+BEGIN
+  {$INITCK+}
+  READLN(n); WRITELN(n);
+  WRITELN(m)
+  {$INITCK-}
+END;
+BEGIN probe END.

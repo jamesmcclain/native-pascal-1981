@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Source at the start of a harness. A supervising shell owns the workspace,
-# so even a harness that replaces its EXIT trap cannot leak its temporaries.
-native_temp_script="$(realpath "${BASH_SOURCE[1]}")"
+# Source at the start of a harness, directly or through tests/lib/harness.sh;
+# it supervises the outermost script (BASH_SOURCE[-1]), re-running it as a
+# child. A supervising shell owns the workspace, so even a harness that
+# replaces its EXIT trap cannot leak its temporaries.
+native_temp_script="$(realpath "${BASH_SOURCE[-1]}")"
 if [[ ${NATIVE_TEMP_CHILD:-} != "$native_temp_script" ]]; then
   native_temp_base=/tmp/native-pascal-1981
   native_temp_work=

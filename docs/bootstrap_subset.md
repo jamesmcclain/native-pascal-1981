@@ -36,8 +36,9 @@ variables of the `Makefile`. `driver.pas`, `proxy.pas`, `pretty81.pas`,
 set. The finished (generation 4) compiler builds them, so they can use the
 full dialect.
 
-Run `make check-bootstrap-subset` to check these files. It runs
-`pasboot --parse-only` on each compiland. `make test` runs it too.
+Run `tests/check/bootstrap_subset.sh` to check these files. It runs
+`pasboot --parse-only` on each compiland. `make test` and `make test-quick`
+run it too.
 
 ## What the subset contains
 
@@ -84,7 +85,7 @@ Some forms have more limits:
 - every metacommand except `$INCLUDE` and standalone `$MATHCK` settings
 
 To widen the subset, change `bootstrap/parse.c` or `bootstrap/emit.c`, add a
-fixture in `bootstrap/tests/`, and update this document.
+fixture in `tests/unit/pasboot/`, and update this document.
 
 ## Semantics
 
@@ -223,7 +224,7 @@ reasons for blanket MATHCK-:
   line/column counters and aggregate layout/shadow products can outgrow their
   representable widths or allocations. Table guards do not prove all sizes
   safe; impose limits/guards, never modular allocation sizes.
-- `pretty81:IntToStr`, `cg_stmt:IntToStr255` and `cg_symbols:InitckIntText`
+- `pretty81:IntToStr`, `cg_util:IntToStr255` and `cg_symbols:InitckIntText`
   negate INTEGER32 without widening; its minimum has no positive INTEGER32
   magnitude. Ordinary bootstrap inputs avoid it. Widen the magnitude as
   `bytebuf:BufAppendInt` does if that domain is needed; do not disable checks.
@@ -250,22 +251,22 @@ reasons for blanket MATHCK-:
 
 ## How the subset is tested
 
-`tests/mathck_bootstrap_audit.sh` (in `make test-native`) pins local label-key
+`tests/contract/mathck_bootstrap_audit.sh` (in `make test`) pins local label-key
 lexer flags/restoration, wide i64 limit arithmetic in actual `tc_expr`/`cg_decl`
 O0 IR (including checked intrinsics), numeric-label AST keys in generations
 1–4/both dialects (8 cells), and high-bit LABEL/GOTO output under both settings,
 both dialects and O0–O3 (16 cells). It runs
-`bootstrap/tests/mathck_ignored.pas` at Clang O0–O3 (4 cells): ignored
+`tests/unit/pasboot/mathck_ignored.pas` at Clang O0–O3 (4 cells): ignored
 on/off/numeric settings, native INTEGER wrapping, a representable INTEGER64
 2^31 build-up and truncating negative DIV/MOD. Malformed bare/numeric/trailing
 settings are rejected; standard pasboot tests retain the unsupported DEBUG
-probe. See the [test guide](../tests/README.md#bootstrapself-hosting-arithmetic-audit)
+probe. See the [test guide](testing/mathck.md#bootstrapself-hosting-arithmetic-audit)
 for the suite entry point. This focused audit is not the clean fixed-point gate
 and does not exhaustively check every source's opt-outs or hostile input.
 
-- `make check-bootstrap-subset` checks that every generation-1 compiland
+- `tests/check/bootstrap_subset.sh` checks that every generation-1 compiland
   stays inside the subset.
-- `bootstrap/tests/run.sh` (`make test-pasboot`) runs one fixture for each
+- `tests/unit/pasboot.sh` (`make test-quick`) runs one fixture for each
   feature in the semantics list, and checks that the unsupported constructs
   are rejected.
 - `make test-bootstrap` builds generations 1 to 4 with `pascal1981`,

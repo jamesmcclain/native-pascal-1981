@@ -1,0 +1,2 @@
+Type checking failed:
+Cannot assign incompatible type without narrowing: narrow at line 10 column 3

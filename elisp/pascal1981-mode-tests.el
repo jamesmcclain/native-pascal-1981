@@ -55,7 +55,7 @@ reliably stay current through real command dispatch in batch mode."
 
 (defconst pascal1981-tests--kitchen
   (expand-file-name
-   "tests/fixtures/parser/should_pass/10_kitchen_sink.pas"
+   "tests/corpus/checklit/parser/should_pass/10_kitchen_sink.pas"
    pascal1981-tests--repo))
 
 (defconst pascal1981-tests--mini

@@ -1,4 +1,0 @@
-PROGRAM P;
-BEGIN
-  Q(1, 2)
-END.

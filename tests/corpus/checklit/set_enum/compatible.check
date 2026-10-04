@@ -1,0 +1,5 @@
+{ Distinct enum declarations with the same identity typecheck and generate
+  code cleanly in both dialects. }
+{ DIALECT: vintage extended }
+{ CHECK-INPUT: tests/corpus/golden/set_enum_identity_compatible.pas }
+{ CHECK-STAGES: lexer parser typechecker codegen }

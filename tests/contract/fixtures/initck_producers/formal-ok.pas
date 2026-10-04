@@ -1,0 +1,14 @@
+PROGRAM formalok;
+{$INITCK+}
+PROCEDURE getv(VAR n: INTEGER; VAR c: CHAR); BEGIN READ(n); READLN(c) END;
+PROCEDURE getval(n: INTEGER); BEGIN READLN(n); WRITELN(n) END;
+PROCEDURE count(n: INTEGER); BEGIN FOR n := n TO n + 1 DO WRITE(n); WRITELN END;
+PROCEDURE probe;
+VAR x, u: INTEGER; c: CHAR;
+BEGIN
+  getv(x, c); WRITELN(x, c);
+  {$INITCK-} getval(u); {$INITCK+}
+  count(-32768)
+END;
+BEGIN probe END.
+{$INITCK-}

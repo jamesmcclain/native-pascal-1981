@@ -1,0 +1,10 @@
+{ DIALECT: extended }
+{ CHECK-STAGES: lexer parser typechecker codegen }
+{ CHECK-ASSEMBLE: ir }
+PROGRAM P;
+VAR a: ARRAY[1..10] OF INTEGER;
+VAR i: INTEGER;
+BEGIN
+  i := 1;
+  a[i] := 5
+END.

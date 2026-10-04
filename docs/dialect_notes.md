@@ -82,8 +82,8 @@ mkdir -p -m 700 /tmp/native-pascal-1981
 work=$(mktemp -d /tmp/native-pascal-1981/example.XXXXXXXXXX)
 trap 'rm -rf -- "$work"' EXIT
 trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
-bin/pascal1981 -S tests/golden/01_hello.pas -o "$work/hello.ll"
-bin/pascal1981 --dialect extended -S tests/golden/01_hello.pas -o "$work/hello.ll"
+bin/pascal1981 -S tests/corpus/golden/01_hello.pas -o "$work/hello.ll"
+bin/pascal1981 --dialect extended -S tests/corpus/golden/01_hello.pas -o "$work/hello.ll"
 ```
 
 The standalone parser, typechecker, and code generator also default to
@@ -91,7 +91,7 @@ The standalone parser, typechecker, and code generator also default to
 extended pipeline has this form (using the workspace above):
 
 ```sh
-bin/lexer < tests/golden/01_hello.pas |
+bin/lexer < tests/corpus/golden/01_hello.pas |
   bin/parser --dialect extended |
   bin/typechecker --dialect extended |
   bin/codegen --dialect extended > "$work/hello.ll"
@@ -768,7 +768,7 @@ BEGIN
   ...
 ```
 
-Without the directive this kernel (`tests/gpu/vadd.pas`) fails to compile
+Without the directive this kernel (`tests/optional/gpu/vadd.pas`) fails to compile
 with `MATHCK unsupported boundary: DEVICE arithmetic at line L column C`,
 pointing at the first operation MATHCK would check, and no PTX is emitted. This is
 the deliberate [DEVICE boundary policy](#mathck-vector-device-and-unsupported-boundaries),
@@ -1002,7 +1002,7 @@ lower, nonnull data, element alignment and nonoverflowing count/stride/byte-span
 address arithmetic. Widen before narrowing. These checks apply under INDEXCK-
 too, never dereference raw or inspect raw-8, and fail deterministically without
 returning/publishing a value. Use NIL assignment, not null import. Runtime failure
-texts are pinned by the [descriptor probes](../tests/README.md#host-descriptor-contracts).
+texts are pinned by the [descriptor probes](testing/descriptors.md#host-descriptor-contracts).
 
 Validation establishes metadata/arithmetic validity, **not accessible capacity,
 provenance, ownership or lifetime**. The caller warrants contiguous storage of
@@ -1037,7 +1037,7 @@ count, size and alignment, allocates directly, then publishes one full descripto
 Checks apply under INDEXCK- too. `pas_super_new` uses 128-bit arithmetic; it rejects
 WORD64 upper > INT64_MAX, upper < lower or outside domain, count > SIZE_MAX,
 bytes > SIZE_MAX or PTRDIFF_MAX, and NULL malloc. Failures abort with
-`runtime error: NEW SUPER ARRAY <reason>`; [NEW probes](../tests/README.md#descriptor-new-and-index-probes)
+`runtime error: NEW SUPER ARRAY <reason>`; [NEW probes](testing/descriptors.md#descriptor-new-and-index-probes)
 pin the reasons. The helper has no destination address; only success reaches the
 compiler's store. Selection/bound side effects are not rolled back. Transactional
 publication is **not atomicity or a concurrent-access guarantee**, and does not
@@ -1082,7 +1082,7 @@ and DataLayout padding, not atomic publication or C ABI from struct spelling.
 Signed i64 bounds, equality-by-data, unsafe syntax/ownership and deterministic
 failures are local decisions, not historical parity. Borrowed formals, DEVICE
 descriptors and temporal safety remain deferred. See the
-[coverage map](../tests/README.md#host-descriptor-contracts) for test entry points.
+[coverage map](testing/descriptors.md#host-descriptor-contracts) for test entry points.
 
 ## Bound expressions **[native]**
 
@@ -1138,7 +1138,7 @@ implementation's NIL diagnostic or side-effect count.
 
 The earlier Python parser accepts only `identifier ["^"]` here. Field,
 indexed and call-result selectors, and general expression operands are
-native-only. The Python parity suite is disabled (`tests/README.md`).
+native-only.
 
 ## Subrange range checks **[native]**
 
@@ -1186,7 +1186,7 @@ retroactively alter the FOR/call policy. Legacy AST nodes without the
 snapshot inherit the enclosing scoped context; the root defaults to on.
 This isolates existing checks only: CASE's no-match trap remains unimplemented,
 and FOR's existing nonempty-loop endpoint/publication policy is unchanged.
-Regression: `tests/rangeck_scope.sh`. Array
+Regression: `tests/contract/rangeck_scope.sh`. Array
 indexes are not checked by `$RANGECK` (see `$INDEXCK` below); string
 capacities are still unchecked. NVPTX `DEVICE` code has no host-runtime
 subrange check; a `DEVICE` compiland targeting the CPU follows the host
@@ -1295,9 +1295,9 @@ the domain.
 ordinary program gets these checks without asking. This section is the
 canonical MATHCK contract. Rules are normative; paragraphs marked
 *Implementation* locate the current lowering and may change without changing
-the rules. The [test map](../tests/README.md#mathck-test-map) names the
+the rules. The [test map](testing/mathck.md#mathck-test-map) names the
 focused regression for each rule, and the persisted
-[G1–G29 inventory](../tests/README.md#mathck-gap-baseline) is a classification
+[G1–G29 inventory](testing/mathck.md#mathck-gap-baseline) is a classification
 audit, not evidence that checks are missing. Compiler-source arithmetic and the
 pasboot policy (it accepts but ignores MATHCK) belong to the
 [bootstrap contract](bootstrap_subset.md#self-hosting-arithmetic).
@@ -1512,7 +1512,7 @@ Legacy unchecked operations follow the [disabled semantics](#disabled-mathck-sem
 wrapping, deterministic zero-divisor errors (reported at `line 0 column 0`,
 since the node has no coordinates) and defined signed MIN/-1 results.
 Unchecked never means unsafe LLVM lowering. The frozen AST files in
-`tests/reference/` stay unchanged and keep their valid-program outputs; new
+`tests/corpus/reference/` stay unchanged and keep their valid-program outputs; new
 snapshot metadata does not justify rewriting them to opt into checking.
 Compatibility does not preserve values that came from LLVM undefined behavior
 (UB: an operation such as integer division by zero or overflowing signed
@@ -1679,8 +1679,9 @@ Literal, variable, selected-string and native string-function sources are
 supported. DEVICE calls are rejected: these are host runtime functions.
 INITCK-enabled calls retain the explicit `call consumer` unsupported boundary;
 string initialization tracking is not implemented. These scans neither write
-the string nor add MATHCK instrumentation. Tests: `scan_builtins.pas`,
-`scan_contract.sh`, and `scan_runtime.c`.
+the string nor add MATHCK instrumentation. Tests: `tests/corpus/golden/scan_builtins.pas`
+and `scan_shadow.pas`, `tests/corpus/checklit/scan/`, and
+`tests/unit/runtime_scan.c`.
 
 ### MATHCK VECTOR, DEVICE and unsupported boundaries
 
@@ -1868,9 +1869,9 @@ site. Floating representation still rounds: WORD64 MAX converts to the double
 18446744073709551616.0, not an exact integer value. These lowering rules do not
 expand type admission or repair the separate ORD(WORD) gap.
 
-The [WORD test map](../tests/README.md#scalar-word-arithmetic-prerequisites)
+The [WORD test map](testing/mathck.md#scalar-word-arithmetic-prerequisites)
 records the nonzero-divisor runtime matrix and O0 unsigned/zero-extension IR
-checks; the [FOR test map](../tests/README.md#for-endpoint-termination) covers
+checks; the [FOR test map](testing/mathck.md#for-endpoint-termination) covers
 endpoint termination separately. Compiler-source arithmetic dependencies and
 fixed-point validation belong to the [bootstrap contract](bootstrap_subset.md#self-hosting-arithmetic),
 not Python-reference parity or historical audit transcripts.
@@ -1924,18 +1925,18 @@ its signedness arbitrary (manual lines 6188–6190); exact comparison is a
 deterministic choice within that latitude. A bare INTEGER literal still
 adapts to the other operand's type first, as above (`CodegenBinOp` and
 `CodegenMixedSignCompare`, `src/cg_expr.pas`;
-`tests/golden/mixed_sign_compare.pas`).
+`tests/corpus/golden/mixed_sign_compare.pas`).
 
 Real division `/` produces `REAL` for any combination of integer-family
 (`INTEGER`, `WORD`, extended wide types) or floating-point operands and
 literals; integer operands are promoted to `REAL` before division
 (`CodegenBinOp`, `src/cg_expr.pas`; `CheckExpr`, `src/tc_expr.pas`;
-`tests/golden/slash_integer_family.pas`,
-`tests/golden/slash_wide_integers.pas`). Assigning the result of `/` to an
+`tests/corpus/golden/slash_integer_family.pas`,
+`tests/corpus/golden/slash_wide_integers.pas`). Assigning the result of `/` to an
 integer variable is rejected as a type mismatch without narrowing
-(`tests/golden/slash_assign_to_int_rejected.pas`), and so is assigning it to
+(`tests/corpus/golden/slash_assign_to_int_rejected.pas`), and so is assigning it to
 a `REAL32` variable, the same as any other `REAL` value
-(`tests/golden/slash_assign_to_real32_rejected.pas`).
+(`tests/corpus/golden/slash_assign_to_real32_rejected.pas`).
 
 In extended mode, a literal can use a wide target type. These examples are
 valid:
@@ -1951,17 +1952,17 @@ BEGIN
   w := 5000000000;     { 5000000000 }
 ```
 
-`tests/golden/19_wide_int_literals.pas` pins this behavior.
+`tests/corpus/golden/19_wide_int_literals.pas` pins this behavior.
 
 Outside an assignment context a literal has its own type: 32768..65535 is a
 WORD constant (both dialects), and a larger extended literal is INTEGER32
 up to MAXINT32, then WORD32 up to 4294967295, then INTEGER64, so
 `WRITELN(40000)` prints 40000 and `i < 40000` with INTEGER `i = -1` is TRUE
 (an exact mixed-sign comparison). A literal of plain INTEGER range still
-adapts to the other operand of a binary operation. `tests/golden/literal_word_range.pas`
-and `tests/golden/literal_wide_range.pas` pin this. Literals of more than 15 digits
+adapts to the other operand of a binary operation. `tests/corpus/golden/literal_word_range.pas`
+and `tests/corpus/golden/literal_wide_range.pas` pin this. Literals of more than 15 digits
 (beyond the precision of a printed JSON double) are preserved exactly across compiler
-stages via companion decimal representation (`tests/golden/literal_int64_exact.pas`).
+stages via companion decimal representation (`tests/corpus/golden/literal_int64_exact.pas`).
 
 A literal too large for its target type is an error:
 
@@ -2013,7 +2014,7 @@ separate constraints; runtime checks, operator locations and VECTOR division
 safety are separate contracts, not consequences of correct folding. Compiler
 self-hosting requires no floor-rounding workaround; its
 [arithmetic rules](bootstrap_subset.md#wide-limits-word-and-division) and clean
-fixed-point gate are separate. The [focused test map](../tests/README.md#constant-divmod-folding-prerequisite)
+fixed-point gate are separate. The [focused test map](testing/mathck.md#constant-divmod-folding-prerequisite)
 describes runtime twins, zero rejections and CONST/CASE/bound AST probes.
 
 ## `TRUNC` and `ROUND` return `INTEGER`, so they narrow to 16 bits **[both]**
@@ -2062,7 +2063,7 @@ is explicitly **deferred**; it does not block MATHCK. Current ORD of WORD is
 therefore not a back door around the
 [mixed-operand rule](#integer-constants-and-context), and the current behavior
 is a recorded compatibility gap, not a ratification of IBM parity. G25 remains
-a known-gap rejection in the [baseline](../tests/README.md#mathck-gap-baseline).
+a known-gap rejection in the [baseline](testing/mathck.md#mathck-gap-baseline).
 
 ORD is a conversion, not a MATHCK operation: changing MATHCK must not change
 its semantics, and because native `-32768` is valid data, a future
@@ -2092,7 +2093,7 @@ including when nested in records. Their leaves are contiguous CHAR bytes;
 the LSTRING length byte is included. Arguments and function results preserve
 the whole value, including when argument registers are exhausted. Larger
 strings retain the existing MEMORY-class transport. Regression:
-`tests/golden/small_string_abi.pas`.
+`tests/corpus/golden/small_string_abi.pas`.
 
 ## Native limitations **[native]**
 

@@ -134,37 +134,60 @@ Run the routine test suites:
 make test
 ```
 
-This target runs the bootstrap-subset check, the `pasboot` fixtures, and the driver, sysutil, native, proxy, and pre-commit-hook test groups. It keeps going after a failing group (`make -k`) and ends with a summary of every failed target and failing check; the full output is kept in `build/test-report.log`. `make test-routine` runs the same groups without the summary. The test runners do not require pytest. The proxy tests need `python3`.
+Every suite is a script in a tier directory under `tests/`, grouped by what
+it does mechanically:
 
-This target does not run the bootstrap or Emacs tests.
+| Tier | What its suites do |
+| --- | --- |
+| `tests/check/` | Static checks: generation 1 stays inside the bootstrap subset; the pre-commit hook and formatter; the suite index in `tests/README.md` is current. |
+| `tests/unit/` | Runtime C unit tests, `pasboot` fixtures, the test launcher. |
+| `tests/corpus/` | Fixture corpora compiled and compared with expected output: golden programs, IR directives, depth limits, AST comparison. |
+| `tests/contract/` | Scripted checks of compiler, driver and runtime behavior (MATHCK, INITCK, INDEXCK, descriptors, stage CLIs, ...). |
+| `tests/service/` | The completion proxy against a deterministic stub backend (needs `python3`). |
+| `tests/optional/` | Opt-in: CUDA hardware, overhead measurements. Never run by `make test`. |
+
+`make test` runs the `check` and `unit` tiers first (they need no
+bootstrap), then builds every tool and runs the `corpus`, `contract` and
+`service` tiers. Suites run in parallel, longest first. It runs every suite
+even after one fails, and ends with a summary of failed suites with their
+`FAIL` lines, and of suites that skipped checks; each suite's full output is
+kept in `build/test-results/<suite>.log`. `make test-quick` runs only the
+first two tiers, in seconds.
+
+To run some suites, name tiers or suites, or run a suite script directly
+(from any directory; it sets up the same environment itself):
+
+```bash
+make test SUITES="contract depth"
+./tests/contract/mathck_vector.sh
+```
+
+The test runners do not require pytest. The proxy tests need `python3`.
 
 Install bubblewrap (`bwrap`; the `bubblewrap` package on Debian or Ubuntu) as
 well. The temporary-directory safety test runs its cases in a `bwrap`
 sandbox with a private `/tmp`; without `bwrap` that test is skipped rather
-than failed, so `make test` passes with less coverage.
+than failed, so `make test` passes with less coverage. The summary lists it
+among the suites that skipped checks.
 
-Use these targets for a specific test group:
+These targets are separate from `make test`:
 
 | Target | Test group |
 | --- | --- |
-| `make check-bootstrap-subset` | Generation 1 sources stay inside the bootstrap subset. No Python needed. |
-| `make test-pasboot` | Per-feature fixtures for the `pasboot` bootstrap translator. No Python needed. |
-| `make test-driver` | Driver, golden-file, and IR/PTX-text directive tests. No Python needed. |
-| `make test-native` | Routine native compiler tests |
-| `make test-sysutil` | POSIX filesystem and process primitives, exercised from Pascal |
-| `make test-proxy` | Differential conformance for the completion proxy (needs `python3`) |
 | `make test-gpu` | CUDA compilation and execution on an NVIDIA GPU |
 | `make test-elisp` | Emacs major-mode ERT tests |
 | `make test-bootstrap` | Clean bootstrap and fixed-point comparison, with Python made unavailable |
 
 If a CUDA prerequisite is not available, the `test-gpu` target skips the test.
 
-The native compiler is the authoritative implementation. A parity suite comparing it with an earlier Python implementation remains in `tests/parity/` but is disabled and slated for removal; see [tests/README.md](tests/README.md) if you need it. The `test-elisp` target requires Emacs and builds the compiler stages first.
+The native compiler is the authoritative implementation; no test compares it with the earlier Python implementation. The `test-elisp` target requires Emacs and builds the compiler stages first.
 
 See [tests/README.md](tests/README.md). It describes the compiler test suites. Before adding or changing a test, read [docs/test_portability.md](docs/test_portability.md): the suites must not depend on a quiet compiler, particular bash/make/LLVM versions, or optional tools.
 
-To run all available test groups, run:
+To run all available test groups, run (`test-bootstrap` deletes `build/`, so
+it must run on its own):
 
 ```bash
-make test-bootstrap test test-gpu test-elisp
+make test-bootstrap
+make test test-gpu test-elisp
 ```

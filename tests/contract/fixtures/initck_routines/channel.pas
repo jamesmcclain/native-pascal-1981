@@ -1,0 +1,7 @@
+PROGRAM channel;
+FUNCTION f(n: INTEGER; r: REAL): INTEGER;
+BEGIN WRITELN(r:3:1); f := n END;
+PROCEDURE probe;
+VAR x: INTEGER;
+BEGIN x := f(f(1, 2.0), 3.0) END;
+BEGIN probe END.

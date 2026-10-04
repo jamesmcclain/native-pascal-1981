@@ -1,0 +1,4 @@
+Parser Error: Expected token match failed. Expected:
+MUL
+Got:
+INTEGER_LITERAL

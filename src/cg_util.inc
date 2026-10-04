@@ -13,6 +13,7 @@ VAR
 
 PROCEDURE AbortWith(msg: Str255);
 PROCEDURE AbortWith2(prefix: Str255; suffix: Str255);
+FUNCTION IntToStr255(n: INTEGER32): Str255;
 FUNCTION EntryAlloca(ty: ADRMEM; name: Str255): ADRMEM;
 FUNCTION GetObjOrNil(obj: ADRMEM; key: Str255): ADRMEM;
 PROCEDURE EnterExprLevel;

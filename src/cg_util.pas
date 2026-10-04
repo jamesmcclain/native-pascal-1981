@@ -66,6 +66,50 @@ BEGIN
   GetObjOrNil := v;
 END;
 
+FUNCTION IntToStr255(n: INTEGER32): Str255;
+{ Decimal text of n, for numeric GOTO labels (which arrive from the parser
+  as JSON numbers while the `labels` table's lookup key is text) and for
+  numbers in diagnostics. Builds digits into `tmp` least-significant-first via direct Str255
+  indexing (the same s[0]=length-byte convention CStrToStr255 uses), then
+  reverses into `res` -- no CONCAT needed, this is plain char-array work. }
+VAR
+  neg: BOOLEAN;
+  v: INTEGER32;
+  digit: INTEGER32;
+  tmp, res: Str255;
+  len, i, out_i: INTEGER;
+BEGIN
+  neg := n < 0;
+  IF neg THEN v := -n ELSE v := n;
+  len := 0;
+  IF v = 0 THEN
+  BEGIN
+    len := 1;
+    tmp[1] := '0';
+  END
+  ELSE
+    WHILE v > 0 DO
+    BEGIN
+      len := len + 1;
+      digit := ORD('0') + (v MOD 10);
+      tmp[len] := CHR(RETYPE(INTEGER, digit));
+      v := v DIV 10;
+    END;
+  out_i := 0;
+  IF neg THEN
+  BEGIN
+    out_i := out_i + 1;
+    res[out_i] := '-';
+  END;
+  FOR i := len DOWNTO 1 DO
+  BEGIN
+    out_i := out_i + 1;
+    res[out_i] := tmp[i];
+  END;
+  res[0] := CHR(out_i);
+  IntToStr255 := res;
+END;
+
 PROCEDURE AbortWith2(prefix: Str255; suffix: Str255);
 VAR
   msg: Str255;

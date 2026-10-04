@@ -6,7 +6,6 @@ INTERFACE;
 UNIT cg_stmt;
 USES jsonutil, features, cg_base, cg_util, cg_types, cg_symbols, cg_expr, cg_io;
 
-FUNCTION IntToStr255(n: INTEGER32): Str255;
 FUNCTION LabelKey(node: ADRMEM; key: Str255): Str255;
 FUNCTION LookupLabel(name: Str255): INTEGER32;
 PROCEDURE RegisterLabel(name: Str255);

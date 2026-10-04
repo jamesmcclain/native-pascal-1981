@@ -1,0 +1,5 @@
+{ The codegen backstop: with the typechecker bypassed, codegen still
+  rejects incompatible SET bases. The driver rejects these at typecheck. }
+{ CHECK-INPUT: tests/corpus/sources/set_enum_identity_rejected.pas }
+{ CHECK-STAGES: lexer parser codegen }
+{ CHECK-FAIL: codegen: assignment type mismatch for: Wrong }

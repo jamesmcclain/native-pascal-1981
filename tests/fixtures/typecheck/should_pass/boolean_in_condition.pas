@@ -1,6 +1,0 @@
-PROGRAM P;
-VAR b: BOOLEAN;
-VAR x: INTEGER;
-BEGIN
-  IF b THEN x := 1
-END.

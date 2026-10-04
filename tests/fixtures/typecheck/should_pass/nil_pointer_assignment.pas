@@ -1,5 +1,0 @@
-PROGRAM P;
-VAR p: ^INTEGER;
-BEGIN
-  p := NIL
-END.

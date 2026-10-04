@@ -1,6 +1,0 @@
-PROGRAM P;
-VAR x: INTEGER;
-VAR s: LSTRING(10);
-BEGIN
-  x := x + s
-END.

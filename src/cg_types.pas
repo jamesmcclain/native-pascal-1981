@@ -1068,6 +1068,59 @@ BEGIN
   SuperElementSize := child;
 END;
 
+PROCEDURE LayoutMismatch(what: Str255; ours, llvm: INTEGER64);
+VAR
+  msg: Str255;
+BEGIN
+  msg := 'codegen: internal error: record layout disagrees with LLVM: ';
+  CONCAT(msg, what);
+  CONCAT(msg, ' is ');
+  CONCAT(msg, IntToStr255(RETYPE(INTEGER32, ours)));
+  CONCAT(msg, ' here but ');
+  CONCAT(msg, IntToStr255(RETYPE(INTEGER32, llvm)));
+  CONCAT(msg, ' in LLVM');
+  AbortWith(msg);
+END;
+
+PROCEDURE CheckRecordLayout(tid: INTEGER; struct_ty: ADRMEM; payload_elem: INTEGER; payload_off: INTEGER32);
+{ Field access, SIZEOF and NEW use the byte offsets and size computed here
+  (fields[].byte_offset, TypeSizeBytes); LLVM lays struct_ty out itself for
+  globals, locals, copies and array strides. The two must agree exactly, so
+  a drift in that arithmetic stops the compile instead of corrupting memory.
+  Fields of variant arms overlap inside one payload member, whose offset is
+  checked instead. Host modules only: an NVPTX module gets its data layout
+  when PTX is emitted, so its layout queries here would answer for LLVM's
+  default layout, not the target's. }
+VAR
+  dl: ADRMEM;
+  i: INTEGER;
+  ours, llvm: INTEGER64;
+  what: Str255;
+BEGIN
+  dl := LLVMGetModuleDataLayout(modl);
+  FOR i := 1 TO nfields DO
+    IF (fields[i].rec_tid = tid) AND (fields[i].arm = 0) THEN
+    BEGIN
+      ours := fields[i].byte_offset;
+      llvm := LLVMOffsetOfElement(dl, struct_ty, fields[i].field_index);
+      IF ours <> llvm THEN
+      BEGIN
+        what := 'offset of field ';
+        CONCAT(what, fields[i].fname);
+        LayoutMismatch(what, ours, llvm);
+      END;
+    END;
+  IF payload_elem >= 0 THEN
+  BEGIN
+    ours := payload_off;
+    llvm := LLVMOffsetOfElement(dl, struct_ty, payload_elem);
+    IF ours <> llvm THEN LayoutMismatch('offset of the variant part', ours, llvm);
+  END;
+  ours := TypeSizeBytes(tid);
+  llvm := LLVMABISizeOfType(dl, struct_ty);
+  IF ours <> llvm THEN LayoutMismatch('SIZEOF', ours, llvm);
+END;
+
 FUNCTION IsAggregateTk(tk: INTEGER): BOOLEAN;
 { The types that cross the C ABI as aggregates rather than as single
   machine values -- exactly the set FlattenParams marks needs_copy for, kept
@@ -1765,6 +1818,7 @@ VAR
   pow2: INTEGER32;
   field_tid, tag_tid: INTEGER;
   payload_align, payload_size, arm_off, fixed_off: INTEGER32;
+  payload_elem: INTEGER;
   fname: Str255;
   elem_llvm_types: ADRMEM;
   struct_ty, payload_ty: ADRMEM;
@@ -2044,8 +2098,10 @@ BEGIN
       END;
       IF arm_off - fixed_off > payload_size THEN payload_size := arm_off - fixed_off;
     END;
+    payload_elem := -1;
     IF payload_size > 0 THEN
     BEGIN
+      payload_elem := field_index;
       { Use an element with the payload's maximum alignment, not i8 storage. }
       IF payload_align >= 8 THEN payload_ty := i64ty
       ELSE IF payload_align >= 4 THEN payload_ty := i32ty
@@ -2057,6 +2113,7 @@ BEGIN
     END;
     struct_ty := LLVMStructTypeInContext(ctx, elem_llvm_types, field_index, 0);
     types[tid].llvm_ty := struct_ty;
+    IF NOT is_nvptx_device THEN CheckRecordLayout(tid, struct_ty, payload_elem, fixed_off);
   END
   ELSE IF nt = 'PointerType' THEN
   BEGIN

@@ -1,0 +1,2 @@
+Type checking failed:
+FOR loop variable must be an ordinal type at line 7 column 3

@@ -8,7 +8,7 @@ GNU make 4.3) with a source-built LLVM 22 installed outside `/usr`.
 ## Diagnose before fixing
 
 - **Get the failing output from the failing host.** Do not infer a cause
-  from a test name or a summary count. Ask for `./tests/run.sh -v <test>`
+  from a test name or a summary count. Ask for `./tests/corpus/fixtures.sh -v <test>`
   (which prints the expected/actual diff) or the suite's own output, and fix
   what it shows. Guessing cost several rounds of wrong fixes.
 - **Check `master` on the same host before blaming a branch.** All of the

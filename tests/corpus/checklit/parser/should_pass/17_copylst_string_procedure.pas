@@ -1,0 +1,9 @@
+{ DIALECT: extended }
+{ CHECK-STAGES: lexer parser }
+PROGRAM CopylstTest;
+VAR
+    src: STRING(100);
+    dest: LSTRING(256);
+BEGIN
+    COPYLST(src, dest)
+END.

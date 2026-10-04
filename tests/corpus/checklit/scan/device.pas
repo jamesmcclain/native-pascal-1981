@@ -1,0 +1,6 @@
+{ SCANEQ/SCANNE are host builtins, rejected in DEVICE code. }
+{ DIALECT: extended }
+{ CHECK-FAIL: SCANEQ/SCANNE are host-only }
+DEVICE INTERFACE; UNIT SCANDEVICE (run); PROCEDURE run; END;
+DEVICE IMPLEMENTATION OF SCANDEVICE; PROCEDURE run; VAR n: INTEGER;
+BEGIN n := SCANEQ(4, 'b', 'aaba', 1) END; .

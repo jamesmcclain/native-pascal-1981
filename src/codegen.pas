@@ -896,8 +896,8 @@ BEGIN
     each was found only by clang-linking the output and running it. Any new
     codegen path must be validated by linking the emitted IR against
     libpascalrt.a and running it on real input, not by verification alone;
-    tests/test_native_parity.py::TestNativeLinkAndRun is the runtime gate that
-    enforces this for the self-hosting codegen paths. }
+    the run fixtures of tests/corpus/ are the runtime gate that enforces
+    this. }
   ok := LLVMVerifyModule(modl, LLVMAbortProcessAction, verify_msg_raw);
   IF ok <> 0 THEN
   BEGIN

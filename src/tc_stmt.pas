@@ -261,7 +261,7 @@ BEGIN
 END;
 
 PROCEDURE CheckNewDispose(args_arr: ADRMEM; pname: Str255);
-{ Kept out of CheckStmt so its recursive frame stays small (tests/depth.sh). }
+{ Kept out of CheckStmt so its recursive frame stays small (tests/corpus/depth.sh). }
 VAR
   nargs, si: INTEGER32;
   warg: ADRMEM;

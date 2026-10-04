@@ -19,8 +19,8 @@ update() {
   echo "updated: $typed"
 }
 
-update tests/reference/ast/with_stmt.pas
-update tests/reference/ast/case_stmt.pas
-update tests/reference/ast/enum_types.pas
-update tests/reference/ast/forward_decl.pas
-update tests/reference/ast/pointer_record_graph.pas
+update tests/corpus/reference/ast/with_stmt.pas
+update tests/corpus/reference/ast/case_stmt.pas
+update tests/corpus/reference/ast/enum_types.pas
+update tests/corpus/reference/ast/forward_decl.pas
+update tests/corpus/reference/ast/pointer_record_graph.pas

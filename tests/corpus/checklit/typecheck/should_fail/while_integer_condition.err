@@ -1,0 +1,2 @@
+Type checking failed:
+WHILE condition must be BOOLEAN at line 7 column 3

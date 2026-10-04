@@ -15,5 +15,5 @@ update() {
   echo "updated: $output"
 }
 
-update tests/gpu/vadd.pas
-update tests/gpu/host.pas
+update tests/optional/gpu/vadd.pas
+update tests/optional/gpu/host.pas

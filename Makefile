@@ -10,10 +10,7 @@ LLVM_CONFIG ?= $(shell command -v llvm-config 2>/dev/null || command -v llvm-con
 LLVM_LINK_FLAGS ?= $(shell $(LLVM_CONFIG) --ldflags --libs)
 export CC LLVM_CONFIG
 
-# make -j parallelizes targets, not the fixture loop inside tests/run.sh.
-# Keep the default bounded; override independently, e.g. TEST_JOBS=8.
-TEST_JOBS ?= 8
-# Parallel jobs for test-native's tool build.
+# Parallel jobs for the tool build `make test` does before it runs suites.
 BUILD_JOBS ?= 8
 TEST_ENV := ./scripts/test-env.sh
 
@@ -58,7 +55,7 @@ GEN4_BINS := $(addprefix $(BUILD_DIR)/gen4/,$(STAGES))
 BOOTSTRAP_BINS := $(addprefix $(BIN_DIR)/,$(STAGES))
 FIXED_POINT := $(BUILD_DIR)/.fixed-point-verified
 
-.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-routine test-precommit-hook test-driver test-native test-descriptor-contract test-super-new test-parser-named-index test-typecheck-named-index test-sysutil test-proxy test-gpu test-reference-parity test-elisp test-bootstrap test-pasboot check-bootstrap-subset
+.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test-gpu test-elisp test-bootstrap
 
 all: runtime driver bootstrap $(PROXY_BIN) $(PRETTY81_BIN)
 
@@ -95,7 +92,7 @@ $(PRETTY81_BIN): src/pretty81.pas $(STAGE_SRCS) $(GEN4_BINS) $(FIXED_POINT) $(RU
 # Linux-only test launcher builds this on demand, independently of bootstrap.
 # Separate launchers may build concurrently: publish only a complete .so and
 # never truncate one that another process has already mapped.
-$(BUILD_DIR)/test-no-core.so: tests/support/no_core.c | $(BUILD_DIR)
+$(BUILD_DIR)/test-no-core.so: tests/lib/no_core.c | $(BUILD_DIR)
 	@tmp=$$(mktemp "$@.XXXXXX"); \
 	trap 'rm -f "$$tmp"' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
 	$(CC) -shared -fPIC $(CFLAGS) $< -o "$$tmp" && \
@@ -158,141 +155,57 @@ cleaner: clean
 cleanest: cleaner
 	rm -rf .pytest_cache
 
-# make test runs every routine group even after one fails (make -k) and ends
-# with a summary of failed targets and checks; see scripts/test-report.sh.
-# make test-routine runs the same groups without the summary.
-test:
-	+@MAKE="$(MAKE)" TEST_REPORT_LABEL="make test" ./scripts/test-report.sh $(BUILD_DIR)/test-report.log test-routine
+# Tests. A suite is an executable file in a tier directory, tests/<tier>/,
+# and tests/lib/schedule.sh runs suites in parallel, longest first, and
+# reports on them (see tests/README.md). Make only builds what they test.
+#   check     static checks of the sources and repository tooling
+#   unit      runtime C units, pasboot fixtures, the test launcher
+#   corpus    fixture corpora compiled and compared with expected output
+#   contract  scripted checks of compiler, driver and runtime behavior
+#   service   the completion proxy against a stub backend
+#   optional  opt-in: needs hardware or measures, never run by `make test`
+# The check and unit tiers need no bootstrap, so `make test` runs them
+# first, while nothing is built yet, then builds every tool with BUILD_JOBS
+# parallel jobs and runs the other tiers. It runs every suite even after
+# one fails, and ends with a summary of failures and skips; each suite's
+# output is kept in build/test-results/. To run some suites, name tiers or
+# suites: make test SUITES="mathck_vector depth", or run the suite itself.
+# TEST_JOBS processes, by default every CPU, are shared by the suites
+# running and the work inside each; see tests/lib/schedule.sh.
+SCHEDULE := ./tests/lib/schedule.sh $(if $(TEST_JOBS),-j $(TEST_JOBS))
+QUICK_TIERS := check unit
+QUICK_TOOLS := runtime $(PASBOOT) $(BUILD_DIR)/test-no-core.so
+TEST_TOOLS := $(QUICK_TOOLS) bootstrap $(DRIVER_BIN) $(ASTCOMPARE_BIN) $(PROXY_BIN) $(PRETTY81_BIN)
 
-test-routine: check-bootstrap-subset test-pasboot test-native test-proxy test-precommit-hook
+.PHONY: test test-quick test-tools print-gen1-compilands
+ifdef SUITES
+test: $(TEST_TOOLS)
+	@$(SCHEDULE) $(SUITES)
+else
+test: $(QUICK_TOOLS)
+	@rm -rf $(BUILD_DIR)/test-results
+	-@$(SCHEDULE) $(QUICK_TIERS)
+	@$(MAKE) --no-print-directory -j$(BUILD_JOBS) test-tools || { $(SCHEDULE) --summary; exit 1; }
+	-@$(SCHEDULE) corpus contract service
+	@$(SCHEDULE) --summary
+endif
 
-test-precommit-hook:
-	$(TEST_ENV) ./tests/test_precommit_hook.sh
+# Seconds, and no bootstrap: suitable before every commit.
+test-quick: $(QUICK_TOOLS)
+	@$(SCHEDULE) $(QUICK_TIERS)
 
-# Every gen1 compiland must stay inside the subset pasboot translates
-# (docs/bootstrap_subset.md). Parse-only, so a src/ change that leaves the
-# subset fails here, in seconds, naming the construct and line, rather than
-# deep inside a gen1 build. The list is the gen1 stages and their units.
+test-tools: $(TEST_TOOLS)
+
+# Every gen1 compiland, for tests/check/bootstrap_subset.sh: the gen1 stages
+# and their units.
 GEN1_COMPILANDS := $(sort jsonutil $(CODEGEN_UNITS) $(TYPECHECKER_UNITS) $(PARSER_UNITS) $(STAGES))
-check-bootstrap-subset: $(PASBOOT)
-	@for u in $(GEN1_COMPILANDS); do \
-	  $(PASBOOT) --parse-only src/$$u.pas || exit 1; \
-	done
-	@echo "check-bootstrap-subset: $(words $(GEN1_COMPILANDS)) gen1 compilands are inside the bootstrap subset"
-
-# pasboot's per-feature fixtures (bootstrap/tests/). Needs only clang, libc
-# and the runtime library -- no Pascal compiler.
-test-pasboot: $(PASBOOT) $(RUNTIME_LIB)
-	$(TEST_ENV) ./bootstrap/tests/run.sh
-
-# The zero-Python subset of `test`: driver, golden-file behavioral, and
-# IR/PTX-text directive tests. It does not run pytest or Python.
-test-driver: $(DRIVER_BIN)
-	$(TEST_ENV) ./tests/driver.sh
-
-# Whole host descriptor transport and explicit unsafe-boundary contracts.
-# Install current stages as well: the driver dispatches through bin/.
-test-descriptor-contract: $(DRIVER_BIN) bootstrap
-	$(TEST_ENV) ./tests/descriptor_contract.sh
-
-test-parser-named-index: $(PRETTY81_BIN)
-	$(TEST_ENV) ./tests/array_named_index_parser.sh
-
-test-typecheck-named-index: $(BIN_DIR)/typechecker $(BIN_DIR)/parser $(BIN_DIR)/lexer
-	$(TEST_ENV) ./tests/array_named_index_typecheck.sh
-
-test-super-new: $(DRIVER_BIN) bootstrap
-	$(TEST_ENV) bash tests/super_new_contract.sh
-
-# Every tool test-native runs, so they can be built ahead of the tests.
-NATIVE_TEST_TOOLS := runtime bootstrap $(DRIVER_BIN) $(ASTCOMPARE_BIN) $(PROXY_BIN) $(PRETTY81_BIN) $(BUILD_DIR)/test-no-core.so
-
-# test-native suites run as ./tests/NAME.sh, longest first (measured warm,
-# 2026-10-04), with the many-worker suites interleaved among the single-core
-# ones so that TEST_SUITE_JOBS slots keep the machine busy without piling
-# every worker pool up at once. Each runs in its own scratch workspace.
-# (Lower priority for the many-worker suites, or more slots, measured slower.)
-NATIVE_SUITES := mathck_mixed_width initck_heap mathck_twins initck_aggregates \
-  mathck_scalar initck_validation initck_external mathck_builtins \
-  initck_definite mathck_bootstrap_audit initck_routines mathck_vector \
-  initck_scalar mathck_for_endpoints mathck_word_scalar initck_abi \
-  mathck_divmod_safety initck_producers mathck_baseline trunc_round_range \
-  initck_contract checklit mathck_metadata mathck_constant_folding depth \
-  mathck_device stage_cli indexck_metadata mathck_boundary_values \
-  mathck_diagnostics mathck_address_arith mathck_optimization initck_state \
-  mathck_overflow astcompare indexck_guard_ir codegen_set_base_guard \
-  set_enum_typecheck scan_contract rangeck_scope
-NATIVE_SUITE_TARGETS := $(addprefix native-suite-,$(NATIVE_SUITES))
-
-# Build every tool with BUILD_JOBS parallel jobs (the runtime objects,
-# pasboot, and the four stages within each bootstrap generation build
-# concurrently; generations still build in order), then run every suite with
-# up to TEST_SUITE_JOBS at once. --output-sync keeps each suite's output
-# together. TEST_SUITE_JOBS=1 runs the suites one at a time, in the order
-# below; as with any make -j, a failure stops new suites from starting.
-TEST_SUITE_JOBS ?= 6
-test-native:
-	$(MAKE) -j$(BUILD_JOBS) $(NATIVE_TEST_TOOLS)
-	$(MAKE) -j$(TEST_SUITE_JOBS) --output-sync=target native-suites
-
-.PHONY: native-suites native-golden native-scan-runtime native-read-wide native-no-core native-temp-hygiene $(NATIVE_SUITE_TARGETS)
-native-suites: native-golden $(word 1,$(NATIVE_SUITE_TARGETS)) $(word 2,$(NATIVE_SUITE_TARGETS)) \
-  $(word 3,$(NATIVE_SUITE_TARGETS)) test-descriptor-contract test-sysutil test-driver test-parser-named-index \
-  test-typecheck-named-index test-super-new native-read-wide \
-  $(NATIVE_SUITE_TARGETS) native-scan-runtime native-no-core native-temp-hygiene
-
-native-golden: $(DRIVER_BIN) bootstrap
-	$(TEST_ENV) ./tests/run.sh -j $(TEST_JOBS)
-
-native-scan-runtime: $(RUNTIME_LIB)
-	$(CC) -o $(BUILD_DIR)/scan_runtime tests/scan_runtime.c $(RUNTIME_LIB)
-	$(TEST_ENV) $(BUILD_DIR)/scan_runtime
-
-native-read-wide: $(RUNTIME_LIB)
-	$(CC) -o $(BUILD_DIR)/read_wide_runtime tests/read_wide_runtime.c $(RUNTIME_LIB)
-	$(TEST_ENV) $(BUILD_DIR)/read_wide_runtime
-
-native-no-core: $(BUILD_DIR)/test-no-core.so
-	$(TEST_ENV) ./tests/test_no_core.py
-
-native-temp-hygiene: $(DRIVER_BIN)
-	$(TEST_ENV) python3 tests/temp_hygiene.py
-
-$(NATIVE_SUITE_TARGETS): native-suite-%: $(DRIVER_BIN) $(ASTCOMPARE_BIN) bootstrap
-	$(TEST_ENV) ./tests/$*.sh
-
-# Reusable POSIX filesystem and process primitives, exercised from Pascal.
-test-sysutil: $(DRIVER_BIN) runtime
-	$(TEST_ENV) ./tests/sysutil_check.sh $(DRIVER_ALIAS)
-
-# Completion-proxy conformance against recorded golden reports, plus native
-# transforms/client/corpus checks. The replaced Python proxy is not run.
-# Retain Python orchestration and the deterministic stub outside the first
-# harness migration; this is not part of test-driver's zero-Python subset.
-test-proxy: $(PROXY_BIN) $(DRIVER_BIN)
-	$(TEST_ENV) ./tests/proxy/run.sh $(PROXY_BIN)
-	$(TEST_ENV) ./tests/proxy/transforms_check.sh $(DRIVER_ALIAS)
-	$(TEST_ENV) ./tests/proxy/oneshot.sh
-	$(TEST_ENV) ./tests/proxy/corpus_reference_check.sh $(DRIVER_ALIAS)
-	$(TEST_ENV) ./tests/proxy/corpus_smoke.sh
+print-gen1-compilands:
+	@echo $(GEN1_COMPILANDS)
 
 # Run the real-GPU CUDA integration test. The runner exits successfully with a
 # clear skip reason when its hardware or toolchain prerequisites are absent.
 test-gpu: bootstrap
-	$(TEST_ENV) ./tests/gpu_orchestration.sh
-
-# Compare the native compiler stages with the earlier Python implementation.
-# Disabled by default: the native compiler is authoritative and deliberately
-# diverges (e.g. INITCK read-site metadata), so the suite is kept only for
-# occasional manual comparison. Removal needs a separate scope decision. Set
-# ENABLE_PYTHON_PARITY=1 to run it; Python is never needed by the build.
-PYTHON ?= python3
-test-reference-parity:
-ifeq ($(ENABLE_PYTHON_PARITY),1)
-	$(TEST_ENV) env PYTHONPATH=. $(PYTHON) -m pytest tests/parity/
-else
-	@echo 'test-reference-parity: disabled (not authoritative; ENABLE_PYTHON_PARITY=1 to run)'
-endif
+	@$(SCHEDULE) -v gpu_orchestration
 
 # Run the Emacs major-mode ERT suite. Kept separate from `test` because Emacs
 # is not a dependency of the compiler toolchain.
