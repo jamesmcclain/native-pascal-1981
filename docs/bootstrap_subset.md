@@ -37,7 +37,7 @@ Run `make check-bootstrap-subset` to check these files. It runs
 
 | Area | Contents |
 | --- | --- |
-| Compilands | `PROGRAM p(input, output)`; `IMPLEMENTATION OF u` after its spliced `INTERFACE; UNIT u [(exports)]; ... END;`; `USES`; `(*$INCLUDE:'x.inc'*)` or `{$INCLUDE:'x.inc'}`, the only metacommand |
+| Compilands | `PROGRAM p(input, output)`; `IMPLEMENTATION OF u` after its spliced `INTERFACE; UNIT u [(exports)]; ... END;`; `USES`; `(*$INCLUDE:'x.inc'*)` or `{$INCLUDE:'x.inc'}`; ignored `$MATHCK+`, `$MATHCK-`, `$MATHCK:<signed integer>` |
 | Declarations | `CONST`, `TYPE`, and `VAR` sections, at file scope and in routines. A constant is a literal, a named constant, or `+ - * DIV` and unary minus on those. |
 | Routines | `PROCEDURE` and `FUNCTION` at file scope only; `FORWARD`; `[C]` in an interface; `[C]; EXTERN;` in an implementation or program |
 | Parameters | value and `VAR`, in groups (`a, b: ADRMEM`) |
@@ -75,7 +75,7 @@ Some forms have more limits:
 - routine attributes other than `[C]`, and variable attributes
 - nested routines
 - `MODULE` and `DEVICE` compilands
-- every metacommand except `$INCLUDE`
+- every metacommand except `$INCLUDE` and standalone `$MATHCK` settings
 
 To widen the subset, change `bootstrap/parse.c` or `bootstrap/emit.c`, add a
 fixture in `bootstrap/tests/`, and update this document.
@@ -87,7 +87,12 @@ These rules are the ones that a C programmer does not expect:
 
 - `INTEGER` is 16 bits. An operation on two integer operands is done at the
   width of the wider operand, and the result wraps at that width. The C is
-  compiled with `-fwrapv`.
+  compiled with `-fwrapv`. `$MATHCK` settings are accepted but deliberately
+  ignored: generation 1 uses unchecked arithmetic, even under `$MATHCK+`.
+  This is the native MATHCK- wrapping policy, not a claim of enabled checks.
+  Malformed settings are rejected. No DEBUG coupling or PUSH/POP processing
+  is added to pasboot; those metacommands remain outside the subset.
+  See the [self-hosting arithmetic audit](mathck_bootstrap_audit.md).
 - All integer comparisons are signed. `CHAR` comparisons are signed too.
 - `AND` and `OR` evaluate both operands. Only `AND THEN` stops early.
 - `/` always gives a `REAL`. An integer operand converts to `REAL` when the
@@ -100,7 +105,9 @@ These rules are the ones that a C programmer does not expect:
 - `TRUNC` gives a 16-bit `INTEGER`.
 - A `FOR` loop evaluates its limit one time. After the loop, the control
   variable is one step past the limit. A limit at the maximum of its type
-  stops the loop. (The native compiler wraps around and does not stop.)
+  stops the loop. Native FOR now exits at the final value without stepping
+  past it; the post-loop value is undefined. Compiler sources do not depend
+  on pasboot's one-past value.
 - An `LSTRING` keeps its length in element 0. Comparison of two strings
   compares the common length with `memcmp`, and then the lengths.
 - `pointer + integer` moves by the size of the pointed-to type. For

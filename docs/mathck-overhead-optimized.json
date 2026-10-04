@@ -1,0 +1,563 @@
+{
+  "revision": "2df72e89d99cfc6ab0da3db47d44a60aa8adfda6 plus the whole-vector MATHCK check (the commit that adds this file)",
+  "platform": "Linux-7.0.0-34-generic-x86_64-with-glibc2.43",
+  "cpu": "AMD Ryzen 7 5800X 8-Core Processor",
+  "clang": "Ubuntu clang version 21.1.8 (6ubuntu1)",
+  "repeats": 7,
+  "comparison": "MATHCK+ versus MATHCK- (unchecked, wrapping); same source otherwise",
+  "timing": "wall seconds including process startup and GNU time launcher; warmup excluded",
+  "cases": [
+    {
+      "workload": "scalar",
+      "dialect": "vintage",
+      "optimization": 0,
+      "modes": {
+        "off": {
+          "elf_bytes": 31312,
+          "text_bytes": 19688,
+          "data_bytes": 840,
+          "bss_bytes": 584,
+          "ir_bytes": 20764,
+          "ir_overflow_failure_calls": 0,
+          "ir_overflow_intrinsics": 0,
+          "ir_vector_integer_ops": 0,
+          "seconds": [
+            0.26539565197890624,
+            0.2656647909898311,
+            0.2673734290001448,
+            0.2662802469858434,
+            0.2684191010193899,
+            0.266149397008121,
+            0.26722307901945896
+          ],
+          "peak_rss_kib": [
+            1932,
+            1932,
+            1932,
+            1868,
+            1932,
+            1932,
+            1932
+          ],
+          "median_seconds": 0.2662802469858434,
+          "median_peak_rss_kib": 1932
+        },
+        "on": {
+          "elf_bytes": 31312,
+          "text_bytes": 20392,
+          "data_bytes": 840,
+          "bss_bytes": 584,
+          "ir_bytes": 26182,
+          "ir_overflow_failure_calls": 10,
+          "ir_overflow_intrinsics": 10,
+          "ir_vector_integer_ops": 0,
+          "seconds": [
+            0.35788272801437415,
+            0.36022755099111237,
+            0.35789156798273325,
+            0.3603084909846075,
+            0.36077764799119905,
+            0.35990591399604455,
+            0.3614348529954441
+          ],
+          "peak_rss_kib": [
+            1932,
+            1932,
+            1932,
+            1808,
+            1932,
+            1932,
+            1932
+          ],
+          "median_seconds": 0.36022755099111237,
+          "median_peak_rss_kib": 1932
+        }
+      },
+      "on_off_time_ratio": 1.352813643027241,
+      "text_delta_bytes": 704
+    },
+    {
+      "workload": "scalar",
+      "dialect": "vintage",
+      "optimization": 2,
+      "modes": {
+        "off": {
+          "elf_bytes": 22872,
+          "text_bytes": 9059,
+          "data_bytes": 840,
+          "bss_bytes": 584,
+          "ir_bytes": 20764,
+          "ir_overflow_failure_calls": 0,
+          "ir_overflow_intrinsics": 0,
+          "ir_vector_integer_ops": 0,
+          "seconds": [
+            0.002848609001375735,
+            0.0025127620028797537,
+            0.002695100993150845,
+            0.0025755020033102483,
+            0.0024851129855960608,
+            0.0025811009982135147,
+            0.0025550220161676407
+          ],
+          "peak_rss_kib": [
+            1932,
+            1932,
+            1928,
+            1932,
+            1932,
+            1932,
+            1932
+          ],
+          "median_seconds": 0.0025755020033102483,
+          "median_peak_rss_kib": 1932
+        },
+        "on": {
+          "elf_bytes": 23040,
+          "text_bytes": 9764,
+          "data_bytes": 840,
+          "bss_bytes": 584,
+          "ir_bytes": 26182,
+          "ir_overflow_failure_calls": 10,
+          "ir_overflow_intrinsics": 10,
+          "ir_vector_integer_ops": 0,
+          "seconds": [
+            0.011677097994834185,
+            0.011616278003202751,
+            0.01199301501037553,
+            0.011337900010403246,
+            0.011530449002748355,
+            0.01111958097317256,
+            0.0110242520167958
+          ],
+          "peak_rss_kib": [
+            1932,
+            1932,
+            1932,
+            1932,
+            1932,
+            1932,
+            1932
+          ],
+          "median_seconds": 0.011530449002748355,
+          "median_peak_rss_kib": 1932
+        }
+      },
+      "on_off_time_ratio": 4.4769714750477645,
+      "text_delta_bytes": 705
+    },
+    {
+      "workload": "builtins",
+      "dialect": "vintage",
+      "optimization": 0,
+      "modes": {
+        "off": {
+          "elf_bytes": 31312,
+          "text_bytes": 19624,
+          "data_bytes": 840,
+          "bss_bytes": 584,
+          "ir_bytes": 19743,
+          "ir_overflow_failure_calls": 0,
+          "ir_overflow_intrinsics": 0,
+          "ir_vector_integer_ops": 0,
+          "seconds": [
+            0.25714267100556754,
+            0.25600326899439096,
+            0.2542580509907566,
+            0.2569162620056886,
+            0.25651735498104244,
+            0.2568695829831995,
+            0.25572324098902754
+          ],
+          "peak_rss_kib": [
+            1928,
+            1932,
+            1932,
+            1932,
+            1932,
+            1928,
+            1932
+          ],
+          "median_seconds": 0.25651735498104244,
+          "median_peak_rss_kib": 1932
+        },
+        "on": {
+          "elf_bytes": 31312,
+          "text_bytes": 20728,
+          "data_bytes": 840,
+          "bss_bytes": 584,
+          "ir_bytes": 28056,
+          "ir_overflow_failure_calls": 16,
+          "ir_overflow_intrinsics": 16,
+          "ir_vector_integer_ops": 0,
+          "seconds": [
+            0.5658825270074885,
+            0.5662665540003218,
+            0.5629472180153243,
+            0.5685268079978414,
+            0.5650484530196991,
+            0.5656640279921703,
+            0.5638077610055916
+          ],
+          "peak_rss_kib": [
+            1916,
+            1932,
+            1776,
+            1928,
+            1932,
+            1928,
+            1932
+          ],
+          "median_seconds": 0.5656640279921703,
+          "median_peak_rss_kib": 1928
+        }
+      },
+      "on_off_time_ratio": 2.2051686445697793,
+      "text_delta_bytes": 1104
+    },
+    {
+      "workload": "builtins",
+      "dialect": "vintage",
+      "optimization": 2,
+      "modes": {
+        "off": {
+          "elf_bytes": 22872,
+          "text_bytes": 9115,
+          "data_bytes": 840,
+          "bss_bytes": 584,
+          "ir_bytes": 19743,
+          "ir_overflow_failure_calls": 0,
+          "ir_overflow_intrinsics": 0,
+          "ir_vector_integer_ops": 0,
+          "seconds": [
+            0.004032140976050869,
+            0.004291228979127482,
+            0.004243900009896606,
+            0.004037381004309282,
+            0.004026681010145694,
+            0.004439198994077742,
+            0.004141711018746719
+          ],
+          "peak_rss_kib": [
+            1932,
+            1932,
+            1932,
+            1932,
+            1928,
+            1932,
+            1932
+          ],
+          "median_seconds": 0.004141711018746719,
+          "median_peak_rss_kib": 1932
+        },
+        "on": {
+          "elf_bytes": 23040,
+          "text_bytes": 10004,
+          "data_bytes": 840,
+          "bss_bytes": 584,
+          "ir_bytes": 28056,
+          "ir_overflow_failure_calls": 16,
+          "ir_overflow_intrinsics": 16,
+          "ir_vector_integer_ops": 0,
+          "seconds": [
+            0.030285206012194976,
+            0.02877532600541599,
+            0.028593478025868535,
+            0.02872621698770672,
+            0.028626687999349087,
+            0.029551951010944322,
+            0.029542911011958495
+          ],
+          "peak_rss_kib": [
+            1928,
+            1932,
+            1932,
+            1932,
+            1932,
+            1932,
+            1928
+          ],
+          "median_seconds": 0.02877532600541599,
+          "median_peak_rss_kib": 1932
+        }
+      },
+      "on_off_time_ratio": 6.947690429189674,
+      "text_delta_bytes": 889
+    },
+    {
+      "workload": "wide",
+      "dialect": "extended",
+      "optimization": 0,
+      "modes": {
+        "off": {
+          "elf_bytes": 23120,
+          "text_bytes": 10600,
+          "data_bytes": 840,
+          "bss_bytes": 584,
+          "ir_bytes": 14959,
+          "ir_overflow_failure_calls": 0,
+          "ir_overflow_intrinsics": 0,
+          "ir_vector_integer_ops": 0,
+          "seconds": [
+            0.04605982400244102,
+            0.04698033700697124,
+            0.04723137497785501,
+            0.04760879400419071,
+            0.04568914702394977,
+            0.047192275000270456,
+            0.0482259189884644
+          ],
+          "peak_rss_kib": [
+            1756,
+            1932,
+            1932,
+            1932,
+            1932,
+            1932,
+            1932
+          ],
+          "median_seconds": 0.047192275000270456,
+          "median_peak_rss_kib": 1932
+        },
+        "on": {
+          "elf_bytes": 23120,
+          "text_bytes": 11224,
+          "data_bytes": 840,
+          "bss_bytes": 584,
+          "ir_bytes": 19987,
+          "ir_overflow_failure_calls": 9,
+          "ir_overflow_intrinsics": 9,
+          "ir_vector_integer_ops": 0,
+          "seconds": [
+            0.06142735600587912,
+            0.06184782300260849,
+            0.06178247299976647,
+            0.06152960500912741,
+            0.06309406398213468,
+            0.06140355599927716,
+            0.061794452980393544
+          ],
+          "peak_rss_kib": [
+            1932,
+            1932,
+            1928,
+            1932,
+            1932,
+            1932,
+            1932
+          ],
+          "median_seconds": 0.06178247299976647,
+          "median_peak_rss_kib": 1932
+        }
+      },
+      "on_off_time_ratio": 1.3091649639567577,
+      "text_delta_bytes": 624
+    },
+    {
+      "workload": "wide",
+      "dialect": "extended",
+      "optimization": 2,
+      "modes": {
+        "off": {
+          "elf_bytes": 22872,
+          "text_bytes": 9925,
+          "data_bytes": 840,
+          "bss_bytes": 584,
+          "ir_bytes": 14959,
+          "ir_overflow_failure_calls": 0,
+          "ir_overflow_intrinsics": 0,
+          "ir_vector_integer_ops": 0,
+          "seconds": [
+            0.004572086996631697,
+            0.004649126989534125,
+            0.004570916993543506,
+            0.0050274749810341746,
+            0.004724497004644945,
+            0.004018462001113221,
+            0.004240729991579428
+          ],
+          "peak_rss_kib": [
+            1928,
+            1932,
+            1932,
+            1932,
+            1932,
+            1932,
+            1932
+          ],
+          "median_seconds": 0.004572086996631697,
+          "median_peak_rss_kib": 1932
+        },
+        "on": {
+          "elf_bytes": 23040,
+          "text_bytes": 9688,
+          "data_bytes": 840,
+          "bss_bytes": 584,
+          "ir_bytes": 19987,
+          "ir_overflow_failure_calls": 9,
+          "ir_overflow_intrinsics": 9,
+          "ir_vector_integer_ops": 0,
+          "seconds": [
+            0.00787109398515895,
+            0.008350440999493003,
+            0.009011076006572694,
+            0.009197564999340102,
+            0.007972064020577818,
+            0.008457460004137829,
+            0.008425890002399683
+          ],
+          "peak_rss_kib": [
+            1928,
+            1932,
+            1932,
+            1932,
+            1932,
+            1932,
+            1928
+          ],
+          "median_seconds": 0.008425890002399683,
+          "median_peak_rss_kib": 1932
+        }
+      },
+      "on_off_time_ratio": 1.8428980044796002,
+      "text_delta_bytes": -237
+    },
+    {
+      "workload": "vector",
+      "dialect": "extended",
+      "optimization": 0,
+      "modes": {
+        "off": {
+          "elf_bytes": 22872,
+          "text_bytes": 8803,
+          "data_bytes": 840,
+          "bss_bytes": 584,
+          "ir_bytes": 10389,
+          "ir_overflow_failure_calls": 0,
+          "ir_overflow_intrinsics": 0,
+          "ir_vector_integer_ops": 3,
+          "seconds": [
+            0.11407506198156625,
+            0.11134131200378761,
+            0.1114406010019593,
+            0.11266869300743565,
+            0.11310657000285573,
+            0.1135746969957836,
+            0.11144292200333439
+          ],
+          "peak_rss_kib": [
+            1932,
+            1932,
+            1932,
+            1928,
+            1932,
+            1932,
+            1760
+          ],
+          "median_seconds": 0.11266869300743565,
+          "median_peak_rss_kib": 1932
+        },
+        "on": {
+          "elf_bytes": 27136,
+          "text_bytes": 15132,
+          "data_bytes": 840,
+          "bss_bytes": 584,
+          "ir_bytes": 38577,
+          "ir_overflow_failure_calls": 41,
+          "ir_overflow_intrinsics": 44,
+          "ir_vector_integer_ops": 0,
+          "seconds": [
+            0.25019804999465123,
+            0.24970492400461808,
+            0.2480354849831201,
+            0.2489902380038984,
+            0.24670693499501795,
+            0.24997996099409647,
+            0.24852771201403812
+          ],
+          "peak_rss_kib": [
+            1932,
+            1928,
+            1932,
+            1928,
+            1932,
+            1932,
+            1932
+          ],
+          "median_seconds": 0.2489902380038984,
+          "median_peak_rss_kib": 1932
+        }
+      },
+      "on_off_time_ratio": 2.2099327804172373,
+      "text_delta_bytes": 6329
+    },
+    {
+      "workload": "vector",
+      "dialect": "extended",
+      "optimization": 2,
+      "modes": {
+        "off": {
+          "elf_bytes": 22872,
+          "text_bytes": 8743,
+          "data_bytes": 840,
+          "bss_bytes": 584,
+          "ir_bytes": 10389,
+          "ir_overflow_failure_calls": 0,
+          "ir_overflow_intrinsics": 0,
+          "ir_vector_integer_ops": 3,
+          "seconds": [
+            0.04147663700859994,
+            0.040845851006451994,
+            0.04318089399021119,
+            0.04143336700508371,
+            0.04287817599833943,
+            0.04149392701219767,
+            0.04054816300049424
+          ],
+          "peak_rss_kib": [
+            1932,
+            1908,
+            1932,
+            1932,
+            1932,
+            1928,
+            1932
+          ],
+          "median_seconds": 0.04147663700859994,
+          "median_peak_rss_kib": 1932
+        },
+        "on": {
+          "elf_bytes": 23040,
+          "text_bytes": 10608,
+          "data_bytes": 840,
+          "bss_bytes": 584,
+          "ir_bytes": 38577,
+          "ir_overflow_failure_calls": 41,
+          "ir_overflow_intrinsics": 44,
+          "ir_vector_integer_ops": 0,
+          "seconds": [
+            0.07456869300222024,
+            0.07694665499730036,
+            0.0753797169891186,
+            0.07549467499484308,
+            0.07451363300788216,
+            0.07536237599560991,
+            0.07458632197813131
+          ],
+          "peak_rss_kib": [
+            1932,
+            1932,
+            1932,
+            1932,
+            1932,
+            1928,
+            1932
+          ],
+          "median_seconds": 0.07536237599560991,
+          "median_peak_rss_kib": 1932
+        }
+      },
+      "on_off_time_ratio": 1.8169837631721193,
+      "text_delta_bytes": 1865
+    }
+  ]
+}

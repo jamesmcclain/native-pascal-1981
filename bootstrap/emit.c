@@ -11,7 +11,9 @@
  * sources can tell (scripts/cross-bootstrap-check.sh checks exactly that):
  *   - integer operands widen (sign-extending) to the wider of the two, the
  *     operation happens at that width and wraps (the C is compiled with
- *     -fwrapv), and comparisons are signed, CHAR included;
+ *     -fwrapv), and comparisons are signed, CHAR included. $MATHCK is
+ *     accepted but ignored: gen1 deliberately uses unchecked wrapping
+ *     arithmetic, never claims the native compiler's enabled protection;
  *   - AND and OR evaluate both operands; only AND THEN short-circuits;
  *   - ORD of a CHAR zero-extends to a 16-bit INTEGER, ORD of an integer
  *     keeps its width, and ORD of an enumeration is an INTEGER32 (the Python

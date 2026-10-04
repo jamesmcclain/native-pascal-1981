@@ -1,0 +1,14 @@
+int8 to max 3
+int8 downto min 3
+word8 to max 3
+word8 cross sign 5
+word8 downto zero 3
+int32 to max 3
+int32 downto min 3
+word32 to max 3
+word32 cross sign 5
+word32 empty 0
+int64 to max 3
+int64 downto min 3
+word64 to max 3
+word64 downto zero 3

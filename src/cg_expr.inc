@@ -10,8 +10,8 @@ PROCEDURE EmitSetRangeLoop(slot: ADRMEM; low_node, high_node: ADRMEM);
 FUNCTION CodegenSetConstructor(node: ADRMEM): ADRMEM;
 FUNCTION CodegenStringBinOp(op: Str255; left_node, right_node: ADRMEM): ADRMEM;
 FUNCTION CodegenShortCircuitBinOp(op: Str255; left_node, right_node: ADRMEM): ADRMEM;
-FUNCTION CodegenBinOp(op: Str255; left_node, right_node: ADRMEM): ADRMEM;
-FUNCTION CodegenUnaryOp(op: Str255; operand_node: ADRMEM): ADRMEM;
+FUNCTION CodegenBinOp(op: Str255; left_node, right_node, site: ADRMEM): ADRMEM;
+FUNCTION CodegenUnaryOp(op: Str255; operand_node, site: ADRMEM): ADRMEM;
 FUNCTION CodegenCallCommon(name: Str255; args_arr: ADRMEM): ADRMEM;
 FUNCTION ComputeDesignatorAddress(node: ADRMEM): ADRMEM;
 { The array operand of VLOAD/VSTORE: a bare array variable (Identifier) or
@@ -21,7 +21,7 @@ FUNCTION ComputeDesignatorAddress(node: ADRMEM): ADRMEM;
   shape where NEW's i64 upper-bound header sits 8 bytes before the data. }
 FUNCTION VectorArrayOperand(node: ADRMEM; VAR arr_tid: INTEGER;
                             VAR super_upper: ADRMEM): ADRMEM;
-FUNCTION CodegenSimpleBuiltin(nm: Str255; args: ADRMEM): ADRMEM;
+FUNCTION CodegenSimpleBuiltin(nm: Str255; site: ADRMEM): ADRMEM;
 FUNCTION CodegenDevAlloc(args: ADRMEM): ADRMEM;
 FUNCTION CodegenExpr(node: ADRMEM): ADRMEM;
 FUNCTION SuperBoundBits(node: ADRMEM; VAR unsigned_flag: ADRMEM): ADRMEM;

@@ -1,0 +1,535 @@
+{
+  "baseline": "e615783",
+  "optimizations": [
+    0,
+    2
+  ],
+  "probes": [
+    {
+      "id": "G1",
+      "fixture": "fixtures/mathck/g1.pas",
+      "kind": "correct-runtime-error",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "located signed overflow diagnostic",
+      "stdout": "",
+      "stderr": "runtime error: MATHCK signed overflow in + at line 6 column 22 (left=32767, right=1)\n"
+    },
+    {
+      "id": "G2",
+      "fixture": "fixtures/mathck/g2.pas",
+      "kind": "correct-runtime-error",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "located signed overflow diagnostic",
+      "stdout": "",
+      "stderr": "runtime error: MATHCK signed overflow in - at line 6 column 23 (left=-32767, right=2)\n"
+    },
+    {
+      "id": "G3",
+      "fixture": "fixtures/mathck/g3.pas",
+      "kind": "correct-runtime-error",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "located signed overflow diagnostic",
+      "stdout": "",
+      "stderr": "runtime error: MATHCK signed overflow in * at line 6 column 20 (left=200, right=200)\n"
+    },
+    {
+      "id": "G4",
+      "fixture": "fixtures/mathck/g4.pas",
+      "kind": "correct-runtime-error",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "located signed overflow diagnostic",
+      "stdout": "",
+      "stderr": "runtime error: MATHCK signed overflow in - at line 6 column 24 (operand=-32768)\n"
+    },
+    {
+      "id": "G5.add",
+      "fixture": "fixtures/mathck/g5_add.pas",
+      "kind": "correct-runtime-error",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "located unsigned overflow diagnostic",
+      "stdout": "",
+      "stderr": "runtime error: MATHCK unsigned overflow in + at line 6 column 25 (left=65535, right=1)\n"
+    },
+    {
+      "id": "G5.sub",
+      "fixture": "fixtures/mathck/g5_sub.pas",
+      "kind": "correct-runtime-error",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "located unsigned overflow diagnostic",
+      "stdout": "",
+      "stderr": "runtime error: MATHCK unsigned overflow in - at line 6 column 21 (left=0, right=1)\n"
+    },
+    {
+      "id": "G5.mul",
+      "fixture": "fixtures/mathck/g5_mul.pas",
+      "kind": "correct-runtime-error",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "located unsigned overflow diagnostic",
+      "stdout": "",
+      "stderr": "runtime error: MATHCK unsigned overflow in * at line 6 column 23 (left=300, right=300)\n"
+    },
+    {
+      "id": "G6.integer.div",
+      "fixture": "fixtures/mathck/g6_integer_div.pas",
+      "kind": "correct-runtime-error",
+      "stdout": "prefix\n",
+      "stderr": "runtime error: MATHCK signed division by zero in DIV at line 6 column 48 (left=7, right=0)\n",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "located divide-by-zero diagnostic, flushed prefix"
+    },
+    {
+      "id": "G6.integer.mod",
+      "fixture": "fixtures/mathck/g6_integer_mod.pas",
+      "kind": "correct-runtime-error",
+      "stdout": "prefix\n",
+      "stderr": "runtime error: MATHCK signed division by zero in MOD at line 6 column 48 (left=7, right=0)\n",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "located divide-by-zero diagnostic, flushed prefix"
+    },
+    {
+      "id": "G6.word.div",
+      "fixture": "fixtures/mathck/g6_word_div.pas",
+      "kind": "correct-runtime-error",
+      "stdout": "prefix\n",
+      "stderr": "runtime error: MATHCK unsigned division by zero in DIV at line 6 column 48 (left=7, right=0)\n",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "located divide-by-zero diagnostic, flushed prefix"
+    },
+    {
+      "id": "G6.word.mod",
+      "fixture": "fixtures/mathck/g6_word_mod.pas",
+      "kind": "correct-runtime-error",
+      "stdout": "prefix\n",
+      "stderr": "runtime error: MATHCK unsigned division by zero in MOD at line 6 column 48 (left=7, right=0)\n",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "located divide-by-zero diagnostic, flushed prefix"
+    },
+    {
+      "id": "G7.div",
+      "fixture": "fixtures/mathck/g7_div.pas",
+      "kind": "correct-runtime-error",
+      "stdout": "",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "located signed overflow diagnostic; no LLVM UB",
+      "stderr": "runtime error: MATHCK signed overflow in DIV at line 6 column 35 (left=-32768, right=-1)\n"
+    },
+    {
+      "id": "G7.mod",
+      "fixture": "fixtures/mathck/g7_mod.pas",
+      "kind": "correct-output",
+      "stdout": "0\n",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "DIV overflow / MOD zero; no LLVM UB"
+    },
+    {
+      "id": "G8",
+      "fixture": "fixtures/mathck/g8.pas",
+      "kind": "correct-runtime-error",
+      "stdout": "",
+      "stderr": "runtime error: MATHCK signed division by zero in DIV at line 6 column 29 (left=7, right=0)\n",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "defined opt-level-independent disabled behavior"
+    },
+    {
+      "id": "G9",
+      "fixture": "fixtures/mathck/g9.pas",
+      "kind": "correct-reject",
+      "diagnostic": "Constant division by zero",
+      "dialects": [
+        "extended"
+      ],
+      "target": "compile-time zero-divisor error"
+    },
+    {
+      "id": "G10.succ",
+      "fixture": "fixtures/mathck/g10_succ.pas",
+      "kind": "correct-runtime-error",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "located signed overflow diagnostic",
+      "stdout": "",
+      "stderr": "runtime error: MATHCK signed overflow in SUCC at line 6 column 23 (operand=32767)\n"
+    },
+    {
+      "id": "G10.pred",
+      "fixture": "fixtures/mathck/g10_pred.pas",
+      "kind": "correct-runtime-error",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "located signed overflow diagnostic",
+      "stdout": "",
+      "stderr": "runtime error: MATHCK signed overflow in PRED at line 6 column 24 (operand=-32768)\n"
+    },
+    {
+      "id": "G11",
+      "fixture": "fixtures/mathck/g11.pas",
+      "kind": "correct-runtime-error",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "located signed overflow diagnostic",
+      "stdout": "",
+      "stderr": "runtime error: MATHCK signed overflow in ABS at line 6 column 24 (operand=-32768)\n"
+    },
+    {
+      "id": "G12",
+      "fixture": "fixtures/mathck/g12.pas",
+      "kind": "correct-runtime-error",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "located signed overflow diagnostic",
+      "stdout": "",
+      "stderr": "runtime error: MATHCK signed overflow in SQR at line 6 column 21 (operand=200)\n"
+    },
+    {
+      "id": "G13.saddok",
+      "fixture": "fixtures/mathck/g13_saddok.pas",
+      "kind": "correct-output",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "never-trapping library builtin",
+      "stdout": "TRUE\n3\n"
+    },
+    {
+      "id": "G13.smulok",
+      "fixture": "fixtures/mathck/g13_smulok.pas",
+      "kind": "correct-output",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "never-trapping library builtin",
+      "stdout": "TRUE\n2\n"
+    },
+    {
+      "id": "G13.uaddok",
+      "fixture": "fixtures/mathck/g13_uaddok.pas",
+      "kind": "correct-output",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "never-trapping library builtin",
+      "stdout": "TRUE\n3\n"
+    },
+    {
+      "id": "G13.umulok",
+      "fixture": "fixtures/mathck/g13_umulok.pas",
+      "kind": "correct-output",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "never-trapping library builtin",
+      "stdout": "TRUE\n2\n"
+    },
+    {
+      "id": "G14",
+      "fixture": "fixtures/mathck/g14.pas",
+      "kind": "correct-output",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "20000",
+      "stdout": "20000\n"
+    },
+    {
+      "id": "G15",
+      "fixture": "fixtures/mathck/g15.pas",
+      "kind": "correct-output",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "2",
+      "stdout": "2\n"
+    },
+    {
+      "id": "G16",
+      "fixture": "fixtures/mathck/g16.pas",
+      "kind": "correct-output",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "21844",
+      "stdout": "21844\n"
+    },
+    {
+      "id": "G17",
+      "fixture": "fixtures/mathck/g17.pas",
+      "kind": "correct-output",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "TRUE",
+      "stdout": "TRUE\n"
+    },
+    {
+      "id": "G18",
+      "fixture": "fixtures/mathck/g18.pas",
+      "kind": "correct-output",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "5",
+      "stdout": "5\n"
+    },
+    {
+      "id": "G19",
+      "fixture": "fixtures/mathck/g19.pas",
+      "kind": "correct-output",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "3 iterations then exit",
+      "stdout": "3\n"
+    },
+    {
+      "id": "G20.integer8",
+      "fixture": "fixtures/mathck/g20_integer8.pas",
+      "kind": "correct-runtime-error",
+      "dialects": [
+        "extended"
+      ],
+      "target": "located overflow at operand width diagnostic",
+      "stdout": "",
+      "stderr": "runtime error: MATHCK signed overflow in + at line 6 column 23 (left=127, right=1)\n"
+    },
+    {
+      "id": "G20.integer32",
+      "fixture": "fixtures/mathck/g20_integer32.pas",
+      "kind": "correct-runtime-error",
+      "dialects": [
+        "extended"
+      ],
+      "target": "located overflow at operand width diagnostic",
+      "stdout": "",
+      "stderr": "runtime error: MATHCK signed overflow in + at line 6 column 30 (left=2147483647, right=1)\n"
+    },
+    {
+      "id": "G20.integer64",
+      "fixture": "fixtures/mathck/g20_integer64.pas",
+      "kind": "correct-runtime-error",
+      "dialects": [
+        "extended"
+      ],
+      "target": "located overflow at operand width diagnostic",
+      "stdout": "",
+      "stderr": "runtime error: MATHCK signed overflow in + at line 6 column 39 (left=9223372036854775807, right=1)\n"
+    },
+    {
+      "id": "G21",
+      "fixture": "fixtures/mathck/g21.pas",
+      "kind": "correct-output",
+      "dialects": [
+        "extended"
+      ],
+      "target": "2000000000 / TRUE",
+      "stdout": "2000000000\nTRUE\n"
+    },
+    {
+      "id": "G22",
+      "fixture": "fixtures/mathck/g22.pas",
+      "kind": "correct-output",
+      "dialects": [
+        "extended"
+      ],
+      "target": "-32768",
+      "stdout": "-32768\n"
+    },
+    {
+      "id": "G23.add",
+      "fixture": "fixtures/mathck/g23_add.pas",
+      "kind": "correct-reject",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "compile-time range error independent of MATHCK",
+      "diagnostic": "out of range"
+    },
+    {
+      "id": "G23.mul",
+      "fixture": "fixtures/mathck/g23_mul.pas",
+      "kind": "correct-reject",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "compile-time range error independent of MATHCK",
+      "diagnostic": "out of range"
+    },
+    {
+      "id": "G23.succ",
+      "fixture": "fixtures/mathck/g23_succ.pas",
+      "kind": "correct-reject",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "compile-time range error independent of MATHCK",
+      "diagnostic": "out of range"
+    },
+    {
+      "id": "G24",
+      "fixture": "fixtures/mathck/g24.pas",
+      "kind": "correct-reject",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "reject mixed INTEGER variable / WORD",
+      "diagnostic": "Mixed INTEGER-family and WORD-family operands need an explicit conversion (e.g. WRD) in +"
+    },
+    {
+      "id": "G25",
+      "fixture": "fixtures/mathck/g25.pas",
+      "kind": "known-gap-reject",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "IBM same-bit-pattern INTEGER conversion (adjacent gap)",
+      "diagnostic": "narrowing"
+    },
+    {
+      "id": "G26.trunc",
+      "fixture": "fixtures/mathck/g26_trunc.pas",
+      "kind": "correct-runtime-error",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "unconditional conversion error, independent of MATHCK",
+      "stdout": "",
+      "stderr": "runtime error: TRUNC result out of INTEGER range at line 6 column 8 (value=100000)\n"
+    },
+    {
+      "id": "G26.round",
+      "fixture": "fixtures/mathck/g26_round.pas",
+      "kind": "correct-runtime-error",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "unconditional conversion error, independent of MATHCK",
+      "stdout": "",
+      "stderr": "runtime error: ROUND result out of INTEGER range at line 6 column 8 (value=100000)\n"
+    },
+    {
+      "id": "G27",
+      "fixture": "fixtures/mathck/g27.pas",
+      "kind": "out-of-scope-output",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "IEEE infinity, outside MATHCK",
+      "stdout": "           INF\n"
+    },
+    {
+      "id": "G27.overflow",
+      "fixture": "fixtures/mathck/g27_overflow.pas",
+      "kind": "out-of-scope-output",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "REAL overflow is IEEE infinity under MATHCK+, outside MATHCK",
+      "stdout": "           INF\n          -INF\n"
+    },
+    {
+      "id": "G28",
+      "fixture": "fixtures/mathck/g28.pas",
+      "kind": "correct-output",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "target": "truncating division and dividend-sign remainder",
+      "stdout": "-3\n-1\n"
+    },
+    {
+      "id": "G29.integer",
+      "fixture": "golden/read_integer_overflow.pas",
+      "kind": "correct-runtime-error",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "stdin": "65536\n",
+      "stdout": "",
+      "stderr": "runtime error: integer out of range\n",
+      "target": "existing READ range check, independent of MATHCK"
+    },
+    {
+      "id": "G29.word",
+      "fixture": "golden/read_word_overflow.pas",
+      "kind": "correct-runtime-error",
+      "dialects": [
+        "vintage",
+        "extended"
+      ],
+      "stdin": "4294967296\n",
+      "stdout": "",
+      "stderr": "runtime error: word out of range\n",
+      "target": "existing READ range check, independent of MATHCK"
+    }
+  ]
+}

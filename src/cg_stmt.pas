@@ -574,20 +574,22 @@ VAR
   start_val, end_val, cur_val, cmp_val, next_val: ADRMEM;
   loop_bb, body_bb, step_bb, inc_bb, end_bb, chk_bb, cont_bb: ADRMEM;
   done_bb, saved_taint: ADRMEM;
-  down, narrow, sub_chk, tracked, unset_at_exit: BOOLEAN;
+  down, narrow, unsigned, sub_chk, tracked, unset_at_exit: BOOLEAN;
 BEGIN
   var_name := GetStr(stmt, 'var');
   symi := LookupSym(var_name);
   IF symi = 0 THEN
     AbortWith2('codegen: undefined FOR loop variable: ', var_name);
   var_tk := SubrangeBaseTid(symbols[symi].tk);
-  { A CHAR (i8) or BOOLEAN (i1) control variable is unsigned and its range
-    usually reaches the type's last value ('a'..CHR(255), FALSE..TRUE), so
-    it compares unsigned and leaves the loop at the final value instead of
-    stepping past it and wrapping. }
+  { Every ordinal control variable leaves the loop at the final value
+    instead of stepping past it (manual 9-17: SUCC/PRED until the final
+    value is reached), so a limit at the type's extreme (32767, 65535,
+    CHR(255), TRUE) terminates rather than wrapping. CHAR, BOOLEAN, enums
+    and the WORD family compare unsigned; the INTEGER family signed. }
   narrow := (var_tk = TK_CHAR) OR (var_tk = TK_BOOLEAN);
   IF NOT IsIntegerFamilyTk(var_tk) AND (TypeKind(var_tk) <> TK_ENUM) AND NOT narrow THEN
     AbortWith('codegen: FOR loop variable must be an ordinal type');
+  unsigned := narrow OR IsUnsignedWordTk(var_tk) OR (TypeKind(var_tk) = TK_ENUM);
   var_llty := LLVMTypeForTk(var_tk);
 
   start_node := GetObj(stmt, 'start');
@@ -618,9 +620,9 @@ BEGIN
       sub_chk := types[symbols[symi].tk].is_subrange;
   IF sub_chk THEN
   BEGIN
-    IF narrow AND down THEN
+    IF unsigned AND down THEN
       cmp_val := LLVMBuildICmp(builder, LLVMIntUGE, start_val, end_val, MakeCStr(''))
-    ELSE IF narrow THEN
+    ELSE IF unsigned THEN
       cmp_val := LLVMBuildICmp(builder, LLVMIntULE, start_val, end_val, MakeCStr(''))
     ELSE IF down THEN
       cmp_val := LLVMBuildICmp(builder, LLVMIntSGE, start_val, end_val, MakeCStr(''))
@@ -656,9 +658,9 @@ BEGIN
   LLVMBuildBr(builder, loop_bb);
   LLVMPositionBuilderAtEnd(builder, loop_bb);
   cur_val := LLVMBuildLoad2(builder, var_llty, symbols[symi].llvm_val, MakeCStr(''));
-  IF narrow AND down THEN
+  IF unsigned AND down THEN
     cmp_val := LLVMBuildICmp(builder, LLVMIntUGE, cur_val, end_val, MakeCStr(''))
-  ELSE IF narrow THEN
+  ELSE IF unsigned THEN
     cmp_val := LLVMBuildICmp(builder, LLVMIntULE, cur_val, end_val, MakeCStr(''))
   ELSE IF down THEN
     cmp_val := LLVMBuildICmp(builder, LLVMIntSGE, cur_val, end_val, MakeCStr(''))
@@ -679,13 +681,13 @@ BEGIN
 
   LLVMPositionBuilderAtEnd(builder, step_bb);
   cur_val := LLVMBuildLoad2(builder, var_llty, symbols[symi].llvm_val, MakeCStr(''));
-  IF narrow THEN
-  BEGIN
-    inc_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('for_inc'));
-    cmp_val := LLVMBuildICmp(builder, LLVMIntEQ, cur_val, end_val, MakeCStr(''));
-    LLVMBuildCondBr(builder, cmp_val, done_bb, inc_bb);
-    LLVMPositionBuilderAtEnd(builder, inc_bb);
-  END;
+  { Exit before the step when the body just ran with the final value, so the
+    increment never wraps past the type's extreme. The post-loop value stays
+    undefined per the manual; this only guarantees termination. }
+  inc_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('for_inc'));
+  cmp_val := LLVMBuildICmp(builder, LLVMIntEQ, cur_val, end_val, MakeCStr(''));
+  LLVMBuildCondBr(builder, cmp_val, done_bb, inc_bb);
+  LLVMPositionBuilderAtEnd(builder, inc_bb);
   IF down THEN
     next_val := LLVMBuildSub(builder, cur_val, LLVMConstInt(var_llty, 1, 0), MakeCStr(''))
   ELSE
@@ -998,9 +1000,9 @@ END;
 PROCEDURE CodegenConcat(args: ADRMEM);
 { CONCAT(VAR D: LSTRING; CONST S: STRING): appends S's characters to D and
   grows D's length byte by length(S) -- manual 11-20. No RANGECK-style
-  capacity guard yet (matches this file's documented MATHCK/RANGECK
-  simplification elsewhere: a capacity overflow here just corrupts memory,
-  same as an unchecked array index). }
+  capacity guard yet (matches codegen.pas's documented RANGECK
+  simplification: a capacity overflow here just corrupts memory, same as
+  an unchecked array index; MATHCK does not cover string capacity). }
 VAR
   d_arg: ADRMEM;
   d_symi: INTEGER32;

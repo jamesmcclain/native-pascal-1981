@@ -512,6 +512,10 @@ BEGIN
 END;
 
 FUNCTION StrToIntVal(s: Str255): INTEGER;
+{ Numeric labels use a 16-bit bit-pattern key, not a signed magnitude.
+  Preserve high-bit labels (32768..65535) modulo 65536. Only accumulation
+  and sign conversion intentionally wrap; restore the source's MATHCK+ after
+  each expression, leaving loop counters and other arithmetic checked. }
 VAR
   i, len, val: INTEGER;
   neg: BOOLEAN;
@@ -528,10 +532,10 @@ BEGIN
   WHILE i <= len DO
   BEGIN
     IF (s[i] >= '0') AND (s[i] <= '9') THEN
-      val := val * 10 + (ORD(s[i]) - ORD('0'));
+      (*$MATHCK-*) val := val * 10 + (ORD(s[i]) - ORD('0')); (*$MATHCK+*)
     i := i + 1;
   END;
-  IF neg THEN val := -val;
+  IF neg THEN (*$MATHCK-*) val := -val; (*$MATHCK+*)
   StrToIntVal := val;
 END;
 

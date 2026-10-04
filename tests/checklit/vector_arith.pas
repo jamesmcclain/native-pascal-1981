@@ -8,6 +8,10 @@
 { CHECK: and <4 x i8> }
 { CHECK: fneg <4 x float> }
 { CHECK: xor <8 x i32> }
+{ MATHCK+ (the default) lowers integer lanes and VSUM one lane at a time
+  with overflow checks (tests/mathck_vector.py); these shapes are the
+  MATHCK- form. }
+{$MATHCK-}
 PROGRAM VArith(output);
 TYPE
   V4F = VECTOR [4] OF REAL32;

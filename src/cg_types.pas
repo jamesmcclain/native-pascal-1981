@@ -343,10 +343,10 @@ END;
 FUNCTION Real64ToInt64(val: REAL): INTEGER64;
 { Truncation toward zero, done in the runtime rather than with TRUNC.
 
-  TRUNC cannot do this job. It lowers to a float-to-int conversion at this
-  dialect's INTEGER width, which is 16 bits, so TRUNC(40000.0) is -25536 and
-  TRUNC(100000.0) is not even a wrapped value -- an out-of-range float-to-int
-  conversion is poison in LLVM, so the result is arbitrary.
+  TRUNC cannot do this job. It converts to this dialect's INTEGER width,
+  which is 16 bits, so TRUNC(40000.0) is a run-time range error (before
+  that check existed, an out-of-range float-to-int conversion was LLVM
+  poison and the result was arbitrary).
 
   That is not a footnote. This function is how an integer literal's value is
   read out of the AST, so every literal above 32767 was destroyed here, inside
@@ -358,15 +358,47 @@ BEGIN
   Real64ToInt64 := RETYPE(INTEGER64, pas_double_to_int64(val));
 END;
 
+FUNCTION FoldArith(op: Str255; left, right: INTEGER64;
+  VAR folded: INTEGER64): BOOLEAN;
+{ The exact constant left + - * right, or FALSE when it leaves INTEGER64.
+  The folder runs inside a MATHCK-checked compiler, so a constant from the
+  program must not trap it: the operation wraps and the overflow is tested
+  explicitly. A typechecked AST never reaches the failure (the
+  typechecker rejects such a constant); an overflowing expression in a
+  legacy AST is simply not folded. }
+VAR
+  r, neg_right: INTEGER64;
+  fits: BOOLEAN;
+BEGIN
+  (*$MATHCK-*)
+  IF op = 'PLUS' THEN r := left + right
+  ELSE IF op = 'MINUS' THEN r := left - right
+  ELSE r := left * right;
+  neg_right := 0 - right;
+  (*$MATHCK+*)
+  IF op = 'PLUS' THEN
+    fits := ((left >= 0) <> (right >= 0)) OR ((r >= 0) = (left >= 0))
+  ELSE IF op = 'MINUS' THEN
+    fits := ((left >= 0) = (right >= 0)) OR ((r >= 0) = (left >= 0))
+  ELSE IF (left = 0) OR (right = 0) THEN
+    fits := TRUE
+  ELSE IF left = -1 THEN
+    fits := neg_right <> right { only the minimum negates to itself }
+  ELSE
+    fits := r DIV left = right;
+  folded := r;
+  FoldArith := fits;
+END;
+
 FUNCTION FoldConstInt(expr_node: ADRMEM; VAR folded: INTEGER64): BOOLEAN;
 { Fold the integer-only constant-expression subset used by the reference
   typechecker's _fold_const_int: literals, unary +/-, arithmetic, earlier
-  integer CONSTs, and ORD/SUCC/PRED.  This is deliberately not CodegenExpr:
+  integer CONSTs, and ORD/SUCC/PRED/ABS/SQR.  This is deliberately not CodegenExpr:
   callers need the untruncated value before rebuilding it at a wider target
   type for the vintage INTEGER-constant adaptation rule. }
 VAR
   nt, op, nm, ch: Str255;
-  left, right, q, r: INTEGER64;
+  left, right: INTEGER64;
   ci: INTEGER32;
   args: ADRMEM;
 BEGIN
@@ -392,8 +424,8 @@ BEGIN
     op := GetStr(expr_node, 'op');
     IF ((op = 'PLUS') OR (op = 'MINUS')) AND FoldConstInt(GetObj(expr_node, 'operand'), folded) THEN
     BEGIN
-      IF op = 'MINUS' THEN folded := 0 - folded;
-      FoldConstInt := TRUE;
+      IF op = 'MINUS' THEN FoldConstInt := FoldArith('MINUS', 0, folded, folded)
+      ELSE FoldConstInt := TRUE;
     END;
   END
   ELSE IF nt = 'BinOp' THEN
@@ -403,23 +435,28 @@ BEGIN
        FoldConstInt(GetObj(expr_node, 'left'), left) AND
        FoldConstInt(GetObj(expr_node, 'right'), right) THEN
     BEGIN
-      IF op = 'PLUS' THEN folded := left + right
-      ELSE IF op = 'MINUS' THEN folded := left - right
-      ELSE IF op = 'MUL' THEN folded := left * right
+      IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') THEN
+        FoldConstInt := FoldArith(op, left, right, folded)
+      ELSE IF right = -1 THEN
+      BEGIN
+        { x DIV -1 is -x, which overflows only for the minimum; x MOD -1
+          is 0. }
+        IF op = 'DIV' THEN FoldConstInt := FoldArith('MINUS', 0, left, folded)
+        ELSE
+        BEGIN
+          folded := 0;
+          FoldConstInt := TRUE;
+        END;
+      END
       ELSE IF right <> 0 THEN
       BEGIN
-        { Match Python's // and % rather than the host's truncating DIV/MOD. }
-        q := left DIV right;
-        r := left MOD right;
-        IF (r <> 0) AND (((left < 0) AND (right > 0)) OR ((left > 0) AND (right < 0))) THEN
-          q := q - 1;
-        IF op = 'DIV' THEN folded := q
-        ELSE folded := left - q * right;
+        { Truncate toward zero; MOD has the dividend's sign, like runtime. }
+        IF op = 'DIV' THEN folded := left DIV right
+        ELSE folded := left MOD right;
         FoldConstInt := TRUE;
       END
       ELSE
-        FoldConstInt := FALSE;
-      IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') THEN FoldConstInt := TRUE;
+        AbortWith('codegen: Constant division by zero');
     END;
   END
   ELSE IF nt = 'Identifier' THEN
@@ -436,12 +473,15 @@ BEGIN
   BEGIN
     nm := UpperStr(GetStr(expr_node, 'name'));
     args := GetObj(expr_node, 'args');
-    IF ((nm = 'ORD') OR (nm = 'CHR') OR (nm = 'SUCC') OR (nm = 'PRED')) AND (ArrSize(args) = 1) AND
+    IF ((nm = 'ORD') OR (nm = 'CHR') OR (nm = 'SUCC') OR (nm = 'PRED') OR
+        (nm = 'ABS') OR (nm = 'SQR')) AND (ArrSize(args) = 1) AND
        FoldConstInt(ArrItem(args, 0), folded) THEN
     BEGIN
-      IF nm = 'SUCC' THEN folded := folded + 1
-      ELSE IF nm = 'PRED' THEN folded := folded - 1;
-      FoldConstInt := TRUE;
+      IF nm = 'SUCC' THEN FoldConstInt := FoldArith('PLUS', folded, 1, folded)
+      ELSE IF nm = 'PRED' THEN FoldConstInt := FoldArith('MINUS', folded, 1, folded)
+      ELSE IF nm = 'SQR' THEN FoldConstInt := FoldArith('MUL', folded, folded, folded)
+      ELSE IF (nm = 'ABS') AND (folded < 0) THEN FoldConstInt := FoldArith('MINUS', 0, folded, folded)
+      ELSE FoldConstInt := TRUE;
     END;
   END;
 END;
@@ -449,7 +489,7 @@ END;
 FUNCTION FoldsThroughShadowedName(expr_node: ADRMEM): BOOLEAN;
 { TRUE when FoldConstInt would reach its value through a spelling that a
   visible variable or user routine has taken over.  FoldConstInt itself
-  folds a CONST name and ORD/CHR/SUCC/PRED by name, deliberately: ps_expr.pas's
+  folds a CONST name and ORD/CHR/SUCC/PRED (and ABS/SQR) by name, deliberately: ps_expr.pas's
   ParseConstant admits exactly those names in a constant expression and
   nothing else can appear there, so a CONST value is the intrinsic whatever
   else is in scope -- which is also what the Python reference's
@@ -588,6 +628,17 @@ BEGIN
   discard := LLVMBuildCall2(builder, fnty, fn, args, 1, MakeCStr(''));
 END;
 
+FUNCTION IntToFloat(v: ADRMEM; tk: INTEGER; destty: ADRMEM): ADRMEM;
+{ An integer-family value converted to a floating type by its own
+  signedness: a WORD-family value is unsigned, so WORD 65535 is 65535.0,
+  not -1.0. }
+BEGIN
+  IF IsUnsignedWordTk(tk) THEN
+    IntToFloat := LLVMBuildUIToFP(builder, v, destty, MakeCStr(''))
+  ELSE
+    IntToFloat := LLVMBuildSIToFP(builder, v, destty, MakeCStr(''));
+END;
+
 FUNCTION CoerceForAssign(v: ADRMEM; from_tid, to_tid: INTEGER; expr_node: ADRMEM; ctx_name: Str255): ADRMEM;
 { Resolve an assignment's RHS value against its target type, mirroring the
   Python reference's can_assign plus its _const_adapts_to_int_target
@@ -633,10 +684,11 @@ BEGIN
   ELSE IF ((from_tid = TK_INTEGER) OR (from_tid = TK_WORD) OR (from_tid = TK_INTEGER8) OR (from_tid = TK_WORD8)
       OR (from_tid = TK_INTEGER32) OR (from_tid = TK_WORD32) OR (from_tid = TK_INTEGER64) OR (from_tid = TK_WORD64))
       AND ((to_tid = TK_REAL) OR (to_tid = TK_REAL32)) THEN
-    { Integer-family -> floating: sitofp into the target float width,
-      matching the reference's general C-ABI argument coercion (not just a
-      literal exemption -- any integer-typed expression, e.g. cJSON_CreateNumber(int_var)). }
-    CoerceForAssign := LLVMBuildSIToFP(builder, v, LLVMTypeForTk(to_tid), MakeCStr(''))
+    { Integer-family -> floating, by the source's signedness, into the
+      target float width, matching the reference's general C-ABI argument
+      coercion (not just a literal exemption -- any integer-typed
+      expression, e.g. cJSON_CreateNumber(int_var)). }
+    CoerceForAssign := IntToFloat(v, from_tid, LLVMTypeForTk(to_tid))
   ELSE IF TypeKind(to_tid) = TK_ENUM THEN
   BEGIN
     { An enum target stores a 0-based ordinal in i32. Enum member
@@ -684,6 +736,33 @@ BEGIN
   END;
 END;
 
+PROCEDURE EmitSubrangeFailure(bad_value: ADRMEM; is_unsigned: BOOLEAN; lo, hi: INTEGER32);
+{ The noreturn pas_subrange_error call (runtime/subrange.c) for an i64
+  bad_value outside lo..hi, at the builder's current (failure) block. }
+VAR
+  args, ps, fnty, fn, discard: ADRMEM;
+BEGIN
+  ps := AllocPtrArray(4);
+  SetPtrArrayElem(ps, 0, i64ty);
+  SetPtrArrayElem(ps, 1, i32ty);
+  SetPtrArrayElem(ps, 2, i64ty);
+  SetPtrArrayElem(ps, 3, i64ty);
+  fnty := LLVMFunctionType(voidty, ps, 4, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_subrange_error'));
+  IF fn = NIL THEN
+    fn := LLVMAddFunction(modl, MakeCStr('pas_subrange_error'), fnty);
+  args := AllocPtrArray(4);
+  SetPtrArrayElem(args, 0, bad_value);
+  IF is_unsigned THEN
+    SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 1, 0))
+  ELSE
+    SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 0, 0));
+  SetPtrArrayElem(args, 2, LLVMConstInt(i64ty, lo, 1));
+  SetPtrArrayElem(args, 3, LLVMConstInt(i64ty, hi, 1));
+  discard := LLVMBuildCall2(builder, fnty, fn, args, 4, MakeCStr(''));
+  discard := LLVMBuildUnreachable(builder);
+END;
+
 PROCEDURE EmitSubrangeCheck(v: ADRMEM; from_tid, to_tid: INTEGER);
 { $RANGECK for a store into a subrange: when to_tid is a subrange and the
   check is on, compare v (a value of the ordinal type from_tid, extended by
@@ -693,7 +772,7 @@ PROCEDURE EmitSubrangeCheck(v: ADRMEM; from_tid, to_tid: INTEGER);
   can wrap into range. Leaves the builder in the in-range block. Device
   code has no host runtime to call, so it is not checked. }
 VAR
-  i128ty, v128, ok, okhi, bad_bb, ok_bb, args, ps, fnty, fn, discard: ADRMEM;
+  i128ty, v128, ok, okhi, bad_bb, ok_bb: ADRMEM;
   fk: INTEGER;
   is_unsigned: BOOLEAN;
 BEGIN
@@ -722,25 +801,8 @@ BEGIN
   LLVMBuildCondBr(builder, ok, ok_bb, bad_bb);
 
   LLVMPositionBuilderAtEnd(builder, bad_bb);
-  ps := AllocPtrArray(4);
-  SetPtrArrayElem(ps, 0, i64ty);
-  SetPtrArrayElem(ps, 1, i32ty);
-  SetPtrArrayElem(ps, 2, i64ty);
-  SetPtrArrayElem(ps, 3, i64ty);
-  fnty := LLVMFunctionType(voidty, ps, 4, 0);
-  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_subrange_error'));
-  IF fn = NIL THEN
-    fn := LLVMAddFunction(modl, MakeCStr('pas_subrange_error'), fnty);
-  args := AllocPtrArray(4);
-  SetPtrArrayElem(args, 0, LLVMBuildTrunc(builder, v128, i64ty, MakeCStr('')));
-  IF is_unsigned THEN
-    SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 1, 0))
-  ELSE
-    SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 0, 0));
-  SetPtrArrayElem(args, 2, LLVMConstInt(i64ty, types[to_tid].lo, 1));
-  SetPtrArrayElem(args, 3, LLVMConstInt(i64ty, types[to_tid].hi, 1));
-  discard := LLVMBuildCall2(builder, fnty, fn, args, 4, MakeCStr(''));
-  discard := LLVMBuildUnreachable(builder);
+  EmitSubrangeFailure(LLVMBuildTrunc(builder, v128, i64ty, MakeCStr('')), is_unsigned,
+    types[to_tid].lo, types[to_tid].hi);
 
   LLVMPositionBuilderAtEnd(builder, ok_bb);
 END;
@@ -887,6 +949,7 @@ VAR
   tid: INTEGER;
   i: INTEGER;
   off, fa, end_off: INTEGER32;
+  wide_size: INTEGER64;
 BEGIN
   tid := LayoutScalarTid(tid_in);
   IF tid = TK_INTEGER THEN TypeSizeBytes := 2
@@ -903,8 +966,16 @@ BEGIN
   ELSE IF tid = TK_REAL32 THEN TypeSizeBytes := 4
   ELSE IF tid = TK_ADRMEM THEN TypeSizeBytes := 8
   ELSE IF TypeKind(tid) = TK_ARRAY THEN
-    TypeSizeBytes := RoundUpBytes(TypeSizeBytes(types[tid].elem_tid), TypeAlignBytes(types[tid].elem_tid))
-                      * (types[tid].hi - types[tid].lo + 1)
+  BEGIN
+    { The product can exceed INTEGER32 (an ARRAY of 2^16 64 KiB pages):
+      reject a size the INTEGER32 layout bookkeeping cannot represent rather
+      than wrapping it into a wrong record offset or NEW size. }
+    wide_size := RoundUpBytes(TypeSizeBytes(types[tid].elem_tid), TypeAlignBytes(types[tid].elem_tid));
+    wide_size := wide_size * (types[tid].hi - types[tid].lo + 1);
+    IF wide_size > 2147483647 THEN
+      AbortWith('codegen: type layout exceeds the supported 2147483647-byte size');
+    TypeSizeBytes := RETYPE(INTEGER32, wide_size);
+  END
   ELSE IF TypeKind(tid) = TK_RECORD THEN
   BEGIN
     end_off := 0;

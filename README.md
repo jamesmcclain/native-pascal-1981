@@ -22,6 +22,16 @@ results remain outside the checked slice. See the
 > of each integer type. They list the constructs that fail without an error.
 > For example, `TRUNC` narrows the result to 16 bits.
 
+> **GPU kernels must use `{$MATHCK-}` for integer arithmetic.** Integer
+> overflow checking (`$MATHCK`) is on by default, and NVPTX code has no way to
+> report a run-time error. So in DEVICE code compiled for NVPTX, every integer
+> operation MATHCK would check (`+ - * DIV MOD`, unary `-`, `SUCC`, `PRED`,
+> `ABS`, `SQR`) is a compile-time error,
+> `MATHCK unsupported boundary: DEVICE arithmetic at line L column C`, until
+> the kernel says `{$MATHCK-}`. That arithmetic is then unchecked and wraps.
+> CPU (serial) DEVICE code is checked like host code. See
+> [GPU kernels and `$MATHCK`](docs/dialect_notes.md#gpu-nvptx-kernels-need-mathck--for-integer-arithmetic-extended).
+
 ## System Prerequisites
 
 Install these packages before you build the toolchain (for example, on Debian or Ubuntu Linux x86_64):
@@ -106,7 +116,7 @@ Supported options:
 - `--dialect <vintage|extended>`: Select the language dialect (default `vintage`)
 - `--target-cpu <cpu>`: Host target CPU, e.g. `x86-64-v3` (LLVM `target-cpu` attribute; default baseline x86-64)
 - `--target-features <list>`: Host target features, comma-separated, e.g. `+avx2,+fma`
-- `--emit-ptx`: Emit NVPTX assembly for device kernels
+- `--emit-ptx`: Emit NVPTX assembly for device kernels (kernels doing integer arithmetic need `{$MATHCK-}`; see above)
 - `-v`: Print pipeline commands
 
 ## Running Tests

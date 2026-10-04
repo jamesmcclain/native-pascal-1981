@@ -79,6 +79,7 @@ FUNCTION InitckShadowSize(tid: INTEGER): INTEGER32;
 VAR
   fi: INTEGER;
   n, s: INTEGER32;
+  wide_n: INTEGER64;
   bad: BOOLEAN;
 BEGIN
   n := 0;
@@ -86,7 +87,12 @@ BEGIN
   ELSE IF TypeKind(tid) = TK_ARRAY THEN
   BEGIN
     IF NOT types[tid].is_super THEN
-      n := InitckShadowSize(types[tid].elem_tid) * (types[tid].hi - types[tid].lo + 1);
+    BEGIN
+      { More leaves than INTEGER32 can count is outside the tracked slice. }
+      wide_n := InitckShadowSize(types[tid].elem_tid);
+      wide_n := wide_n * (types[tid].hi - types[tid].lo + 1);
+      IF wide_n <= 2147483647 THEN n := RETYPE(INTEGER32, wide_n);
+    END;
   END
   ELSE IF TypeKind(tid) = TK_RECORD THEN
   BEGIN

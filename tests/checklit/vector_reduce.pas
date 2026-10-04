@@ -6,6 +6,10 @@
 { CHECK: call i32 @llvm.vector.reduce.add.v8i32(<8 x i32> }
 { CHECK: call i32 @llvm.vector.reduce.smax.v8i32(<8 x i32> }
 { CHECK: call i8 @llvm.vector.reduce.or.v4i8(<4 x i8> }
+{ MATHCK+ (the default) lowers integer lanes and VSUM one lane at a time
+  with overflow checks (tests/mathck_vector.py); these shapes are the
+  MATHCK- form. }
+{$MATHCK-}
 PROGRAM VReduceShape(output);
 TYPE
   V4D = VECTOR [4] OF REAL;

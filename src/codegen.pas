@@ -115,11 +115,12 @@
   involved) are still rejected, same as the file's existing no-implicit-
   promotion rule for plain INTEGER/REAL. Not yet covered: files,
   multi-dimension arrays, CHAR-keyed CASE, CASE label ranges,
-  MATHCK-style runtime traps and RANGECK beyond subrange stores (which
-  EmitSubrangeCheck does check) -- CONCAT/COPYLST/COPYSTR/INSERT's own
-  capacity overflow, for one, is unchecked, the same simplification as an
-  unchecked array index elsewhere in this file -- C-ABI externs, units, and DEVICE MODULE/PTX
-  generation. Anything not yet covered is
+  RANGECK beyond subrange stores (which EmitSubrangeCheck does check) --
+  CONCAT/COPYLST/COPYSTR/INSERT's own capacity overflow, for one, is
+  unchecked, the same simplification as an unchecked array index elsewhere
+  in this file -- C-ABI externs, units, and DEVICE MODULE/PTX generation. (MATHCK is enforced: integer operators and builtins trap
+  or wrap per docs/mathck_contract.md, see SiteMathCk in cg_expr.pas.)
+  Anything not yet covered is
   rejected loudly via AbortWith rather than silently mishandled
   or miscompiled -- reject unhandled constructs instead of guessing, the
   same discipline the earlier native stages (lexer.pas/parser.pas/

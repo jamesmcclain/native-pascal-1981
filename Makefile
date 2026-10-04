@@ -10,6 +10,11 @@ LLVM_CONFIG ?= $(shell command -v llvm-config 2>/dev/null || command -v llvm-con
 LLVM_LINK_FLAGS ?= $(shell $(LLVM_CONFIG) --ldflags --libs)
 export CC LLVM_CONFIG
 
+# make -j parallelizes targets, not the fixture loop inside tests/run.sh.
+# Keep the default bounded; override independently, e.g. TEST_JOBS=8.
+TEST_JOBS ?= 8
+TEST_ENV := ./scripts/test-env.sh
+
 BIN_DIR := bin
 BUILD_DIR := build
 DRIVER_BIN := $(BIN_DIR)/pascal1981-native
@@ -85,6 +90,15 @@ $(PROXY_BIN): src/proxy.pas src/bytebuf.pas src/bytebuf.inc src/argparse.pas src
 $(PRETTY81_BIN): src/pretty81.pas $(STAGE_SRCS) $(GEN4_BINS) $(FIXED_POINT) $(RUNTIME_LIB) | $(BIN_DIR)
 	NATIVE_LEXER="$(abspath $(BUILD_DIR)/gen4/lexer)" NATIVE_PARSER="$(abspath $(BUILD_DIR)/gen4/parser)" NATIVE_TYPECHECKER="$(abspath $(BUILD_DIR)/gen4/typechecker)" NATIVE_CODEGEN="$(abspath $(BUILD_DIR)/gen4/codegen)" ./scripts/build-stage.sh $< $@
 
+# Linux-only test launcher builds this on demand, independently of bootstrap.
+# Separate launchers may build concurrently: publish only a complete .so and
+# never truncate one that another process has already mapped.
+$(BUILD_DIR)/test-no-core.so: tests/support/no_core.c | $(BUILD_DIR)
+	@tmp=$$(mktemp "$@.XXXXXX"); \
+	trap 'rm -f "$$tmp"' EXIT; \
+	$(CC) -shared -fPIC -O2 -Wall -Wextra -Werror $< -o "$$tmp" && \
+	mv -f "$$tmp" "$@"
+
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
 
@@ -139,7 +153,7 @@ cleanest: cleaner
 	rm -rf .pytest_cache
 
 test: check-bootstrap-subset test-pasboot test-native test-proxy
-	./tests/test_precommit_hook.sh
+	$(TEST_ENV) ./tests/test_precommit_hook.sh
 
 # Every gen1 compiland must stay inside the subset pasboot translates
 # (docs/bootstrap_subset.md). Parse-only, so a src/ change that leaves the
@@ -155,70 +169,90 @@ check-bootstrap-subset: $(PASBOOT)
 # pasboot's per-feature fixtures (bootstrap/tests/). Needs only clang, libc
 # and the runtime library -- no Pascal compiler.
 test-pasboot: $(PASBOOT) $(RUNTIME_LIB)
-	./bootstrap/tests/run.sh
+	$(TEST_ENV) ./bootstrap/tests/run.sh
 
 # The zero-Python subset of `test`: driver, golden-file behavioral, and
 # IR/PTX-text directive tests. It does not run pytest or Python.
 test-driver: $(DRIVER_BIN)
-	./tests/driver.sh
+	$(TEST_ENV) ./tests/driver.sh
 
 # Whole host descriptor transport and explicit unsafe-boundary contracts.
 # Install current stages as well: the driver dispatches through bin/.
 test-descriptor-contract: $(DRIVER_BIN) bootstrap
-	./tests/descriptor_contract.sh
+	$(TEST_ENV) ./tests/descriptor_contract.sh
 
 test-parser-named-index: $(PRETTY81_BIN)
-	./tests/array_named_index_parser.sh
+	$(TEST_ENV) ./tests/array_named_index_parser.sh
 
 test-typecheck-named-index: $(BIN_DIR)/typechecker $(BIN_DIR)/parser $(BIN_DIR)/lexer
-	./tests/array_named_index_typecheck.sh
+	$(TEST_ENV) ./tests/array_named_index_typecheck.sh
 
 test-super-new: $(DRIVER_BIN) bootstrap
-	bash tests/super_new_contract.sh
+	$(TEST_ENV) bash tests/super_new_contract.sh
 
 test-native: test-driver test-sysutil test-parser-named-index test-typecheck-named-index test-descriptor-contract test-super-new $(ASTCOMPARE_BIN) $(PROXY_BIN)
 	$(CC) -o $(BUILD_DIR)/read_wide_runtime tests/read_wide_runtime.c $(RUNTIME_LIB)
-	$(BUILD_DIR)/read_wide_runtime
-	./tests/run.sh
-	./tests/checklit.sh
-	./tests/depth.sh
-	./tests/stage_cli.sh
-	./tests/astcompare.sh
-	./tests/indexck_metadata.sh
-	./tests/initck_contract.sh
-	./tests/initck_state.sh
-	./tests/initck_scalar.sh
-	./tests/initck_validation.sh
-	./tests/initck_definite.sh
-	./tests/initck_abi.sh
-	./tests/initck_producers.sh
-	./tests/initck_routines.sh
-	./tests/initck_aggregates.sh
-	./tests/initck_heap.sh
-	./tests/initck_external.sh
-	./tests/indexck_guard_ir.sh
-	./tests/codegen_set_base_guard.sh
-	./tests/set_enum_typecheck.sh
+	$(TEST_ENV) $(BUILD_DIR)/read_wide_runtime
+	$(TEST_ENV) ./tests/test_no_core.py
+	$(TEST_ENV) ./tests/run.sh -j $(TEST_JOBS)
+	$(TEST_ENV) ./tests/checklit.sh
+	$(TEST_ENV) ./tests/depth.sh
+	$(TEST_ENV) ./tests/stage_cli.sh
+	$(TEST_ENV) ./tests/astcompare.sh
+	$(TEST_ENV) ./tests/indexck_metadata.sh
+	$(TEST_ENV) ./tests/initck_contract.sh
+	$(TEST_ENV) ./tests/mathck_baseline.sh
+	$(TEST_ENV) ./tests/mathck_word_scalar.sh
+	$(TEST_ENV) ./tests/mathck_for_endpoints.sh
+	$(TEST_ENV) ./tests/mathck_divmod_safety.sh
+	$(TEST_ENV) ./tests/mathck_constant_folding.sh
+	$(TEST_ENV) ./tests/mathck_bootstrap_audit.sh
+	$(TEST_ENV) ./tests/mathck_metadata.sh
+	$(TEST_ENV) ./tests/mathck_overflow.sh
+	$(TEST_ENV) ./tests/mathck_builtins.sh
+	$(TEST_ENV) ./tests/mathck_mixed_width.sh
+	$(TEST_ENV) ./tests/mathck_vector.sh
+	$(TEST_ENV) ./tests/trunc_round_range.sh
+	$(TEST_ENV) ./tests/mathck_device.sh
+	$(TEST_ENV) ./tests/mathck_address_arith.sh
+	$(TEST_ENV) ./tests/mathck_diagnostics.sh
+	$(TEST_ENV) ./tests/mathck_twins.sh
+	$(TEST_ENV) ./tests/mathck_boundary_values.sh
+	$(TEST_ENV) ./tests/mathck_optimization.sh
+	$(TEST_ENV) ./tests/mathck_review.sh
+	$(TEST_ENV) ./tests/initck_state.sh
+	$(TEST_ENV) ./tests/initck_scalar.sh
+	$(TEST_ENV) ./tests/initck_validation.sh
+	$(TEST_ENV) ./tests/initck_definite.sh
+	$(TEST_ENV) ./tests/initck_abi.sh
+	$(TEST_ENV) ./tests/initck_producers.sh
+	$(TEST_ENV) ./tests/initck_routines.sh
+	$(TEST_ENV) ./tests/initck_aggregates.sh
+	$(TEST_ENV) ./tests/initck_heap.sh
+	$(TEST_ENV) ./tests/initck_external.sh
+	$(TEST_ENV) ./tests/indexck_guard_ir.sh
+	$(TEST_ENV) ./tests/codegen_set_base_guard.sh
+	$(TEST_ENV) ./tests/set_enum_typecheck.sh
 
 # Reusable POSIX filesystem and process primitives, exercised from Pascal.
 test-sysutil: $(DRIVER_BIN) runtime
-	./tests/sysutil_check.sh $(DRIVER_ALIAS)
+	$(TEST_ENV) ./tests/sysutil_check.sh $(DRIVER_ALIAS)
 
 # Differential conformance for the completion proxy: the same corpus of raw
 # HTTP requests replayed against the Pascal port and against the Python
 # implementation it replaces, compared byte for byte. Needs Python for the
 # stub backend, so it is not part of test-driver's zero-Python subset.
-test-proxy: $(PROXY_BIN)
-	./tests/proxy/run.sh $(PROXY_BIN)
-	./tests/proxy/transforms_check.sh $(DRIVER_ALIAS)
-	./tests/proxy/oneshot.sh
-	./tests/proxy/corpus_reference_check.sh $(DRIVER_ALIAS)
-	./tests/proxy/corpus_smoke.sh
+test-proxy: $(PROXY_BIN) $(DRIVER_BIN)
+	$(TEST_ENV) ./tests/proxy/run.sh $(PROXY_BIN)
+	$(TEST_ENV) ./tests/proxy/transforms_check.sh $(DRIVER_ALIAS)
+	$(TEST_ENV) ./tests/proxy/oneshot.sh
+	$(TEST_ENV) ./tests/proxy/corpus_reference_check.sh $(DRIVER_ALIAS)
+	$(TEST_ENV) ./tests/proxy/corpus_smoke.sh
 
 # Run the real-GPU CUDA integration test. The runner exits successfully with a
 # clear skip reason when its hardware or toolchain prerequisites are absent.
 test-gpu: bootstrap
-	./tests/gpu_orchestration.sh
+	$(TEST_ENV) ./tests/gpu_orchestration.sh
 
 # Compare the native compiler stages with the earlier Python implementation.
 # Disabled by default: the native compiler is authoritative and deliberately
@@ -228,15 +262,15 @@ test-gpu: bootstrap
 PYTHON ?= python3
 test-reference-parity:
 ifeq ($(ENABLE_PYTHON_PARITY),1)
-	PYTHONPATH=. $(PYTHON) -m pytest tests/parity/
+	$(TEST_ENV) env PYTHONPATH=. $(PYTHON) -m pytest tests/parity/
 else
 	@echo 'test-reference-parity: disabled (not authoritative; ENABLE_PYTHON_PARITY=1 to run)'
 endif
 
 # Run the Emacs major-mode ERT suite. Kept separate from `test` because Emacs
 # is not a dependency of the compiler toolchain.
-test-elisp: bootstrap $(PRETTY81_BIN)
-	$(MAKE) -C elisp test
+test-elisp: bootstrap $(PRETTY81_BIN) $(DRIVER_BIN)
+	$(TEST_ENV) $(MAKE) -C elisp test
 
 # Full fixed-point regression: force a clean gen1->gen4 rebuild (not reusing
 # any cached generation) and fail if gen3/gen4 aren't byte-identical. Separate
@@ -244,6 +278,13 @@ test-elisp: bootstrap $(PRETTY81_BIN)
 # and python3 are shadowed on PATH by stubs that fail, so the bootstrap is
 # proven to need no Python even on a machine that has it.
 NO_PYTHON_DIR := $(BUILD_DIR)/no-python
+# This target deletes artifacts other goals may be using, especially with -j.
+ifneq ($(filter test-bootstrap,$(MAKECMDGOALS)),)
+ifneq ($(words $(MAKECMDGOALS)),1)
+$(error test-bootstrap deletes build/: run it separately from other goals)
+endif
+endif
+
 test-bootstrap:
 	rm -rf $(BUILD_DIR)
 	mkdir -p $(NO_PYTHON_DIR)

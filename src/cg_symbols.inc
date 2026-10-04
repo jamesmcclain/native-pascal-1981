@@ -28,6 +28,8 @@ FUNCTION InitckSuperHeapTracked(ptr_tid: INTEGER): BOOLEAN;
 FUNCTION InitckSuperLeaves(high: ADRMEM; arr_tid: INTEGER): ADRMEM;
 PROCEDURE InitckSuperNew(data, high: ADRMEM; arr_tid: INTEGER);
 FUNCTION InitckSuperElement(data, total, offset: ADRMEM; arr_tid: INTEGER): ADRMEM;
+FUNCTION StaticDesigTid(tid: INTEGER; selectors: ADRMEM): INTEGER;
+FUNCTION InitckIntText(n: INTEGER32): Str255;
 FUNCTION InitckShadowSize(tid: INTEGER): INTEGER32;
 FUNCTION InitckShadowTy(tid: INTEGER): ADRMEM;
 FUNCTION InitckFieldShadowOffset(fi: INTEGER): INTEGER32;

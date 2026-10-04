@@ -3,6 +3,9 @@
 { Gap 6: NVPTX value aggregates use CUDA's aligned parameter buffer ABI,
   not host SysV register-piece coercion. }
 { CHECK: .param .align 4 .b8 SumSmall_param_0[8] }
+{ NVPTX integer arithmetic is a MATHCK unsupported boundary (no device
+  failure path); this ABI/lowering fixture opts out. }
+{$MATHCK-}
 DEVICE MODULE DeviceAggregateSmallParam;
 TYPE
   TRec = RECORD

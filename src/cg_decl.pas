@@ -1994,11 +1994,14 @@ END;
 
 FUNCTION ConstIntegerType(ival: INTEGER64): INTEGER;
 VAR
-  max_i32: INTEGER64;
+  max_i32, max_word16: INTEGER64;
 BEGIN
   max_i32 := MaxConstInteger32;
+  { Keep the limit arithmetic wide before the comparison adapts operands. }
+  max_word16 := 32767;
+  max_word16 := max_word16 * 2 + 1;
   IF (ival >= -32768) AND (ival <= 32767) THEN ConstIntegerType := TK_INTEGER
-  ELSE IF (ival >= 0) AND (ival <= 32767 * 2 + 1) THEN ConstIntegerType := TK_WORD
+  ELSE IF (ival >= 0) AND (ival <= max_word16) THEN ConstIntegerType := TK_WORD
   ELSE IF (ival >= (-max_i32 - 1)) AND (ival <= max_i32) THEN ConstIntegerType := TK_INTEGER32
   ELSE IF (ival >= 0) AND (ival <= max_i32 * 2 + 1) THEN ConstIntegerType := TK_WORD32
   ELSE ConstIntegerType := TK_INTEGER64;

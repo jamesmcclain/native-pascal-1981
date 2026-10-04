@@ -166,7 +166,9 @@ for src in tests/descriptor/reject_*.pas; do
   elif grep -Eiq 'parser error|undefined variable|not a function|unknown.*kernel' "$work/compile.err"; then
     fail "$name: unrelated frontend failure"
     diagnostic
-  elif grep -Eiq 'super.?array|descriptor|pointer|\[C\]|foreign|ADRMEM|CPTR|device|LAUNCH|DEVCOPY|ADR' "$work/compile.err"; then
+  # An element layout too large for INTEGER32 bookkeeping is rejected where
+  # its size is first needed (the RECORD declaration), before SUPER NEW.
+  elif grep -Eiq 'super.?array|descriptor|pointer|\[C\]|foreign|ADRMEM|CPTR|device|LAUNCH|DEVCOPY|ADR|layout exceeds' "$work/compile.err"; then
     pass "$name: descriptor boundary rejected"
   else
     fail "$name: rejection lacks a boundary diagnostic"

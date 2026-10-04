@@ -1,7 +1,6 @@
 /* Tokenizer. Handles both comment forms ({ } and (* *), neither nesting),
- * string and character literals, decimal, radix and real numbers, and the
- * one metacommand the bootstrap subset allows, $INCLUDE, which splices the
- * named file's tokens in place. */
+ * string and character literals, decimal, radix and real numbers, $INCLUDE
+ * (splices the named file's tokens in place), and ignored $MATHCK settings. */
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
@@ -80,6 +79,33 @@ static void metacommand(Lexer *lx, const char *body, size_t n, Loc loc)
     while (i < n && (isalpha((unsigned char) body[i]) || body[i] == '_') && w < sizeof word - 1)
         word[w++] = (char) toupper((unsigned char) body[i++]);
     word[w] = 0;
+    if (strcmp(word, "MATHCK") == 0) {
+        /* Gen1 deliberately has unchecked, wrapping arithmetic. Accept the
+         * source directive, but neither enabling nor disabling it emits checks. */
+        while (i < n && isspace((unsigned char) body[i]))
+            i++;
+        if (i < n && (body[i] == '+' || body[i] == '-')) {
+            i++;
+        } else if (i < n && body[i] == ':') {
+            i++;
+            while (i < n && isspace((unsigned char) body[i]))
+                i++;
+            if (i < n && (body[i] == '+' || body[i] == '-'))
+                i++;
+            size_t start = i;
+            while (i < n && isdigit((unsigned char) body[i]))
+                i++;
+            if (i == start)
+                fatal(loc, "malformed $MATHCK");
+        } else {
+            fatal(loc, "malformed $MATHCK");
+        }
+        while (i < n && isspace((unsigned char) body[i]))
+            i++;
+        if (i != n)
+            fatal(loc, "malformed $MATHCK");
+        return;
+    }
     if (strcmp(word, "INCLUDE") != 0)
         unsupported(loc, xfmt("metacommand $%s", word));
     while (i < n && isspace((unsigned char) body[i]))

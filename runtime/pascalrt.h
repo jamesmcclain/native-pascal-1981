@@ -273,6 +273,35 @@ void pas_initck_heap_dispose(const void *data);
 void  pas_array_index_error(int64_t value, int32_t value_unsigned,
                             int64_t lo, int64_t hi) __attribute__((noreturn));
 
+/* ---- MATHCK runtime failures (mathck.c) ----
+ * Both flush stdout, print one located "runtime error: MATHCK ..." line,
+ * flush stderr and abort. pas_math_zero is the mandatory zero-divisor
+ * failure (either MATHCK setting). pas_math_overflow is MATHCK+ overflow;
+ * op is 0 +, 1 -, 2 *, 3 DIV, 4 unary -, 5 SUCC, 6 PRED, 7 ABS, 8 SQR,
+ * 9 VSUM, 10 VPROD (4 through 8 are unary: right ignored; for 9 and 10
+ * left is the partial result and right the lane). Operands arrive widened to 64 bits with their own
+ * signedness. line/column are the operator or builtin-name token's, 0:0
+ * for a legacy AST without a snapshot. */
+void  pas_math_zero(int32_t is_unsigned, int32_t is_mod,
+                    int64_t left, int64_t right,
+                    int32_t line, int32_t column) __attribute__((noreturn));
+/* TRUNC/ROUND out of INTEGER range or NaN (numeric.c): always checked,
+ * independent of MATHCK. kind 0 TRUNC, 1 ROUND. */
+void  pas_conversion_error(int32_t kind, double value,
+                           int32_t line, int32_t column) __attribute__((noreturn));
+void  pas_math_overflow(int32_t is_unsigned, int32_t op,
+                        int64_t left, int64_t right,
+                        int32_t line, int32_t column) __attribute__((noreturn));
+
+/* ---- IBM never-trapping 16-bit arithmetic (overflow_ok.c) ----
+ * For programs that declare these EXTERN as the manual (11-21) says; an
+ * undeclared call is lowered inline. Only the low 16 bits of a and b are
+ * read. Return true when the wrapped result stored in *c did not overflow. */
+_Bool SADDOK(uint32_t a, uint32_t b, int16_t *c);
+_Bool SMULOK(uint32_t a, uint32_t b, int16_t *c);
+_Bool UADDOK(uint32_t a, uint32_t b, uint16_t *c);
+_Bool UMULOK(uint32_t a, uint32_t b, uint16_t *c);
+
 /* ---- $RANGECK subrange stores (subrange.c) ---- */
 
 void  pas_subrange_error(int64_t value, int32_t value_unsigned,
