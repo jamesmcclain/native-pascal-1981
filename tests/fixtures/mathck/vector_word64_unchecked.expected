@@ -1,0 +1,62 @@
+case 0
+status: 0
+stdout:
+prefix
+0
+0
+18446744073709551615
+18446744073709551615
+stderr:
+case 1
+status: 0
+stdout:
+prefix
+3
+18446744073709551615
+0
+1
+stderr:
+case 2
+status: 0
+stdout:
+prefix
+0
+0
+18446744073709551615
+18446744073709551615
+stderr:
+case 3
+status: 0
+stdout:
+prefix
+15
+18446744073709551615
+18446744073709551614
+18446744073709551613
+stderr:
+case 4
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK unsigned division by zero in DIV at line 146 column 14 (left=9, right=0)
+case 5
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK unsigned division by zero in MOD at line 175 column 14 (left=9, right=0)
+case 6
+status: 0
+stdout:
+18446744073709551615
+prefix
+0
+stderr:
+case 7
+status: 0
+stdout:
+9223372036854775806
+prefix
+0
+stderr:

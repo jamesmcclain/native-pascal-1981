@@ -13,6 +13,8 @@ export CC LLVM_CONFIG
 # make -j parallelizes targets, not the fixture loop inside tests/run.sh.
 # Keep the default bounded; override independently, e.g. TEST_JOBS=8.
 TEST_JOBS ?= 8
+# Parallel jobs for test-native's tool build.
+BUILD_JOBS ?= 8
 TEST_ENV := ./scripts/test-env.sh
 
 BIN_DIR := bin
@@ -31,7 +33,7 @@ PASBOOT_SRCS := $(wildcard bootstrap/*.c bootstrap/*.h) bootstrap/Makefile
 STAGES := lexer parser typechecker codegen
 # Every stage splices jsonutil.inc, so a change to the interface must rebuild
 # all of them -- $INCLUDE is textual, and make cannot see through it.
-STAGE_SRCS := src/jsonutil.pas src/jsonutil.inc scripts/build-stage.sh
+STAGE_SRCS := src/jsonutil.pas src/jsonutil.inc scripts/build-stage.sh scripts/temp-env.sh
 # codegen is a composition root over these units: it splices every one of
 # their .inc interfaces and links every .pas as a component object. Listed
 # lowest layer first -- the same order scripts/build-stage.sh compiles and
@@ -95,8 +97,8 @@ $(PRETTY81_BIN): src/pretty81.pas $(STAGE_SRCS) $(GEN4_BINS) $(FIXED_POINT) $(RU
 # never truncate one that another process has already mapped.
 $(BUILD_DIR)/test-no-core.so: tests/support/no_core.c | $(BUILD_DIR)
 	@tmp=$$(mktemp "$@.XXXXXX"); \
-	trap 'rm -f "$$tmp"' EXIT; \
-	$(CC) -shared -fPIC -O2 -Wall -Wextra -Werror $< -o "$$tmp" && \
+	trap 'rm -f "$$tmp"' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
+	$(CC) -shared -fPIC $(CFLAGS) $< -o "$$tmp" && \
 	mv -f "$$tmp" "$@"
 
 $(BIN_DIR):
@@ -190,58 +192,67 @@ test-typecheck-named-index: $(BIN_DIR)/typechecker $(BIN_DIR)/parser $(BIN_DIR)/
 test-super-new: $(DRIVER_BIN) bootstrap
 	$(TEST_ENV) bash tests/super_new_contract.sh
 
-test-native: test-driver test-sysutil test-parser-named-index test-typecheck-named-index test-descriptor-contract test-super-new $(ASTCOMPARE_BIN) $(PROXY_BIN)
+# Every tool test-native runs, so they can be built ahead of the tests.
+NATIVE_TEST_TOOLS := runtime bootstrap $(DRIVER_BIN) $(ASTCOMPARE_BIN) $(PROXY_BIN) $(PRETTY81_BIN) $(BUILD_DIR)/test-no-core.so
+
+# test-native suites run as ./tests/NAME.sh, longest first (measured warm,
+# 2026-10-04), with the many-worker suites interleaved among the single-core
+# ones so that TEST_SUITE_JOBS slots keep the machine busy without piling
+# every worker pool up at once. Each runs in its own scratch workspace.
+# (Lower priority for the many-worker suites, or more slots, measured slower.)
+NATIVE_SUITES := mathck_mixed_width initck_heap mathck_twins initck_aggregates \
+  mathck_scalar initck_validation initck_external mathck_builtins \
+  initck_definite mathck_bootstrap_audit initck_routines mathck_vector \
+  initck_scalar mathck_for_endpoints mathck_word_scalar initck_abi \
+  mathck_divmod_safety initck_producers mathck_baseline trunc_round_range \
+  initck_contract checklit mathck_metadata mathck_constant_folding depth \
+  mathck_device stage_cli indexck_metadata mathck_boundary_values \
+  mathck_diagnostics mathck_address_arith mathck_optimization initck_state \
+  mathck_overflow astcompare indexck_guard_ir codegen_set_base_guard \
+  set_enum_typecheck
+NATIVE_SUITE_TARGETS := $(addprefix native-suite-,$(NATIVE_SUITES))
+
+# Build every tool with BUILD_JOBS parallel jobs (the runtime objects,
+# pasboot, and the four stages within each bootstrap generation build
+# concurrently; generations still build in order), then run every suite with
+# up to TEST_SUITE_JOBS at once. --output-sync keeps each suite's output
+# together. TEST_SUITE_JOBS=1 runs the suites one at a time, in the order
+# below; as with any make -j, a failure stops new suites from starting.
+TEST_SUITE_JOBS ?= 6
+test-native:
+	$(MAKE) -j$(BUILD_JOBS) $(NATIVE_TEST_TOOLS)
+	$(MAKE) -j$(TEST_SUITE_JOBS) --output-sync=target native-suites
+
+.PHONY: native-suites native-golden native-read-wide native-no-core native-temp-hygiene $(NATIVE_SUITE_TARGETS)
+native-suites: native-golden $(word 1,$(NATIVE_SUITE_TARGETS)) $(word 2,$(NATIVE_SUITE_TARGETS)) \
+  $(word 3,$(NATIVE_SUITE_TARGETS)) test-descriptor-contract test-sysutil test-driver test-parser-named-index \
+  test-typecheck-named-index test-super-new native-read-wide \
+  $(NATIVE_SUITE_TARGETS) native-no-core native-temp-hygiene
+
+native-golden: $(DRIVER_BIN) bootstrap
+	$(TEST_ENV) ./tests/run.sh -j $(TEST_JOBS)
+
+native-read-wide: $(RUNTIME_LIB)
 	$(CC) -o $(BUILD_DIR)/read_wide_runtime tests/read_wide_runtime.c $(RUNTIME_LIB)
 	$(TEST_ENV) $(BUILD_DIR)/read_wide_runtime
+
+native-no-core: $(BUILD_DIR)/test-no-core.so
 	$(TEST_ENV) ./tests/test_no_core.py
-	$(TEST_ENV) ./tests/run.sh -j $(TEST_JOBS)
-	$(TEST_ENV) ./tests/checklit.sh
-	$(TEST_ENV) ./tests/depth.sh
-	$(TEST_ENV) ./tests/stage_cli.sh
-	$(TEST_ENV) ./tests/astcompare.sh
-	$(TEST_ENV) ./tests/indexck_metadata.sh
-	$(TEST_ENV) ./tests/initck_contract.sh
-	$(TEST_ENV) ./tests/mathck_baseline.sh
-	$(TEST_ENV) ./tests/mathck_word_scalar.sh
-	$(TEST_ENV) ./tests/mathck_for_endpoints.sh
-	$(TEST_ENV) ./tests/mathck_divmod_safety.sh
-	$(TEST_ENV) ./tests/mathck_constant_folding.sh
-	$(TEST_ENV) ./tests/mathck_bootstrap_audit.sh
-	$(TEST_ENV) ./tests/mathck_metadata.sh
-	$(TEST_ENV) ./tests/mathck_overflow.sh
-	$(TEST_ENV) ./tests/mathck_builtins.sh
-	$(TEST_ENV) ./tests/mathck_mixed_width.sh
-	$(TEST_ENV) ./tests/mathck_vector.sh
-	$(TEST_ENV) ./tests/trunc_round_range.sh
-	$(TEST_ENV) ./tests/mathck_device.sh
-	$(TEST_ENV) ./tests/mathck_address_arith.sh
-	$(TEST_ENV) ./tests/mathck_diagnostics.sh
-	$(TEST_ENV) ./tests/mathck_twins.sh
-	$(TEST_ENV) ./tests/mathck_boundary_values.sh
-	$(TEST_ENV) ./tests/mathck_optimization.sh
-	$(TEST_ENV) ./tests/mathck_review.sh
-	$(TEST_ENV) ./tests/initck_state.sh
-	$(TEST_ENV) ./tests/initck_scalar.sh
-	$(TEST_ENV) ./tests/initck_validation.sh
-	$(TEST_ENV) ./tests/initck_definite.sh
-	$(TEST_ENV) ./tests/initck_abi.sh
-	$(TEST_ENV) ./tests/initck_producers.sh
-	$(TEST_ENV) ./tests/initck_routines.sh
-	$(TEST_ENV) ./tests/initck_aggregates.sh
-	$(TEST_ENV) ./tests/initck_heap.sh
-	$(TEST_ENV) ./tests/initck_external.sh
-	$(TEST_ENV) ./tests/indexck_guard_ir.sh
-	$(TEST_ENV) ./tests/codegen_set_base_guard.sh
-	$(TEST_ENV) ./tests/set_enum_typecheck.sh
+
+native-temp-hygiene: $(DRIVER_BIN)
+	$(TEST_ENV) python3 tests/temp_hygiene.py
+
+$(NATIVE_SUITE_TARGETS): native-suite-%: $(DRIVER_BIN) $(ASTCOMPARE_BIN) bootstrap
+	$(TEST_ENV) ./tests/$*.sh
 
 # Reusable POSIX filesystem and process primitives, exercised from Pascal.
 test-sysutil: $(DRIVER_BIN) runtime
 	$(TEST_ENV) ./tests/sysutil_check.sh $(DRIVER_ALIAS)
 
-# Differential conformance for the completion proxy: the same corpus of raw
-# HTTP requests replayed against the Pascal port and against the Python
-# implementation it replaces, compared byte for byte. Needs Python for the
-# stub backend, so it is not part of test-driver's zero-Python subset.
+# Completion-proxy conformance against recorded golden reports, plus native
+# transforms/client/corpus checks. The replaced Python proxy is not run.
+# Retain Python orchestration and the deterministic stub outside the first
+# harness migration; this is not part of test-driver's zero-Python subset.
 test-proxy: $(PROXY_BIN) $(DRIVER_BIN)
 	$(TEST_ENV) ./tests/proxy/run.sh $(PROXY_BIN)
 	$(TEST_ENV) ./tests/proxy/transforms_check.sh $(DRIVER_ALIAS)
@@ -257,7 +268,7 @@ test-gpu: bootstrap
 # Compare the native compiler stages with the earlier Python implementation.
 # Disabled by default: the native compiler is authoritative and deliberately
 # diverges (e.g. INITCK read-site metadata), so the suite is kept only for
-# occasional manual comparison until it is removed. Set
+# occasional manual comparison. Removal needs a separate scope decision. Set
 # ENABLE_PYTHON_PARITY=1 to run it; Python is never needed by the build.
 PYTHON ?= python3
 test-reference-parity:

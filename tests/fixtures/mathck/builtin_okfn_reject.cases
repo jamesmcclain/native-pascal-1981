@@ -1,0 +1,19 @@
+# SADDOK-family misuse for tests/mathck_builtins.sh: call|typechecker
+# message. The suite fills builtin_okfn_reject.pas (default dialect) and
+# requires the exact three-line stderr, empty stdout and no executable.
+SADDOK(1, 2)|Argument count mismatch in call to SADDOK
+SADDOK(1, 2, 3)|VAR argument must be a variable in call to SADDOK
+SADDOK(1, 2, K)|VAR argument must be a variable in call to SADDOK
+SADDOK(1, 2, w)|VAR argument type mismatch in call to SADDOK
+UADDOK(1, 2, s)|VAR argument type mismatch in call to UADDOK
+SMULOK(1.5, 2, s)|Argument type mismatch or implicit narrowing in call to SMULOK
+# A subrange variable or field as VAR C is a type mismatch (VAR needs the
+# identical type), rejected by the typechecker, never a codegen abort.
+SADDOK(1, 2, c)|VAR argument type mismatch in call to SADDOK
+SADDOK(1, 2, rec.f)|VAR argument type mismatch in call to SADDOK
+SMULOK(1, 2, c)|VAR argument type mismatch in call to SMULOK
+SMULOK(1, 2, rec.f)|VAR argument type mismatch in call to SMULOK
+UADDOK(1, 2, c)|VAR argument type mismatch in call to UADDOK
+UADDOK(1, 2, rec.f)|VAR argument type mismatch in call to UADDOK
+UMULOK(1, 2, c)|VAR argument type mismatch in call to UMULOK
+UMULOK(1, 2, rec.f)|VAR argument type mismatch in call to UMULOK

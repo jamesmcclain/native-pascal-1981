@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # Compile-time proofs at O0, plus success/failure parity at every driver level.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -13,12 +14,12 @@ for dialect in vintage extended; do
     "$work/ok" > "$work/out" 2> "$work/err"
     diff -u "$work/expected" "$work/out"
     test ! -s "$work/err"
-    for probe in OneBranch GotoSkip ZeroLoop UncheckedCopy CallEffect; do
-      python3 - "$probe" > "$work/fail.pas" <<'PY'
-import sys
-s = open('tests/fixtures/initck_definite_fail.pas').read()
-print(s.replace('  OneBranch\nEND.', '  ' + sys.argv[1] + '\nEND.'))
-PY
+    for fixture in initck_definite_fail initck_definite_fail_goto_skip \
+        initck_definite_fail_zero_loop initck_definite_fail_unchecked_copy \
+        initck_definite_fail_call_effect; do
+      cp "tests/fixtures/$fixture.pas" "$work/fail.pas"
+      # Preserve the former generator's extra print newline.
+      printf '\n' >> "$work/fail.pas"
       bin/pascal1981 --dialect "$dialect" -O"$opt" "$work/fail.pas" -o "$work/fail"
       status=0
       { "$work/fail" > "$work/out" 2> "$work/err"; } 2>/dev/null || status=$?
@@ -27,10 +28,11 @@ PY
       test "$(wc -l < "$work/err")" -eq 1
       grep -Eq '^runtime error: INITCK uninitialized local x at line [0-9]+ column [0-9]+$' "$work/err"
       # Disabled bad paths are compile-only, never executed.
-      python3 - "$work/fail.pas" > "$work/off.pas" <<'PY'
-import sys
-print(open(sys.argv[1]).read().replace('{$INITCK+}', '{$INITCK-}'))
-PY
+      # Keep the extra trailing newline emitted by the former Python print.
+      {
+        sed 's/{$INITCK+}/{$INITCK-}/g' "$work/fail.pas"
+        printf '\n'
+      } > "$work/off.pas"
       bin/pascal1981 --dialect "$dialect" -O"$opt" -S "$work/off.pas" -o "$work/off.ll"
       ! grep -Eq 'call void @pas_initck_(error|fail)' "$work/off.ll"
     done

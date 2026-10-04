@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../../scripts/temp-env.sh"
 # Compile recorded reference continuations with the native compiler.
 set -euo pipefail
 

@@ -3,7 +3,7 @@ VAR
   f: TEXT;
   c: CHAR;
 BEGIN
-  ASSIGN(f, '/tmp/native_pascal_test_file_buffer_var.txt');
+  ASSIGN(f, 'native_pascal_test_file_buffer_var.txt');
   REWRITE(f);
   WRITELN(f, 'ab');
   CLOSE(f);

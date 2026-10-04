@@ -305,7 +305,7 @@ END;
 PROCEDURE MathckDeviceBoundary(site: ADRMEM);
 { NVPTX DEVICE code has no host failure path, so an operation that MATHCK+
   would check is rejected before any IR is published, per the approved
-  unsupported-boundary policy (docs/mathck_contract.md). MATHCK- at the
+  unsupported-boundary policy (docs/dialect_notes.md, MATHCK). MATHCK- at the
   operation is the opt-out. CPU DEVICE code shares the host failure path
   and is checked normally. }
 VAR

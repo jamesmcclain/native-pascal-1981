@@ -161,6 +161,9 @@ void *pas_sys_dir_open(const char *path);
 int   pas_sys_dir_next(void *handle, char *name, int namecap);
 int   pas_sys_dir_close(void *handle);
 int   pas_sys_temp_dir(const char *prefix, char *out, int outcap);
+const char *pas_project_temp_root(void);
+char *pas_driver_temp_file(const char *suffix);
+FILE *pas_project_tmpfile(void);
 int   pas_sys_remove_tree(const char *path);
 /* The caller releases a successful read result with pas_sys_free. */
 char *pas_sys_read_file(const char *path, int *out_len);

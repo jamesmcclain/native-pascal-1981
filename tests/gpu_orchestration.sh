@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # Compile and run vector addition through the real CUDA device backend.
 set -euo pipefail
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # Standalone compiler-stage command-line contract tests.
 set -euo pipefail
 cd "$(dirname "$0")/.."

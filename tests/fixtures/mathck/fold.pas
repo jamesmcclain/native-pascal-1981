@@ -1,6 +1,6 @@
 {$MATHCK+}
 PROGRAM fold(input, output);
-{ tests/mathck_optimization.py: the checks on i + 1, i * 2 - 1 and -i have
+{ tests/mathck_optimization.sh: the checks on i + 1, i * 2 - 1 and -i have
   operands bounded by constant FOR limits, so LLVM folds them at O1-O3. The
   accumulations into k and the operations on n (read at run time) stay. }
 VAR i, k, n, s: INTEGER;

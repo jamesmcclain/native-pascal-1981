@@ -1,0 +1,38 @@
+case 0
+status: nonzero
+stdout:
+prefix
+left
+right
+stderr:
+runtime error: MATHCK unsigned overflow in + at line 15 column 20 (left=255, right=1)
+case 1
+status: nonzero
+stdout:
+prefix
+left
+right
+stderr:
+runtime error: MATHCK unsigned overflow in - at line 17 column 20 (left=0, right=1)
+case 2
+status: nonzero
+stdout:
+prefix
+left
+right
+stderr:
+runtime error: MATHCK unsigned overflow in * at line 19 column 20 (left=255, right=2)
+case 3
+status: nonzero
+stdout:
+prefix
+left
+stderr:
+runtime error: MATHCK unsigned overflow in - at line 21 column 18 (operand=1)
+case 4
+status: nonzero
+stdout:
+prefix
+left
+stderr:
+runtime error: MATHCK unsigned overflow in - at line 23 column 18 (operand=255)

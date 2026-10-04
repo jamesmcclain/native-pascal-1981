@@ -8,9 +8,9 @@
 { CHECK: and <4 x i8> }
 { CHECK: fneg <4 x float> }
 { CHECK: xor <8 x i32> }
-{ MATHCK+ (the default) lowers integer lanes and VSUM one lane at a time
-  with overflow checks (tests/mathck_vector.py); these shapes are the
-  MATHCK- form. }
+{ MATHCK+ (the default) adds overflow checks to integer lanes and VSUM
+  (tests/mathck_vector.sh; check shape in tests/mathck_optimization.sh);
+  these shapes are the MATHCK- form. }
 {$MATHCK-}
 PROGRAM VArith(output);
 TYPE

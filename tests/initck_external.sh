@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # INITCK at external boundaries: C code that reads or writes Pascal storage.
 # Executed programs link generated IR with a C helper; uninitialized reads
 # are never executed unchecked as if their output meant anything.
@@ -317,7 +318,27 @@ for mutation in adr desc; do
 done
 # The FOR exception is exactly the address-taken control variable: a twin
 # without the ADR still unsets i on the natural-exit edge.
-probe_ir() { python3 -c 'import sys; ir = open(sys.argv[1]).read(); b = ir[ir.index("define void @probe("):]; print(b[:b.index("\n}")])' "$1"; }
+probe_ir() {
+  LC_ALL=C awk '
+    {
+      sub(/\r$/, "")
+      if (!found) {
+        start = index($0, "define void @probe(")
+        if (!start) next
+        found = 1
+        $0 = substr($0, start)
+      } else if (substr($0, 1, 1) == "}") {
+        closed = 1
+        exit
+      }
+      body = body $0 "\n"
+    }
+    END {
+      if (!found || !closed) exit 1
+      printf "%s", body
+    }
+  ' "$1"
+}
 probe_ir "$work/mut.ll" > "$work/with-adr.ll"
 ! grep -q '^for_done' "$work/with-adr.ll"
 sed 's/a := ADR i; FOR/a := ADR f; FOR/' "$work/raw.pas" > "$work/noadr.pas"
@@ -441,10 +462,10 @@ rel = probe.index('call void @pas_initck_heap_release(')
 assert rel < probe.index('@pas_dev_launch(')
 PY
 # Device compilands: one exact boundary for an enabled read, CPU and NVPTX.
-python3 - > "$work/devread.pas" <<'PY'
-s = open('tests/fixtures/initck_state_device.pas').read()
-print(s.replace("c := 'a' END", "c := 'a'; {$INITCK+} x := x + 1 {$INITCK-} END"))
-PY
+# Unlike the scalar DEVICE probe, disable INITCK again before closing END.
+cp tests/fixtures/initck_external_device_read.pas "$work/devread.pas"
+# Preserve the former generator's extra print newline.
+printf '\n' >> "$work/devread.pas"
 for target in host nvptx; do
   opts=()
   if [ "$target" = nvptx ]; then opts=(--device-triple nvptx64-nvidia-cuda); fi

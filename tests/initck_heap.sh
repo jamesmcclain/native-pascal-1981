@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # INITCK pointers and heap storage: a plain typed pointer's or descriptor's
 # value is one tracked leaf, NEW initializes only the destination pointer,
 # and reading a pointer to reach its referent (a DEREF, DISPOSE, UPPER) is a

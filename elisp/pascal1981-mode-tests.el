@@ -18,6 +18,25 @@
 (add-to-list 'load-path pascal1981-tests--dir)
 (require 'pascal1981-mode)
 
+(ert-deftest pascal1981-tests-temporary-workspaces-are-isolated-and-cleaned ()
+  (dolist (mode '(success error quit))
+    (let (owned)
+      (pascal1981--with-temp-directory
+        (let ((outer temporary-file-directory))
+          (condition-case nil
+              (pascal1981--with-temp-directory
+                (setq owned temporary-file-directory)
+                (should (string-prefix-p "/tmp/native-pascal-1981/emacs." owned))
+                (should-not (equal outer owned))
+                (make-temp-file "data")
+                (cond ((eq mode 'error) (error "expected test failure"))
+                      ((eq mode 'quit) (signal 'quit nil))))
+            (error nil)
+            (quit nil))
+          (should-not (file-exists-p owned))
+          (should (file-directory-p outer))))
+      (should-not (member owned pascal1981--temp-directories)))))
+
 (defmacro pascal1981-tests--with-selected-buffer (name &rest body)
   "Run BODY in a new, selected buffer named NAME. Buffer is killed after.
 Needed wherever a test drives real key dispatch via `execute-kbd-macro':

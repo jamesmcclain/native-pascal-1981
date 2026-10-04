@@ -1,4 +1,4 @@
-{ MATHCK boundary values (tests/mathck_boundary_values.py): every operation
+{ MATHCK boundary values (tests/mathck_boundary_values.sh): every operation
   below has a representable result -- most land exactly on 32767, -32768, 0
   or 65535 -- so none may trap under MATHCK+. Operands come from variables,
   so each operation is checked at run time; the `consts' line repeats the

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../../scripts/temp-env.sh"
 # The [C] callees this fixture calls are real clang-compiled C functions;
 # the driver only forwards -I/-L/-l to its own clang link step, so they are
 # staged into a temporary static library it can be told to link.

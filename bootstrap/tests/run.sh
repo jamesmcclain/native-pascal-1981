@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../../scripts/temp-env.sh"
 # Per-feature fixtures for pasboot. Each <name>.pas with a <name>.out is a
 # PROGRAM that USES the testio unit: it is translated, compiled, linked with
 # testio and run, and its output must equal <name>.out. Each <name>.pas with

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # Initialized on/off twins: observable output, Pascal ABI and descriptor layout.
 # Unsupported descriptor/aggregate result reads are explicitly INITCK- in both.
 set -euo pipefail
@@ -6,10 +7,11 @@ cd "$(dirname "$0")/.."
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cp tests/fixtures/initck_validation_abi.pas "$work/on.pas"
-python3 - "$work/on.pas" > "$work/off.pas" <<'PY'
-import sys
-print(open(sys.argv[1]).read().replace('{$INITCK+}', '{$INITCK-}'))
-PY
+# Keep the extra trailing newline emitted by the former Python print.
+{
+  sed 's/{$INITCK+}/{$INITCK-}/g' "$work/on.pas"
+  printf '\n'
+} > "$work/off.pas"
 printf '2:4:-32768\n4:0\n4:6\n2:6:12\n2:4:-32768\n4:0\n4:6\n0:-32768\n16:16:32\n' > "$work/expected"
 for dialect in vintage extended; do
   for opt in 0 1 2 3; do

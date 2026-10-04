@@ -19,9 +19,16 @@ import os
 import shutil
 import subprocess
 import sys
+import sys as _temp_sys
 import tempfile
+from pathlib import Path as _TempPath
+
+_temp_sys.path.insert(
+    0, str(_TempPath(__file__).resolve().parents[2] / 'scripts'))
 import unittest
 from pathlib import Path
+
+import native_temp  # owns this process's temporary workspace
 
 from tests.support import RUNTIME_LIB
 

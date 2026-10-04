@@ -114,8 +114,7 @@ has no way to start.
   appends each completion to its buffer before compiling it with the real
   compiler, which is an objective quality signal no stub can produce.
 - `oneshot.pas` / `oneshot.build.sh` / `oneshot.sh` / `oneshot.expected` — one
-  upstream call written in the vintage dialect, the step-5 milestone of the
-  port. It is not the proxy: no calibration, no echo stripping, no server
+  upstream call written in the vintage dialect. It is not the proxy: no calibration, no echo stripping, no server
   side. What it pins is that a payload built with `jsonx`, sent over `netsock`
   through `httpio`, is one a real backend accepts, and that every reply shape
   — string content, content as parts, an exhausted reasoning budget, an empty

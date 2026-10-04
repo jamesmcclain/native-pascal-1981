@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # Typecheck-only coverage for named ordinal array index types: the named
 # bounds resolve through aliases while value, non-ordinal, reversed and
 # missing names are rejected at this stage. Run goldens cover codegen.

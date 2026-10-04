@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # FOR loops terminate at the final value without stepping past it (G18, G19).
 # Iteration counts are the oracle; the post-loop control value is undefined.
 set -euo pipefail
@@ -14,6 +15,7 @@ for dialect in vintage extended; do
       printf '{$MATHCK%s}\n' "$flag" > "$work/source.pas"
       cat "$fixtures/$name.pas" >> "$work/source.pas"
       for opt in 0 1 2 3; do
+        rm -f "$work/probe" # never rerun a previous cell's binary
         bin/pascal1981 --dialect "$dialect" -O"$opt" "$work/source.pas" -o "$work/probe"
         # A wrapped endpoint would spin forever; the timeout is the failure.
         timeout 5 "$work/probe" > "$work/stdout" 2> "$work/stderr"
@@ -39,6 +41,7 @@ EOF
 printf '3\n8\n3\n' > "$work/ranged.expected"
 for dialect in vintage extended; do
   for opt in 0 2; do
+    rm -f "$work/ranged" # never rerun a previous cell's binary
     bin/pascal1981 --dialect "$dialect" -O"$opt" "$work/ranged.pas" -o "$work/ranged"
     timeout 5 "$work/ranged" > "$work/stdout"
     diff -u "$work/ranged.expected" "$work/stdout"

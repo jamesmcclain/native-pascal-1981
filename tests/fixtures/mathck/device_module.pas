@@ -1,0 +1,8 @@
+DEVICE MODULE DevMath;
+VAR k, i: INTEGER; d, e: INTEGER32; v, w: WORD; r: REAL; c: CHAR;
+{$MATHCK{FLAG}}
+PROCEDURE work;
+BEGIN
+  {STATEMENT}
+END;
+.

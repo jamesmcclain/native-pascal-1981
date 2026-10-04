@@ -1,0 +1,28 @@
+case 0
+status: nonzero
+stdout:
+prefix
+arg
+stderr:
+runtime error: MATHCK unsigned overflow in SUCC at line 14 column 18 (operand=4294967295)
+case 1
+status: nonzero
+stdout:
+prefix
+arg
+stderr:
+runtime error: MATHCK unsigned overflow in PRED at line 16 column 18 (operand=0)
+case 2
+status: nonzero
+stdout:
+prefix
+arg
+stderr:
+runtime error: MATHCK unsigned overflow in SQR at line 18 column 18 (operand=65536)
+case 3
+status: nonzero
+stdout:
+prefix
+arg
+stderr:
+runtime error: MATHCK unsigned overflow in SQR at line 20 column 18 (operand=4294967295)

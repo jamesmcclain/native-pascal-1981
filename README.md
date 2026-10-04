@@ -70,6 +70,13 @@ groups need more; see [Running Tests](#running-tests).
 - `tests/`: Test suites (golden files, unit tests, integration tests, dialect fixtures).
 - `docs/`: The [EBNF grammar](docs/ebnf_grammar.md) of the dialect. The dialect notes cover [widths, literals, and silent failure modes](docs/dialect_notes.md).
 
+## Temporary files
+
+The [temporary-file ownership contract](docs/temporary_files.md) is the
+canonical guide to scratch isolation and cleanup for the compiler, runtime,
+test harnesses, and Emacs mode. Read it before changing temporary-file handling
+or manually removing abandoned workspaces.
+
 ## Building
 
 To build the runtime, the driver, and all compiler stages (bootstrap):

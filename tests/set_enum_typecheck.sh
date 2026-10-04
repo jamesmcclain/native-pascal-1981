@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # Distinct enum declarations must fail in the checker, not later in codegen.
 set -euo pipefail
 cd "$(dirname "$0")/.."

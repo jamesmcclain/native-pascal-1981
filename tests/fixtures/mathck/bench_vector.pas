@@ -2,8 +2,8 @@ PROGRAM benchvector(input, output);
 { MATHCK overhead workload (tests/mathck_overhead.py), extended dialect:
   20 million steps of an 8-lane INTEGER32 recurrence p := p + q * c;
   q := q - p, with c = 1 read at run time. It has period 6, so the lanes stay
-  bounded. MATHCK+ lowers VECTOR arithmetic one lane at a time;
-  MATHCK- keeps one SIMD instruction per operation. }
+  bounded. MATHCK+ uses a whole-vector overflow check with a cold
+  lane-by-lane failure path; MATHCK- keeps SIMD arithmetic. }
 {$MATHCK+}
 TYPE V = VECTOR [8] OF INTEGER32;
 PROCEDURE probe;

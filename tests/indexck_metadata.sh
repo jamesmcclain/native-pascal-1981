@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # Verify native per-index metadata without Python or unchecked bad accesses.
 set -euo pipefail
 cd "$(dirname "$0")/.."

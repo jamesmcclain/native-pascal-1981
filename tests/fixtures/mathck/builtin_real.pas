@@ -1,0 +1,6 @@
+{$MATHCK+}
+PROGRAM Reals;
+VAR r: REAL;
+BEGIN
+  r := -2.5; WRITELN(ABS(r):5:2, SQR(r):6:2)
+END.

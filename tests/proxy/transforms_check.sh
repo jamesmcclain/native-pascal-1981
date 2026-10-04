@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../../scripts/temp-env.sh"
 # Check proxycore's pure transforms against the frozen native golden corpus.
 set -euo pipefail
 

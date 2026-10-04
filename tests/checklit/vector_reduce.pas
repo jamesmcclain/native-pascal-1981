@@ -6,9 +6,9 @@
 { CHECK: call i32 @llvm.vector.reduce.add.v8i32(<8 x i32> }
 { CHECK: call i32 @llvm.vector.reduce.smax.v8i32(<8 x i32> }
 { CHECK: call i8 @llvm.vector.reduce.or.v4i8(<4 x i8> }
-{ MATHCK+ (the default) lowers integer lanes and VSUM one lane at a time
-  with overflow checks (tests/mathck_vector.py); these shapes are the
-  MATHCK- form. }
+{ MATHCK+ (the default) adds overflow checks to integer lanes and VSUM
+  (tests/mathck_vector.sh; check shape in tests/mathck_optimization.sh);
+  these shapes are the MATHCK- form. }
 {$MATHCK-}
 PROGRAM VReduceShape(output);
 TYPE

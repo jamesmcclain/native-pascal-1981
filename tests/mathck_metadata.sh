@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # Verify per-operation MATHCK snapshots survive parser/typechecker/codegen.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -24,12 +25,13 @@ for cell in $cells; do
     "$work/check" < "$work/$stage" > "$work/actual"
     diff -u "$fixtures/$name.out" "$work/actual"
   done
-  # Compile only: snapshots are not consumed yet, and codegen must accept them.
+  # Compile only here: codegen consumes snapshots; focused arithmetic suites
+  # check their runtime effects. This suite checks metadata acceptance.
   bin/codegen < "$work/typed" > "$work/module.ll"
 done
 # Legacy typed ASTs without snapshots (frozen references with arithmetic)
 # must still compile; their diagnostics use 0:0, checked in IR by
-# mathck_divmod_safety.py.
+# mathck_divmod_safety.sh.
 for name in enum_types forward_decl with_stmt; do
   if "$work/check" < "tests/reference/ast/$name.typed.json" > /dev/null 2>&1; then
     echo "frozen $name.typed.json unexpectedly carries MATHCK snapshots" >&2

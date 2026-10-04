@@ -1,0 +1,80 @@
+case 0
+status: 0
+stdout:
+prefix
+-9223372036854775807
+0
+-9223372036854775808
+-9223372036854775808
+stderr:
+case 1
+status: 0
+stdout:
+prefix
+-1
+9223372036854775807
+-9223372036854775808
+9223372036854775807
+stderr:
+case 2
+status: 0
+stdout:
+prefix
+0
+-9223372036854775808
+9223372036854775807
+-9223372036854775808
+stderr:
+case 3
+status: 0
+stdout:
+prefix
+-9223372036854775807
+-9223372036854775808
+-2
+-9223372036854775808
+stderr:
+case 4
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK signed division by zero in DIV at line 164 column 14 (left=9, right=0)
+case 5
+status: 0
+stdout:
+prefix
+3
+-9223372036854775808
+-9223372036854775808
+1
+stderr:
+case 6
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK signed division by zero in MOD at line 222 column 14 (left=9, right=0)
+case 7
+status: 0
+stdout:
+prefix
+1
+0
+0
+0
+stderr:
+case 8
+status: 0
+stdout:
+-1
+prefix
+-9223372036854775808
+stderr:
+case 9
+status: 0
+stdout:
+9223372036854775807
+prefix
+0
+stderr:

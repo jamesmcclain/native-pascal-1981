@@ -17,7 +17,7 @@ BEGIN
   WRITELN(truth);
   WRITELN(falsehood);
 
-  ASSIGN(data_file, '/tmp/native_pascal_vintage_enum_io.txt');
+  ASSIGN(data_file, 'native_pascal_vintage_enum_io.txt');
   REWRITE(data_file);
   WRITELN(data_file, BLUE);
   WRITELN(data_file, FALSE);

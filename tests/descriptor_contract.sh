@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # Host descriptor transport ABI and unsupported-boundary contracts.
 # Compile-only rejection/IR checks never link undefined foreign functions or
 # execute invalid raw/DEVICE accesses. Runtime goldens use valid allocations.

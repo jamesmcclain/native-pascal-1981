@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # Release-gate fixtures: checked success/failure, non-sentinel values,
 # partial aggregates/aliases/calls across flag regions, and compile-only
 # disabled twins for uninitialized reads.
@@ -9,10 +10,11 @@ trap 'rm -rf "$work"' EXIT
 ulimit -c 0
 for kind in ok fail values mixed_ok mixed_fail; do
   cp "tests/fixtures/initck_validation_$kind.pas" "$work/$kind-on.pas"
-  python3 - "$work/$kind-on.pas" > "$work/$kind-off.pas" <<'PY'
-import sys
-print(open(sys.argv[1]).read().replace('{$INITCK+}', '{$INITCK-}'))
-PY
+  # Keep the extra trailing newline emitted by the former Python print.
+  {
+    sed 's/{$INITCK+}/{$INITCK-}/g' "$work/$kind-on.pas"
+    printf '\n'
+  } > "$work/$kind-off.pas"
 done
 printf '0\n-32768\n' > "$work/ok.out"
 printf '0:-32768:0:0:1\n0:-32768:0:0:1\n0:-32768\n0\n-32768\n0:-32768\n' > "$work/values.out"

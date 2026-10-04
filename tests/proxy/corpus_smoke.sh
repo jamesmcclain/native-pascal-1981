@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../../scripts/temp-env.sh"
 # Replay the realistic completion corpus using the native Pascal client.
 set -euo pipefail
 

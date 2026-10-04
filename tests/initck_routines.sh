@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # INITCK routine boundaries: supplied parameter values, the agreed zero/default
 # result bytes, and calling conventions must survive instrumentation. Never
 # run unchecked bad reads as if their output meant anything.
@@ -8,69 +9,36 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 ulimit -c 0
 
+# source_column FILE LINE|NEEDLE: last literal occurrence, 1-based, in the
+# ASCII source fixtures. Fail rather than invent a column for a missing match.
+source_column() {
+  INITCK_NEEDLE=${2#*|} LC_ALL=C awk -v line="${2%%|*}" '
+    NR == line {
+      needle = ENVIRON["INITCK_NEEDLE"]
+      for (column = length($0) - length(needle) + 1; column > 0; column--)
+        if (substr($0, column, length(needle)) == needle) {
+          print column
+          found = 1
+          exit
+        }
+    }
+    END { if (!found) exit 1 }
+  ' "$1"
+}
+
 # A correctly initialized program, apart from functions that deliberately
 # never assign their result: those return the retained native zero/default
 # bytes (scalar, REAL, pointer, coerced and sret records) when INITCK is off
 # at the return. Value, VAR and CONST formals carry 0, FALSE, CHR(0) and the
 # full-range INTEGER minimum unchanged; recursion and nesting are included.
-cat > "$work/plain.pas" <<'PAS'
-PROGRAM routines;
-TYPE
-  Pair = RECORD a, b: INTEGER END;
-  Big = RECORD a, b, c, d, e, f, g, h, i, j: INTEGER END;
-  PInt = ^INTEGER;
-FUNCTION echo(i: INTEGER; b: BOOLEAN; c: CHAR): INTEGER;
-VAR t: INTEGER; u: BOOLEAN;
-BEGIN
-  t := i; u := b;
-  {@ON} IF u THEN echo := t ELSE {@OFF} echo := ORD(c)
-END;
-PROCEDURE swap(VAR x, y: INTEGER);
-VAR t: INTEGER;
-BEGIN t := x; x := y; {@ON} y := t {@OFF} END;
-PROCEDURE view(CONST c: CHAR; CONST p: Pair);
-BEGIN WRITELN(ORD(c), ' ', p.a, ' ', p.b) END;
-FUNCTION noint: INTEGER; BEGIN END;
-FUNCTION nobool: BOOLEAN; BEGIN END;
-FUNCTION nochar: CHAR; BEGIN END;
-FUNCTION noreal: REAL; BEGIN END;
-FUNCTION noptr: PInt; BEGIN END;
-FUNCTION nopair: Pair; BEGIN END;
-FUNCTION nobig: Big; BEGIN END;
-FUNCTION early(n: INTEGER): INTEGER;
-BEGIN IF n > 0 THEN BEGIN early := n; {@ON} RETURN END {@OFF} END;
-FUNCTION fact(n: INTEGER): INTEGER;
-BEGIN IF n <= 1 THEN fact := 1 ELSE fact := n * fact(n - 1) END;
-PROCEDURE outer(n: INTEGER);
-VAR m: INTEGER;
-  FUNCTION inner(k: INTEGER): INTEGER;
-  BEGIN inner := k + 1 END;
-BEGIN m := inner(n); WRITELN(m) END;
-VAR x, y: INTEGER; p: Pair; bg: Big; ch: CHAR;
-BEGIN
-  {@OFF}
-  WRITELN(echo(-32768, TRUE, 'a'), ' ', echo(0, FALSE, CHR(0)));
-  x := 1; y := -32768; swap(x, y); WRITELN(x, ' ', y);
-  p.a := 3; p.b := 4; ch := 'z'; view(ch, p);
-  WRITELN(noint, ' ', ORD(nobool), ' ', ORD(nochar), ' ', noreal:3:1, ' ', noptr = NIL);
-  p := nopair; bg := nobig; WRITELN(p.a, ' ', p.b, ' ', bg.a, ' ', bg.j);
-  WRITELN(early(0), ' ', early(5), ' ', fact(5));
-  outer(41)
-END.
-PAS
-printf -- '-32768 0\n-32768 1\n122 3 4\n0 0 0 0.0 TRUE\n0 0 0 0\n0 5 120\n42\n' > "$work/expected"
 # plain: no directives. checked: INITCK+ wherever the current slice accepts an
 # enabled read (tracked locals) and at a RETURN after the result is assigned.
 # Unassigned results keep INITCK off at their return: the default bytes are
 # the agreed INITCK-off behavior, not an initialization.
-python3 - "$work" <<'PY'
-import sys
-work = sys.argv[1]
-src = open(f'{work}/plain.pas').read()
-open(f'{work}/plain.pas', 'w').write(src.replace('{@ON}', '').replace('{@OFF}', ''))
-open(f'{work}/checked.pas', 'w').write(
-    src.replace('{@ON}', '{$INITCK+}').replace('{@OFF}', '{$INITCK-}'))
-PY
+for mode in plain checked; do
+  cp "tests/fixtures/initck_routines_$mode.pas" "$work/$mode.pas"
+done
+printf -- '-32768 0\n-32768 1\n122 3 4\n0 0 0 0.0 TRUE\n0 0 0 0\n0 5 120\n42\n' > "$work/expected"
 for mode in plain checked; do
   for dialect in vintage extended; do
     for opt in 0 2; do
@@ -250,15 +218,8 @@ BEGIN
 END;
 BEGIN probe END.
 PAS
-  # The reported column is the consuming token's: the last match of the
-  # needle on the given line of the generated source.
-  col=$(python3 - "$work/bad.pas" "$site" <<'PY'
-import sys
-path, site = sys.argv[1:]
-line, needle = site.split('|', 1)
-print(open(path).read().splitlines()[int(line) - 1].rindex(needle) + 1)
-PY
-)
+  # The reported column is the consuming token's last literal occurrence.
+  col=$(source_column "$work/bad.pas" "$site")
   expect_fail bad "$prefix" "runtime error: INITCK uninitialized $err at line ${site%%|*} column $col"
 done
 
@@ -387,13 +348,7 @@ BEGIN
 END;
 BEGIN probe END.
 PAS
-  col=$(python3 - "$work/bad.pas" "$site" <<'PY'
-import sys
-path, site = sys.argv[1:]
-line, needle = site.split('|', 1)
-print(open(path).read().splitlines()[int(line) - 1].rindex(needle) + 1)
-PY
-)
+  col=$(source_column "$work/bad.pas" "$site")
   expect_fail bad "$prefix" "runtime error: INITCK uninitialized $err at line ${site%%|*} column $col"
 done
 
@@ -462,55 +417,15 @@ expect_ok scope-ok '121 3 22 1\n242\n121\n'
 for kind in withread nestedread nestedother; do
   case "$kind" in
     withread) # A checked read inside a WITH body is the routine's local.
-      routines='TYPE R = RECORD f: INTEGER END;'; locals='u, x, y: INTEGER; r: R'
-      body='r.f := 1; WITH r DO BEGIN {$INITCK+} WRITELN(u) {$INITCK-} END'
       err='local u'; site='9|u)' ;;
     nestedread) # The nested routine's own same-name local starts unset.
-      routines='PROCEDURE inner; VAR x: INTEGER; BEGIN {$INITCK+} WRITELN(x) {$INITCK-} END;'
-      locals='u, x, y: INTEGER'; body='x := 1; inner'
-      err='local x'; site='2|x)' ;;
+      err='local x'; site='4|x)' ;;
     nestedother) # ...and initializing it leaves the enclosing x unset.
-      routines='PROCEDURE inner(x: INTEGER); VAR y: INTEGER; BEGIN y := x END;'
-      locals='u, x, y: INTEGER'; body='inner(1); {$INITCK+} WRITELN(x)'
       err='local x'; site='9|x)' ;;
   esac
-  # Nested routines must live inside probe to exercise nesting.
-  if [ "$kind" = withread ]; then decls=''; else decls="$routines"; routines=''; fi
-  cat > "$work/bad.pas" <<PAS
-PROGRAM bad;
-$routines
-PROCEDURE probe;
-VAR $locals;
-$decls
-BEGIN
-  {\$INITCK+}
-  WRITELN('prefix');
-  {\$INITCK-}
-  $body;
-  WRITELN('after')
-END;
-BEGIN probe END.
-PAS
-  # Drop whichever slot is empty, so the body is line 9 either way and a
-  # nested declaration is line 4.
-  python3 - "$work/bad.pas" <<'PY'
-import sys
-p = sys.argv[1]
-lines = open(p).read().splitlines()
-if lines[1] == '':
-    del lines[1]
-else:
-    del lines[4]
-open(p, 'w').write('\n'.join(lines) + '\n')
-PY
-  if [ "$kind" != withread ]; then site="${site/#2|/4|}"; fi
-  col=$(python3 - "$work/bad.pas" "$site" <<'PY'
-import sys
-path, site = sys.argv[1:]
-line, needle = site.split('|', 1)
-print(open(path).read().splitlines()[int(line) - 1].rindex(needle) + 1)
-PY
-)
+  # Fixtures pin the body at line 9 and nested declarations at line 4.
+  cp "tests/fixtures/initck_routines_$kind.pas" "$work/bad.pas"
+  col=$(source_column "$work/bad.pas" "$site")
   expect_fail bad 'prefix\n' "runtime error: INITCK uninitialized $err at line ${site%%|*} column $col"
 done
 

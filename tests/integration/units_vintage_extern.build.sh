@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../../scripts/temp-env.sh"
 # Builds a PROGRAM against a UNIT whose INTERFACE is implemented partly in
 # Pascal and partly in C -- the 1981 manual's split-implementation shape.
 # vsplit's IMPLEMENTATION declares Helper with the EXTERN directive at its

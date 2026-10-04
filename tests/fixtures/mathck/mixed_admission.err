@@ -1,0 +1,3 @@
+Type checking failed:
+Mixed INTEGER-family and WORD-family operands need an explicit conversion (e.g. WRD) in {OP}
+Error: Failed to parse input AST JSON

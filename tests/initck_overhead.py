@@ -5,9 +5,16 @@ import json
 import platform
 import statistics
 import subprocess
+import sys as _temp_sys
 import tempfile
+from pathlib import Path as _TempPath
+
+_temp_sys.path.insert(
+    0, str(_TempPath(__file__).resolve().parents[1] / 'scripts'))
 import time
 from pathlib import Path
+
+import native_temp  # owns this process's temporary workspace
 
 repo = Path(__file__).resolve().parent.parent
 parser = argparse.ArgumentParser(description=__doc__)

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # Direct scalar-local producer/guard matrix. Never run unchecked bad reads.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -52,10 +53,11 @@ END;
 BEGIN values; recurse(2); recurse(1); flow(TRUE); flow(FALSE); flow(TRUE); flow(FALSE) END.
 PAS
 printf '0\n-32768\n8\n11\n13\n2a\n1a\n0a\n1a\n0a\n2\n2\n3\n2\n2\n3\n' > "$work/expected"
-python3 - "$work/good.pas" > "$work/good-off.pas" <<'PY'
-import sys
-print(open(sys.argv[1]).read().replace('{$INITCK+}', '{$INITCK-}').replace('{$DEBUG+}', '{$DEBUG-}'))
-PY
+# Keep the extra trailing newline emitted by the former Python print.
+{
+  sed -e 's/{$INITCK+}/{$INITCK-}/g' -e 's/{$DEBUG+}/{$DEBUG-}/g' "$work/good.pas"
+  printf '\n'
+} > "$work/good-off.pas"
 for dialect in vintage extended; do
   for mode in good good-off; do
     for opt in 0 2; do
@@ -133,15 +135,23 @@ PAS
     status=0
     { "$work/bad" > "$work/actual" 2> "$work/err"; } 2>/dev/null || status=$?
     test "$status" -ne 0
-    python3 - "$kind" "$body" > "$work/expected-err" <<'PY'
-import sys
-kind, body = sys.argv[1:]
-# The failing read is on line 7, after two indentation spaces. For a
-# self-update skip the destination; skipped writers and recursion fail at output.
-offset = (body.index('x', 1) if kind == 'selfupdate' else
-          body.index('x') if kind == 'repeat' else body.rindex('x'))
-print(f'runtime error: INITCK uninitialized local x at line 7 column {offset + 3}')
-PY
+    # ASCII body at line 7, with two indentation spaces. Self-update skips
+    # the destination; REPEAT consumes the first x; other cases use the last.
+    printf '%s\n' "$body" | LC_ALL=C awk -v kind="$kind" '
+      {
+        if (kind == "selfupdate") {
+          column = index(substr($0, 2), "x")
+          if (column) column++
+        } else if (kind == "repeat") {
+          column = index($0, "x")
+        } else {
+          for (column = length($0); column > 0; column--)
+            if (substr($0, column, 1) == "x") break
+        }
+        if (!column) exit 1
+        printf "runtime error: INITCK uninitialized local x at line 7 column %d\n", column + 2
+      }
+    ' > "$work/expected-err"
     diff -u "$work/expected-err" "$work/err"
     printf 'prefix\n' > "$work/expected-bad"
     if [ "$kind" = recursion ] || [ "$kind" = earlyreturn ]; then
@@ -360,11 +370,10 @@ for kind in global real enum subrange heapreal globalptr realarray realfield wit
     device) header='DEVICE;'; category='DEVICE code' ;;
   esac
   if [ "$kind" = device ]; then
-    # Reuse the known CPU DEVICE syntax and inject a checked local read.
-    python3 - > "$work/boundary.pas" <<'PY'
-s = open('tests/fixtures/initck_state_device.pas').read()
-print(s.replace("c := 'a' END", "c := 'a'; {$INITCK+} x := x + 1 END"))
-PY
+    # Unlike the external DEVICE probe, keep INITCK enabled at closing END.
+    cp tests/fixtures/initck_scalar_device_read.pas "$work/boundary.pas"
+    # Preserve the former generator's extra print newline.
+    printf '\n' >> "$work/boundary.pas"
   elif [ "$kind" = realresult ]; then
     # An enabled closing END reads a result outside the tracked types.
     cat > "$work/boundary.pas" <<'PAS'
@@ -390,10 +399,11 @@ BEGIN $setup; {\$INITCK+} WRITELN($expr); {\$INITCK-} $after END;
 BEGIN probe(0) END.
 PAS
   fi
-  python3 - "$work/boundary.pas" > "$work/boundary-off.pas" <<'PY'
-import sys
-print(open(sys.argv[1]).read().replace('{$INITCK+}', '{$INITCK-}'))
-PY
+  # Keep the extra trailing newline emitted by the former Python print.
+  {
+    sed 's/{$INITCK+}/{$INITCK-}/g' "$work/boundary.pas"
+    printf '\n'
+  } > "$work/boundary-off.pas"
   bin/pascal1981 --dialect extended -O0 -S "$work/boundary-off.pas" -o "$work/boundary-off.ll" 2> "$work/err"
   test ! -s "$work/err"
   for opt in 0 2; do

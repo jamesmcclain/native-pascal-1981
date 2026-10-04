@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../../scripts/temp-env.sh"
 # Builds units_cextern.pas (a host PROGRAM) linked against a separately
 # compiled UNIT implementation (units_cextern.cwrap.impl), demonstrating
 # USES + separate compilation, which the single-file driver invocation

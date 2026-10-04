@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # INITCK scalar producers beyond literal assignment: unchecked copies carry
 # their source state, READ/READLN destinations and FOR control variables are
 # producers. Never run unchecked bad reads as if their output meant anything.

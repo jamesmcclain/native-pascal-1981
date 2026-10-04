@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # Shadow allocation/reset independently of enabled guards (see initck_scalar.sh).
 set -euo pipefail
 cd "$(dirname "$0")/.."

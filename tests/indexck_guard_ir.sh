@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # Compile only: the disabled selector is deliberately out of bounds.
 set -euo pipefail
 cd "$(dirname "$0")/.."

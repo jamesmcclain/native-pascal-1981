@@ -1,4 +1,4 @@
-{ MATHCK on/off twin: tests/mathck_overflow.py prepends $MATHCK+ or $MATHCK-
+{ MATHCK on/off twin: tests/mathck_scalar.sh prepends $MATHCK+ or $MATHCK-
   and requires identical output (twin_arith.out). No operation overflows. }
 PROGRAM TwinArith(output);
 CONST

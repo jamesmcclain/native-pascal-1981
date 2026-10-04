@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # Hardened NEW failures: inspect selected slots via a test-only C/linker harness.
 set -euo pipefail
 cd "$(dirname "$0")/.."

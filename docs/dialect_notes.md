@@ -15,6 +15,42 @@ rather than inferred from its sources.
 > for. Arithmetic in those kernels is then unchecked and wraps. See
 > [GPU (NVPTX) kernels need `{$MATHCK-}`](#gpu-nvptx-kernels-need-mathck--for-integer-arithmetic-extended).
 
+Compiler and runtime scratch storage, including anonymous Pascal FILE storage
+and `SysTempDirCreate`, is covered by the canonical
+[temporary-file ownership contract](temporary_files.md). Harness and editor
+cleanup rules live there too; they are not dialect differences.
+
+Host pointer interoperability is defined by the
+[SUPER ARRAY descriptor ABI](#host-super-array-descriptor-abi-native), including
+its [unsafe raw boundary](#descriptor-unsafe-raw-boundary) and ownership limits.
+
+## Contents
+
+- [There are two command-line dialects](#there-are-two-command-line-dialects)
+- [Initialization checking: host storage](#initialization-checking-host-storage-native)
+- [Enumerated and BOOLEAN I/O](#enumerated-and-boolean-io)
+- [Wide signed integer input](#wide-signed-integer-input-extended)
+- [String precision](#string-precision)
+- [READSET and tuning hints](#readset-and-tuning-hints)
+- [GPU (NVPTX) kernels need `{$MATHCK-}` for integer arithmetic](#gpu-nvptx-kernels-need-mathck--for-integer-arithmetic-extended)
+- [Vectors (SIMD)](#vectors-simd-extended)
+- [BOOLEAN set constructors](#boolean-set-constructors-native)
+- [Set base compatibility](#set-base-compatibility-native)
+- [Set constructor element range](#set-constructor-element-range-native)
+- [BOOLEAN membership](#boolean-membership-native)
+- [Host SUPER ARRAY descriptor ABI](#host-super-array-descriptor-abi-native)
+- [Bound expressions](#bound-expressions-native)
+- [Subrange range checks](#subrange-range-checks-native)
+- [Named ordinal array index types](#named-ordinal-array-index-types-native)
+- [MATHCK: integer overflow and division checks](#mathck-integer-overflow-and-division-checks-both)
+- [Integer widths](#integer-widths)
+- [Integer constants and context](#integer-constants-and-context)
+- [`TRUNC` and `ROUND` return `INTEGER`, so they narrow to 16 bits](#trunc-and-round-return-integer-so-they-narrow-to-16-bits-both)
+- [Differences from the Python compiler](#differences-from-the-python-compiler)
+- [Native limitations](#native-limitations-native)
+- [Other things that cost time](#other-things-that-cost-time-both-unless-marked-otherwise)
+- [Checklist before committing Pascal in this tree](#checklist-before-committing-pascal-in-this-tree)
+
 ## There are two command-line dialects
 
 The native compiler has a **vintage** dialect and an **extended** dialect.
@@ -42,19 +78,23 @@ values. The driver uses `vintage` when the command does not contain a dialect
 option. For example:
 
 ```sh
-bin/pascal1981 -S tests/golden/01_hello.pas -o /tmp/hello.ll
-bin/pascal1981 --dialect extended -S tests/golden/01_hello.pas -o /tmp/hello.ll
+mkdir -p -m 700 /tmp/native-pascal-1981
+work=$(mktemp -d /tmp/native-pascal-1981/example.XXXXXXXXXX)
+trap 'rm -rf -- "$work"' EXIT
+trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+bin/pascal1981 -S tests/golden/01_hello.pas -o "$work/hello.ll"
+bin/pascal1981 --dialect extended -S tests/golden/01_hello.pas -o "$work/hello.ll"
 ```
 
 The standalone parser, typechecker, and code generator also default to
 `vintage`. These stages accept data only on standard input. An explicit
-extended pipeline has this form:
+extended pipeline has this form (using the workspace above):
 
 ```sh
 bin/lexer < tests/golden/01_hello.pas |
   bin/parser --dialect extended |
   bin/typechecker --dialect extended |
-  bin/codegen --dialect extended > /tmp/hello.ll
+  bin/codegen --dialect extended > "$work/hello.ll"
 ```
 
 The lexer is dialect-neutral. It creates the same token stream for both
@@ -115,8 +155,8 @@ this section define the limits, not the presence of a directive.
 | Initialized on/off output, guarded vs unguarded IR, partial aliases/calls | `initck_validation.sh` |
 | Unchanged Pascal ABI and descriptor layout (not aggregate-result enforcement) | `initck_abi.sh`, `descriptor_contract.sh` |
 
-The old enabled/disabled **identical-IR** expectation applied only to the
-metadata-only baseline and is no longer valid for supported checked reads.
+Enabled and disabled INITCK IR are **not** expected to be identical for
+supported checked reads.
 At O0 the release matrix requires located guards for scalar/pointer reads,
 aggregate copies/elements, heap leaves, formals and results; disabled twins
 have no INITCK failure calls but still carry shadow state and copy/heap
@@ -713,8 +753,8 @@ BEGIN
 Without the directive this kernel (`tests/gpu/vadd.pas`) fails to compile
 with `MATHCK unsupported boundary: DEVICE arithmetic at line L column C`,
 pointing at the first operation MATHCK would check, and no PTX is emitted. This is
-a deliberate, recorded policy (MATHCK §6 in `docs/mathck_contract.md`, "DEVICE:
-decided and implemented"), not an oversight: a check the compiler cannot
+the deliberate [DEVICE boundary policy](#mathck-vector-device-and-unsupported-boundaries),
+not an oversight: a check the compiler cannot
 enforce on the GPU is never silently dropped. Overflow in such a kernel wraps
 at the type's width with no diagnostic, so validate index ranges on the host
 or run the kernel as CPU DEVICE code (which is checked) while debugging.
@@ -860,59 +900,173 @@ As the 1981 manual allows, the left operand can be outside the range of the
 set's base type. Then the result is FALSE. This includes a value outside
 0..255, such as -1 or 300, which cannot be in any set.
 
+## Host SUPER ARRAY descriptor ABI **[native]**
+
+- [Storage and identity](#descriptor-storage-and-identity)
+- [Native transport](#descriptor-native-transport)
+- [Unsafe raw boundary](#descriptor-unsafe-raw-boundary)
+- [Allocation and checked access](#descriptor-allocation-and-checked-access)
+- [Evidence and limits](#descriptor-evidence-and-limits)
+
+### Descriptor storage and identity
+
+Host `^SUPER ARRAY` values use nonpacked LLVM `{ptr, i64}` storage on the
+supported x86-64 Linux/SysV target: data at offset 0, actual inclusive upper
+(signed INTEGER64) at offset 8, size/array stride 16, alignment 8. Data points
+to the first element at the declared lower index; there is **no pre-data bound
+header**. The declared lower, ordinal domain and element identity are immutable
+type metadata. Enclosing aggregates use natural padding. Other host targets
+require a new layout/ABI audit.
+
+Rebuild affected units, callers and callees together; old objects are incompatible.
+The break includes slots, enclosing records, array strides, SIZEOF, typed-file
+element layouts and parameter/results. Descriptor-containing binary data is
+process-local memory representation, not portable serialization or a safe
+reconstruction mechanism. Arbitrary bytes supply no validity, ownership or
+lifetime guarantee.
+
+NIL is `{null, 0}`; its upper is not a bound. NIL tests and equality/inequality
+compare data only, not upper. Ordering/arithmetic are rejected. Bounds do not
+prove liveness; DISPOSE does not invalidate aliases or detect dangling access.
+Assignment, arguments and results require the same resolved pointer identity,
+including aliases (`TYPE Q = P`), referent, lower/domain and pointer flavor/space.
+Separate declarations are not interchangeable merely because layouts match;
+use a shared named pointer type in fields and repeated routine headings.
+Reference actuals need matching descriptor storage. Ordinary thin-pointer rules
+are unchanged. NIL literals coerce to the whole descriptor; arbitrary zero
+ADRMEM values do not.
+
+The i64 carrier does not broaden source domains or introduce INTEGER64/WORD64
+declared-lower syntax. INTEGER, WORD, CHAR, BOOLEAN and enum/subrange domains
+retain their limits. Both compiler phases resolve lower/domain consistently;
+unsupported/unresolved domains are rejected, not defaulted to INTEGER. NEW and
+unsafe import require domain-valid upper >= lower, representable as signed i64;
+wider expressions are checked before narrowing (WORD64 above INT64_MAX cannot
+wrap into a bound). LOWER/UPPER return INTEGER64: LOWER is type-only, UPPER
+selects once and diagnoses final NIL before using upper.
+
+### Descriptor native transport
+
+Assignment, aliases, record/array slots, parameter temporaries and result slots
+load/store the complete value. The explicit SysV aggregate machinery uses two
+INTEGER-class eightbytes: value arguments use two i64 coercion pieces, results
+use `{i64, i64}`, while storage stays `{ptr, i64}`. Reference modes pass one
+address of the complete slot, not element data. Recursively classify both leaves
+in aggregates; register accounting, MEMORY/byval and sret rules apply. Signatures,
+call marshalling, callee and return reconstruction must agree; LLVM struct
+spelling alone does not establish the object ABI.
+
+For `record.p^[i]` and `a[j]^[i]`, the shared designator carries the selected
+pointer's descriptor separately from element data, never a declaration-wide
+last allocation. UPPER, scalar indexing and VLOAD/VSTORE consume that actual
+bound source. Vector transfer-check policy remains independent of scalar INDEXCK.
+Borrowed non-pointer SUPER ARRAY formals remain unsupported.
+
+DEVICE storage/lowering stays thin, including DEVICE interfaces spliced into
+host modules. Imported host descriptor parameters/results/storage are rejected
+in DEVICE code, not reinterpreted as thin pointers; opaque raw-only interfaces
+remain usable.
+
+### Descriptor unsafe raw boundary
+
+Extended intrinsics respect normal builtin shadowing:
+
+- `UNSAFERAW(p)` returns CPTR/ADRMEM, extracting data only, not slot storage.
+  It evaluates p once; NIL exports null.
+- `UNSAFESUPER(P, raw, lower, upper)` returns descriptor type P. P is a type
+  argument as in RETYPE and must resolve to a supported host super-array pointer.
+  Raw may be CPTR/ADRMEM or a compatible thin host element pointer, not integer,
+  ADS or another descriptor. Runtime operands run once; relative order is
+  unspecified.
+
+Import validates matching declared lower, domain-valid/representable upper >=
+lower, nonnull data, element alignment and nonoverflowing count/stride/byte-span/
+address arithmetic. Widen before narrowing. These checks apply under INDEXCK-
+too, never dereference raw or inspect raw-8, and fail deterministically without
+returning/publishing a value. Use NIL assignment, not null import. Runtime failure
+texts are pinned by the [descriptor probes](../tests/README.md#host-descriptor-contracts).
+
+Validation establishes metadata/arithmetic validity, **not accessible capacity,
+provenance, ownership or lifetime**. The caller warrants contiguous storage of
+the stated extent, valid elements, permitted read/write access and sufficient
+lifetime. Nonnull/aligned addresses prove neither allocation origin nor capacity.
+C raw results require explicit import before checked or unchecked descriptor use.
+Import grants no ownership. DISPOSE of an import/alias is valid only with the
+exact native allocation/free contract and exclusive right to free; borrowed
+C/stack storage fails that precondition. No compile/runtime misuse detection is
+promised: two-word descriptors cannot enforce ownership through arbitrary aliases.
+
+Both intrinsics emit stable `unsafe-super-array-conversion` warnings;
+warning-as-error control syntax is deferred. Vintage and DEVICE uses are rejected.
+Implicit conversions to/from ADRMEM, CPTR, thin pointers or ADS (including RETYPE,
+address arithmetic and numeric READ/WRITE) are rejected. Explicit raw export can
+print an address; numeric input cannot reconstruct a descriptor.
+
+C arguments/results containing descriptors are rejected recursively, including
+VAR slots and enclosing value/reference aggregates. Statically visible opaque
+address escapes to descriptor-containing storage, including ADR of a slot or
+aggregate, are rejected; ADR of a non-pointer SUPER ARRAY referent awaits a
+borrowed-view contract. ADR(slot) is not element export. Arbitrary raw-memory
+operations remain unsafe: pointer spelling cannot prove what an address hides.
+Direct descriptor LAUNCH arguments and ADS conversions are rejected.
+DEVCOPY/DEVFREE require explicit raw export where applicable; copying descriptor
+bytes neither converts DEVICE representation nor transfers ownership.
+
+### Descriptor allocation and checked access
+
+NEW evaluates destination selection and upper once, validates bounds/domain,
+count, size and alignment, allocates directly, then publishes one full descriptor.
+Checks apply under INDEXCK- too. `pas_super_new` uses 128-bit arithmetic; it rejects
+WORD64 upper > INT64_MAX, upper < lower or outside domain, count > SIZE_MAX,
+bytes > SIZE_MAX or PTRDIFF_MAX, and NULL malloc. Failures abort with
+`runtime error: NEW SUPER ARRAY <reason>`; [NEW probes](../tests/README.md#descriptor-new-and-index-probes)
+pin the reasons. The helper has no destination address; only success reaches the
+compiler's store. Selection/bound side effects are not rolled back. Transactional
+publication is **not atomicity or a concurrent-access guarantee**, and does not
+require element zero-initialization.
+
+Strides/alignment use LLVM allocation layout, not narrow SIZEOF arithmetic.
+Array layouts beyond signed host size are rejected before an overflowing LLVM
+layout query; records retain 32-bit field-offset limits. Nested non-pointer SUPER
+ARRAY elements have no static extent and are rejected. These checks also govern
+unsafe-import spans. NEW elements aligned beyond 16 bytes are rejected. Allocation
+must return the exact recoverable base compatible with free; no adjusted data
+pointer without a free base. DISPOSE frees that unchanged base, not a header.
+Ordinary thin-pointer NEW also aborts with `runtime error: NEW allocation failed`
+(IBM error 2001, "No Room In Heap") before destination publication, not by storing NIL.
+
+Host `$INDEXCK+` compares the scalar index in widened signed/unsigned i128 against
+declared lower and the selected descriptor's upper before offset/GEP/data access,
+using `pas_array_index_error` and the same fixed-array diagnostic with actual
+lower..upper. The index runs once; even a checked constant bad index fails only
+when executed. Offset/GEP reuses that checked full-width value. A NIL descriptor
+fails via `pas_super_index_nil_error` (`runtime error: index through NIL
+super-array pointer`) before bounds comparison/address formation, independent
+of index value. The index expression runs once, but its side-effect ordering
+relative to NIL failure is deliberately not pinned down.
+
+Per-index snapshots apply; in-expression directives affect subsequent indexes
+only. INDEXCK- suppresses scalar guards, not descriptor transport or import/NEW
+validation. Borrowed non-pointer subscripts are rejected outright; DEVICE has no
+such guard. Guards never inspect a pre-data header or make a dangling alias safe.
+
+### Descriptor evidence and limits
+
+[IBM Pascal Compiler, August 1981](https://www.bitsavers.org/pdf/ibm/pc/languages/IBM_Pascal_Compiler_Aug81.pdf),
+printed pp. 6-43 (descriptors), 6-35 (address without bounds), 6-29–6-31
+(pointer identity/operations), 6-15–6-16 (bounds/NEW), 10-16–10-17 (returns),
+provides historical context. Local OCR `IBM_Pascal_Compiler_Aug81_djvu.txt` lines
+7943–7963, 7593–7604, 7325–7396, 6636–6701 and 11000–11058 respectively were not
+verified against scan images. Historical widths, 16-bit bounds and return
+registers are **not** the native ABI.
+[LLVM LangRef](https://llvm.org/docs/LangRef.html) supports aggregate operations
+and DataLayout padding, not atomic publication or C ABI from struct spelling.
+Signed i64 bounds, equality-by-data, unsafe syntax/ownership and deterministic
+failures are local decisions, not historical parity. Borrowed formals, DEVICE
+descriptors and temporal safety remain deferred. See the
+[coverage map](../tests/README.md#host-descriptor-contracts) for test entry points.
+
 ## Bound expressions **[native]**
-
-The following describes implemented behavior. Host super-array pointers now use
-[the descriptor ABI](host_super_array_abi.md): nonpacked `{ptr, i64}` storage,
-16-byte size/stride and 8-byte alignment on x86-64 Linux/SysV. Assignment,
-record/array slots, value/reference parameters and function results preserve the
-whole value. Native value/result ABI uses two INTEGER eightbytes, or byval/sret
-for larger aggregates and register exhaustion. NIL is `{null, 0}`; equality
-compares data addresses. The declared lower/index domain stays type metadata.
-Same resolved pointer type (including aliases) is required; separately declared
-pointer types are not interchangeable. Use a shared named pointer type in
-variables, fields and repeated routine headings. Rebuild affected host units.
-DEVICE pointers and DEVICE-interface storage remain thin and unchanged.
-Host descriptor parameters/results/storage imported into DEVICE code are
-explicitly rejected, not silently reinterpreted as thin pointers.
-
-Extended `UNSAFERAW(p)` explicitly exports element data as CPTR/ADRMEM.
-`UNSAFESUPER(P, raw, lower, upper)` explicitly imports to descriptor type P;
-runtime operands execute once. It requires matching lower, representable/domain-
-valid upper, non-NIL aligned data and nonoverflowing extent/address arithmetic,
-including under INDEXCK-. Both emit `unsafe-super-array-conversion` warnings
-and respect user routine shadowing; vintage and DEVICE uses are rejected.
-Import validates metadata, **not capacity, provenance, ownership or lifetime**;
-those are unsafe caller warranties. DISPOSE requires an exact compatible native
-allocation and an exclusive right to free it. C descriptor signatures, known
-slot-address escapes, implicit raw/ADS conversions, pointer arithmetic/ordering,
-numeric descriptor I/O and direct descriptor LAUNCH arguments are rejected.
-
-Host SUPER ARRAY NEW evaluates destination selection and upper once, validates
-representability/domain and lower <= upper, checks count/bytes in 128-bit
-arithmetic, then allocates elements directly. NULL allocation and invalid bounds/
-size produce deterministic `runtime error: NEW SUPER ARRAY ...` diagnostics and
-abort, even under INDEXCK-. Only success reaches one complete-descriptor store;
-the bound expression's own side effects are not rolled back. No element-zeroing
-or concurrent atomicity promise. LLVM allocation strides avoid narrow SIZEOF
-arithmetic; oversized element layouts, records beyond supported 32-bit field
-offsets, dynamic non-pointer element extents and over-aligned (>16) NEW elements
-are rejected. Ordinary thin-pointer NEW likewise aborts with `runtime error:
-NEW allocation failed` (IBM error 2001, "No Room In Heap") when its allocation
-fails, before the destination is written, instead of storing NIL. DISPOSE frees the
-unchanged exact data base; aliases are not invalidated or protected from dangling
-access. Host `$INDEXCK+` now checks scalar super-array subscripts against the
-selected descriptor's declared lower and actual upper in widened signed/
-unsigned arithmetic, with the same executed-only constant diagnostic as fixed
-arrays; the offset/GEP reuses the checked full-width value and `$INDEXCK-`
-suppresses the guard. A checked subscript through a NIL descriptor fails
-deterministically (`runtime error: index through NIL super-array pointer`)
-before the bound comparison and before any data access; the index expression
-has already run exactly once, and whether its side effects happen before the
-NIL failure is deliberately not specified. `$INDEXCK` snapshot semantics and
-guard-free IR for disabled snapshots are probed for super subscripts in
-`tests/indexck_guard_ir.sh`. Borrowed non-pointer formals and dangling-alias
-detection remain deferred.
 
 `LOWER(expression)` and `UPPER(expression)` accept the 1981 manual's array,
 set, enumerated and subrange operands, subject to these native ABI limits:
@@ -957,7 +1111,7 @@ literal expressions outside the permitted types are rejected. Standalone
 subrange type declarations are supported for vintage INTEGER bounds within
 `-32768..32767`, CHAR, BOOLEAN, and a pair of members from one enumerated
 type; stores into them are range-checked as described under
-[Subrange range checks](#subrange-range-checks). Function call
+[Subrange range checks](#subrange-range-checks-native). Function call
 postfix selectors are supported only inside a bound operand; this does not
 make `f(x)^` a general expression elsewhere. Pointer descriptor formals preserve
 bounds; borrowed non-pointer super-array formals are explicitly rejected until
@@ -1108,35 +1262,282 @@ the domain.
 ## MATHCK: integer overflow and division checks **[both]**
 
 `$MATHCK` is implemented. It is on by default (and through `$DEBUG`), so an
-ordinary program gets these checks without asking. The full decision record is
-the [MATHCK contract](mathck_contract.md); the test map is in
-[`tests/README.md`](../tests/README.md#mathck-test-map).
+ordinary program gets these checks without asking. This section is the
+canonical MATHCK contract. Rules are normative; paragraphs marked
+*Implementation* locate the current lowering and may change without changing
+the rules. The [test map](../tests/README.md#mathck-test-map) names the
+focused regression for each rule, and the persisted
+[G1–G29 inventory](../tests/README.md#mathck-gap-baseline) is a classification
+audit, not evidence that checks are missing. Compiler-source arithmetic and the
+pasboot policy (it accepts but ignores MATHCK) belong to the
+[bootstrap contract](bootstrap_subset.md#self-hosting-arithmetic).
 
-**What is checked.** INTEGER-family and WORD-family (8/16/32/64-bit, signed
-and unsigned) `+ - * DIV MOD`, unary minus, and the builtins `SUCC`, `PRED`,
-`ABS`, `SQR`; integer VECTOR lanes and the `VSUM`/`VPROD` reductions
-**[extended]**. Overflow means the mathematically exact result does not fit
-the operation's result type, using the type's real native range. INTEGER is
-`-32768..32767`, so `32767 + 1`, `-(-32768)`, `ABS(-32768)`, `SQR(200)` and
-`-32768 DIV -1` fail, while `-32767 - 1`, `-16384 * 2` and `PRED(-32767)` give a
-valid `-32768`. WORD is `0..65535` with unsigned arithmetic, so `0 - 1` fails;
-WORD negation succeeds only for zero, and WORD `ABS` returns its argument.
-Operands of different widths in one family widen to the wider operand, which is
-the result type (`INTEGER32 * INTEGER` is checked at 32 bits). Mixed
-INTEGER-family/WORD-family operands are rejected at compile time (see
-[Integer constants and context](#integer-constants-and-context)).
+- [Operation scope](#mathck-operation-scope)
+- [Overflow definition](#mathck-overflow-definition)
+- [Disabled MATHCK semantics](#disabled-mathck-semantics)
+- [Constant operations](#mathck-constant-operations)
+- [Directive snapshots](#mathck-directive-snapshots)
+- [Legacy AST compatibility](#mathck-legacy-ast-compatibility)
+- [Interaction with RANGECK](#mathck-and-rangeck)
+- [Runtime diagnostics](#mathck-runtime-diagnostics)
+- [Builtin classification](#mathck-builtin-classification)
+- [VECTOR, DEVICE and unsupported boundaries](#mathck-vector-device-and-unsupported-boundaries)
+- [Outside MATHCK](#outside-mathck)
+- [Differences from IBM](#explicit-mathck-differences-from-ibm-pascal-1981)
 
-**Where the setting comes from.** Each operation uses the MATHCK setting in
-force at its operator token, or at the function name for a builtin. Explicit
-`{$MATHCK-}`/`{$MATHCK+}`, `$DEBUG`, PUSH/POP, numeric forms, conditional
-compilation and includes all decide that setting, so `{$MATHCK-} i := k + 1
-{$MATHCK+}` turns off exactly that one `+`. A directive inside an operand does
-not change an operator whose token came before it, and nested operations keep
-their own settings.
+### MATHCK operation scope
 
-**What a failure looks like.** Under MATHCK+, the first failing operation
-flushes stdout, prints one line to stderr and aborts before the result is
-stored or used:
+MATHCK governs explicitly evaluated INTEGER-family and WORD-family arithmetic
+at every scalar width: `INTEGER8`, `INTEGER`, `INTEGER32`, `INTEGER64`,
+`WORD8`, `WORD`, `WORD32` and `WORD64`.
+
+| Operation | Checked condition |
+|---|---|
+| Binary `+`, `-`, `*` | Overflow |
+| Binary `DIV`, `MOD` | Division by zero (under either setting) and applicable overflow |
+| Unary minus | Overflow |
+| `SUCC`, `PRED` | Base-type endpoint overflow |
+| `ABS`, `SQR` | Overflow |
+| Integer VECTOR lanes, `VSUM`, `VPROD` **[extended]** | The scalar rules per lane; each reduction step |
+
+An enabled in-scope operation is either checked or rejected at compile time
+(see [unsupported boundaries](#mathck-vector-device-and-unsupported-boundaries));
+accepting it silently without a check is not a supported implementation
+strategy. Every listed scalar width is checked, so wide scalar arithmetic is
+not a boundary.
+
+Type admission and promotion are separate from checking. Operands of
+different widths in one family widen to the wider operand, which is the result
+type and the checked width (`INTEGER32 * INTEGER` is checked at 32 bits).
+Nonconstant mixed INTEGER-family/WORD-family operands are rejected (G24; see
+[Integer constants and context](#integer-constants-and-context)). Listing
+SUCC/PRED here does not move their CHAR, BOOLEAN, enumeration or subrange
+domains out of RANGECK.
+
+FOR-loop control is not a MATHCK operation. The loop terminates at its final
+value without stepping past it under either setting, so a loop ending at
+`32767` or `65535` terminates normally: MATHCK+ must not turn it into an
+overflow error, and MATHCK- must not let the endpoint step wrap into an
+infinite loop. Explicit arithmetic in the bounds or the body is ordinary
+in-scope arithmetic.
+
+Compiler-generated bookkeeping (implicit string-length arithmetic, index
+scaling, SUPER extent and descriptor calculations) stays under its INDEXCK,
+RANGECK, allocation and descriptor contracts. It gets no MATHCK guard merely
+because the compiler emits arithmetic instructions for it. This exclusion
+neither weakens those contracts nor excuses LLVM undefined behavior in
+generated calculations. Explicit user arithmetic that *supplies* a length,
+index, position, count or extent is still MATHCK arithmetic at its own
+operators.
+
+*Implementation:* MATHCK+ scalar `+ - *` use LLVM's overflow intrinsics at
+the adapted/promoted operand type and signedness, and fail through
+`pas_math_overflow` (`runtime/mathck.c`) before the result is used. Signed
+MIN DIV -1 is checked after the mandatory zero-divisor test, and unary minus
+is a checked `0 - v`. Native compiler generations 2–4 are built with these
+checks.
+
+### MATHCK overflow definition
+
+For an in-scope operation with MATHCK enabled, overflow means that the exact
+mathematical result is outside the native range of the operation's resolved
+result type, including its width and signedness. The range is never inferred
+from the destination of a later assignment; store-time subrange checks remain
+RANGECK. A signed N-bit type has the range `-2^(N-1)..2^(N-1)-1` and an
+unsigned one `0..2^N-1`, for N = 8, 16, 32 and 64. This is a mathematical
+definition, not a requirement to compute the exact result in a same-width
+machine integer before checking it.
+
+- **The INTEGER minimum is ordinary data.** Native INTEGER is
+  `-32768..32767`, with no reserved `#8000` result, sentinel exception or
+  separate MATHCK range. `-32767 - 1`, `-16384 * 2` and `PRED(-32767)` give a
+  valid `-32768`; `32767 + 1`, `-(-32768)`, `ABS(-32768)`, `SQR(200)` and
+  `-32768 DIV -1` overflow. The same endpoint rules apply at every signed
+  width.
+- **Unsigned arithmetic.** WORD is `0..65535`. Subtraction below zero
+  (`0 - 1`) and addition or multiplication above the maximum overflow.
+- **WORD unary minus** succeeds for zero; negating any nonzero WORD-family
+  value overflows. There is no compile-time warning merely for unary minus on
+  WORD, but ordinary constant-range errors still apply.
+- **DIV and MOD.** Division truncates toward zero, and the remainder has the
+  dividend's sign; WORD-family DIV/MOD are unsigned. A zero divisor is a
+  division-by-zero error, not a representability test. Signed `MIN DIV -1`
+  overflows. `MIN MOD -1` is the representable zero and succeeds: MOD does not
+  inherit a trap because a machine quotient would overflow. Neither operation
+  executes LLVM undefined behavior to obtain its result.
+- **Builtins.** SUCC of the base-type maximum and PRED of its minimum
+  overflow. Signed ABS overflows only for MIN, WORD-family ABS returns its
+  argument, and SQR overflows when `v * v` is not representable.
+
+A representable result never overflows merely because it equals a historical
+IBM invalid value.
+
+### Disabled MATHCK semantics
+
+MATHCK- disables representability traps. It does not license LLVM undefined
+behavior or optimization-dependent results, and the same resolved result width
+and signedness apply as with checking enabled.
+
+- `+ - *`, unary minus, SUCC/PRED, ABS and SQR wrap: the result keeps the low
+  N bits of the exact result (modulo `2^N`), interpreted as unsigned for
+  WORD-family types and as two's-complement for INTEGER-family types. So
+  `32767 + 1` is `-32768`, `ABS(-32768)` stays `-32768`, and WORD unary minus
+  of `1` is `65535`.
+- DIV and MOD by zero still fail deterministically with the runtime
+  division-by-zero diagnostic, never a machine exception or a fabricated
+  result.
+- Signed `MIN DIV -1` returns MIN. `MIN MOD -1` returns zero under either
+  setting. Other DIV/MOD truncate as above.
+
+None of this depends on the optimization level. MATHCK- does not relax
+compile-time constant range and type errors (including constant zero
+divisors), store-time RANGECK checks, conversion errors, or FOR termination.
+Integer VECTOR code under MATHCK- keeps its single SIMD instruction; under
+MATHCK+ each operation adds one whole-vector overflow test, so put
+`{$MATHCK-}` around hot vector loops if the cost matters.
+
+*Implementation:* native lowering guards dynamic zero divisors, sanitizes
+signed MIN/-1 so no overflowing signed divide or remainder instruction
+executes, and selects unsigned division for WORD-family operands at every
+width. Even constant-dead division instructions get safe divisors.
+
+### MATHCK constant operations
+
+Every integer `+ - * DIV MOD` or negation whose value is fully determined at
+compile time is folded exactly by the typechecker and must fit its own type,
+independently of MATHCK. That type is the integer context's when there is one
+(as for a literal, so `i32 := Base + Step` is 33000 with INTEGER CONSTs), and
+otherwise the operands' result type. The rule applies at every node, so
+`(M + 1) - 1`, `WRITELN(32767 + 1)`, `WRITELN(-N)` with `N = -32768`, and the
+operand `M + 1` in `k := i + (M + 1)` are compile-time `integer constant out of
+range` errors, not silent wrapping or a guaranteed runtime trap. A fully
+constant SUCC/PRED/ABS/SQR call must fit its type the same way. A constant
+zero divisor is rejected at compile time even with a dynamic dividend; the
+[constant DIV/MOD rules](#constant-divmod-and-consumer-invariants) cover
+truncating folds and their consumers. A partially constant operation is
+checked at run time like any other.
+
+*Implementation:* a valid constant operation is tagged with `resolved_type`,
+and codegen materializes that exact value at that type instead of evaluating
+its operands again at literal width (`j := i + (M + 1)` with INTEGER32 `j` is
+32773). Legacy typed ASTs carry the old reference's BinOp `resolved_type`,
+which codegen uses the same way; an untagged constant operation stays
+unchecked.
+
+### MATHCK directive snapshots
+
+Each in-scope operation uses the effective MATHCK setting at its own source
+token, not at the end of its expression, at an assignment destination, or at
+a routine declaration or call elsewhere:
+
+- binary arithmetic uses its `+`, `-`, `*`, `DIV` or `MOD` token;
+- unary minus uses its `-` token;
+- `SUCC`, `PRED`, `ABS`, `SQR`, `VSUM` and `VPROD` use the function-name
+  token, not a parenthesis or argument token.
+
+The setting is captured before the parser advances past the token, so a
+directive in the right operand or argument list affects only later tokens.
+Each nested operation has its own snapshot: a builtin's setting does not
+replace the settings of arithmetic in its arguments, and an ordinary call
+does not impose the caller's setting on operations in the callee. With MATHCK
+initially enabled:
+
+```pascal
+x := a + {$MATHCK-} b;             { + remains checked }
+x := a {$MATHCK+} + b;             { this + is checked }
+x := ABS({$MATHCK-} a + b);        { ABS checked; argument + unchecked }
+{$MATHCK-} i := k + 1 {$MATHCK+};  { exactly this + is unchecked }
+```
+
+The existing directive machinery decides the setting: the enabled default,
+`$DEBUG` coupling and later explicit overrides, PUSH/POP, numeric forms,
+conditional compilation and includes. Include-file tokens carry their own
+effective lexical setting, and only the active token stream of conditional
+compilation counts; settings are never reconstructed from skipped text. The
+snapshot is per operation, not a runtime flag, and survives parsing and
+typechecking unchanged.
+
+*Implementation:* the parser (`AddMathckSnapshot`/`AddOpLocation`,
+`src/ps_expr.pas`) adds `mathck` (BOOLEAN) and `op_location`
+(`{line, column}`) to BinOp `PLUS`/`MINUS`/`MUL`/`DIV`/`MOD`, to the
+sign-minus UnaryOp, and to FuncCall nodes of the six builtins above. The
+snapshot is syntactic (set, REAL and CHAR uses carry it too); later stages
+decide applicability. The typechecker annotates nodes in place and never
+rebuilds them. Codegen reads the metadata only from the operation's own node:
+checked arithmetic and scoped builtins consume `mathck` and `op_location`,
+and mandatory DIV/MOD zero checks consume `op_location` regardless of
+`mathck`. Never read `mathck` from another node or a flags object: cJSON key
+lookup ignores case, so a flags object's `MATHCK` entry would match.
+
+### MATHCK legacy AST compatibility
+
+A BinOp, UnaryOp or scoped builtin FuncCall without a MATHCK snapshot is a
+legacy unchecked operation. Absence does not mean the current source default,
+an enclosing node's setting, or a request to reconstruct directive state, and
+no enabled snapshot is synthesized merely because MATHCK defaults to enabled.
+The rule is per node: an unchecked parent does not erase an explicit snapshot
+on a nested operation.
+
+Legacy unchecked operations follow the [disabled semantics](#disabled-mathck-semantics):
+wrapping, deterministic zero-divisor errors (reported at `line 0 column 0`,
+since the node has no coordinates) and defined signed MIN/-1 results.
+Unchecked never means unsafe LLVM lowering. The frozen AST files in
+`tests/reference/` stay unchanged and keep their valid-program outputs; new
+snapshot metadata does not justify rewriting them to opt into checking.
+Compatibility does not preserve values that came from LLVM undefined behavior
+(UB: an operation such as integer division by zero or overflowing signed
+MIN/-1 division, for which LLVM gives no valid-result guarantee and
+optimization can produce arbitrary results or crashes), crashes or
+optimization-level differences. Such observations are not a language
+contract.
+
+*Implementation:* `SiteMathCk` in `src/cg_expr.pas` applies the
+absent-snapshot policy.
+
+### MATHCK and RANGECK
+
+MATHCK checks the representability of an in-scope operation in its resolved
+base result type. RANGECK keeps domain and destination constraints; a
+narrower destination does not redefine the operation's overflow range.
+
+- Store-time subrange checks (`EmitSubrangeCheck`) are RANGECK checks.
+- SUCC/PRED bounds for CHAR, BOOLEAN, enumeration and subrange domains belong
+  to RANGECK; INTEGER/WORD-family base-type endpoint overflow belongs to
+  MATHCK. For a numeric subrange both are distinct checks. Enumeration domain
+  checking does not bring enumeration arithmetic into MATHCK's scope.
+- Each switch controls only its own checks. MATHCK- does not disable RANGECK,
+  and RANGECK- disables neither MATHCK nor mandatory zero-divisor errors.
+  Disabled base arithmetic follows the wrapping/division rules rather than
+  borrowing protection from RANGECK.
+
+When both apply to the same result, base-type overflow is checked first and
+the domain or store range second. A MATHCK failure terminates before a
+RANGECK check can consume the failed result; if the arithmetic succeeds but
+violates an enabled domain or destination check, RANGECK reports it. Neither
+failure publishes the failed result to a destination or lets later user code
+use it. This ordering concerns checks on one result, not operand evaluation
+order or unrelated checks. For example, INTEGER `32767 + 1` overflows under
+MATHCK+ before any store check; an addition yielding `11` is representable,
+but storing it in `0..10` fails under RANGECK+; SUCC of `10` in that subrange
+is a domain failure, not INTEGER overflow; and at an endpoint shared by a
+numeric subrange and its base type, the enabled base overflow check wins.
+
+Under RANGECK+ (the statement's setting, as for store checks), stepping a
+CHAR, BOOLEAN or enumeration value past its first or last ordinal fails before
+the step. A result outside the declared bounds of a subrange argument whose
+type is evident at the call (a variable, designator or nested SUCC/PRED)
+fails after it. Both use the existing `runtime error: value V is outside
+subrange LO..HI` text. A subrange value that reaches SUCC/PRED any other way
+(for example, a function result) is stepped in its host type and checked
+where it is stored.
+
+### MATHCK runtime diagnostics
+
+Under MATHCK+, the first failing operation reports one line on stderr:
+
+```text
+runtime error: MATHCK <class> in <operator> at line L column C (<operands>)
+```
 
 ```text
 runtime error: MATHCK signed overflow in + at line 12 column 10 (left=32767, right=1)
@@ -1146,58 +1547,80 @@ runtime error: MATHCK signed overflow in VSUM at line 4 column 8 (left=20000, ri
 runtime error: MATHCK signed division by zero in DIV at line 5 column 13 (left=7, right=0)
 ```
 
-The class is `signed`/`unsigned` `overflow` or `division by zero`, the
-operator is the source spelling (`+ - * DIV MOD`; unary minus is `-`) or the
-builtin name, and the coordinates are the operator's or function name's. The
-operands are the values already computed, never evaluated again. A failing
-VECTOR lane reports its own operands, the lowest failing lane first; a
-reduction folds left to right and reports the partial result and the lane.
-IBM's error numbers are not printed; for reference they map as unsigned/signed
-division by zero 2051/2052 and unsigned/signed overflow 2053/2054. These
-messages are distinct from the other checks: RANGECK prints `value V is
-outside subrange LO..HI`, INDEXCK `array index V is outside bounds LO..HI`
-(both still without a location), and INITCK `INITCK uninitialized ...`.
+- The class is `signed overflow`, `unsigned overflow`, `signed division by
+  zero` or `unsigned division by zero`, from the resolved arithmetic type.
+- The operator is the source spelling (`+ - * DIV MOD`; unary minus is `-`)
+  or the uppercase builtin name (`SUCC`, `PRED`, `ABS`, `SQR`, `VSUM`,
+  `VPROD`).
+- The coordinates are the operator or function-name token used for the
+  snapshot, not the destination or the end of the expression.
+- Binary operators append `(left=L, right=R)`; VSUM/VPROD append the partial
+  result and the lane in the same form; unary minus and the scalar builtins
+  append `(operand=X)`. Operands are the original values already computed,
+  formatted by their signedness and width, never a wrapped result or a
+  fabricated quotient, and are never evaluated again. Reporting them has no
+  side effects and exposes no LLVM undefined behavior. A failing VECTOR lane
+  reports its own operands, the lowest failing lane first.
 
-**MATHCK- is defined, not undefined.** With the check off, `+ - *`, unary
-minus, SUCC/PRED, ABS and SQR wrap at the result width (`32767 + 1` is
-`-32768`). DIV and MOD by zero still fail with the `division by zero` line
-under either setting. Signed `MIN DIV -1` returns MIN and `MIN MOD -1` returns
-zero. Division truncates toward zero and MOD takes the dividend's sign; WORD
-division is unsigned. None of this depends on the optimization level, and
-none of it is LLVM undefined behavior. Integer VECTOR code under MATHCK- keeps
-its single SIMD instruction; under MATHCK+ each operation adds one whole-vector
-overflow test, so put `{$MATHCK-}` around hot vector loops if the cost matters.
+Failure handling, under MATHCK+ and for mandatory zero-divisor errors under
+MATHCK-, follows the `runtime/subrange.c` and `runtime/array_index.c`
+convention: flush stdout so prior output survives, print the single line to
+stderr and flush it, then call `abort()` before the failed result can be
+stored or used. Tests require failure and the exact line, not a
+platform-specific signal number or exit status. There is no second error line
+and no IBM error number in the message. For historical reference only, the
+classes correspond to IBM Appendix A errors 2051 (Unsigned Divide By Zero),
+2052 (Signed Divide By Zero), 2053 (Unsigned Math Overflow) and 2054 (Signed
+Math Overflow); this mapping does not adopt IBM's INTEGER sentinel or range
+rules. Compile-time constant errors and unsupported-boundary diagnostics are
+separate from this runtime format.
 
-**Constants.** A fully constant operation is folded exactly and must fit its
-type at compile time under either setting: `WRITELN(32767 + 1)`, a constant
-SUCC/PRED/ABS/SQR that does not fit, and a constant zero divisor are compile
-errors, not run-time failures. In an integer context the context's type is
-used (`i32 := Base + Step` is 33000 with INTEGER CONSTs).
+The other checks keep their own texts and never use the MATHCK stem: RANGECK
+prints `value V is outside subrange LO..HI`, INDEXCK `array index V is outside
+bounds LO..HI`, INITCK `INITCK uninitialized ...`, and TRUNC/ROUND their
+[conversion error](#trunc-and-round-return-integer-so-they-narrow-to-16-bits-both).
+RANGECK and INDEXCK messages stay unlocated, and SUCC/PRED domain failures say
+"subrange" even for CHAR, BOOLEAN and enumeration domains. Adding coordinates
+or domain-specific wording would change the `pas_subrange_error` runtime
+interface and every store-check caller; that is RANGECK's own diagnostics
+work (located classes, file/include identity, runtime ABI compatibility), not
+a MATHCK change.
 
-**FOR loops** step their control variable without MATHCK: a loop ending at
-`32767` or `65535` terminates normally under either setting.
+*Implementation:* `pas_math_zero` and `pas_math_overflow` in
+`runtime/mathck.c`.
 
-**Unsupported boundaries.** An operation MATHCK+ would check but cannot is
-rejected at compile time, with no IR:
-`MATHCK unsupported boundary: <category> at line L column C`. The only
-category that can occur today is `DEVICE arithmetic`: NVPTX GPU kernels have
-no way to report the failure, so integer arithmetic there needs `{$MATHCK-}`
-(see [GPU (NVPTX) kernels need `{$MATHCK-}`](#gpu-nvptx-kernels-need-mathck--for-integer-arithmetic-extended)).
-NVPTX DIV/MOD are rejected under either setting. CPU DEVICE code is checked
-like host code.
+### MATHCK builtin classification
 
-**Outside MATHCK.** REAL and REAL32 arithmetic follows IEEE 754 under either
-setting: overflow and `x / 0.0` give `INF`/`-INF`, and `0.0 / 0.0` gives a NaN,
-with no run-time error. `TRUNC`/`ROUND` have their own always-on range check
-(see [the TRUNC section](#trunc-and-round-return-integer-so-they-narrow-to-16-bits-both)).
-`ORD`, `WRD`, `CHR` and the other conversions are not MATHCK operations.
-Pointer `+ offset` is address arithmetic, never checked (the offset expression
-itself is). Code inside `[C]` routines is outside MATHCK; a `[C]` result is
-ordinary data once it is used in Pascal arithmetic. Compiler bookkeeping
-(string lengths, array extents) stays under its own checks. Store-time
-subrange checks and the CHAR/BOOLEAN/enumeration/subrange domains of SUCC/PRED
-are RANGECK, not MATHCK; when both apply, MATHCK's base overflow is reported
-first. Neither switch turns the other's checks on or off.
+Every builtin that does integer arithmetic on, or converts, a user value
+belongs to exactly one of the groups below. A user routine of the same name
+is an ordinary call, outside this classification.
+
+| Group | Builtins | Rule |
+|---|---|---|
+| MATHCK | `SUCC`, `PRED` (integer family) | Checked `v ± 1` at the argument's width (`overflow in SUCC`/`PRED`). |
+| MATHCK | `ABS` | Signed: checked `0 - v` for negative `v`; only MIN overflows. WORD family: returns its argument, no arithmetic. |
+| MATHCK | `SQR` (integer family) | Checked `v * v`. |
+| MATHCK | `VSUM`, `VPROD` (integer lanes) | Checked left-to-right fold of `+`/`*`. `VMIN`/`VMAX` cannot overflow. |
+| Never trapping | `SADDOK`, `SMULOK`, `UADDOK`, `UMULOK` | Return the 16-bit "fits" flag and store the wrapped result (IBM 11-21); described below. |
+| RANGECK | `SUCC`, `PRED` on CHAR, BOOLEAN, enumerations, subranges | Domain checks under RANGECK+ ([above](#mathck-and-rangeck)). |
+| RANGECK gap | `CHR` | IBM: "error if ORD (X) > 255 or ORD (X) < 0 (if $RANGECK on)" (11-8). **Not checked:** `CHR(300)` is `CHR(44)` and `CHR(-1)` is `CHR(255)`, also for a constant `CHR(300)`. Part of the range-checks-beyond-subranges gap, not MATHCK. |
+| Separate contract | `TRUNC`, `ROUND` | Always-on range check, independent of MATHCK and RANGECK (G26, [TRUNC section](#trunc-and-round-return-integer-so-they-narrow-to-16-bits-both)). |
+| Separate contract | `CONCAT` (LSTRING length byte) | Compiler-generated length update under the capacity contract. **No capacity check:** with `t: LSTRING(3) := 'ab'`, `CONCAT(t, 'xyzw')` stores length 6 and overwrites the next variable. |
+| Separate contract | `INSERT`, `DELETE`, `COPYLST`, `COPYSTR`, `POSITN`, `SCANEQ`, `SCANNE`, `ENCODE`, `DECODE` | **Unreachable:** codegen lowers them, but the typechecker rejects every call as an undefined procedure or function. When enabled, their internal length and position arithmetic (`pos - 1`, `len - pos`) needs capacity and position checks, not MATHCK; DECODE is a text-to-number conversion. |
+| Separate contract | `NEW` bounds, `DEVALLOC`, `SIZEOF`, `LOWER`, `UPPER` | Descriptor and layout arithmetic; layouts above 2147483647 bytes are rejected (`TypeSizeBytes`). |
+| Separate contract | `READ`/`READLN` of integers | Text conversion, checked independently of MATHCK (G29). |
+| No check | `ORD` | Same value and width; an enumeration gives its ordinal as INTEGER, so `ORD(e) * 20000` is checked 16-bit arithmetic. [`ORD(WORD)`](#deferred-ordword-conversion-gap-g25) stays WORD (G25). |
+| No check | `WRD`, `WRD8` | Bit-pattern conversion: `WRD(-2)` is 65534 (IBM 11-8). |
+| No check | `ODD` | Low-bit test. |
+| No check | `HIBYTE`, `LOBYTE` | Byte extraction, never above 255. They return CHAR; IBM returns the argument's type, a typing difference, not a MATHCK question. |
+| No check | `BYWORD` | Packs the low byte of each operand: `BYWORD(300, -1)` is 11519. IBM requires one-byte operands; masking wider ones is a typing difference, not overflow. |
+| No check | `FLOAT` | Exact for every INTEGER-family value up to 2^53; WORD-family values convert unsigned ([WORD to REAL](#word-to-real-conversion)). |
+| No check | `RETYPE`, `ADR`, `ADS`, pointer `+` | Reinterpretation and [address arithmetic](#outside-mathck). |
+
+`FILLC`, `FILLSC`, `MOVEL`, `MOVER`, `MOVESL` and `MOVESR` are not builtins:
+the typechecker reports `Undefined procedure`, and the runtime library
+defines them under lower-case C names. Their counts are memory-region bounds,
+not MATHCK.
 
 The IBM library functions `SADDOK`, `SMULOK` (A, B: INTEGER; VAR C: INTEGER)
 and `UADDOK`, `UMULOK` (A, B: WORD; VAR C: WORD) return TRUE when the 16-bit
@@ -1211,13 +1634,97 @@ no wide variants: extended mode has the same 16-bit functions. Under INITCK+,
 like the other builtins outside INITCK's model, a call stops at the
 `call consumer` boundary.
 
-A legacy AST (BinOp/UnaryOp/builtin call) without a MATHCK snapshot is
-unchecked and follows the MATHCK- rules, never the current source default.
+### MATHCK VECTOR, DEVICE and unsupported boundaries
+
+**VECTOR [extended].** Under the operation's MATHCK+ snapshot, integer lane
+`+ - *` and unary minus are checked per lane. Lane DIV/MOD use the scalar safe
+division under either setting: a zero lane fails with the zero-divisor
+diagnostic, and signed MIN/-1 gives MIN (DIV, MATHCK-), an overflow (DIV,
+MATHCK+) or 0 (MOD). No vector division instruction is emitted. Integer
+VSUM/VPROD are left-to-right folds of checked steps under MATHCK+. MATHCK-
+lane `+ - *`, negation and reductions keep the wrapping SIMD instructions.
+REAL lanes are unchanged. VECTOR is rejected on NVPTX altogether, so only host
+and CPU DEVICE code reaches these paths. *Implementation:* one vector overflow
+intrinsic computes every lane and the code branches once on the OR of the
+overflow lanes; only on failure does a cold path redo the operation lane by
+lane, in lane order, through the scalar checked paths (`CodegenLanewiseIntOp`,
+`CodegenLanesIntOp` and `CodegenCheckedVReduce` in `src/cg_expr.pas`).
+
+**DEVICE.** NVPTX code has no host failure path, and no device-side error
+channel (state in device memory, transport across LAUNCH, a non-trapping way
+to stop the failing thread) is planned. An operation that its MATHCK+
+snapshot would check there (`+ - * DIV MOD`, unary minus, SUCC/PRED, signed
+ABS, SQR; not a fully constant fold and not WORD ABS) is therefore rejected as
+a `DEVICE arithmetic` boundary. MATHCK- at the operation is the opt-out and
+wraps. DIV/MOD stay rejected on NVPTX under MATHCK- as well, because the
+mandatory zero-divisor failure has no device path either. Because MATHCK
+defaults on, NVPTX kernels with integer arithmetic need `{$MATHCK-}` (see
+[GPU (NVPTX) kernels](#gpu-nvptx-kernels-need-mathck--for-integer-arithmetic-extended)).
+Unlike INITCK, which keys its boundary on every DEVICE compiland, MATHCK keys
+it on NVPTX only: CPU DEVICE code links the host runtime, so its kernels are
+checked through LAUNCH exactly like host code. The SUCC/PRED RANGECK domain
+checks remain skipped on NVPTX (RANGECK's own open DEVICE decision).
+
+**Unsupported-boundary policy.** An enabled in-scope operation whose checks
+are not implemented is a hard compile-time error, never a warning or silent
+unchecked acceptance, reported at the operator or function-name token before
+any IR is published:
+
+```text
+MATHCK unsupported boundary: <category> at line L column C
+```
+
+| Category | Unsupported enabled operation |
+|---|---|
+| `scalar arithmetic` | ordinary INTEGER/WORD scalar operation lacking its checks |
+| `wide arithmetic` | extended-width scalar operation lacking its checks |
+| `VECTOR arithmetic` | in-scope integer VECTOR operation lacking its checks |
+| `DEVICE arithmetic` | in-scope integer operation in DEVICE code lacking its checks |
+
+Only `DEVICE arithmetic` on NVPTX can occur today; scalar, wide and host/CPU
+VECTOR checks are implemented. A category stops being a boundary for an
+operation once its checks exist; the policy is not a permanent ban. Merely
+enabling MATHCK is silent when no unsupported operation is encountered, and
+declarations or out-of-scope operations never trigger the diagnostic. MATHCK-
+at the operation, or a legacy node without a snapshot, opts out of checking
+but not out of safety: wrapping, zero-divisor failure and safe MIN/-1
+handling still apply where the operation is admitted, and other type, target,
+range and descriptor constraints are unchanged. *Implementation:*
+`MathckDeviceBoundary` in `src/cg_expr.pas`.
+
+### Outside MATHCK
+
+- **REAL arithmetic (G27).** REAL and REAL32 `+ - * /`, unary minus, and REAL
+  ABS/SQR/SQRT/LN/EXP follow IEEE 754 under either setting: overflow gives
+  `INF`/`-INF`, `x / 0.0` a signed infinity, and `0.0 / 0.0` or `INF - INF` a
+  NaN (printed `-NAN` on x86-64, following the platform). Nothing traps, and
+  MATHCK neither adds nor removes a REAL check. IBM's always-on REAL function
+  checks (11-8, through its real-math library) are not reproduced. Any future
+  REAL checking needs its own directive decision, not MATHCK.
+- **Conversions.** TRUNC/ROUND have their own always-on range check
+  ([TRUNC section](#trunc-and-round-return-integer-so-they-narrow-to-16-bits-both)).
+  `ORD`, `WRD`, `CHR` and the other conversions are not MATHCK operations
+  ([builtin classification](#mathck-builtin-classification)).
+- **Address arithmetic.** Pointer or ADRMEM `+` an integer offset (either
+  order) lowers to a non-inbounds GEP scaled by the pointee size (bytes for
+  ADRMEM). It wraps in the address space without LLVM undefined behavior and
+  never traps, under either setting. The offset widens to 64 bits by its own
+  signedness (a literal by its exact value), so a WORD offset of 40000
+  addresses element 40000. Arithmetic *inside* the offset (`p + (n - 1)`) is
+  ordinary MATHCK arithmetic. `p - n`, `p * n`, `p DIV n` and a REAL offset are
+  typecheck errors (`Pointer arithmetic supports only pointer + integer
+  offset`). Pointer validity belongs to the NILCK, INDEXCK and descriptor
+  contracts.
+- **`[C]` and other EXTERN code.** Arithmetic inside the routine is invisible
+  to the compiler. A returned CINT/CLONG/CSIZE_T or other integer value is
+  ordinary data in Pascal, checked at its own type (CINT `+` is INTEGER32
+  arithmetic).
+- **Compiler bookkeeping** and **FOR stepping**, as described under
+  [operation scope](#mathck-operation-scope).
 
 ### Explicit MATHCK differences from IBM Pascal 1981
 
-These are deliberate native decisions; the full
-[contract record](mathck_contract.md) has the reasoning.
+These are deliberate native decisions.
 
 - **No `#8000` exclusion or sentinel range.** IBM excludes the exact
   `-MAXINT-1` result from checking and describes signed overflow against
@@ -1276,6 +1783,50 @@ REAL function checks are not reproduced; TRUNC/ROUND's range check is).
 dialects, and `-32768` is an ordinary writable literal (a deliberate
 difference from IBM, which reserved it; see the next section).
 
+### WORD arithmetic and comparison boundaries
+
+Scalar WORD-family DIV/MOD use unsigned `udiv`/`urem`, and ordering uses
+unsigned predicates, at 8/16/32/64 bits after literal adaptation and width
+promotion (`CodegenBinOp`, `src/cg_expr.pas`). INTEGER-family operations remain
+signed; EQ/NE are signedness-neutral and wrapping add/sub/mul is unchanged.
+G14–G17 and G21 are native correct-output requirements, independent of MATHCK;
+Python compiler parity is not an acceptance criterion. Mixed-family arithmetic
+admission is governed by [integer constants and context](#integer-constants-and-context),
+not by unsigned instruction selection. DIV/MOD zero guards and signed MIN/-1
+sanitization are implemented separately; unsigned lowering alone is not safety.
+
+Comparison sites have distinct contracts; do not replace every signed predicate
+with an unsigned one merely because WORD data can reach it:
+
+| Site | Predicate/domain invariant |
+| --- | --- |
+| Scalar ordering | WORD uses unsigned predicates at the adapted/promoted width; INTEGER controls stay signed. |
+| CASE | Labels are coerced to selector type and compared with `icmp eq`; high-bit/max labels work at each width. CASE label ranges remain unsupported. |
+| Set membership | Admitted ordinals normalize to i16, then sign-extend to i64; unsigned `< 256` excludes negative/high-bit patterns before safe bit lookup. WORD in an INTEGER set is a type error; even a matching WORD set reaches codegen rejection. These are admission limits, not WORD membership support. |
+| Set constructors/ranges | Unsigned i16 `> 255` guards elements. Signed range comparisons operate on admitted INTEGER/CHAR/BOOLEAN/enum bounds, not WORD; equality/subset checks compare bitvectors. |
+| Fixed/SUPER indices, subranges, VECTOR descriptor bounds | Unsigned sources zero-extend into wider signed i128, where signed bounds comparisons are correct even for WORD64. Blind unsigned conversion would break negative lower bounds. |
+| VECTOR lanes | WORD DIV/MOD and ordering are unsigned; division guards/MATHCK scope are separate contracts. |
+| FOR | WORD controls use unsigned ordering and loops exit at the final value, before an endpoint step could wrap. G18/G19 are correct-output requirements, independent of MATHCK; post-loop control value is undefined, not an oracle. |
+| Other internal comparisons | String lengths/strcmp, signed counters/status, pointer/NIL and initialization equality are not WORD scalar ordering. WORD ABS is identity, including high-bit arguments; signed ABS overflow is a separate MATHCK operation. |
+
+### WORD to REAL conversion
+
+`IntToFloat` (`src/cg_types.pas`) selects `uitofp` for WORD-family operands
+and `sitofp` for signed operands. Its callers include FLOAT/libm argument
+conversion (`RealArgToDouble`), admitted mixed REAL/integer operands and `/`
+promotion in `CodegenBinOp`, and `CoerceForAssign`. Thus `FLOAT(w)` for WORD
+`w = 65535` is 65535.0, not -1.0; unsignedness must survive every conversion
+site. Floating representation still rounds: WORD64 MAX converts to the double
+18446744073709551616.0, not an exact integer value. These lowering rules do not
+expand type admission or repair the separate ORD(WORD) gap.
+
+The [WORD test map](../tests/README.md#scalar-word-arithmetic-prerequisites)
+records the nonzero-divisor runtime matrix and O0 unsigned/zero-extension IR
+checks; the [FOR test map](../tests/README.md#for-endpoint-termination) covers
+endpoint termination separately. Compiler-source arithmetic dependencies and
+fixed-point validation belong to the [bootstrap contract](bootstrap_subset.md#self-hosting-arithmetic),
+not Python-reference parity or historical audit transcripts.
+
 ## Integer constants and context
 
 Native decimal and radix constants from `-32768` through `32767` have type
@@ -1301,8 +1852,16 @@ INTEGER-family and WORD-family operands need an explicit conversion (e.g.
 WRD) in <op>`. An INTEGER-family constant still adapts to a WORD-family
 operand (`w + (-1)` is unsigned WORD arithmetic), and a WORD-family constant
 mixes with a signed operand only if it fits that operand's type (`a + 40000`
-with INTEGER32 `a` is fine; `i + 40000` with INTEGER `i` is rejected). See the
-[admission decision](mathck_contract.md#mixed-integerword-operand-decision-g24).
+with INTEGER32 `a` is fine; `i + 40000` with INTEGER `i` is rejected). The
+constant exception applies per operand at every width (negative INTEGER-family
+constants adapt by bit pattern, as at 16 bits). A rejected expression has no
+arithmetic result type or overflow class, and neither MATHCK- nor a
+destination type admits the mixture. This follows IBM §6-5 (manual lines
+6144–6147) and §8's same-family rules. The decision covers scoped scalar
+arithmetic only; it adds no rules for comparisons, assignments, REAL, VECTOR
+or pointer arithmetic. *Implementation:* the typechecker's BinOp check and
+`ConstantAdaptsToOperand` (`src/tc_expr.pas`) reject the mixture before any IR
+exists.
 
 Operands of different widths in the same family widen to the wider operand,
 which is the result type: `INTEGER32 * INTEGER` is INTEGER32 arithmetic,
@@ -1343,19 +1902,48 @@ The compiler also rejects implicit narrowing, such as assigning an
 is intentional. Assignment, value-parameter, array-index, and `FOR`-bound
 contexts apply the same constant range checks.
 
-**Historical note, because the wrong version of this was believed for a
-while:** until recently the native compiler *did* truncate every literal to 16
-bits, and it looked exactly like a property of the dialect. It was not. Three
-separate places inside the compiler read a literal's value through `TRUNC` or
-stored it in a 16-bit field — the parser's token record, `jsonutil`'s
-`AddIntField`, and `Real64ToInt64` in the constant folder — so `40000` became
-`-25536` on its way into the AST and nothing downstream could recover it. If
-you find yourself writing `n := 65; n := n * 1000;` to avoid a wrap, you are
-working around a bug that no longer exists.
+### Constant DIV/MOD and consumer invariants
+
+Integer constant DIV truncates toward zero; MOD has the dividend's sign,
+with `a MOD b = a - (a DIV b) * b`. Thus `-5 DIV 2 = -2` and
+`-5 MOD 2 = -1`, not Python floor results. This rule is independent of MATHCK.
+A constant zero divisor is rejected with `Constant division by zero`, even
+with a dynamic dividend or a divisor expressed through names/nested arithmetic;
+it must not merely make the expression unfoldable.
+
+Both `FoldConstInt` implementations (`src/tc_expr.pas`, `src/cg_types.pas`)
+and their consumers use the exact truncating value before target-width
+materialization. For example `CONST N = -65537` in extended mode gives
+`N DIV 2 = -32768`, a representable INTEGER and the legal lower edge of
+`ARRAY [-32768..-32767]`. MIN MOD -1 is zero. Existing constant range/overflow
+rejection remains: MIN DIV -1's exact positive result does not fit its signed
+type merely because unchecked runtime division would wrap.
+
+| Consumer | Enduring invariant |
+| --- | --- |
+| Typechecker `CheckExprForSetTarget` / unary literal typing | Exact folded values control range errors and assignment/argument adaptation; recursive arithmetic has no separate rounding rule. |
+| Typechecker `CheckDesignator` | Constant bound checks agree with codegen's index rebuilding, including large negative indices. |
+| `CheckDecl`, `CheckConstOrdinalBounds`, CASE/type/array-bound checking | Recorded CONST values and nested SUCC/PRED arguments retain the same fold and existing domain checks; there is no second floor folder. |
+| Codegen `IsIntLiteralLike` / `IntLiteralValue`, `CoerceForAssign`, `CodegenBinOp` | General-expression and 8/32/64-bit or wider ordinal adaptation rebuild the exact value before promotion. Shadowed names must not replace variables/user routines with constants; mixed-width negative remainders obey the same rule. |
+| `CodegenDesignator`, `CodegenVload` / `CodegenVstore` | VECTOR and fixed/SUPER index reconstruction, rebasing and bounds checks use the same folder and shadow filter; no local signed rounding adjustment. Existing scalar/vector bounds contracts still apply. |
+| `SuperBoundBits` | Exact INTEGER constants survive before i16 materialization; dynamic/unsigned bounds retain extension and runtime descriptor validation. |
+| `CodegenConstDecl` | CONST tables feed subsequent CASE labels/array bounds with the same exact values; independent typechecker/codegen zero-divisor rejection also applies to parser-derived AST inputs. |
+
+These internal consumers do not broaden the source CONST/CASE/bound grammar:
+its permitted constants/names/selected constructors are not general binary
+arithmetic. Direct AST probes test otherwise unreachable folder routes, not
+new source syntax. The Python reference compiler is not the numeric oracle.
+Broader constant-width/overflow and JSON literal-precision limits remain
+separate constraints; runtime checks, operator locations and VECTOR division
+safety are separate contracts, not consequences of correct folding. Compiler
+self-hosting requires no floor-rounding workaround; its
+[arithmetic rules](bootstrap_subset.md#wide-limits-word-and-division) and clean
+fixed-point gate are separate. The [focused test map](../tests/README.md#constant-divmod-folding-prerequisite)
+describes runtime twins, zero rejections and CONST/CASE/bound AST probes.
 
 ## `TRUNC` and `ROUND` return `INTEGER`, so they narrow to 16 bits **[both]**
 
-This one is real in both dialects, and it is what caused the bug above. Both produce a 16-bit
+This one is real in both dialects. Both produce a 16-bit
 `INTEGER` result even when assigned to an `INTEGER32`. A result outside
 `-32768..32767`, or a NaN argument, is a run-time error, as IBM specifies
 ("Error if ABS(X) > MAXINT", 11-6). The check is always on and is
@@ -1373,14 +1961,18 @@ rounds halves away from zero first, so `ROUND(32767.5)` fails and
 constant argument is checked at run time too. CPU `DEVICE` code fails the
 same way. NVPTX `DEVICE` code has no host failure path, so there the
 conversion saturates instead (`TRUNC(1.0E10)` is `32767`, NaN gives `0`);
-this is defined, but it is not IBM's error. Before this check, an
-out-of-range value was LLVM poison (`TRUNC(100000.0)` printed `1227885960`).
+this is defined, but it is not IBM's error, and it is recorded as a device
+gap. *Implementation:* `CodegenCheckedRealToInt` (`src/cg_expr.pas`) guards
+`fptosi` with ordered compares, which also reject NaN, so no out-of-range
+conversion reaches LLVM poison; failures go through `pas_conversion_error`
+(`runtime/numeric.c`) at the parser's `op_location`, with no MATHCK
+snapshot. NVPTX uses `llvm.fptosi.sat`.
 
 Do not use `TRUNC` to read a number out of JSON, a file, or anything else that
 can exceed 32767. The runtime provides `pas_cjson_int32`, `pas_cjson_int64`
 and `pas_double_to_int64` for exactly this, and `jsonx`'s `JxIntValue`,
 `jsonutil`'s `GetInt` and the compiler's own constant folder all go through
-them now.
+them.
 
 `ORD` does not have this problem: `ORD` of an `INTEGER32` keeps its width.
 
@@ -1390,12 +1982,19 @@ Currently ORD of any integer-family argument preserves its type, width,
 signedness and value. In particular, `ORD(w)` for native WORD remains WORD;
 assignment to INTEGER is rejected as implicit narrowing. IBM instead returns
 INTEGER with the same 16-bit pattern (`32768` becomes valid `-32768`, `65535`
-becomes `-1`). The compatibility fix is explicitly **deferred**, not required
-for the next MATHCK instrumentation slice. ORD remains outside MATHCK's
-arithmetic scope, and G25 remains a known gap. Extended WORD-family conversion
-policy, bootstrap/pasboot audit and boundary tests belong to a separate slice;
-no behavior changes here. See the
-[deferral record](mathck_contract.md#ordword-conversion-decision-g25-defer).
+becomes `-1`; IBM §11-6/7, manual lines 11896–11908). The compatibility fix
+is explicitly **deferred**; it does not block MATHCK. Current ORD of WORD is
+therefore not a back door around the
+[mixed-operand rule](#integer-constants-and-context), and the current behavior
+is a recorded compatibility gap, not a ratification of IBM parity. G25 remains
+a known-gap rejection in the [baseline](../tests/README.md#mathck-gap-baseline).
+
+ORD is a conversion, not a MATHCK operation: changing MATHCK must not change
+its semantics, and because native `-32768` is valid data, a future
+same-pattern conversion must not trap merely for producing it. A separate
+conversion change must decide the extended WORD-family result types, update
+the typechecker and codegen together, audit bootstrap/pasboot dependencies,
+and test low/high-bit boundaries plus subsequent arithmetic and assignment.
 
 ## Differences from the Python compiler
 
@@ -1494,7 +2093,8 @@ least once:
   to an instruction in another function"), naming neither routine. Pass the
   value as a parameter, or lift it to a file-level variable.
 - **There is no implicit `INTEGER64` to `REAL` conversion [extended]**, and
-  `FLOAT()` accepts only a plain `INTEGER`. The runtime's
+  `FLOAT()` is an explicit numeric-to-REAL conversion, not an implicit one.
+  The runtime's
   `pas_int64_to_double` exists because there is no way to write that
   conversion in Pascal.
 

@@ -15,7 +15,8 @@
       ],
       "target": "located signed overflow diagnostic",
       "stdout": "",
-      "stderr": "runtime error: MATHCK signed overflow in + at line 6 column 22 (left=32767, right=1)\n"
+      "stderr": "runtime error: MATHCK signed overflow in + at line 6 column 22 (left=32767, right=1)\n",
+      "name": "Signed addition overflow"
     },
     {
       "id": "G2",
@@ -27,7 +28,8 @@
       ],
       "target": "located signed overflow diagnostic",
       "stdout": "",
-      "stderr": "runtime error: MATHCK signed overflow in - at line 6 column 23 (left=-32767, right=2)\n"
+      "stderr": "runtime error: MATHCK signed overflow in - at line 6 column 23 (left=-32767, right=2)\n",
+      "name": "Signed subtraction overflow"
     },
     {
       "id": "G3",
@@ -39,7 +41,8 @@
       ],
       "target": "located signed overflow diagnostic",
       "stdout": "",
-      "stderr": "runtime error: MATHCK signed overflow in * at line 6 column 20 (left=200, right=200)\n"
+      "stderr": "runtime error: MATHCK signed overflow in * at line 6 column 20 (left=200, right=200)\n",
+      "name": "Signed multiplication overflow"
     },
     {
       "id": "G4",
@@ -51,7 +54,8 @@
       ],
       "target": "located signed overflow diagnostic",
       "stdout": "",
-      "stderr": "runtime error: MATHCK signed overflow in - at line 6 column 24 (operand=-32768)\n"
+      "stderr": "runtime error: MATHCK signed overflow in - at line 6 column 24 (operand=-32768)\n",
+      "name": "Negating minimum INTEGER"
     },
     {
       "id": "G5.add",
@@ -63,7 +67,8 @@
       ],
       "target": "located unsigned overflow diagnostic",
       "stdout": "",
-      "stderr": "runtime error: MATHCK unsigned overflow in + at line 6 column 25 (left=65535, right=1)\n"
+      "stderr": "runtime error: MATHCK unsigned overflow in + at line 6 column 25 (left=65535, right=1)\n",
+      "name": "WORD addition overflow"
     },
     {
       "id": "G5.sub",
@@ -75,7 +80,8 @@
       ],
       "target": "located unsigned overflow diagnostic",
       "stdout": "",
-      "stderr": "runtime error: MATHCK unsigned overflow in - at line 6 column 21 (left=0, right=1)\n"
+      "stderr": "runtime error: MATHCK unsigned overflow in - at line 6 column 21 (left=0, right=1)\n",
+      "name": "WORD subtraction underflow"
     },
     {
       "id": "G5.mul",
@@ -87,7 +93,8 @@
       ],
       "target": "located unsigned overflow diagnostic",
       "stdout": "",
-      "stderr": "runtime error: MATHCK unsigned overflow in * at line 6 column 23 (left=300, right=300)\n"
+      "stderr": "runtime error: MATHCK unsigned overflow in * at line 6 column 23 (left=300, right=300)\n",
+      "name": "WORD multiplication overflow"
     },
     {
       "id": "G6.integer.div",
@@ -99,7 +106,8 @@
         "vintage",
         "extended"
       ],
-      "target": "located divide-by-zero diagnostic, flushed prefix"
+      "target": "located divide-by-zero diagnostic, flushed prefix",
+      "name": "INTEGER DIV by zero"
     },
     {
       "id": "G6.integer.mod",
@@ -111,7 +119,8 @@
         "vintage",
         "extended"
       ],
-      "target": "located divide-by-zero diagnostic, flushed prefix"
+      "target": "located divide-by-zero diagnostic, flushed prefix",
+      "name": "INTEGER MOD by zero"
     },
     {
       "id": "G6.word.div",
@@ -123,7 +132,8 @@
         "vintage",
         "extended"
       ],
-      "target": "located divide-by-zero diagnostic, flushed prefix"
+      "target": "located divide-by-zero diagnostic, flushed prefix",
+      "name": "WORD DIV by zero"
     },
     {
       "id": "G6.word.mod",
@@ -135,7 +145,8 @@
         "vintage",
         "extended"
       ],
-      "target": "located divide-by-zero diagnostic, flushed prefix"
+      "target": "located divide-by-zero diagnostic, flushed prefix",
+      "name": "WORD MOD by zero"
     },
     {
       "id": "G7.div",
@@ -147,7 +158,8 @@
         "extended"
       ],
       "target": "located signed overflow diagnostic; no LLVM UB",
-      "stderr": "runtime error: MATHCK signed overflow in DIV at line 6 column 35 (left=-32768, right=-1)\n"
+      "stderr": "runtime error: MATHCK signed overflow in DIV at line 6 column 35 (left=-32768, right=-1)\n",
+      "name": "Minimum INTEGER DIV -1"
     },
     {
       "id": "G7.mod",
@@ -158,7 +170,8 @@
         "vintage",
         "extended"
       ],
-      "target": "DIV overflow / MOD zero; no LLVM UB"
+      "target": "DIV overflow / MOD zero; no LLVM UB",
+      "name": "Minimum INTEGER MOD -1"
     },
     {
       "id": "G8",
@@ -170,7 +183,8 @@
         "vintage",
         "extended"
       ],
-      "target": "defined opt-level-independent disabled behavior"
+      "target": "defined opt-level-independent disabled behavior",
+      "name": "Division by zero with MATHCK disabled"
     },
     {
       "id": "G9",
@@ -180,7 +194,8 @@
       "dialects": [
         "extended"
       ],
-      "target": "compile-time zero-divisor error"
+      "target": "compile-time zero-divisor error",
+      "name": "Constant division by zero"
     },
     {
       "id": "G10.succ",
@@ -192,7 +207,8 @@
       ],
       "target": "located signed overflow diagnostic",
       "stdout": "",
-      "stderr": "runtime error: MATHCK signed overflow in SUCC at line 6 column 23 (operand=32767)\n"
+      "stderr": "runtime error: MATHCK signed overflow in SUCC at line 6 column 23 (operand=32767)\n",
+      "name": "SUCC at maximum INTEGER"
     },
     {
       "id": "G10.pred",
@@ -204,7 +220,8 @@
       ],
       "target": "located signed overflow diagnostic",
       "stdout": "",
-      "stderr": "runtime error: MATHCK signed overflow in PRED at line 6 column 24 (operand=-32768)\n"
+      "stderr": "runtime error: MATHCK signed overflow in PRED at line 6 column 24 (operand=-32768)\n",
+      "name": "PRED at minimum INTEGER"
     },
     {
       "id": "G11",
@@ -216,7 +233,8 @@
       ],
       "target": "located signed overflow diagnostic",
       "stdout": "",
-      "stderr": "runtime error: MATHCK signed overflow in ABS at line 6 column 24 (operand=-32768)\n"
+      "stderr": "runtime error: MATHCK signed overflow in ABS at line 6 column 24 (operand=-32768)\n",
+      "name": "ABS of minimum INTEGER"
     },
     {
       "id": "G12",
@@ -228,7 +246,8 @@
       ],
       "target": "located signed overflow diagnostic",
       "stdout": "",
-      "stderr": "runtime error: MATHCK signed overflow in SQR at line 6 column 21 (operand=200)\n"
+      "stderr": "runtime error: MATHCK signed overflow in SQR at line 6 column 21 (operand=200)\n",
+      "name": "SQR signed overflow"
     },
     {
       "id": "G13.saddok",
@@ -239,7 +258,8 @@
         "extended"
       ],
       "target": "never-trapping library builtin",
-      "stdout": "TRUE\n3\n"
+      "stdout": "TRUE\n3\n",
+      "name": "SADDOK overflow predicate"
     },
     {
       "id": "G13.smulok",
@@ -250,7 +270,8 @@
         "extended"
       ],
       "target": "never-trapping library builtin",
-      "stdout": "TRUE\n2\n"
+      "stdout": "TRUE\n2\n",
+      "name": "SMULOK overflow predicate"
     },
     {
       "id": "G13.uaddok",
@@ -261,7 +282,8 @@
         "extended"
       ],
       "target": "never-trapping library builtin",
-      "stdout": "TRUE\n3\n"
+      "stdout": "TRUE\n3\n",
+      "name": "UADDOK overflow predicate"
     },
     {
       "id": "G13.umulok",
@@ -272,7 +294,8 @@
         "extended"
       ],
       "target": "never-trapping library builtin",
-      "stdout": "TRUE\n2\n"
+      "stdout": "TRUE\n2\n",
+      "name": "UMULOK overflow predicate"
     },
     {
       "id": "G14",
@@ -283,7 +306,8 @@
         "extended"
       ],
       "target": "20000",
-      "stdout": "20000\n"
+      "stdout": "20000\n",
+      "name": "Checked signed addition result"
     },
     {
       "id": "G15",
@@ -294,10 +318,12 @@
         "extended"
       ],
       "target": "2",
-      "stdout": "2\n"
+      "stdout": "2\n",
+      "name": "Checked signed multiplication result"
     },
     {
       "id": "G16",
+      "name": "WORD division truncates toward zero",
       "fixture": "fixtures/mathck/g16.pas",
       "kind": "correct-output",
       "dialects": [
@@ -309,6 +335,7 @@
     },
     {
       "id": "G17",
+      "name": "WORD comparison uses unsigned ordering",
       "fixture": "fixtures/mathck/g17.pas",
       "kind": "correct-output",
       "dialects": [
@@ -320,6 +347,7 @@
     },
     {
       "id": "G18",
+      "name": "WORD FOR loop across signed boundary",
       "fixture": "fixtures/mathck/g18.pas",
       "kind": "correct-output",
       "dialects": [
@@ -338,7 +366,8 @@
         "extended"
       ],
       "target": "3 iterations then exit",
-      "stdout": "3\n"
+      "stdout": "3\n",
+      "name": "FOR loop exits at final WORD value"
     },
     {
       "id": "G20.integer8",
@@ -349,7 +378,8 @@
       ],
       "target": "located overflow at operand width diagnostic",
       "stdout": "",
-      "stderr": "runtime error: MATHCK signed overflow in + at line 6 column 23 (left=127, right=1)\n"
+      "stderr": "runtime error: MATHCK signed overflow in + at line 6 column 23 (left=127, right=1)\n",
+      "name": "INTEGER8 addition overflow"
     },
     {
       "id": "G20.integer32",
@@ -360,7 +390,8 @@
       ],
       "target": "located overflow at operand width diagnostic",
       "stdout": "",
-      "stderr": "runtime error: MATHCK signed overflow in + at line 6 column 30 (left=2147483647, right=1)\n"
+      "stderr": "runtime error: MATHCK signed overflow in + at line 6 column 30 (left=2147483647, right=1)\n",
+      "name": "INTEGER32 addition overflow"
     },
     {
       "id": "G20.integer64",
@@ -371,7 +402,8 @@
       ],
       "target": "located overflow at operand width diagnostic",
       "stdout": "",
-      "stderr": "runtime error: MATHCK signed overflow in + at line 6 column 39 (left=9223372036854775807, right=1)\n"
+      "stderr": "runtime error: MATHCK signed overflow in + at line 6 column 39 (left=9223372036854775807, right=1)\n",
+      "name": "INTEGER64 addition overflow"
     },
     {
       "id": "G21",
@@ -381,7 +413,8 @@
         "extended"
       ],
       "target": "2000000000 / TRUE",
-      "stdout": "2000000000\nTRUE\n"
+      "stdout": "2000000000\nTRUE\n",
+      "name": "Wide integer arithmetic and Boolean result"
     },
     {
       "id": "G22",
@@ -391,7 +424,8 @@
         "extended"
       ],
       "target": "-32768",
-      "stdout": "-32768\n"
+      "stdout": "-32768\n",
+      "name": "Minimum INTEGER literal"
     },
     {
       "id": "G23.add",
@@ -402,7 +436,8 @@
         "extended"
       ],
       "target": "compile-time range error independent of MATHCK",
-      "diagnostic": "out of range"
+      "diagnostic": "out of range",
+      "name": "Compile-time signed addition range"
     },
     {
       "id": "G23.mul",
@@ -413,7 +448,8 @@
         "extended"
       ],
       "target": "compile-time range error independent of MATHCK",
-      "diagnostic": "out of range"
+      "diagnostic": "out of range",
+      "name": "Compile-time signed multiplication range"
     },
     {
       "id": "G23.succ",
@@ -424,7 +460,8 @@
         "extended"
       ],
       "target": "compile-time range error independent of MATHCK",
-      "diagnostic": "out of range"
+      "diagnostic": "out of range",
+      "name": "Compile-time SUCC range"
     },
     {
       "id": "G24",
@@ -435,7 +472,8 @@
         "extended"
       ],
       "target": "reject mixed INTEGER variable / WORD",
-      "diagnostic": "Mixed INTEGER-family and WORD-family operands need an explicit conversion (e.g. WRD) in +"
+      "diagnostic": "Mixed INTEGER-family and WORD-family operands need an explicit conversion (e.g. WRD) in +",
+      "name": "Mixed INTEGER and WORD operands rejected"
     },
     {
       "id": "G25",
@@ -446,7 +484,8 @@
         "extended"
       ],
       "target": "IBM same-bit-pattern INTEGER conversion (adjacent gap)",
-      "diagnostic": "narrowing"
+      "diagnostic": "narrowing",
+      "name": "IBM same-bit-pattern INTEGER conversion gap"
     },
     {
       "id": "G26.trunc",
@@ -458,7 +497,8 @@
       ],
       "target": "unconditional conversion error, independent of MATHCK",
       "stdout": "",
-      "stderr": "runtime error: TRUNC result out of INTEGER range at line 6 column 8 (value=100000)\n"
+      "stderr": "runtime error: TRUNC result out of INTEGER range at line 6 column 8 (value=100000)\n",
+      "name": "TRUNC result outside INTEGER range"
     },
     {
       "id": "G26.round",
@@ -470,7 +510,8 @@
       ],
       "target": "unconditional conversion error, independent of MATHCK",
       "stdout": "",
-      "stderr": "runtime error: ROUND result out of INTEGER range at line 6 column 8 (value=100000)\n"
+      "stderr": "runtime error: ROUND result out of INTEGER range at line 6 column 8 (value=100000)\n",
+      "name": "ROUND result outside INTEGER range"
     },
     {
       "id": "G27",
@@ -481,7 +522,8 @@
         "extended"
       ],
       "target": "IEEE infinity, outside MATHCK",
-      "stdout": "           INF\n"
+      "stdout": "           INF\n",
+      "name": "IEEE infinity output"
     },
     {
       "id": "G27.overflow",
@@ -492,7 +534,8 @@
         "extended"
       ],
       "target": "REAL overflow is IEEE infinity under MATHCK+, outside MATHCK",
-      "stdout": "           INF\n          -INF\n"
+      "stdout": "           INF\n          -INF\n",
+      "name": "REAL overflow produces IEEE infinity"
     },
     {
       "id": "G28",
@@ -503,7 +546,8 @@
         "extended"
       ],
       "target": "truncating division and dividend-sign remainder",
-      "stdout": "-3\n-1\n"
+      "stdout": "-3\n-1\n",
+      "name": "Truncating DIV and dividend-sign MOD"
     },
     {
       "id": "G29.integer",
@@ -516,7 +560,8 @@
       "stdin": "65536\n",
       "stdout": "",
       "stderr": "runtime error: integer out of range\n",
-      "target": "existing READ range check, independent of MATHCK"
+      "target": "existing READ range check, independent of MATHCK",
+      "name": "INTEGER READ overflow"
     },
     {
       "id": "G29.word",
@@ -529,7 +574,8 @@
       "stdin": "4294967296\n",
       "stdout": "",
       "stderr": "runtime error: word out of range\n",
-      "target": "existing READ range check, independent of MATHCK"
+      "target": "existing READ range check, independent of MATHCK",
+      "name": "WORD READ overflow"
     }
   ]
 }

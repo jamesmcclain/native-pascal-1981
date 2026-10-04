@@ -6,7 +6,8 @@ Each tests/fixtures/mathck/bench_*.pas workload is compiled with its
 unchecked comparator: wrapping arithmetic with no overflow intrinsics (the
 mandatory zero-divisor checks stay in both builds). No workload overflows,
 so both builds must print the same exact output. Results go to stdout as
-JSON; docs/mathck_overhead.md describes the method and the recorded run.
+JSON; tests/README.md#opt-in-overhead-measurements describes the method and
+retained measurement snapshots.
 """
 import argparse
 import json
@@ -14,9 +15,16 @@ import platform
 import re
 import statistics
 import subprocess
+import sys as _temp_sys
 import tempfile
+from pathlib import Path as _TempPath
+
+_temp_sys.path.insert(
+    0, str(_TempPath(__file__).resolve().parents[1] / 'scripts'))
 import time
 from pathlib import Path
+
+import native_temp  # owns this process's temporary workspace
 
 repo = Path(__file__).resolve().parent.parent
 parser = argparse.ArgumentParser(description=__doc__)

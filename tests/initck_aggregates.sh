@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # INITCK aggregates: fixed ARRAYs and RECORDs built only from INTEGER, BOOLEAN
 # and CHAR leaves carry one shadow state per scalar leaf, so writing one
 # component never initializes its neighbors. Never run unchecked bad reads as

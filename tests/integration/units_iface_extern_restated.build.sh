@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../../scripts/temp-env.sh"
 # Builds a PROGRAM against a UNIT whose INTERFACE itself declares Helper
 # EXTERN and whose IMPLEMENTATION re-states that EXTERN before defining only
 # Local -- the split-implementation shape with the directive written on both

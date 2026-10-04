@@ -89,9 +89,9 @@ static FILE *ensure_handle(struct pas_file_fcb *f)
         if (!f->handle)
             die("file runtime: open failed");
     } else {
-        f->handle = tmpfile();
+        f->handle = pas_project_tmpfile();
         if (!f->handle)
-            die("file runtime: tmpfile failed");
+            die("file runtime: temporary file failed");
         f->mode |= MODE_TEMP;
     }
     f->mode |= MODE_OWNS_HANDLE;
@@ -309,9 +309,9 @@ void pas_file_rewrite(struct pas_file_fcb *f)
         }
         f->mode &= ~MODE_TEMP;
     } else {
-        f->handle = tmpfile();
+        f->handle = pas_project_tmpfile();
         if (!f->handle)
-            die("file runtime: tmpfile failed");
+            die("file runtime: temporary file failed");
         f->mode |= MODE_TEMP;
     }
     f->mode |= MODE_OWNS_HANDLE;
@@ -386,7 +386,7 @@ void pas_file_discard(struct pas_file_fcb *f)
         remove(name);
         free(name);
     } else if (was_temp) {
-        /* Anonymous tmpfile storage is deleted by fclose. */
+        /* Anonymous temporary storage is deleted by fclose. */
     }
 }
 

@@ -1682,7 +1682,7 @@ BEGIN
               NOT ConstantAdaptsToOperand(left_node, lt, rt) AND
               NOT ConstantAdaptsToOperand(right_node, rt, lt) THEN
       BEGIN
-        { G24 (docs/mathck_contract.md): no wider-wins or unsigned-wins rule
+        { G24 (docs/dialect_notes.md): no wider-wins or unsigned-wins rule
           admits a nonconstant signed/unsigned mixture; constants still adapt. }
         IF op = 'PLUS' THEN
           AddError('Mixed INTEGER-family and WORD-family operands need an explicit conversion (e.g. WRD) in +')

@@ -1,4 +1,4 @@
-{ MATHCK on/off twin (extended dialect): tests/mathck_twins.py prepends
+{ MATHCK on/off twin (extended dialect): tests/mathck_twins.sh prepends
   $MATHCK+ or $MATHCK- and requires identical output (twin_extended.out).
   Every width, scoped builtin, SADDOK-family call, VECTOR lane operation
   and reduction, and FOR loop ending at its type's maximum stays in range;
