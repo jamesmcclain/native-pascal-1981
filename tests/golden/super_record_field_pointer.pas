@@ -4,10 +4,11 @@ PROGRAM SuperRecordFieldPointer(OUTPUT);
 TYPE
   Cell = RECORD x, y: INTEGER32 END;
   Cells = SUPER ARRAY [2..*] OF Cell;
-  Holder = RECORD data: ^Cells END;
+  PCells = ^Cells;
+  Holder = RECORD data: PCells END;
 VAR
   h: Holder;
-  p: ^Cells;
+  p: PCells;
   j: INTEGER;
 BEGIN
   NEW(p, 4);

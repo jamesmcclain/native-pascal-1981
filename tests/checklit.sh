@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # Minimal, zero-Python, FileCheck-lite directive runner for asserting on
 # emitted LLVM IR / PTX text -- the native-runner path for the class of
 # test that (in tests/parity/) is done via Python string assertions on

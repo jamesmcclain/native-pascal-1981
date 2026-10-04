@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # Verify the codegen backstop by bypassing the typechecker deliberately.
 # The normal driver must instead reject all of these at typecheck time.
 set -euo pipefail

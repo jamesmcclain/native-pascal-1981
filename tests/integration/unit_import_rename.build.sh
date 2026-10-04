@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../../scripts/temp-env.sh"
 # Builds unit_import_rename.pas (a host PROGRAM that renames its imports via
 # `USES mathutil (Sq, Cb)`) linked against a separately compiled UNIT
 # implementation exporting Square/Cube under their real names -- proving the

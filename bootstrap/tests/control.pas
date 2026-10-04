@@ -1,6 +1,8 @@
 { RETURN, BREAK and CYCLE; FOR TO and DOWNTO. A FOR limit is evaluated
-  once, the control variable ends one past it, and a limit at the type's
-  maximum ends the loop (the native compiler would wrap and loop forever). }
+  once, and a limit at the type's maximum ends the loop in both pasboot and
+  the native compiler. The control variable's value after natural
+  termination is undefined (manual 9-17); pasboot leaves it one past the
+  limit, which the "after FOR 1 TO 4" line below pins for pasboot only. }
 (*$INCLUDE:'testio.inc'*)
 PROGRAM control(input, output);
 USES testio;

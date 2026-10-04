@@ -1,0 +1,66 @@
+case 0
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK signed overflow in + at line 23 column 21 (left=32767, right=1)
+case 1
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK unsigned overflow in * at line 24 column 21 (left=65535, right=2)
+case 2
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK signed overflow in - at line 25 column 32 (operand=-32768)
+case 3
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK signed overflow in SUCC at line 26 column 19 (operand=32767)
+case 4
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK signed overflow in VSUM at line 27 column 19 (left=20000, right=20000)
+case 5
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK signed division by zero in DIV at line 28 column 21 (left=32767, right=0)
+case 6
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK unsigned division by zero in MOD at line 29 column 21 (left=65535, right=0)
+case 7
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: value 5 is outside subrange 0..3
+case 8
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: value 3 is outside subrange 0..2
+case 9
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: array index 4 is outside bounds 1..3
+case 10
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: TRUNC result out of INTEGER range at line 33 column 20 (value=1000000000)

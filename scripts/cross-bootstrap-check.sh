@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/temp-env.sh"
 # Cross-bootstrap identity check: build generation 1 twice -- once with
 # pasboot, the in-tree C bootstrap translator, and once with the external
 # Python reference compiler -- then build generation 2 from each and require

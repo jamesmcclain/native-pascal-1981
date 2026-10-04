@@ -1,6 +1,6 @@
 { DIALECT: extended }
 { VLOAD/VSTORE on a NEW-allocated SUPER ARRAY pointee: one i128 whole-lane
-  range check (non-NIL, idx >= lo, idx+n-1 <= the i64 header bound) guards
+  range check (non-NIL, idx >= lo, idx+n-1 <= the selected i64 descriptor bound) guards
   each access, and failure calls a noreturn runtime diagnostic. VSTORE's
   per-lane stores all sit after its single check. }
 { CHECK-COUNT: 2 call void @pas_vector_nil_error }

@@ -1,5 +1,5 @@
 /* POSIX substrate for filesystem and child-process utilities.  This file
- * deliberately knows nothing about a particular test suite or compiler. */
+ * uses the project temporary namespace by default, with a TMPDIR override. */
 #define _POSIX_C_SOURCE 200809L
 
 #include "pascalrt.h"
@@ -82,7 +82,9 @@ int pas_sys_temp_dir(const char *prefix, char *out, int outcap)
     }
     base = getenv("TMPDIR");
     if (!base || base[0] == '\0')
-        base = "/tmp";
+        base = pas_project_temp_root();
+    if (!base)
+        return -1;
     need = strlen(base) + 1 + strlen(prefix) + 6 + 1;
     if (need > (size_t) outcap) {
         errno = ENAMETOOLONG;

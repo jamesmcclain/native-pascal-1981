@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # Parser coverage for named ordinal array index types: every bare index
 # name parses to a NamedType node, pretty81 round-trips it losslessly, and
 # the SUPER ARRAY lo..* grammar is unchanged.

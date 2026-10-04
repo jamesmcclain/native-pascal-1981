@@ -1,0 +1,50 @@
+case 0
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK unsigned overflow in - at line 26 column 12 (operand=1)
+case 1
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK unsigned overflow in + at line 57 column 14 (left=18446744073709551615, right=1)
+case 2
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK unsigned overflow in - at line 86 column 14 (left=0, right=1)
+case 3
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK unsigned overflow in * at line 117 column 14 (left=18446744073709551615, right=2)
+case 4
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK unsigned division by zero in DIV at line 146 column 14 (left=9, right=0)
+case 5
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK unsigned division by zero in MOD at line 175 column 14 (left=9, right=0)
+case 6
+status: nonzero
+stdout:
+18446744073709551615
+prefix
+stderr:
+runtime error: MATHCK unsigned overflow in VSUM at line 205 column 12 (left=18446744073709551615, right=1)
+case 7
+status: nonzero
+stdout:
+9223372036854775806
+prefix
+stderr:
+runtime error: MATHCK unsigned overflow in VPROD at line 231 column 12 (left=9223372036854775808, right=2)

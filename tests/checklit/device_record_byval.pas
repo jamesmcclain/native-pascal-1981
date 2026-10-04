@@ -1,6 +1,9 @@
 { DIALECT: extended }
 { CHECK-FLAGS: --emit-ptx --device-triple nvptx64-nvidia-cuda }
 { CHECK: .param .align 4 .b8 Sum_param_0[20] }
+{ NVPTX integer arithmetic is a MATHCK unsupported boundary (no device
+  failure path); this ABI/lowering fixture opts out. }
+{$MATHCK-}
 DEVICE MODULE DeviceRecordByVal;
 TYPE
   TRec = RECORD

@@ -15,7 +15,7 @@ VAR
 BEGIN
   READLN(c, a, b, p);
   WRITELN(ORD(c), ' ', a, ' ', b, ' ', p);
-  ASSIGN(f, '/tmp/native_pascal_test_read_enum_bool_ptr.txt');
+  ASSIGN(f, 'native_pascal_test_read_enum_bool_ptr.txt');
   REWRITE(f);
   WRITELN(f, '1 false 65536');
   CLOSE(f);

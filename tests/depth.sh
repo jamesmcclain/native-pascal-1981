@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # Native parser depth and resource-limit tests. No Python is required.
 set -euo pipefail
 cd "$(dirname "$0")/.."

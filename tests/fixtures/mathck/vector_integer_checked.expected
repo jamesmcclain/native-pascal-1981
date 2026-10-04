@@ -1,0 +1,65 @@
+case 0
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK signed overflow in - at line 24 column 12 (operand=-32768)
+case 1
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK signed overflow in + at line 49 column 14 (left=32767, right=1)
+case 2
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK signed overflow in - at line 74 column 14 (left=-32768, right=1)
+case 3
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK signed overflow in * at line 99 column 14 (left=32767, right=2)
+case 4
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK signed division by zero in DIV at line 124 column 14 (left=9, right=0)
+case 5
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK signed overflow in DIV at line 149 column 14 (left=-32768, right=-1)
+case 6
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK signed division by zero in MOD at line 174 column 14 (left=9, right=0)
+case 7
+status: 0
+stdout:
+prefix
+1
+0
+0
+0
+stderr:
+case 8
+status: nonzero
+stdout:
+-1
+prefix
+stderr:
+runtime error: MATHCK signed overflow in VSUM at line 225 column 12 (left=32767, right=1)
+case 9
+status: nonzero
+stdout:
+32767
+prefix
+stderr:
+runtime error: MATHCK signed overflow in VPROD at line 247 column 12 (left=16384, right=2)

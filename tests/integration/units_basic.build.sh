@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../../scripts/temp-env.sh"
 # Builds units_basic.pas (a host PROGRAM) linked against a separately
 # compiled UNIT implementation (units_basic.mathutil.impl), demonstrating
 # USES + separate compilation, which the single-file driver invocation

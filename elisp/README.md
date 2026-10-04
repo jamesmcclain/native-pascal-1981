@@ -79,6 +79,13 @@ the lexeme. The AST has no source spans, so this order is the only
 scope the mode has. The index covers the top-level block only, so a
 name declared in a nested body can still shadow.
 
+## Temporary files
+
+The mode's workspace ownership and cleanup rules are documented in the
+canonical [temporary-file ownership contract](../docs/temporary_files.md),
+including the limits of cleanup after fatal editor crashes. Consult that
+contract before changing stage invocation or temporary-file handling.
+
 ## Tests
 
 Run the ERT suite with make, from any directory:

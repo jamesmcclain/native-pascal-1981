@@ -322,15 +322,12 @@ BEGIN
     IF ((nm = 'SUCC') OR (nm = 'PRED')) AND (cJSON_GetArraySize(args) = 1) THEN
     BEGIN
       arg_tk := CheckExpr(cJSON_GetArrayItem(args, 0));
-      IF FoldConstInt(cJSON_GetArrayItem(args, 0), folded_value) THEN
+      { An integer result is range-checked by CheckFoldedOperation, as for
+        every other constant SUCC/PRED. }
+      IF (arg_tk = TK_CHAR) AND FoldConstInt(cJSON_GetArrayItem(args, 0), folded_value) THEN
       BEGIN
         IF nm = 'SUCC' THEN folded_value := folded_value + 1 ELSE folded_value := folded_value - 1;
-        IF (arg_tk = TK_INTEGER) AND ((folded_value < -32767) OR (folded_value > 32767)) THEN
-        BEGIN
-          IF nm = 'SUCC' THEN AddError('Constant SUCC result outside INTEGER range')
-          ELSE AddError('Constant PRED result outside INTEGER range');
-        END
-        ELSE IF (arg_tk = TK_CHAR) AND ((folded_value < 0) OR (folded_value > 255)) THEN
+        IF (folded_value < 0) OR (folded_value > 255) THEN
         BEGIN
           IF nm = 'SUCC' THEN AddError('Constant SUCC result outside CHAR range')
           ELSE AddError('Constant PRED result outside CHAR range');

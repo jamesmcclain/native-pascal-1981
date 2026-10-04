@@ -115,7 +115,9 @@ BEGIN
   types[ntypes].hi := hi;
   types[ntypes].index_tid := TK_INTEGER;
   types[ntypes].is_super := FALSE;
+  types[ntypes].is_descriptor := FALSE;
   types[ntypes].is_subrange := FALSE;
+  types[ntypes].variant_empty := FALSE;
   types[ntypes].ptr_space := PTR_SPACE_PLAIN;
   types[ntypes].enum_values := NIL;
   types[ntypes].llvm_ty := llvm_ty;
@@ -175,6 +177,85 @@ BEGIN
   EnsureBoolVectorType := found;
 END;
 
+FUNCTION IsHostDescriptor(tid: INTEGER): BOOLEAN;
+BEGIN
+  IsHostDescriptor := FALSE;
+  IF TypeKind(tid) = TK_POINTER THEN
+    IsHostDescriptor := types[tid].is_descriptor;
+END;
+
+FUNCTION ContainsHostDescriptor(tid: INTEGER): BOOLEAN;
+VAR i: INTEGER; found: BOOLEAN;
+BEGIN
+  found := IsHostDescriptor(tid);
+  IF TypeKind(tid) = TK_ARRAY THEN
+    found := ContainsHostDescriptor(types[tid].elem_tid)
+  ELSE IF TypeKind(tid) = TK_RECORD THEN
+    FOR i := 1 TO nfields DO
+      IF fields[i].rec_tid = tid THEN
+        IF ContainsHostDescriptor(fields[i].field_tid) THEN found := TRUE;
+  ContainsHostDescriptor := found;
+END;
+
+FUNCTION WalkDescriptorExposure(tid: INTEGER; VAR seen: DescriptorVisitArr): BOOLEAN;
+VAR i: INTEGER; found: BOOLEAN;
+BEGIN
+  found := FALSE;
+  IF tid >= 14 THEN
+    IF NOT seen[tid] THEN
+    BEGIN
+      seen[tid] := TRUE;
+      found := IsHostDescriptor(tid);
+      IF (TypeKind(tid) = TK_POINTER) OR (TypeKind(tid) = TK_ARRAY) THEN
+        IF WalkDescriptorExposure(types[tid].elem_tid, seen) THEN found := TRUE;
+      IF TypeKind(tid) = TK_RECORD THEN
+        FOR i := 1 TO nfields DO
+          IF fields[i].rec_tid = tid THEN
+            IF WalkDescriptorExposure(fields[i].field_tid, seen) THEN found := TRUE;
+    END;
+  WalkDescriptorExposure := found;
+END;
+
+FUNCTION ExposesHostDescriptor(tid: INTEGER): BOOLEAN;
+{ Follow statically typed address paths as well as embedded values; a visited
+  set terminates recursive records. Opaque ADRMEM/CPTR paths remain unsafe. }
+VAR seen: DescriptorVisitArr; i: INTEGER;
+BEGIN
+  IF tid < 14 THEN ExposesHostDescriptor := FALSE
+  ELSE
+  BEGIN
+    FOR i := 1 TO MAX_TYPES DO seen[i] := FALSE;
+    ExposesHostDescriptor := WalkDescriptorExposure(tid, seen);
+  END;
+END;
+
+FUNCTION SameStoragePointerTarget(a, b: INTEGER): BOOLEAN;
+BEGIN
+  SameStoragePointerTarget := FALSE;
+  IF (TypeKind(a) = TK_POINTER) AND (TypeKind(b) = TK_POINTER) THEN
+    SameStoragePointerTarget := (types[a].elem_tid = types[b].elem_tid) AND PointerSpacesCompatible(a, b);
+END;
+
+FUNCTION MakeDescriptor(tid: INTEGER; data, bound_value: ADRMEM): ADRMEM;
+VAR v: ADRMEM;
+BEGIN
+  v := LLVMBuildInsertValue(builder, LLVMConstNull(LLVMTypeForTk(tid)), data, 0, MakeCStr(''));
+  MakeDescriptor := LLVMBuildInsertValue(builder, v, bound_value, 1, MakeCStr(''));
+END;
+
+PROCEDURE SuperDomainLimits(arr_tid: INTEGER; VAR low, high: INTEGER64);
+VAR host: INTEGER;
+BEGIN
+  host := types[arr_tid].index_tid;
+  IF host = TK_INTEGER THEN BEGIN low := -32768; high := 32767 END
+  ELSE IF host = TK_WORD THEN BEGIN low := 0; high := 65535 END
+  ELSE IF host = TK_CHAR THEN BEGIN low := 0; high := 255 END
+  ELSE IF host = TK_BOOLEAN THEN BEGIN low := 0; high := 1 END
+  ELSE IF TypeKind(host) = TK_ENUM THEN
+  BEGIN low := types[host].lo; high := types[host].hi END
+  ELSE AbortWith('codegen: unsupported SUPER ARRAY index domain');
+END;
+
 FUNCTION PointerSpacesCompatible(from_tid, to_tid: INTEGER): BOOLEAN;
 { Assignment compatibility between two pointer types, mirroring the reference
   type system's PointerType.equivalent_to: a plain `^T` is a wildcard against
@@ -184,7 +265,9 @@ FUNCTION PointerSpacesCompatible(from_tid, to_tid: INTEGER): BOOLEAN;
   kernel declared `ADS(GLOBAL) OF T` by an imported DEVICE INTERFACE, since
   the two type_exprs register separate tids. }
 BEGIN
-  IF (TypeKind(from_tid) <> TK_POINTER) OR (TypeKind(to_tid) <> TK_POINTER) THEN
+  IF IsHostDescriptor(from_tid) OR IsHostDescriptor(to_tid) THEN
+    PointerSpacesCompatible := from_tid = to_tid
+  ELSE IF (TypeKind(from_tid) <> TK_POINTER) OR (TypeKind(to_tid) <> TK_POINTER) THEN
     PointerSpacesCompatible := FALSE
   ELSE IF (types[from_tid].ptr_space = PTR_SPACE_PLAIN) OR
           (types[to_tid].ptr_space = PTR_SPACE_PLAIN) THEN
@@ -236,7 +319,9 @@ BEGIN
     none -- a comparison result via EnsureBoolVectorType, a VSPLAT/VSELECT
     result) produced the tid. Same structural rule as SET just above; every
     such vector has the identical <n x T> layout. }
-  TypesCompatibleForAssign := (from_tid = to_tid) OR
+  IF IsHostDescriptor(from_tid) OR IsHostDescriptor(to_tid) THEN
+    TypesCompatibleForAssign := from_tid = to_tid
+  ELSE TypesCompatibleForAssign := (from_tid = to_tid) OR
     ((TypeKind(from_tid) = TK_VECTOR) AND (TypeKind(to_tid) = TK_VECTOR)
        AND (types[from_tid].elem_tid = types[to_tid].elem_tid)
        AND (types[from_tid].lo = types[to_tid].lo)
@@ -258,10 +343,10 @@ END;
 FUNCTION Real64ToInt64(val: REAL): INTEGER64;
 { Truncation toward zero, done in the runtime rather than with TRUNC.
 
-  TRUNC cannot do this job. It lowers to a float-to-int conversion at this
-  dialect's INTEGER width, which is 16 bits, so TRUNC(40000.0) is -25536 and
-  TRUNC(100000.0) is not even a wrapped value -- an out-of-range float-to-int
-  conversion is poison in LLVM, so the result is arbitrary.
+  TRUNC cannot do this job. It converts to this dialect's INTEGER width,
+  which is 16 bits, so TRUNC(40000.0) is a run-time range error (before
+  that check existed, an out-of-range float-to-int conversion was LLVM
+  poison and the result was arbitrary).
 
   That is not a footnote. This function is how an integer literal's value is
   read out of the AST, so every literal above 32767 was destroyed here, inside
@@ -273,15 +358,47 @@ BEGIN
   Real64ToInt64 := RETYPE(INTEGER64, pas_double_to_int64(val));
 END;
 
+FUNCTION FoldArith(op: Str255; left, right: INTEGER64;
+  VAR folded: INTEGER64): BOOLEAN;
+{ The exact constant left + - * right, or FALSE when it leaves INTEGER64.
+  The folder runs inside a MATHCK-checked compiler, so a constant from the
+  program must not trap it: the operation wraps and the overflow is tested
+  explicitly. A typechecked AST never reaches the failure (the
+  typechecker rejects such a constant); an overflowing expression in a
+  legacy AST is simply not folded. }
+VAR
+  r, neg_right: INTEGER64;
+  fits: BOOLEAN;
+BEGIN
+  (*$MATHCK-*)
+  IF op = 'PLUS' THEN r := left + right
+  ELSE IF op = 'MINUS' THEN r := left - right
+  ELSE r := left * right;
+  neg_right := 0 - right;
+  (*$MATHCK+*)
+  IF op = 'PLUS' THEN
+    fits := ((left >= 0) <> (right >= 0)) OR ((r >= 0) = (left >= 0))
+  ELSE IF op = 'MINUS' THEN
+    fits := ((left >= 0) = (right >= 0)) OR ((r >= 0) = (left >= 0))
+  ELSE IF (left = 0) OR (right = 0) THEN
+    fits := TRUE
+  ELSE IF left = -1 THEN
+    fits := neg_right <> right { only the minimum negates to itself }
+  ELSE
+    fits := r DIV left = right;
+  folded := r;
+  FoldArith := fits;
+END;
+
 FUNCTION FoldConstInt(expr_node: ADRMEM; VAR folded: INTEGER64): BOOLEAN;
 { Fold the integer-only constant-expression subset used by the reference
   typechecker's _fold_const_int: literals, unary +/-, arithmetic, earlier
-  integer CONSTs, and ORD/SUCC/PRED.  This is deliberately not CodegenExpr:
+  integer CONSTs, and ORD/SUCC/PRED/ABS/SQR.  This is deliberately not CodegenExpr:
   callers need the untruncated value before rebuilding it at a wider target
   type for the vintage INTEGER-constant adaptation rule. }
 VAR
   nt, op, nm, ch: Str255;
-  left, right, q, r: INTEGER64;
+  left, right: INTEGER64;
   ci: INTEGER32;
   args: ADRMEM;
 BEGIN
@@ -307,8 +424,8 @@ BEGIN
     op := GetStr(expr_node, 'op');
     IF ((op = 'PLUS') OR (op = 'MINUS')) AND FoldConstInt(GetObj(expr_node, 'operand'), folded) THEN
     BEGIN
-      IF op = 'MINUS' THEN folded := 0 - folded;
-      FoldConstInt := TRUE;
+      IF op = 'MINUS' THEN FoldConstInt := FoldArith('MINUS', 0, folded, folded)
+      ELSE FoldConstInt := TRUE;
     END;
   END
   ELSE IF nt = 'BinOp' THEN
@@ -318,23 +435,28 @@ BEGIN
        FoldConstInt(GetObj(expr_node, 'left'), left) AND
        FoldConstInt(GetObj(expr_node, 'right'), right) THEN
     BEGIN
-      IF op = 'PLUS' THEN folded := left + right
-      ELSE IF op = 'MINUS' THEN folded := left - right
-      ELSE IF op = 'MUL' THEN folded := left * right
+      IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') THEN
+        FoldConstInt := FoldArith(op, left, right, folded)
+      ELSE IF right = -1 THEN
+      BEGIN
+        { x DIV -1 is -x, which overflows only for the minimum; x MOD -1
+          is 0. }
+        IF op = 'DIV' THEN FoldConstInt := FoldArith('MINUS', 0, left, folded)
+        ELSE
+        BEGIN
+          folded := 0;
+          FoldConstInt := TRUE;
+        END;
+      END
       ELSE IF right <> 0 THEN
       BEGIN
-        { Match Python's // and % rather than the host's truncating DIV/MOD. }
-        q := left DIV right;
-        r := left MOD right;
-        IF (r <> 0) AND (((left < 0) AND (right > 0)) OR ((left > 0) AND (right < 0))) THEN
-          q := q - 1;
-        IF op = 'DIV' THEN folded := q
-        ELSE folded := left - q * right;
+        { Truncate toward zero; MOD has the dividend's sign, like runtime. }
+        IF op = 'DIV' THEN folded := left DIV right
+        ELSE folded := left MOD right;
         FoldConstInt := TRUE;
       END
       ELSE
-        FoldConstInt := FALSE;
-      IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') THEN FoldConstInt := TRUE;
+        AbortWith('codegen: Constant division by zero');
     END;
   END
   ELSE IF nt = 'Identifier' THEN
@@ -351,12 +473,15 @@ BEGIN
   BEGIN
     nm := UpperStr(GetStr(expr_node, 'name'));
     args := GetObj(expr_node, 'args');
-    IF ((nm = 'ORD') OR (nm = 'CHR') OR (nm = 'SUCC') OR (nm = 'PRED')) AND (ArrSize(args) = 1) AND
+    IF ((nm = 'ORD') OR (nm = 'CHR') OR (nm = 'SUCC') OR (nm = 'PRED') OR
+        (nm = 'ABS') OR (nm = 'SQR')) AND (ArrSize(args) = 1) AND
        FoldConstInt(ArrItem(args, 0), folded) THEN
     BEGIN
-      IF nm = 'SUCC' THEN folded := folded + 1
-      ELSE IF nm = 'PRED' THEN folded := folded - 1;
-      FoldConstInt := TRUE;
+      IF nm = 'SUCC' THEN FoldConstInt := FoldArith('PLUS', folded, 1, folded)
+      ELSE IF nm = 'PRED' THEN FoldConstInt := FoldArith('MINUS', folded, 1, folded)
+      ELSE IF nm = 'SQR' THEN FoldConstInt := FoldArith('MUL', folded, folded, folded)
+      ELSE IF (nm = 'ABS') AND (folded < 0) THEN FoldConstInt := FoldArith('MINUS', 0, folded, folded)
+      ELSE FoldConstInt := TRUE;
     END;
   END;
 END;
@@ -364,7 +489,7 @@ END;
 FUNCTION FoldsThroughShadowedName(expr_node: ADRMEM): BOOLEAN;
 { TRUE when FoldConstInt would reach its value through a spelling that a
   visible variable or user routine has taken over.  FoldConstInt itself
-  folds a CONST name and ORD/CHR/SUCC/PRED by name, deliberately: ps_expr.pas's
+  folds a CONST name and ORD/CHR/SUCC/PRED (and ABS/SQR) by name, deliberately: ps_expr.pas's
   ParseConstant admits exactly those names in a constant expression and
   nothing else can appear there, so a CONST value is the intrinsic whatever
   else is in scope -- which is also what the Python reference's
@@ -466,6 +591,54 @@ BEGIN
   ELSE IntFamilyWidth := 64;
 END;
 
+PROCEDURE ReleaseReinterpretedReferent(v: ADRMEM; from_tid, to_tid: INTEGER; expr_node: ADRMEM);
+{ INITCK: a typed host pointer converted to ADRMEM or to a pointer to
+  another type hands its referent to accesses whose state is not modeled,
+  so the referent's heap state is released (pas_initck_heap_release in
+  runtime/initck_heap.c; a no-op for an untracked address). Raw and
+  external access is otherwise outside the INITCK slice. }
+VAR
+  tys, args, fnty, fn, discard: ADRMEM;
+BEGIN
+  IF is_device_compiland OR (from_tid = to_tid) THEN RETURN;
+  IF NodeType(expr_node) = 'NilLiteral' THEN RETURN;
+  IF TypeKind(from_tid) <> TK_POINTER THEN RETURN;
+  IF IsHostDescriptor(from_tid) OR (types[from_tid].ptr_space <> PTR_SPACE_PLAIN) THEN RETURN;
+  IF to_tid <> TK_ADRMEM THEN
+  BEGIN
+    IF TypeKind(to_tid) <> TK_POINTER THEN RETURN;
+    IF types[to_tid].elem_tid = types[from_tid].elem_tid THEN RETURN;
+  END;
+  { A converted actual hands its referent over at the call, after the
+    later actuals (InitckReleaseAtCall in cg_symbols). }
+  IF initck_defer_conv AND (initck_npending < INITCK_MAX_PENDING) THEN
+  BEGIN
+    initck_npending := initck_npending + 1;
+    initck_pending[initck_npending] := LLVMBuildBitCast(builder, v, i8ptrty, MakeCStr(''));
+    initck_pending_tid[initck_npending] := 0;
+    RETURN;
+  END;
+  tys := AllocPtrArray(1);
+  SetPtrArrayElem(tys, 0, i8ptrty);
+  fnty := LLVMFunctionType(voidty, tys, 1, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_initck_heap_release'));
+  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr('pas_initck_heap_release'), fnty);
+  args := AllocPtrArray(1);
+  SetPtrArrayElem(args, 0, LLVMBuildBitCast(builder, v, i8ptrty, MakeCStr('')));
+  discard := LLVMBuildCall2(builder, fnty, fn, args, 1, MakeCStr(''));
+END;
+
+FUNCTION IntToFloat(v: ADRMEM; tk: INTEGER; destty: ADRMEM): ADRMEM;
+{ An integer-family value converted to a floating type by its own
+  signedness: a WORD-family value is unsigned, so WORD 65535 is 65535.0,
+  not -1.0. }
+BEGIN
+  IF IsUnsignedWordTk(tk) THEN
+    IntToFloat := LLVMBuildUIToFP(builder, v, destty, MakeCStr(''))
+  ELSE
+    IntToFloat := LLVMBuildSIToFP(builder, v, destty, MakeCStr(''));
+END;
+
 FUNCTION CoerceForAssign(v: ADRMEM; from_tid, to_tid: INTEGER; expr_node: ADRMEM; ctx_name: Str255): ADRMEM;
 { Resolve an assignment's RHS value against its target type, mirroring the
   Python reference's can_assign plus its _const_adapts_to_int_target
@@ -477,8 +650,28 @@ FUNCTION CoerceForAssign(v: ADRMEM; from_tid, to_tid: INTEGER; expr_node: ADRMEM
   same as the reference (use WRD(...) / an INTEGER8-typed expression
   explicitly). }
 BEGIN
-  IF TypesCompatibleForAssign(from_tid, to_tid) THEN
-    CoerceForAssign := v
+  IF IsHostDescriptor(to_tid) AND (NodeType(expr_node) = 'NilLiteral') THEN
+    CoerceForAssign := LLVMConstNull(LLVMTypeForTk(to_tid))
+  ELSE IF (IsHostDescriptor(from_tid) OR IsHostDescriptor(to_tid)) AND (from_tid <> to_tid) THEN
+  BEGIN
+    AbortWith2('codegen: incompatible super-array descriptor pointer; use explicit unsafe conversion: ', ctx_name);
+    CoerceForAssign := NIL;
+  END
+  ELSE IF (from_tid <> to_tid) AND ExposesHostDescriptor(from_tid) AND
+          ((to_tid = TK_ADRMEM) OR (TypeKind(to_tid) = TK_POINTER)) THEN
+  BEGIN
+    IF SameStoragePointerTarget(from_tid, to_tid) THEN CoerceForAssign := v
+    ELSE
+    BEGIN
+      AbortWith2('codegen: implicit escape of super-array descriptor storage is unsupported: ', ctx_name);
+      CoerceForAssign := NIL;
+    END;
+  END
+  ELSE IF TypesCompatibleForAssign(from_tid, to_tid) THEN
+  BEGIN
+    ReleaseReinterpretedReferent(v, from_tid, to_tid, expr_node);
+    CoerceForAssign := v;
+  END
   ELSE IF (from_tid = TK_INTEGER) AND ((to_tid = TK_INTEGER8) OR (to_tid = TK_WORD8)) AND IsIntLiteralLike(expr_node) THEN
     CoerceForAssign := LLVMConstInt(i8ty, IntLiteralValue(expr_node), 1)
   ELSE IF (from_tid = TK_INTEGER) AND ((to_tid = TK_INTEGER32) OR (to_tid = TK_WORD32)) AND IsIntLiteralLike(expr_node) THEN
@@ -491,10 +684,11 @@ BEGIN
   ELSE IF ((from_tid = TK_INTEGER) OR (from_tid = TK_WORD) OR (from_tid = TK_INTEGER8) OR (from_tid = TK_WORD8)
       OR (from_tid = TK_INTEGER32) OR (from_tid = TK_WORD32) OR (from_tid = TK_INTEGER64) OR (from_tid = TK_WORD64))
       AND ((to_tid = TK_REAL) OR (to_tid = TK_REAL32)) THEN
-    { Integer-family -> floating: sitofp into the target float width,
-      matching the reference's general C-ABI argument coercion (not just a
-      literal exemption -- any integer-typed expression, e.g. cJSON_CreateNumber(int_var)). }
-    CoerceForAssign := LLVMBuildSIToFP(builder, v, LLVMTypeForTk(to_tid), MakeCStr(''))
+    { Integer-family -> floating, by the source's signedness, into the
+      target float width, matching the reference's general C-ABI argument
+      coercion (not just a literal exemption -- any integer-typed
+      expression, e.g. cJSON_CreateNumber(int_var)). }
+    CoerceForAssign := IntToFloat(v, from_tid, LLVMTypeForTk(to_tid))
   ELSE IF TypeKind(to_tid) = TK_ENUM THEN
   BEGIN
     { An enum target stores a 0-based ordinal in i32. Enum member
@@ -542,6 +736,33 @@ BEGIN
   END;
 END;
 
+PROCEDURE EmitSubrangeFailure(bad_value: ADRMEM; is_unsigned: BOOLEAN; lo, hi: INTEGER32);
+{ The noreturn pas_subrange_error call (runtime/subrange.c) for an i64
+  bad_value outside lo..hi, at the builder's current (failure) block. }
+VAR
+  args, ps, fnty, fn, discard: ADRMEM;
+BEGIN
+  ps := AllocPtrArray(4);
+  SetPtrArrayElem(ps, 0, i64ty);
+  SetPtrArrayElem(ps, 1, i32ty);
+  SetPtrArrayElem(ps, 2, i64ty);
+  SetPtrArrayElem(ps, 3, i64ty);
+  fnty := LLVMFunctionType(voidty, ps, 4, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_subrange_error'));
+  IF fn = NIL THEN
+    fn := LLVMAddFunction(modl, MakeCStr('pas_subrange_error'), fnty);
+  args := AllocPtrArray(4);
+  SetPtrArrayElem(args, 0, bad_value);
+  IF is_unsigned THEN
+    SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 1, 0))
+  ELSE
+    SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 0, 0));
+  SetPtrArrayElem(args, 2, LLVMConstInt(i64ty, lo, 1));
+  SetPtrArrayElem(args, 3, LLVMConstInt(i64ty, hi, 1));
+  discard := LLVMBuildCall2(builder, fnty, fn, args, 4, MakeCStr(''));
+  discard := LLVMBuildUnreachable(builder);
+END;
+
 PROCEDURE EmitSubrangeCheck(v: ADRMEM; from_tid, to_tid: INTEGER);
 { $RANGECK for a store into a subrange: when to_tid is a subrange and the
   check is on, compare v (a value of the ordinal type from_tid, extended by
@@ -551,7 +772,7 @@ PROCEDURE EmitSubrangeCheck(v: ADRMEM; from_tid, to_tid: INTEGER);
   can wrap into range. Leaves the builder in the in-range block. Device
   code has no host runtime to call, so it is not checked. }
 VAR
-  i128ty, v128, ok, okhi, bad_bb, ok_bb, args, ps, fnty, fn, discard: ADRMEM;
+  i128ty, v128, ok, okhi, bad_bb, ok_bb: ADRMEM;
   fk: INTEGER;
   is_unsigned: BOOLEAN;
 BEGIN
@@ -580,25 +801,8 @@ BEGIN
   LLVMBuildCondBr(builder, ok, ok_bb, bad_bb);
 
   LLVMPositionBuilderAtEnd(builder, bad_bb);
-  ps := AllocPtrArray(4);
-  SetPtrArrayElem(ps, 0, i64ty);
-  SetPtrArrayElem(ps, 1, i32ty);
-  SetPtrArrayElem(ps, 2, i64ty);
-  SetPtrArrayElem(ps, 3, i64ty);
-  fnty := LLVMFunctionType(voidty, ps, 4, 0);
-  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_subrange_error'));
-  IF fn = NIL THEN
-    fn := LLVMAddFunction(modl, MakeCStr('pas_subrange_error'), fnty);
-  args := AllocPtrArray(4);
-  SetPtrArrayElem(args, 0, LLVMBuildTrunc(builder, v128, i64ty, MakeCStr('')));
-  IF is_unsigned THEN
-    SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 1, 0))
-  ELSE
-    SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 0, 0));
-  SetPtrArrayElem(args, 2, LLVMConstInt(i64ty, types[to_tid].lo, 1));
-  SetPtrArrayElem(args, 3, LLVMConstInt(i64ty, types[to_tid].hi, 1));
-  discard := LLVMBuildCall2(builder, fnty, fn, args, 4, MakeCStr(''));
-  discard := LLVMBuildUnreachable(builder);
+  EmitSubrangeFailure(LLVMBuildTrunc(builder, v128, i64ty, MakeCStr('')), is_unsigned,
+    types[to_tid].lo, types[to_tid].hi);
 
   LLVMPositionBuilderAtEnd(builder, ok_bb);
 END;
@@ -745,6 +949,7 @@ VAR
   tid: INTEGER;
   i: INTEGER;
   off, fa, end_off: INTEGER32;
+  wide_size: INTEGER64;
 BEGIN
   tid := LayoutScalarTid(tid_in);
   IF tid = TK_INTEGER THEN TypeSizeBytes := 2
@@ -761,8 +966,16 @@ BEGIN
   ELSE IF tid = TK_REAL32 THEN TypeSizeBytes := 4
   ELSE IF tid = TK_ADRMEM THEN TypeSizeBytes := 8
   ELSE IF TypeKind(tid) = TK_ARRAY THEN
-    TypeSizeBytes := RoundUpBytes(TypeSizeBytes(types[tid].elem_tid), TypeAlignBytes(types[tid].elem_tid))
-                      * (types[tid].hi - types[tid].lo + 1)
+  BEGIN
+    { The product can exceed INTEGER32 (an ARRAY of 2^16 64 KiB pages):
+      reject a size the INTEGER32 layout bookkeeping cannot represent rather
+      than wrapping it into a wrong record offset or NEW size. }
+    wide_size := RoundUpBytes(TypeSizeBytes(types[tid].elem_tid), TypeAlignBytes(types[tid].elem_tid));
+    wide_size := wide_size * (types[tid].hi - types[tid].lo + 1);
+    IF wide_size > 2147483647 THEN
+      AbortWith('codegen: type layout exceeds the supported 2147483647-byte size');
+    TypeSizeBytes := RETYPE(INTEGER32, wide_size);
+  END
   ELSE IF TypeKind(tid) = TK_RECORD THEN
   BEGIN
     end_off := 0;
@@ -777,6 +990,7 @@ BEGIN
   ELSE IF TypeKind(tid) = TK_LSTRING THEN TypeSizeBytes := types[tid].hi + 1
   ELSE IF TypeKind(tid) = TK_STRING THEN TypeSizeBytes := types[tid].hi
   ELSE IF TypeKind(tid) = TK_SET THEN TypeSizeBytes := 32
+  ELSE IF IsHostDescriptor(tid) THEN TypeSizeBytes := 16
   ELSE IF TypeKind(tid) = TK_POINTER THEN TypeSizeBytes := 8
   ELSE IF TypeKind(tid) = TK_VECTOR THEN
     { Vector lanes are packed -- no inter-lane padding, unlike an ARRAY's
@@ -791,6 +1005,45 @@ BEGIN
   END;
 END;
 
+FUNCTION SuperElementSize(tid: INTEGER): CLONG;
+{ Validate before LLVM computes an overflowing layout. Arrays use wide actual
+  allocation strides; record offsets still have the compiler's INTEGER32 limit.
+  Check each field span, including overlapping variant alternatives. }
+VAR child, count, limit: CLONG; i: INTEGER;
+BEGIN
+  limit := 2147483647;
+  limit := limit * 4294967296 + 4294967295;
+  IF TypeKind(tid) = TK_ARRAY THEN
+  BEGIN
+    IF types[tid].is_super THEN
+      AbortWith('codegen: SUPER ARRAY allocation requires statically sized elements');
+    child := SuperElementSize(types[tid].elem_tid);
+    count := types[tid].hi; count := count - types[tid].lo + 1;
+    IF count < 0 THEN AbortWith('codegen: SUPER ARRAY element layout is too large');
+    IF child > 0 THEN
+      IF count > limit DIV child THEN
+        AbortWith('codegen: SUPER ARRAY element layout is too large');
+  END
+  ELSE IF TypeKind(tid) = TK_RECORD THEN
+  BEGIN
+    FOR i := 1 TO nfields DO
+      IF fields[i].rec_tid = tid THEN
+      BEGIN
+        child := SuperElementSize(fields[i].field_tid);
+        IF fields[i].byte_offset < 0 THEN
+          AbortWith('codegen: SUPER ARRAY element record layout exceeds supported offsets');
+        IF child > 2147483647 - fields[i].byte_offset THEN
+          AbortWith('codegen: SUPER ARRAY element record layout exceeds supported offsets');
+      END;
+  END;
+  child := LLVMABISizeOfType(LLVMGetModuleDataLayout(modl), LLVMTypeForTk(tid));
+  IF child < 0 THEN AbortWith('codegen: SUPER ARRAY element layout is too large');
+  IF TypeKind(tid) = TK_RECORD THEN
+    IF child > 2147483647 THEN
+      AbortWith('codegen: SUPER ARRAY element record layout exceeds supported offsets');
+  SuperElementSize := child;
+END;
+
 FUNCTION IsAggregateTk(tk: INTEGER): BOOLEAN;
 { The types that cross the C ABI as aggregates rather than as single
   machine values -- exactly the set FlattenParams marks needs_copy for, kept
@@ -799,7 +1052,7 @@ FUNCTION IsAggregateTk(tk: INTEGER): BOOLEAN;
 BEGIN
   IsAggregateTk := (TypeKind(tk) = TK_ARRAY) OR (TypeKind(tk) = TK_RECORD) OR
                    (TypeKind(tk) = TK_LSTRING) OR (TypeKind(tk) = TK_STRING) OR
-                   (TypeKind(tk) = TK_VECTOR);
+                   (TypeKind(tk) = TK_VECTOR) OR IsHostDescriptor(tk);
 END;
 
 FUNCTION SysVMergeClass(a: INTEGER; b: INTEGER): INTEGER;
@@ -824,7 +1077,7 @@ BEGIN
                 OR (tid = TK_WORD8) OR (tid = TK_BOOLEAN) OR (tid = TK_CHAR)
                 OR (tid = TK_INTEGER32) OR (tid = TK_WORD32) OR (tid = TK_REAL32)
                 OR (tid = TK_INTEGER64) OR (tid = TK_WORD64) OR (tid = TK_REAL)
-                OR (tid = TK_ADRMEM) OR (TypeKind(tid) = TK_POINTER);
+                OR (tid = TK_ADRMEM) OR ((TypeKind(tid) = TK_POINTER) AND NOT IsHostDescriptor(tid));
 END;
 
 PROCEDURE WalkTypeLeaves(tid_in: INTEGER; base_off: INTEGER32; VAR nleaves: INTEGER32;
@@ -850,6 +1103,11 @@ BEGIN
     nleaves := nleaves + 1;
     leaf_off[nleaves] := base_off;
     leaf_tid[nleaves] := tid;
+  END
+  ELSE IF IsHostDescriptor(tid) THEN
+  BEGIN
+    WalkTypeLeaves(TK_ADRMEM, base_off, nleaves, leaf_off, leaf_tid);
+    WalkTypeLeaves(TK_INTEGER64, base_off + 8, nleaves, leaf_off, leaf_tid);
   END
   ELSE IF TypeKind(tid) = TK_ARRAY THEN
   BEGIN
@@ -1034,6 +1292,44 @@ BEGIN
   END;
 END;
 
+PROCEDURE ClassifyParamAt(VAR tks: ParamTkArr; VAR refs, copies: ParamVarArr;
+                          at: INTEGER32; has_sret: BOOLEAN;
+                          VAR agg_class, n_pieces: INTEGER;
+                          VAR piece_kind: SysVPieceArr; VAR piece_bytes: SysVPieceSzArr);
+{ SysV rolls an aggregate back to MEMORY when all its register pieces do
+  not fit. Recompute from the signature at every declaration/body/call site
+  so register exhaustion cannot split a descriptor or drift between units. }
+VAR i: INTEGER32; gp, fp, ngp, nfp, eb: INTEGER;
+BEGIN
+  gp := 6; fp := 8;
+  IF has_sret THEN gp := gp - 1;
+  FOR i := 1 TO at DO
+  BEGIN
+    agg_class := 0; n_pieces := 0;
+    IF refs[i] THEN gp := gp - 1
+    ELSE IF copies[i] THEN
+    BEGIN
+      ClassifyAggregate(tks[i], agg_class, n_pieces, piece_kind, piece_bytes);
+      IF agg_class = SYSV_CLASS_COERCED THEN
+      BEGIN
+        ngp := 0; nfp := 0;
+        FOR eb := 1 TO n_pieces DO
+          IF piece_kind[eb] = SYSV_PIECE_INTEGER THEN ngp := ngp + 1
+          ELSE nfp := nfp + 1;
+        IF (ngp > gp) OR (nfp > fp) THEN
+        BEGIN agg_class := SYSV_CLASS_MEMORY; n_pieces := 0 END
+        ELSE BEGIN gp := gp - ngp; fp := fp - nfp END;
+      END;
+    END
+    ELSE IF (tks[i] = TK_REAL) OR (tks[i] = TK_REAL32) OR
+                 (TypeKind(tks[i]) = TK_VECTOR) THEN fp := fp - 1
+    ELSE IF TypeKind(tks[i]) = TK_SET THEN gp := gp - 4
+    ELSE gp := gp - 1;
+    IF gp < 0 THEN gp := 0;
+    IF fp < 0 THEN fp := 0;
+  END;
+END;
+
 FUNCTION SysVAggClass(tk: INTEGER): INTEGER;
 { Memory-vs-register answer only, for callers that do not need the per-piece
   breakdown ClassifyAggregate reports. Returns plain INTEGER (not INTEGER32),
@@ -1124,9 +1420,9 @@ END;
   negative-INTEGER-to-WORD adaptation when one bound selects WORD. }
 FUNCTION CheckedIndexBound(wide: INTEGER64): INTEGER32;
 BEGIN
-  IF (wide > MAXWORD) OR (wide < -32767) THEN
+  IF (wide > MAXWORD) OR (wide < -32768) THEN
   BEGIN
-    AbortWith('codegen: array index bound is outside -32767..65535');
+    AbortWith('codegen: array index bound is outside -32768..65535');
     CheckedIndexBound := 0;
   END
   ELSE
@@ -1195,7 +1491,7 @@ BEGIN
     IF ci <> 0 THEN
       IF const_tbl[ci].enum_tid <> 0 THEN BoundHostTid := const_tbl[ci].enum_tid
       ELSE IF const_tbl[ci].is_char THEN BoundHostTid := TK_CHAR
-      ELSE IF const_tbl[ci].integer_tid = TK_BOOLEAN THEN BoundHostTid := TK_BOOLEAN;
+      ELSE IF const_tbl[ci].integer_tid <> 0 THEN BoundHostTid := const_tbl[ci].integer_tid;
   END;
 END;
 
@@ -1445,6 +1741,7 @@ VAR
   mi: INTEGER32;
   named_tid: INTEGER;
   idx_host: INTEGER; { named array index: the index type's host tid }
+  domain_low, domain_high: INTEGER64;
 BEGIN
   nt := NodeType(te);
   IF nt = 'NamedType' THEN
@@ -1574,6 +1871,16 @@ BEGIN
         flat element pointer and c^[i] can use a one-index GEP. }
       tid := RegisterType(TK_ARRAY, elem_tid, lo, lo, LLVMTypeForTk(elem_tid));
       types[tid].is_super := TRUE;
+      types[tid].index_tid := BoundHostTid(GetObj(GetObj(te, 'index_range'), 'low'));
+      IF (types[tid].index_tid = TK_INTEGER) AND (lo > 32767) AND
+         (NodeType(GetObj(GetObj(te, 'index_range'), 'low')) <> 'Identifier') THEN
+        types[tid].index_tid := TK_WORD;
+      IF (NOT is_device_compiland) OR lowering_host_interface_in_device THEN
+      BEGIN
+        SuperDomainLimits(tid, domain_low, domain_high);
+        IF (lo < domain_low) OR (lo > domain_high) THEN
+          AbortWith('codegen: SUPER ARRAY lower bound is outside declared index domain');
+      END;
     END
     ELSE
     BEGIN
@@ -1656,7 +1963,7 @@ BEGIN
         fname := CStrToStr255(cJSON_GetStringValue(ArrItem(fnames_arr, fni)));
         nfields := nfields + 1; fields[nfields].rec_tid := tid; fields[nfields].fname := fname;
         fields[nfields].field_tid := field_tid; fields[nfields].field_index := field_index;
-        fields[nfields].byte_offset := fixed_off;
+        fields[nfields].byte_offset := fixed_off; fields[nfields].arm := 0;
         SetPtrArrayElem(elem_llvm_types, field_index, LLVMTypeForTk(field_tid));
         fixed_off := fixed_off + TypeSizeBytes(field_tid); field_index := field_index + 1;
       END;
@@ -1667,7 +1974,7 @@ BEGIN
       fixed_off := RoundUpBytes(fixed_off, TypeAlignBytes(tag_tid));
       nfields := nfields + 1; fields[nfields].rec_tid := tid; fields[nfields].fname := GetStr(te, 'tag_name');
       fields[nfields].field_tid := tag_tid; fields[nfields].field_index := field_index;
-      fields[nfields].byte_offset := fixed_off;
+      fields[nfields].byte_offset := fixed_off; fields[nfields].arm := 0;
       SetPtrArrayElem(elem_llvm_types, field_index, LLVMTypeForTk(tag_tid));
       fixed_off := fixed_off + TypeSizeBytes(tag_tid); field_index := field_index + 1;
     END;
@@ -1688,6 +1995,7 @@ BEGIN
     FOR ai := 0 TO ArrSize(variants_arr) - 1 DO
     BEGIN
       arm_off := fixed_off; arm_node := ArrItem(variants_arr, ai); fields_arr := GetObj(arm_node, 'fields');
+      IF ArrSize(fields_arr) = 0 THEN types[tid].variant_empty := TRUE;
       FOR fi := 0 TO ArrSize(fields_arr) - 1 DO
       BEGIN
         field_tuple := ArrItem(fields_arr, fi); items := GetObj(field_tuple, 'items'); fnames_arr := ArrItem(items, 0);
@@ -1697,7 +2005,7 @@ BEGIN
           fname := CStrToStr255(cJSON_GetStringValue(ArrItem(fnames_arr, fni)));
           nfields := nfields + 1; fields[nfields].rec_tid := tid; fields[nfields].fname := fname;
           fields[nfields].field_tid := field_tid; fields[nfields].field_index := field_index;
-          fields[nfields].byte_offset := arm_off;
+          fields[nfields].byte_offset := arm_off; fields[nfields].arm := RETYPE(INTEGER, ai + 1);
           arm_off := arm_off + TypeSizeBytes(field_tid);
         END;
       END;
@@ -1764,6 +2072,16 @@ BEGIN
     IF arr_ty = NIL THEN arr_ty := LLVMPointerType(LLVMTypeForTk(elem_tid), lo);
     tid := RegisterType(TK_POINTER, elem_tid, 0, 0, arr_ty);
     types[tid].ptr_space := space_code;
+    IF ((NOT is_device_compiland) OR lowering_host_interface_in_device) AND (space_code = PTR_SPACE_PLAIN) THEN
+      IF TypeKind(elem_tid) = TK_ARRAY THEN
+        types[tid].is_descriptor := types[elem_tid].is_super;
+    IF IsHostDescriptor(tid) THEN
+    BEGIN
+      arr_ty := AllocPtrArray(2);
+      SetPtrArrayElem(arr_ty, 0, i8ptrty);
+      SetPtrArrayElem(arr_ty, 1, i64ty);
+      types[tid].llvm_ty := LLVMStructTypeInContext(ctx, arr_ty, 2, 0);
+    END;
   END
   ELSE IF nt = 'FileType' THEN
   BEGIN
@@ -1790,7 +2108,7 @@ BEGIN
     ELSE IF elem_tid = TK_BOOLEAN THEN
       tid := RegisterType(TK_BOOLEAN, TK_BOOLEAN, lo, hi, i1ty)
     ELSE BEGIN
-      IF (lo < -32767) OR (hi > 32767) THEN
+      IF (lo < -32768) OR (hi > 32767) THEN
         AbortWith('codegen: INTEGER subrange bounds must fit vintage INTEGER');
       tid := RegisterType(TK_INTEGER, TK_INTEGER, lo, hi, i16ty);
     END;

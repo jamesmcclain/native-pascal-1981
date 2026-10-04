@@ -5,7 +5,7 @@
 
 static int check(const char *text, int bits)
 {
-    FILE *h = tmpfile();
+    FILE *h = pas_project_tmpfile();
     if (!h) return 1;
     fputs(text, h);
     rewind(h);
@@ -30,7 +30,7 @@ static int check(const char *text, int bits)
 /* Leading newlines and zeros are not malformed input. */
 static int check_ok(const char *text, int64_t expected)
 {
-    FILE *h = tmpfile();
+    FILE *h = pas_project_tmpfile();
     if (!h) return 1;
     fputs(text, h);
     rewind(h);

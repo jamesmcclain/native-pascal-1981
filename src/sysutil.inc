@@ -49,7 +49,8 @@ FUNCTION SysDirNext(VAR dir: SysDir; VAR name: ByteBuf;
                     VAR kind: INTEGER32): INTEGER32;
 FUNCTION SysDirClose(VAR dir: SysDir): BOOLEAN;
 
-{ The caller owns a directory returned by SysTempDirCreate and must call
+{ Default parent: /tmp/native-pascal-1981; an explicit TMPDIR overrides it.
+  The caller owns a directory returned by SysTempDirCreate and must call
   SysRemoveTree after use.  Cleanup does not follow symlinks. }
 FUNCTION SysTempDirCreate(VAR prefix: ByteBuf; VAR path: ByteBuf): BOOLEAN;
 FUNCTION SysRemoveTree(VAR path: ByteBuf): BOOLEAN;

@@ -218,8 +218,10 @@ BEGIN
       IF have_width THEN CONCAT(fmt, '%*d') ELSE CONCAT(fmt, '%d');
     END;
   END
-  ELSE IF TypeKind(tid) = TK_POINTER THEN
+  ELSE IF (TypeKind(tid) = TK_POINTER) OR (tid = TK_ADRMEM) THEN
   BEGIN
+    IF IsHostDescriptor(tid) THEN
+      AbortWith('codegen: numeric WRITE of a super-array descriptor is unsupported; use UNSAFERAW');
     { The manual reads pointer variables as numbers, in an
       implementation-defined format such that writing then reading
       preserves the value (13620-13623); this toolchain's format is
@@ -364,6 +366,10 @@ BEGIN
           lstr_tid := symbols[symi].tk;
         END;
       END;
+      { A string is never tracked storage: an enabled read of one (a WITH
+        field, say) is a boundary here too, not an unguarded address load. }
+      IF (is_lstring OR is_string) AND GetBool(GetObj(expr, 'read_flags'), 'INITCK') THEN
+        GuardInitckRead(expr, symi);
       IF is_lstring OR is_string THEN
         EmitStringWriteArg(addr, lstr_tid, have_width, have_prec,
                            width_val, prec_val, fmt, vals, vi)
@@ -375,12 +381,28 @@ BEGIN
     END
     ELSE IF NodeType(expr) = 'Designator' THEN
     BEGIN
+      { Older AST producers can spell a direct local as a zero-selector
+        designator. Match CodegenExpr's guard before this output fast path
+        performs its own scalar load. A selected tracked leaf is guarded
+        after its address (index operands, bounds checks); other selected
+        reads are rejected by the INITCK boundary prepass. }
+      IF GetBool(GetObj(expr, 'read_flags'), 'INITCK') AND
+         (ArrSize(GetObj(expr, 'selectors')) = 0) THEN
+      BEGIN
+        symi := LookupSym(GetStr(expr, 'name'));
+        IF symi <> 0 THEN GuardInitckRead(expr, symi);
+      END;
       { A single ComputeDesignatorAddress call -- reused for both the
         string and scalar cases below -- so an array-index/field-selector
         chain with a side-effecting sub-expression is only ever evaluated
         once. }
       addr := ComputeDesignatorAddress(expr);
       lstr_tid := last_val_tk;
+      IF ArrSize(GetObj(expr, 'selectors')) <> 0 THEN
+        IF (last_desig_shadow <> NIL) AND InitckTrackedTk(lstr_tid) THEN
+          GuardInitckComponent(expr, last_desig_shadow, lstr_tid)
+        ELSE IF GetBool(GetObj(expr, 'read_flags'), 'INITCK') THEN
+          InitckBoundaryAt('selected storage', expr);
       IF (TypeKind(lstr_tid) = TK_LSTRING) OR (TypeKind(lstr_tid) = TK_STRING) THEN
         EmitStringWriteArg(addr, lstr_tid, have_width, have_prec,
                            width_val, prec_val, fmt, vals, vi)
@@ -524,6 +546,8 @@ BEGIN
   END
   ELSE IF TypeKind(tid) = TK_POINTER THEN
   BEGIN
+    IF IsHostDescriptor(tid) THEN
+      AbortWith('codegen: numeric READ of a super-array descriptor is unsupported');
     { Pointer-as-number read, the implementation-defined round-trip format
       shared with WRITE's pointer path (manual 13620-13623). }
     tmp64 := EntryAlloca(i64ty, '');
@@ -647,7 +671,8 @@ PROCEDURE CodegenReadArgs(args: ADRMEM; is_readln: BOOLEAN);
   every read runtime function fills a 32-bit int, matching the reference's
   own INTEGER32-based READ machinery. }
 VAR
-  nargs, i, symi: INTEGER32;
+  nargs, i, symi, dest_symi: INTEGER32;
+  dest_state: ADRMEM; { INITCK state of a tracked destination, or NIL }
   start_idx: INTEGER32;
   arg0, argnode, addr, fcb_ptr, tmp32, loaded, call_args, buf_i8, cap, tmp64: ADRMEM;
   tid: INTEGER;
@@ -679,6 +704,13 @@ BEGIN
   BEGIN
     argnode := ArrItem(args, i);
     rd_status := NIL;
+    dest_symi := 0;
+    dest_state := NIL;
+    IF NodeType(argnode) = 'Identifier' THEN
+      dest_symi := LookupSym(GetStr(argnode, 'name'))
+    ELSE IF NodeType(argnode) = 'Designator' THEN
+      IF ArrSize(GetObj(argnode, 'selectors')) = 0 THEN
+        dest_symi := LookupSym(GetStr(argnode, 'name'));
     IF NodeType(argnode) = 'Identifier' THEN
     BEGIN
       symi := LookupSym(GetStr(argnode, 'name'));
@@ -690,6 +722,9 @@ BEGIN
     BEGIN
       addr := ComputeDesignatorAddress(argnode);
       tid := last_val_tk;
+      { A selected tracked leaf is a producer like a direct destination. }
+      IF (dest_symi = 0) AND (last_desig_shadow <> NIL) AND InitckTrackedTk(tid) THEN
+        dest_state := last_desig_shadow;
     END
     ELSE
     BEGIN
@@ -913,6 +948,8 @@ BEGIN
     END
     ELSE IF TypeKind(tid) = TK_POINTER THEN
     BEGIN
+      IF IsHostDescriptor(tid) THEN
+        AbortWith('codegen: numeric READ of a super-array descriptor is unsupported');
       { Pointer-as-number read, round-tripping WRITE's unsigned-decimal
         pointer format (manual 13620-13623). }
       tmp64 := EntryAlloca(i64ty, '');
@@ -955,6 +992,22 @@ BEGIN
       EmitSubrangeCheck(cur_v, SubrangeBaseTid(tid), tid);
       LLVMBuildBr(builder, cont_bb);
       LLVMPositionBuilderAtEnd(builder, cont_bb);
+    END;
+    { INITCK producer: a direct or selected-leaf tracked destination becomes
+      initialized only after its conversion succeeded and was stored. A
+      trapped file error (status -1) leaves its prior state; stdin failures
+      abort first. Every tracked type (INTEGER/CHAR/BOOLEAN) reports a
+      status. }
+    IF InitckTracked(dest_symi) THEN dest_state := symbols[dest_symi].init_state;
+    IF dest_state <> NIL THEN
+    BEGIN
+      IF rd_status = NIL THEN
+        AbortWith('codegen: internal error: tracked READ destination without status');
+      cur_v := LLVMBuildLoad2(builder, i1ty, dest_state, MakeCStr(''));
+      cur_v := LLVMBuildSelect(builder,
+        LLVMBuildICmp(builder, LLVMIntEQ, rd_status, LLVMConstInt(i32ty, 0, 0), MakeCStr('')),
+        LLVMConstInt(i1ty, 1, 0), cur_v, MakeCStr('initck.read'));
+      LLVMBuildStore(builder, cur_v, dest_state);
     END;
   END;
 

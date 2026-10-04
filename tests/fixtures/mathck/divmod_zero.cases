@@ -1,0 +1,22 @@
+# Dynamic zero divisors for tests/mathck_divmod_safety.sh, one row per
+# type and operator: dialects|type|left|op|exact stderr. The suite fills
+# divmod_zero.pas and prepends {$MATHCK+} or {$MATHCK-}: the zero check is
+# mandatory under both. The operator is then at line 9 column 21; stdout is
+# prefix/left/right (each operand evaluated once, left first). Unsigned left
+# operands are 2^width - 1.
+both|INTEGER|-7|DIV|runtime error: MATHCK signed division by zero in DIV at line 9 column 21 (left=-7, right=0)
+both|INTEGER|-7|MOD|runtime error: MATHCK signed division by zero in MOD at line 9 column 21 (left=-7, right=0)
+both|WORD|65535|DIV|runtime error: MATHCK unsigned division by zero in DIV at line 9 column 21 (left=65535, right=0)
+both|WORD|65535|MOD|runtime error: MATHCK unsigned division by zero in MOD at line 9 column 21 (left=65535, right=0)
+extended|INTEGER8|-7|DIV|runtime error: MATHCK signed division by zero in DIV at line 9 column 21 (left=-7, right=0)
+extended|INTEGER8|-7|MOD|runtime error: MATHCK signed division by zero in MOD at line 9 column 21 (left=-7, right=0)
+extended|INTEGER32|-7|DIV|runtime error: MATHCK signed division by zero in DIV at line 9 column 21 (left=-7, right=0)
+extended|INTEGER32|-7|MOD|runtime error: MATHCK signed division by zero in MOD at line 9 column 21 (left=-7, right=0)
+extended|INTEGER64|-7|DIV|runtime error: MATHCK signed division by zero in DIV at line 9 column 21 (left=-7, right=0)
+extended|INTEGER64|-7|MOD|runtime error: MATHCK signed division by zero in MOD at line 9 column 21 (left=-7, right=0)
+extended|WORD8|255|DIV|runtime error: MATHCK unsigned division by zero in DIV at line 9 column 21 (left=255, right=0)
+extended|WORD8|255|MOD|runtime error: MATHCK unsigned division by zero in MOD at line 9 column 21 (left=255, right=0)
+extended|WORD32|4294967295|DIV|runtime error: MATHCK unsigned division by zero in DIV at line 9 column 21 (left=4294967295, right=0)
+extended|WORD32|4294967295|MOD|runtime error: MATHCK unsigned division by zero in MOD at line 9 column 21 (left=4294967295, right=0)
+extended|WORD64|MAXWORD64|DIV|runtime error: MATHCK unsigned division by zero in DIV at line 9 column 21 (left=18446744073709551615, right=0)
+extended|WORD64|MAXWORD64|MOD|runtime error: MATHCK unsigned division by zero in MOD at line 9 column 21 (left=18446744073709551615, right=0)

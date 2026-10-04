@@ -1,0 +1,6 @@
+PROGRAM OkReject;
+CONST K = 3;
+VAR s: INTEGER; w: WORD; c: 0..100; rec: RECORD f: 0..100 END;
+BEGIN
+  IF {CALL} THEN WRITELN(s)
+END.

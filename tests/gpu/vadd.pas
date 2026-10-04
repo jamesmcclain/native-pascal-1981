@@ -1,4 +1,7 @@
 (*$INCLUDE:'vadd.inc'*)
+{ NVPTX integer arithmetic is a MATHCK unsupported boundary (no device
+  failure path), so device kernels opt out explicitly. }
+{$MATHCK-}
 DEVICE IMPLEMENTATION OF vaddu;
 PROCEDURE add(a: ADS(GLOBAL) OF BUFFER; b: ADS(GLOBAL) OF BUFFER;
               c: ADS(GLOBAL) OF BUFFER; n: INTEGER32);

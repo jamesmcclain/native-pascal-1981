@@ -51,6 +51,9 @@ struct pas_file_fcb {
     int          filemode;
     unsigned char trap;         /* F.TRAP  — trapped-I/O switch (manual ch.12) */
     int          errs;          /* F.ERRS  — last trapped error code           */
+    unsigned char *initck_state; /* INITCK: one byte per leaf of the buffer, or
+                                    NULL when the component type is untracked */
+    int          initck_n;
 };
 
 /* ------------------------------------------------------------------ *
@@ -158,6 +161,9 @@ void *pas_sys_dir_open(const char *path);
 int   pas_sys_dir_next(void *handle, char *name, int namecap);
 int   pas_sys_dir_close(void *handle);
 int   pas_sys_temp_dir(const char *prefix, char *out, int outcap);
+const char *pas_project_temp_root(void);
+char *pas_driver_temp_file(const char *suffix);
+FILE *pas_project_tmpfile(void);
 int   pas_sys_remove_tree(const char *path);
 /* The caller releases a successful read result with pas_sys_free. */
 char *pas_sys_read_file(const char *path, int *out_len);
@@ -226,13 +232,78 @@ int   movesr(adsmem src, adsmem dst, unsigned short len);
 
 void  pas_vector_nil_error(int32_t is_store) __attribute__((noreturn));
 void  pas_upper_nil_error(int32_t unused) __attribute__((noreturn));
+void  pas_super_index_nil_error(void) __attribute__((noreturn));
+void  pas_new_error(void) __attribute__((noreturn));
+void *pas_super_new(int64_t upper_bits, int32_t upper_unsigned, int64_t lower,
+                    int64_t domain_low, int64_t domain_high,
+                    uint64_t stride, uint64_t alignment);
+void  pas_super_import_check(void *raw, int64_t lower_bits, int32_t lower_unsigned,
+                            int64_t upper_bits, int32_t upper_unsigned,
+                            int64_t declared_lower, int64_t domain_low,
+                            int64_t domain_high, uint64_t stride, uint64_t alignment);
 void  pas_vector_range_error(int32_t is_store, int64_t idx, int32_t idx_unsigned,
                              int32_t lanes, int64_t lo, int64_t hi) __attribute__((noreturn));
+
+/* ---- $INITCK host locals, formals, results and aggregates (initck.c) ---- */
+void pas_initck_error(const char *name, int32_t line, int32_t column);
+/* what is "local", "parameter", "result of", "component" or "part of". */
+void pas_initck_fail(const char *what, const char *name, int32_t line, int32_t column);
+/* Must cover MAX_PARAMS in src/cg_base.inc. */
+#define PAS_INITCK_MAX_ARGS 16
+extern _Thread_local void *pas_initck_args[PAS_INITCK_MAX_ARGS];
+extern _Thread_local _Bool pas_initck_ret;
+extern _Thread_local void *pas_initck_callee;
+extern _Thread_local _Bool *pas_initck_ack;
+/* Aggregate shadows: one byte per scalar leaf, nonzero when initialized. */
+int32_t pas_initck_all(const unsigned char *s, int64_t n);
+void pas_initck_copy(unsigned char *dst, const unsigned char *src, int64_t n, int32_t ok);
+void pas_initck_fill(unsigned char *dst, int64_t n, int32_t ok);
+void pas_initck_receive(unsigned char *own, const unsigned char *p, int64_t n);
+void pas_initck_release_unacked(unsigned char *dst, int64_t n, int32_t acked);
+/* Heap referent state (initck_heap.c), keyed by the data address NEW
+ * published; unregistered or released referents read as initialized. */
+void pas_initck_heap_new(const void *data, int64_t n);
+unsigned char *pas_initck_heap(const void *data, int64_t n);
+unsigned char *pas_initck_heap_part(const void *data, int64_t n, int64_t offset, int64_t count);
+unsigned char *pas_initck_heap_at(const void *data, int64_t n, unsigned char *fallback);
+unsigned char *pas_initck_heap_part_at(const void *data, int64_t n, int64_t offset, int64_t count,
+                                       unsigned char *fallback);
+void pas_initck_heap_release(const void *data);
+void pas_initck_heap_dispose(const void *data);
 
 /* ---- $INDEXCK fixed-array indexes (array_index.c) ---- */
 
 void  pas_array_index_error(int64_t value, int32_t value_unsigned,
                             int64_t lo, int64_t hi) __attribute__((noreturn));
+
+/* ---- MATHCK runtime failures (mathck.c) ----
+ * Both flush stdout, print one located "runtime error: MATHCK ..." line,
+ * flush stderr and abort. pas_math_zero is the mandatory zero-divisor
+ * failure (either MATHCK setting). pas_math_overflow is MATHCK+ overflow;
+ * op is 0 +, 1 -, 2 *, 3 DIV, 4 unary -, 5 SUCC, 6 PRED, 7 ABS, 8 SQR,
+ * 9 VSUM, 10 VPROD (4 through 8 are unary: right ignored; for 9 and 10
+ * left is the partial result and right the lane). Operands arrive widened to 64 bits with their own
+ * signedness. line/column are the operator or builtin-name token's, 0:0
+ * for a legacy AST without a snapshot. */
+void  pas_math_zero(int32_t is_unsigned, int32_t is_mod,
+                    int64_t left, int64_t right,
+                    int32_t line, int32_t column) __attribute__((noreturn));
+/* TRUNC/ROUND out of INTEGER range or NaN (numeric.c): always checked,
+ * independent of MATHCK. kind 0 TRUNC, 1 ROUND. */
+void  pas_conversion_error(int32_t kind, double value,
+                           int32_t line, int32_t column) __attribute__((noreturn));
+void  pas_math_overflow(int32_t is_unsigned, int32_t op,
+                        int64_t left, int64_t right,
+                        int32_t line, int32_t column) __attribute__((noreturn));
+
+/* ---- IBM never-trapping 16-bit arithmetic (overflow_ok.c) ----
+ * For programs that declare these EXTERN as the manual (11-21) says; an
+ * undeclared call is lowered inline. Only the low 16 bits of a and b are
+ * read. Return true when the wrapped result stored in *c did not overflow. */
+_Bool SADDOK(uint32_t a, uint32_t b, int16_t *c);
+_Bool SMULOK(uint32_t a, uint32_t b, int16_t *c);
+_Bool UADDOK(uint32_t a, uint32_t b, uint16_t *c);
+_Bool UMULOK(uint32_t a, uint32_t b, uint16_t *c);
 
 /* ---- $RANGECK subrange stores (subrange.c) ---- */
 

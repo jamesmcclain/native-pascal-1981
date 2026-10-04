@@ -1,13 +1,15 @@
+#include <inttypes.h>
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #include "pascalrt.h"
 
 /* Truncate a double toward zero into a 64-bit integer.
  *
- * Pascal's TRUNC cannot do this. It lowers to a float-to-int conversion at
- * this dialect's INTEGER width, which is 16 bits, so TRUNC(40000.0) is not
- * 40000 and TRUNC(100000.0) is not even a wrapped 100000 -- an out-of-range
- * float-to-int conversion is poison in LLVM, so the result is arbitrary.
+ * Pascal's TRUNC cannot do this. It converts to this dialect's INTEGER
+ * width, which is 16 bits, so TRUNC(40000.0) is a run-time range error
+ * (pas_conversion_error below; it used to be LLVM poison).
  *
  * That mattered: the compiler's own constant folding used TRUNC to read an
  * integer literal's value, so every literal above 32767 was destroyed inside
@@ -38,4 +40,22 @@ long long pas_double_to_int64(double value)
 double pas_int64_to_double(long long value)
 {
     return (double) value;
+}
+
+/* TRUNC/ROUND result outside INTEGER (-32768..32767), or a NaN argument.
+ * IBM checks this unconditionally (manual 11-6: "Error if ABS(X) > MAXINT"),
+ * so it is independent of MATHCK. kind: 0 TRUNC, 1 ROUND. value is the
+ * argument; line/column are the function name's, 0:0 for a legacy AST.
+ */
+void pas_conversion_error(int32_t kind, double value, int32_t line, int32_t column)
+{
+    fflush(stdout);
+    fprintf(stderr, "runtime error: %s result out of INTEGER range at line %" PRId32 " column %" PRId32, kind ? "ROUND" : "TRUNC", line, column);
+    /* A NaN's sign bit depends on how it was produced (and on -O). */
+    if (isnan(value))
+        fprintf(stderr, " (value=NaN)\n");
+    else
+        fprintf(stderr, " (value=%.17g)\n", value);
+    fflush(stderr);
+    abort();
 }

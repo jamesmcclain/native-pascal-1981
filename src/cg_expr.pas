@@ -21,6 +21,7 @@ FUNCTION CodegenPositn(args: ADRMEM): ADRMEM; FORWARD;
 FUNCTION CodegenScan(stop_on_equal: INTEGER; args: ADRMEM): ADRMEM; FORWARD;
 FUNCTION CodegenEncode(args: ADRMEM): ADRMEM; FORWARD;
 FUNCTION CodegenDecode(args: ADRMEM): ADRMEM; FORWARD;
+FUNCTION CodegenOverflowOk(nm: Str255; args: ADRMEM): ADRMEM; FORWARD;
 PROCEDURE ResolveStringExprCharsLen(expr: ADRMEM; VAR chars_ptr: ADRMEM; VAR len_val: ADRMEM); FORWARD;
 
 { ============================== expressions =============================== }
@@ -272,10 +273,617 @@ BEGIN
   CodegenShortCircuitBinOp := phi;
 END;
 
-FUNCTION CodegenBinOp(op: Str255; left_node, right_node: ADRMEM): ADRMEM;
+PROCEDURE OperationLocation(site: ADRMEM; VAR line, column: INTEGER32);
+{ An operation's diagnostic coordinates come only from its own node's
+  parser snapshot. A legacy node without one reports line 0 column 0. }
+VAR
+  location: ADRMEM;
+BEGIN
+  line := 0;
+  column := 0;
+  IF HasKey(site, 'op_location') THEN
+  BEGIN
+    location := GetObj(site, 'op_location');
+    line := GetInt(location, 'line');
+    column := GetInt(location, 'column');
+  END;
+END;
+
+FUNCTION SiteMathCk(site: ADRMEM): BOOLEAN;
+{ MATHCK+ comes only from the operation's own parser snapshot; a legacy
+  node without one is unchecked. Never ask a flags object: cJSON keys are
+  case-insensitive, so its MATHCK entry would also match mathck. }
+VAR
+  enabled: BOOLEAN;
+BEGIN
+  enabled := FALSE;
+  IF site <> NIL THEN
+    IF HasKey(site, 'mathck') THEN enabled := GetBool(site, 'mathck');
+  SiteMathCk := enabled;
+END;
+
+PROCEDURE MathckDeviceBoundary(site: ADRMEM);
+{ NVPTX DEVICE code has no host failure path, so an operation that MATHCK+
+  would check is rejected before any IR is published, per the approved
+  unsupported-boundary policy (docs/dialect_notes.md, MATHCK). MATHCK- at the
+  operation is the opt-out. CPU DEVICE code shares the host failure path
+  and is checked normally. }
+VAR
+  msg: Str255;
+  line, column: INTEGER32;
+BEGIN
+  msg := 'MATHCK unsupported boundary: DEVICE arithmetic';
+  OperationLocation(site, line, column);
+  IF (line > 0) AND (column > 0) THEN
+  BEGIN
+    CONCAT(msg, ' at line ');
+    CONCAT(msg, InitckIntText(line));
+    CONCAT(msg, ' column ');
+    CONCAT(msg, InitckIntText(column));
+  END;
+  AbortWith(msg);
+END;
+
+FUNCTION MathReportOperand(v: ADRMEM; tk: INTEGER): ADRMEM;
+{ An already-evaluated operand widened to i64 with its own signedness. }
+BEGIN
+  IF IntFamilyWidth(tk) = 64 THEN MathReportOperand := v
+  ELSE IF IsUnsignedWordTk(tk) THEN
+    MathReportOperand := LLVMBuildZExt(builder, v, i64ty, MakeCStr(''))
+  ELSE
+    MathReportOperand := LLVMBuildSExt(builder, v, i64ty, MakeCStr(''));
+END;
+
+PROCEDURE EmitMathOverflowCheck(failed: ADRMEM; op_code: INTEGER;
+  lval, rval: ADRMEM; tk: INTEGER; site: ADRMEM);
+{ Branch on failed to a noreturn pas_math_overflow call before the result
+  is stored or used, then continue in math.ok. op_code follows
+  runtime/mathck.c: 0 +, 1 -, 2 *, 3 DIV, 4 unary -. rval is NIL for a
+  unary operation and is reported as 0 (the runtime ignores it). }
+VAR
+  bad_bb, ok_bb, ps, fnty, fn, args, discard: ADRMEM;
+  line, column: INTEGER32;
+BEGIN
+  bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('math.bad'));
+  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('math.ok'));
+  LLVMBuildCondBr(builder, failed, bad_bb, ok_bb);
+  LLVMPositionBuilderAtEnd(builder, bad_bb);
+  ps := AllocPtrArray(6);
+  SetPtrArrayElem(ps, 0, i32ty);
+  SetPtrArrayElem(ps, 1, i32ty);
+  SetPtrArrayElem(ps, 2, i64ty);
+  SetPtrArrayElem(ps, 3, i64ty);
+  SetPtrArrayElem(ps, 4, i32ty);
+  SetPtrArrayElem(ps, 5, i32ty);
+  fnty := LLVMFunctionType(voidty, ps, 6, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_math_overflow'));
+  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr('pas_math_overflow'), fnty);
+  OperationLocation(site, line, column);
+  args := AllocPtrArray(6);
+  IF IsUnsignedWordTk(tk) THEN SetPtrArrayElem(args, 0, LLVMConstInt(i32ty, 1, 0))
+  ELSE SetPtrArrayElem(args, 0, LLVMConstInt(i32ty, 0, 0));
+  SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, op_code, 0));
+  SetPtrArrayElem(args, 2, MathReportOperand(lval, tk));
+  IF rval = NIL THEN SetPtrArrayElem(args, 3, LLVMConstInt(i64ty, 0, 0))
+  ELSE SetPtrArrayElem(args, 3, MathReportOperand(rval, tk));
+  SetPtrArrayElem(args, 4, LLVMConstInt(i32ty, line, 0));
+  SetPtrArrayElem(args, 5, LLVMConstInt(i32ty, column, 0));
+  discard := LLVMBuildCall2(builder, fnty, fn, args, 6, MakeCStr(''));
+  discard := LLVMBuildUnreachable(builder);
+  LLVMPositionBuilderAtEnd(builder, ok_bb);
+END;
+
+FUNCTION FoldedOperationTk(site: ADRMEM): INTEGER;
+{ The integer type the typechecker resolved for a fully constant + - * DIV
+  MOD or negation after range-checking its exact folded value
+  (CheckFoldedOperation); TK_UNKNOWN for any other node, including a
+  legacy typed AST without the tag. }
+VAR
+  tag: ADRMEM;
+  name: Str255;
+  tk: INTEGER;
+BEGIN
+  tk := TK_UNKNOWN;
+  tag := GetObjOrNil(site, 'resolved_type');
+  IF (tag <> NIL) AND IsIntLiteralLike(site) THEN
+  BEGIN
+    name := GetStr(tag, '__type_system__');
+    IF name = 'IntegerType' THEN tk := TK_INTEGER
+    ELSE IF name = 'WordType' THEN tk := TK_WORD
+    ELSE IF name = 'Integer8Type' THEN tk := TK_INTEGER8
+    ELSE IF name = 'Word8Type' THEN tk := TK_WORD8
+    ELSE IF name = 'Integer32Type' THEN tk := TK_INTEGER32
+    ELSE IF name = 'Word32Type' THEN tk := TK_WORD32
+    ELSE IF name = 'Integer64Type' THEN tk := TK_INTEGER64
+    ELSE IF name = 'Word64Type' THEN tk := TK_WORD64;
+  END;
+  FoldedOperationTk := tk;
+END;
+
+FUNCTION TcFoldedOperation(site: ADRMEM): BOOLEAN;
+{ TRUE only for an operation the typechecker folded and range-checked
+  (CheckFoldedOperation tagged its type). Codegen's own folder accepts more
+  (enum members, for example), and such an operation, which nothing has
+  checked, is checked at run time like any other. }
+BEGIN
+  TcFoldedOperation := FoldedOperationTk(site) <> TK_UNKNOWN;
+END;
+
+FUNCTION OverflowIntrinsicCall(op: Str255; lval, rval: ADRMEM; tk: INTEGER): ADRMEM;
+{ The (result, overflow) pair of the LLVM sadd/ssub/smul.with.overflow
+  intrinsic, or uadd/usub/umul for the WORD family, at tk's width. }
+VAR
+  name: Str255;
+  ty, elems, pair_ty, ps, fnty, fn, args: ADRMEM;
+  width: INTEGER;
+BEGIN
+  IF IsUnsignedWordTk(tk) THEN name := 'llvm.u' ELSE name := 'llvm.s';
+  IF op = 'PLUS' THEN CONCAT(name, 'add')
+  ELSE IF op = 'MINUS' THEN CONCAT(name, 'sub')
+  ELSE CONCAT(name, 'mul');
+  width := IntFamilyWidth(tk);
+  IF width = 8 THEN CONCAT(name, '.with.overflow.i8')
+  ELSE IF width = 16 THEN CONCAT(name, '.with.overflow.i16')
+  ELSE IF width = 32 THEN CONCAT(name, '.with.overflow.i32')
+  ELSE CONCAT(name, '.with.overflow.i64');
+  ty := LLVMTypeForTk(tk);
+  elems := AllocPtrArray(2);
+  SetPtrArrayElem(elems, 0, ty);
+  SetPtrArrayElem(elems, 1, i1ty);
+  pair_ty := LLVMStructTypeInContext(ctx, elems, 2, 0);
+  ps := AllocPtrArray(2);
+  SetPtrArrayElem(ps, 0, ty);
+  SetPtrArrayElem(ps, 1, ty);
+  fnty := LLVMFunctionType(pair_ty, ps, 2, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr(name));
+  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr(name), fnty);
+  args := AllocPtrArray(2);
+  SetPtrArrayElem(args, 0, lval);
+  SetPtrArrayElem(args, 1, rval);
+  OverflowIntrinsicCall := LLVMBuildCall2(builder, fnty, fn, args, 2, MakeCStr('math'));
+END;
+
+FUNCTION CodegenCheckedArith(op: Str255; lval, rval: ADRMEM; tk: INTEGER;
+  site: ADRMEM): ADRMEM;
+{ MATHCK+ scalar + - * at the adapted/promoted operand width and
+  signedness, so overflow is the exact result leaving the resolved type's
+  native range (INTEGER -32768 is a valid result). The failure branch
+  precedes any use of the result. }
+VAR
+  pair: ADRMEM;
+  op_code: INTEGER;
+BEGIN
+  IF op = 'PLUS' THEN op_code := 0
+  ELSE IF op = 'MINUS' THEN op_code := 1
+  ELSE op_code := 2;
+  pair := OverflowIntrinsicCall(op, lval, rval, tk);
+  EmitMathOverflowCheck(LLVMBuildExtractValue(builder, pair, 1, MakeCStr('math.ovf')),
+    op_code, lval, rval, tk, site);
+  CodegenCheckedArith := LLVMBuildExtractValue(builder, pair, 0, MakeCStr(''));
+END;
+
+FUNCTION CodegenCheckedUnary(op: Str255; lval, rval, operand: ADRMEM;
+  op_code, tk: INTEGER; site: ADRMEM): ADRMEM;
+{ A MATHCK+ one-operand operation lowered as the checked lval op rval
+  (negation is 0 - v, SUCC/PRED are v + 1 and v - 1); the failure reports
+  only the source operand. }
+VAR
+  pair: ADRMEM;
+BEGIN
+  pair := OverflowIntrinsicCall(op, lval, rval, tk);
+  EmitMathOverflowCheck(LLVMBuildExtractValue(builder, pair, 1, MakeCStr('math.ovf')),
+    op_code, operand, NIL, tk, site);
+  CodegenCheckedUnary := LLVMBuildExtractValue(builder, pair, 0, MakeCStr(''));
+END;
+
+FUNCTION CodegenCheckedNegate(v: ADRMEM; tk: INTEGER; site: ADRMEM): ADRMEM;
+{ MATHCK+ unary minus as a checked 0 - v: signed MIN overflows; for the
+  WORD family only zero negates without overflow. }
+BEGIN
+  CodegenCheckedNegate := CodegenCheckedUnary('MINUS',
+    LLVMConstInt(LLVMTypeForTk(tk), 0, 0), v, v, 4, tk, site);
+END;
+
+PROCEDURE EmitSuccPredDomainCheck(v: ADRMEM; tid: INTEGER; is_succ: BOOLEAN);
+{ $RANGECK for SUCC/PRED of a CHAR, BOOLEAN or enumeration value: the
+  result has the argument's type (IBM 11-8), so stepping past its last
+  (SUCC) or first (PRED) ordinal fails before the step. The report uses
+  the ordinal the step would have produced. }
+VAR
+  lo, hi, edge: INTEGER32;
+  ty, at_edge, bad_bb, ok_bb: ADRMEM;
+  k: INTEGER;
+BEGIN
+  k := TypeKind(tid);
+  IF k = TK_CHAR THEN
+  BEGIN
+    lo := 0; hi := 255; ty := i8ty;
+  END
+  ELSE IF k = TK_BOOLEAN THEN
+  BEGIN
+    lo := 0; hi := 1; ty := i1ty;
+  END
+  ELSE
+  BEGIN
+    lo := types[tid].lo; hi := types[tid].hi; ty := i32ty;
+  END;
+  IF is_succ THEN edge := hi ELSE edge := lo;
+  at_edge := LLVMBuildICmp(builder, LLVMIntEQ, v, LLVMConstInt(ty, edge, 0), MakeCStr(''));
+  bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('range.bad'));
+  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('range.ok'));
+  LLVMBuildCondBr(builder, at_edge, bad_bb, ok_bb);
+  LLVMPositionBuilderAtEnd(builder, bad_bb);
+  IF is_succ THEN edge := edge + 1 ELSE edge := edge - 1;
+  EmitSubrangeFailure(LLVMConstInt(i64ty, edge, 1), FALSE, lo, hi);
+  LLVMPositionBuilderAtEnd(builder, ok_bb);
+END;
+
+FUNCTION SuccPredDomainTid(node: ADRMEM): INTEGER;
+{ The declared type of a SUCC/PRED argument when it is evident before
+  lowering: a variable or designator, or a nested SUCC/PRED, whose result
+  has its argument's type. 0 otherwise. }
+VAR
+  nt, nm: Str255;
+  symi: INTEGER32;
+  args: ADRMEM;
+  tid: INTEGER;
+BEGIN
+  tid := 0;
+  nt := NodeType(node);
+  IF (nt = 'Identifier') OR (nt = 'Designator') THEN
+  BEGIN
+    symi := LookupSym(GetStr(node, 'name'));
+    IF symi <> 0 THEN
+    BEGIN
+      tid := symbols[symi].tk;
+      IF nt = 'Designator' THEN tid := StaticDesigTid(tid, GetObj(node, 'selectors'));
+    END;
+  END
+  ELSE IF nt = 'FuncCall' THEN
+  BEGIN
+    nm := UpperStr(GetStr(node, 'name'));
+    args := GetObj(node, 'args');
+    IF ((nm = 'SUCC') OR (nm = 'PRED')) AND NOT UserRoutineShadows(nm) THEN
+      IF ArrSize(args) = 1 THEN tid := SuccPredDomainTid(ArrItem(args, 0));
+  END;
+  SuccPredDomainTid := tid;
+END;
+
+FUNCTION CodegenSuccPred(is_succ: BOOLEAN; v: ADRMEM; argtk: INTEGER; site: ADRMEM): ADRMEM;
+{ SUCC/PRED on an evaluated argument, at the argument's own type and
+  width. Integer family: MATHCK+ (from the call's own snapshot) fails when
+  the base type's extreme is stepped past; otherwise the step wraps.
+  CHAR, BOOLEAN and enumerations: their ordinal range is RANGECK's, per
+  statement like store checks. The result has the argument's type (IBM
+  11-8), so a subrange argument whose type is evident (SuccPredDomainTid)
+  is checked against its declared bounds after the step under RANGECK;
+  any other subrange value arrives as its host type and is checked where
+  it is stored. Base overflow is checked first. A fully constant call was
+  range-checked by the typechecker and is materialized at its resolved
+  type. }
+VAR
+  folded_tk, op_code, dom_tid: INTEGER;
+  one, res: ADRMEM;
+  op: Str255;
+BEGIN
+  IF is_succ THEN
+  BEGIN
+    op := 'PLUS'; op_code := 5;
+  END
+  ELSE
+  BEGIN
+    op := 'MINUS'; op_code := 6;
+  END;
+  folded_tk := FoldedOperationTk(site);
+  IF folded_tk <> TK_UNKNOWN THEN
+  BEGIN
+    res := LLVMConstInt(LLVMTypeForTk(folded_tk), IntLiteralValue(site), 1);
+    last_val_tk := folded_tk;
+  END
+  ELSE
+  BEGIN
+    IF IsIntegerFamilyTk(TypeKind(argtk)) THEN
+    BEGIN
+      one := LLVMConstInt(LLVMTypeForTk(TypeKind(argtk)), 1, 0);
+      IF SiteMathCk(site) AND is_nvptx_device THEN MathckDeviceBoundary(site);
+      IF SiteMathCk(site) AND NOT is_nvptx_device THEN
+        res := CodegenCheckedUnary(op, v, one, v, op_code, TypeKind(argtk), site)
+      ELSE IF is_succ THEN res := LLVMBuildAdd(builder, v, one, MakeCStr(''))
+      ELSE res := LLVMBuildSub(builder, v, one, MakeCStr(''));
+    END
+    ELSE
+    BEGIN
+      IF cur_rangeck AND NOT is_nvptx_device THEN EmitSuccPredDomainCheck(v, argtk, is_succ);
+      IF argtk = TK_CHAR THEN one := LLVMConstInt(i8ty, 1, 0)
+      ELSE IF argtk = TK_BOOLEAN THEN one := LLVMConstInt(i1ty, 1, 0)
+      ELSE one := LLVMConstInt(i32ty, 1, 0);
+      IF is_succ THEN res := LLVMBuildAdd(builder, v, one, MakeCStr(''))
+      ELSE res := LLVMBuildSub(builder, v, one, MakeCStr(''));
+    END;
+    dom_tid := SuccPredDomainTid(ArrItem(GetObj(site, 'args'), 0));
+    IF dom_tid >= 14 THEN EmitSubrangeCheck(res, argtk, dom_tid);
+    last_val_tk := argtk;
+  END;
+  CodegenSuccPred := res;
+END;
+
+FUNCTION CodegenSafeDivMod(op: Str255; lval, rval: ADRMEM; tk: INTEGER;
+  site: ADRMEM): ADRMEM;
+{ The zero-divisor test is mandatory, independent of MATHCK, and comes
+  first. Under the operation's MATHCK+ snapshot, signed MIN DIV -1 then
+  fails as overflow; unchecked, it returns MIN. MIN MOD -1 is always the
+  valid result 0. Both errors report the operator token's coordinates.
+  Sanitize the divisor even in a constant-dead block, so LLVM never sees
+  a constant zero divisor or signed MIN/-1 in a division instruction. }
+VAR
+  ty, zero, one, iszero, exceptional, unsafe, safe_divisor, minval: ADRMEM;
+  bad_bb, ok_bb, ps, fnty, fn, args, discard, result: ADRMEM;
+  unsigned_value: BOOLEAN;
+  line, column: INTEGER32;
+BEGIN
+  IF is_nvptx_device THEN
+    AbortWith('codegen: scalar DIV/MOD safety is unsupported on DEVICE');
+  unsigned_value := IsUnsignedWordTk(tk);
+  ty := LLVMTypeForTk(tk);
+  zero := LLVMConstInt(ty, 0, 0);
+  one := LLVMConstInt(ty, 1, 0);
+  iszero := LLVMBuildICmp(builder, LLVMIntEQ, rval, zero, MakeCStr('div.zero'));
+  exceptional := LLVMConstInt(i1ty, 0, 0);
+  minval := zero;
+  IF NOT unsigned_value THEN
+  BEGIN
+    minval := LLVMBuildShl(builder, one,
+      LLVMConstInt(ty, IntFamilyWidth(tk) - 1, 0), MakeCStr(''));
+    exceptional := LLVMBuildAnd(builder,
+      LLVMBuildICmp(builder, LLVMIntEQ, lval, minval, MakeCStr('')),
+      LLVMBuildICmp(builder, LLVMIntEQ, rval, LLVMConstInt(ty, -1, 1), MakeCStr('')),
+      MakeCStr('div.min'));
+  END;
+  unsafe := LLVMBuildOr(builder, iszero, exceptional, MakeCStr(''));
+  safe_divisor := LLVMBuildSelect(builder, unsafe, one, rval, MakeCStr('div.safe'));
+  bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('div.bad'));
+  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('div.ok'));
+  LLVMBuildCondBr(builder, iszero, bad_bb, ok_bb);
+  LLVMPositionBuilderAtEnd(builder, bad_bb);
+  ps := AllocPtrArray(6);
+  SetPtrArrayElem(ps, 0, i32ty);
+  SetPtrArrayElem(ps, 1, i32ty);
+  SetPtrArrayElem(ps, 2, i64ty);
+  SetPtrArrayElem(ps, 3, i64ty);
+  SetPtrArrayElem(ps, 4, i32ty);
+  SetPtrArrayElem(ps, 5, i32ty);
+  fnty := LLVMFunctionType(voidty, ps, 6, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_math_zero'));
+  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr('pas_math_zero'), fnty);
+  args := AllocPtrArray(6);
+  OperationLocation(site, line, column);
+  SetPtrArrayElem(args, 4, LLVMConstInt(i32ty, line, 0));
+  SetPtrArrayElem(args, 5, LLVMConstInt(i32ty, column, 0));
+  IF unsigned_value THEN
+  BEGIN
+    SetPtrArrayElem(args, 0, LLVMConstInt(i32ty, 1, 0));
+    IF IntFamilyWidth(tk) < 64 THEN
+    BEGIN
+      SetPtrArrayElem(args, 2, LLVMBuildZExt(builder, lval, i64ty, MakeCStr('')));
+      SetPtrArrayElem(args, 3, LLVMBuildZExt(builder, rval, i64ty, MakeCStr('')));
+    END;
+  END
+  ELSE
+  BEGIN
+    SetPtrArrayElem(args, 0, LLVMConstInt(i32ty, 0, 0));
+    IF IntFamilyWidth(tk) < 64 THEN
+    BEGIN
+      SetPtrArrayElem(args, 2, LLVMBuildSExt(builder, lval, i64ty, MakeCStr('')));
+      SetPtrArrayElem(args, 3, LLVMBuildSExt(builder, rval, i64ty, MakeCStr('')));
+    END;
+  END;
+  IF IntFamilyWidth(tk) = 64 THEN
+  BEGIN
+    SetPtrArrayElem(args, 2, lval);
+    SetPtrArrayElem(args, 3, rval);
+  END;
+  IF op = 'MOD' THEN SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 1, 0))
+  ELSE SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 0, 0));
+  discard := LLVMBuildCall2(builder, fnty, fn, args, 6, MakeCStr(''));
+  discard := LLVMBuildUnreachable(builder);
+  LLVMPositionBuilderAtEnd(builder, ok_bb);
+  { A quotient the typechecker folded is range-checked there instead. }
+  IF (op = 'DIV') AND NOT unsigned_value AND SiteMathCk(site) AND
+     NOT TcFoldedOperation(site) THEN
+    EmitMathOverflowCheck(exceptional, 3, lval, rval, tk, site);
+  IF unsigned_value THEN
+  BEGIN
+    IF op = 'DIV' THEN result := LLVMBuildUDiv(builder, lval, safe_divisor, MakeCStr(''))
+    ELSE result := LLVMBuildURem(builder, lval, safe_divisor, MakeCStr(''));
+  END
+  ELSE
+  BEGIN
+    IF op = 'DIV' THEN
+    BEGIN
+      result := LLVMBuildSDiv(builder, lval, safe_divisor, MakeCStr(''));
+      result := LLVMBuildSelect(builder, exceptional, minval, result, MakeCStr(''));
+    END
+    ELSE
+    BEGIN
+      result := LLVMBuildSRem(builder, lval, safe_divisor, MakeCStr(''));
+      result := LLVMBuildSelect(builder, exceptional, zero, result, MakeCStr(''));
+    END;
+  END;
+  CodegenSafeDivMod := result;
+END;
+
+FUNCTION CodegenLanesIntOp(op: Str255; lval, rval: ADRMEM; vec_tid: INTEGER;
+  site: ADRMEM): ADRMEM;
+{ An integer VECTOR operation one lane at a time, in lane order, through the
+  scalar paths: checked + - * (op PLUS/MINUS/MUL) and negation (op NEG,
+  rval unused) under the operation's MATHCK+ snapshot, and DIV/MOD with the
+  mandatory zero-divisor failure and safe MIN/-1 under either setting. A
+  failing lane reports its own operands at the operator's coordinates, and
+  no lane result is used before every earlier lane has passed. }
+VAR
+  elem: INTEGER;
+  i, n: INTEGER32;
+  acc, idx, l, r, e: ADRMEM;
+BEGIN
+  elem := types[vec_tid].elem_tid;
+  n := types[vec_tid].hi - types[vec_tid].lo + 1;
+  acc := LLVMGetUndef(LLVMTypeForTk(vec_tid));
+  FOR i := 0 TO n - 1 DO
+  BEGIN
+    idx := LLVMConstInt(i32ty, i, 0);
+    l := LLVMBuildExtractElement(builder, lval, idx, MakeCStr(''));
+    IF op = 'NEG' THEN
+      e := CodegenCheckedNegate(l, elem, site)
+    ELSE
+    BEGIN
+      r := LLVMBuildExtractElement(builder, rval, idx, MakeCStr(''));
+      IF (op = 'DIV') OR (op = 'MOD') THEN
+        e := CodegenSafeDivMod(op, l, r, elem, site)
+      ELSE
+        e := CodegenCheckedArith(op, l, r, elem, site);
+    END;
+    acc := LLVMBuildInsertElement(builder, acc, e, idx, MakeCStr(''));
+  END;
+  CodegenLanesIntOp := acc;
+END;
+
+FUNCTION VectorOverflowPair(op: Str255; lval, rval: ADRMEM; vec_tid: INTEGER): ADRMEM;
+{ The (result vector, overflow lane mask) pair of the vector form of the LLVM
+  sadd/ssub/smul.with.overflow (uadd/usub/umul for WORD lanes) at the
+  vector type vec_tid. }
+VAR
+  name: Str255;
+  elem: INTEGER;
+  n: INTEGER32;
+  vecty, elems, pair_ty, ps, fnty, fn, args: ADRMEM;
+BEGIN
+  elem := types[vec_tid].elem_tid;
+  n := types[vec_tid].hi - types[vec_tid].lo + 1;
+  IF IsUnsignedWordTk(elem) THEN name := 'llvm.u' ELSE name := 'llvm.s';
+  IF op = 'PLUS' THEN CONCAT(name, 'add')
+  ELSE IF op = 'MINUS' THEN CONCAT(name, 'sub')
+  ELSE CONCAT(name, 'mul');
+  CONCAT(name, '.with.overflow.v');
+  CONCAT(name, InitckIntText(n));
+  IF IntFamilyWidth(elem) = 8 THEN CONCAT(name, 'i8')
+  ELSE IF IntFamilyWidth(elem) = 16 THEN CONCAT(name, 'i16')
+  ELSE IF IntFamilyWidth(elem) = 32 THEN CONCAT(name, 'i32')
+  ELSE CONCAT(name, 'i64');
+  vecty := LLVMTypeForTk(vec_tid);
+  elems := AllocPtrArray(2);
+  SetPtrArrayElem(elems, 0, vecty);
+  SetPtrArrayElem(elems, 1, LLVMVectorType(i1ty, n));
+  pair_ty := LLVMStructTypeInContext(ctx, elems, 2, 0);
+  ps := AllocPtrArray(2);
+  SetPtrArrayElem(ps, 0, vecty);
+  SetPtrArrayElem(ps, 1, vecty);
+  fnty := LLVMFunctionType(pair_ty, ps, 2, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr(name));
+  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr(name), fnty);
+  args := AllocPtrArray(2);
+  SetPtrArrayElem(args, 0, lval);
+  SetPtrArrayElem(args, 1, rval);
+  VectorOverflowPair := LLVMBuildCall2(builder, fnty, fn, args, 2, MakeCStr('vmath'));
+END;
+
+FUNCTION CodegenLanewiseIntOp(op: Str255; lval, rval: ADRMEM; vec_tid: INTEGER;
+  site: ADRMEM): ADRMEM;
+{ Integer VECTOR + - * and negation under MATHCK+, and DIV/MOD under either
+  setting. DIV/MOD go lane by lane (CodegenLanesIntOp). + - * and
+  negation (0 - v) compute every lane at once with the vector overflow
+  intrinsic and branch once on the OR of its overflow lanes; only when
+  some lane overflowed does the cold path redo the operation lane by lane,
+  so the lowest failing lane traps with its own operands exactly as
+  before. The fast path's result is used only after that branch. }
+VAR
+  elem: INTEGER;
+  n: INTEGER32;
+  lhs, rhs, pair, mask, any, ps, fnty, fn, args, slow_bb, ok_bb, discard: ADRMEM;
+  kind, name: Str255;
+BEGIN
+  IF (op = 'DIV') OR (op = 'MOD') THEN
+  BEGIN
+    CodegenLanewiseIntOp := CodegenLanesIntOp(op, lval, rval, vec_tid, site);
+    RETURN;
+  END;
+  elem := types[vec_tid].elem_tid;
+  n := types[vec_tid].hi - types[vec_tid].lo + 1;
+  IF op = 'NEG' THEN
+  BEGIN
+    kind := 'MINUS';
+    lhs := LLVMConstNull(LLVMTypeForTk(vec_tid));
+    rhs := lval;
+  END
+  ELSE
+  BEGIN
+    kind := op;
+    lhs := lval;
+    rhs := rval;
+  END;
+  pair := VectorOverflowPair(kind, lhs, rhs, vec_tid);
+  mask := LLVMBuildExtractValue(builder, pair, 1, MakeCStr('vmath.ovf'));
+  name := 'llvm.vector.reduce.or.v';
+  CONCAT(name, InitckIntText(n));
+  CONCAT(name, 'i1');
+  ps := AllocPtrArray(1);
+  SetPtrArrayElem(ps, 0, LLVMVectorType(i1ty, n));
+  fnty := LLVMFunctionType(i1ty, ps, 1, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr(name));
+  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr(name), fnty);
+  args := AllocPtrArray(1);
+  SetPtrArrayElem(args, 0, mask);
+  any := LLVMBuildCall2(builder, fnty, fn, args, 1, MakeCStr('vmath.any'));
+  slow_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('vmath.lanes'));
+  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('vmath.ok'));
+  LLVMBuildCondBr(builder, any, slow_bb, ok_bb);
+  LLVMPositionBuilderAtEnd(builder, slow_bb);
+  discard := CodegenLanesIntOp(op, lval, rval, vec_tid, site);
+  discard := LLVMBuildUnreachable(builder);
+  LLVMPositionBuilderAtEnd(builder, ok_bb);
+  CodegenLanewiseIntOp := LLVMBuildExtractValue(builder, pair, 0, MakeCStr(''));
+END;
+
+FUNCTION CodegenCheckedVReduce(nm: Str255; vec_val: ADRMEM; vec_tid: INTEGER;
+  site: ADRMEM): ADRMEM;
+{ MATHCK+ integer VSUM/VPROD: a left-to-right fold over the lanes, each
+  step checked at the element type. A failure reports the partial result
+  so far and the lane value (op 9 VSUM, 10 VPROD in runtime/mathck.c). }
+VAR
+  elem, op_code: INTEGER;
+  i, n: INTEGER32;
+  acc, lane, pair: ADRMEM;
+  op: Str255;
+BEGIN
+  elem := types[vec_tid].elem_tid;
+  n := types[vec_tid].hi - types[vec_tid].lo + 1;
+  IF nm = 'VSUM' THEN
+  BEGIN
+    op := 'PLUS';
+    op_code := 9;
+  END
+  ELSE
+  BEGIN
+    op := 'MUL';
+    op_code := 10;
+  END;
+  acc := LLVMBuildExtractElement(builder, vec_val, LLVMConstInt(i32ty, 0, 0), MakeCStr(''));
+  FOR i := 1 TO n - 1 DO
+  BEGIN
+    lane := LLVMBuildExtractElement(builder, vec_val, LLVMConstInt(i32ty, i, 0), MakeCStr(''));
+    pair := OverflowIntrinsicCall(op, acc, lane, elem);
+    EmitMathOverflowCheck(LLVMBuildExtractValue(builder, pair, 1, MakeCStr('math.ovf')),
+      op_code, acc, lane, elem, site);
+    acc := LLVMBuildExtractValue(builder, pair, 0, MakeCStr(''));
+  END;
+  last_val_tk := elem;
+  CodegenCheckedVReduce := acc;
+END;
+
+FUNCTION CodegenBinOp(op: Str255; left_node, right_node, site: ADRMEM): ADRMEM;
+{ site is the BinOp node itself: per-operation metadata is read from it. }
 VAR
   lval, rval, res: ADRMEM;
-  ltk, rtk: INTEGER;
+  ltk, rtk, folded_tk: INTEGER;
   gep_idx, ptr_elem_ty: ADRMEM;
 BEGIN
   IF (op = 'AND_THEN') OR (op = 'OR_ELSE') THEN
@@ -293,6 +901,17 @@ BEGIN
   rval := CodegenExpr(right_node);
   rtk := last_val_tk;
 
+  { A fully constant operation is the typechecker's exact folded value at
+    its checked type. Its operands are still generated first (constants
+    only, so no code), which keeps the expression depth limit in force. }
+  folded_tk := FoldedOperationTk(site);
+  IF folded_tk <> TK_UNKNOWN THEN
+  BEGIN
+    res := LLVMConstInt(LLVMTypeForTk(folded_tk), IntLiteralValue(site), 1);
+    last_val_tk := folded_tk;
+  END
+  ELSE
+  BEGIN
   { A bare INTEGER literal operand adapts to the other side's wider/
     differently-signed integer type, mirroring the reference's
     literal_context threading (typecheck/exprs.py): CodegenExpr always
@@ -337,6 +956,14 @@ BEGIN
     ltk := TK_INTEGER
   ELSE IF (ltk = TK_INTEGER) AND (rtk = TK_WORD) THEN
     rtk := TK_INTEGER
+  ELSE IF (ltk = TK_ADRMEM) AND IsHostDescriptor(rtk) THEN
+  BEGIN
+    lval := CoerceForAssign(lval, ltk, rtk, left_node, 'pointer comparison'); ltk := rtk;
+  END
+  ELSE IF (rtk = TK_ADRMEM) AND IsHostDescriptor(ltk) THEN
+  BEGIN
+    rval := CoerceForAssign(rval, rtk, ltk, right_node, 'pointer comparison'); rtk := ltk;
+  END
   ELSE IF (ltk = TK_ADRMEM) AND (TypeKind(rtk) = TK_POINTER) THEN
     { NIL (an ADRMEM constant) against a typed pointer -- both are the
       same opaque i8* value, only the tracked tag differs, the same
@@ -357,8 +984,8 @@ BEGIN
       ELSE IF chain would short-circuit past the actual FDiv/FAdd/etc. dispatch
       entirely, leaving `res` unassigned/garbage (found via a real bug this
       way: `int_part * 10.0 + (...)` silently emitted no FAdd at all). }
-    lval := LLVMBuildSIToFP(builder, lval, dblty, MakeCStr(''));
-    rval := LLVMBuildSIToFP(builder, rval, dblty, MakeCStr(''));
+    lval := IntToFloat(lval, ltk, dblty);
+    rval := IntToFloat(rval, rtk, dblty);
     ltk := TK_REAL;
     rtk := TK_REAL;
   END
@@ -368,12 +995,12 @@ BEGIN
       promotes to the other side's floating width, matching the
       reference's is_real widening (codegen_binop). Same chain-placement
       rationale as the SLASH branch above. }
-    lval := LLVMBuildSIToFP(builder, lval, LLVMTypeForTk(rtk), MakeCStr(''));
+    lval := IntToFloat(lval, ltk, LLVMTypeForTk(rtk));
     ltk := rtk;
   END
   ELSE IF ((ltk = TK_REAL) OR (ltk = TK_REAL32)) AND IsIntegerFamilyTk(rtk) THEN
   BEGIN
-    rval := LLVMBuildSIToFP(builder, rval, LLVMTypeForTk(ltk), MakeCStr(''));
+    rval := IntToFloat(rval, rtk, LLVMTypeForTk(ltk));
     rtk := ltk;
   END
   ELSE IF (ltk = TK_REAL32) AND (rtk = TK_REAL) THEN
@@ -393,7 +1020,18 @@ BEGIN
     procedure call with "Undefined procedure: EXIT"), so early-return from
     deep inside nested IFs isn't expressible here regardless. A single
     terminal assignment is the only option. }
-  IF (TypeKind(ltk) = TK_VECTOR) OR (TypeKind(rtk) = TK_VECTOR) THEN
+  IF IsHostDescriptor(ltk) OR IsHostDescriptor(rtk) THEN
+  BEGIN
+    IF ltk <> rtk THEN AbortWith('codegen: incompatible super-array descriptor pointer comparison');
+    IF (op <> 'EQ') AND (op <> 'NEQ') THEN
+      AbortWith('codegen: super-array descriptor pointer arithmetic/ordering is unsupported');
+    lval := LLVMBuildExtractValue(builder, lval, 0, MakeCStr(''));
+    rval := LLVMBuildExtractValue(builder, rval, 0, MakeCStr(''));
+    IF op = 'EQ' THEN res := LLVMBuildICmp(builder, LLVMIntEQ, lval, rval, MakeCStr(''))
+    ELSE res := LLVMBuildICmp(builder, LLVMIntNE, lval, rval, MakeCStr(''));
+    last_val_tk := TK_BOOLEAN;
+  END
+  ELSE IF (TypeKind(ltk) = TK_VECTOR) OR (TypeKind(rtk) = TK_VECTOR) THEN
   BEGIN
     { Elementwise arithmetic/logic, or a lanewise comparison. Both operands
       must be the identical VECTOR type -- the callee emits the mixed-type
@@ -406,6 +1044,16 @@ BEGIN
         last_val_tk := EnsureBoolVectorType(types[ltk].hi - types[ltk].lo + 1)
       ELSE
         last_val_tk := EnsureBoolVectorType(types[rtk].hi - types[rtk].lo + 1);
+    END
+    ELSE IF (ltk = rtk) AND IsIntegerFamilyTk(types[ltk].elem_tid) AND
+            (((op = 'DIV') OR (op = 'MOD')) OR
+             (((op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL')) AND SiteMathCk(site))) THEN
+    BEGIN
+      { Integer lanes: checked + - * under MATHCK+, and DIV/MOD always,
+        since a vector udiv/sdiv by a zero lane (or signed MIN/-1) is LLVM
+        undefined behavior. MATHCK- + - * keep the wrapping vector form. }
+      res := CodegenLanewiseIntOp(op, lval, rval, ltk, site);
+      last_val_tk := ltk;
     END
     ELSE
     BEGIN
@@ -455,8 +1103,17 @@ BEGIN
       particular, ^ADRMEM is a pointer-slot array, not a byte array. }
     IF ltk = TK_ADRMEM THEN ptr_elem_ty := i8ty
     ELSE ptr_elem_ty := LLVMTypeForTk(types[ltk].elem_tid);
+    { GEP reads its index as signed at the index's own width, so widen it
+      by the offset's own signedness first: a WORD offset of 40000 is
+      40000 elements, not -25536. Address arithmetic is not MATHCK; the
+      non-inbounds GEP wraps without LLVM undefined behavior. A literal
+      offset was built as a 16-bit INTEGER (40000 as -25536), so rebuild it
+      from its exact value. }
     gep_idx := AllocPtrArray(1);
-    SetPtrArrayElem(gep_idx, 0, rval);
+    IF IsIntLiteralLike(right_node) THEN
+      SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i64ty, IntLiteralValue(right_node), 1))
+    ELSE
+      SetPtrArrayElem(gep_idx, 0, MathReportOperand(rval, rtk));
     res := LLVMBuildGEP2(builder, ptr_elem_ty, lval, gep_idx, 1, MakeCStr(''));
     last_val_tk := ltk;
   END
@@ -465,7 +1122,10 @@ BEGIN
     IF rtk = TK_ADRMEM THEN ptr_elem_ty := i8ty
     ELSE ptr_elem_ty := LLVMTypeForTk(types[rtk].elem_tid);
     gep_idx := AllocPtrArray(1);
-    SetPtrArrayElem(gep_idx, 0, lval);
+    IF IsIntLiteralLike(left_node) THEN
+      SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i64ty, IntLiteralValue(left_node), 1))
+    ELSE
+      SetPtrArrayElem(gep_idx, 0, MathReportOperand(lval, ltk));
     res := LLVMBuildGEP2(builder, ptr_elem_ty, rval, gep_idx, 1, MakeCStr(''));
     last_val_tk := rtk;
   END
@@ -476,12 +1136,9 @@ BEGIN
   END
   ELSE IF (op = 'EQ') OR (op = 'NEQ') OR (op = 'LT') OR (op = 'LE') OR (op = 'GT') OR (op = 'GE') THEN
   BEGIN
-    { WORD/INTEGER8 compare via the same *signed* icmp as plain INTEGER --
-      matching the Python reference, whose same-width WORD comparisons are
-      signed at the LLVM instruction level too (only WRITE formatting and
-      cross-width extension choice are signedness-aware there; this file
-      has no cross-width mixing at all, so that distinction never applies
-      here). }
+    { Use the adapted/promoted operand type, not the destination type, to
+      select signedness. Equality is independent of signedness; WORD-family
+      ordering must treat the high bit as data, not a sign bit. }
     IF (ltk = TK_INTEGER) OR (ltk = TK_WORD) OR (ltk = TK_INTEGER8) OR (ltk = TK_WORD8) OR
        (ltk = TK_INTEGER32) OR (ltk = TK_WORD32) OR (ltk = TK_INTEGER64) OR (ltk = TK_WORD64) OR
        (ltk = TK_CHAR) OR (ltk = TK_BOOLEAN) OR (TypeKind(ltk) = TK_ENUM) THEN
@@ -491,6 +1148,13 @@ BEGIN
         on their i8/i1 representations as on the integer widths above. }
       IF op = 'EQ' THEN res := LLVMBuildICmp(builder, LLVMIntEQ, lval, rval, MakeCStr(''))
       ELSE IF op = 'NEQ' THEN res := LLVMBuildICmp(builder, LLVMIntNE, lval, rval, MakeCStr(''))
+      ELSE IF IsUnsignedWordTk(ltk) THEN
+      BEGIN
+        IF op = 'LT' THEN res := LLVMBuildICmp(builder, LLVMIntULT, lval, rval, MakeCStr(''))
+        ELSE IF op = 'LE' THEN res := LLVMBuildICmp(builder, LLVMIntULE, lval, rval, MakeCStr(''))
+        ELSE IF op = 'GT' THEN res := LLVMBuildICmp(builder, LLVMIntUGT, lval, rval, MakeCStr(''))
+        ELSE res := LLVMBuildICmp(builder, LLVMIntUGE, lval, rval, MakeCStr(''));
+      END
       ELSE IF op = 'LT' THEN res := LLVMBuildICmp(builder, LLVMIntSLT, lval, rval, MakeCStr(''))
       ELSE IF op = 'LE' THEN res := LLVMBuildICmp(builder, LLVMIntSLE, lval, rval, MakeCStr(''))
       ELSE IF op = 'GT' THEN res := LLVMBuildICmp(builder, LLVMIntSGT, lval, rval, MakeCStr(''))
@@ -528,16 +1192,26 @@ BEGIN
   ELSE IF (ltk = TK_INTEGER) OR (ltk = TK_WORD) OR (ltk = TK_INTEGER8) OR (ltk = TK_WORD8) OR
           (ltk = TK_INTEGER32) OR (ltk = TK_WORD32) OR (ltk = TK_INTEGER64) OR (ltk = TK_WORD64) THEN
   BEGIN
-    { Same rationale as the comparison branch above: +/-/*/DIV/MOD on
-      WORD/INTEGER8 (and their wider WORD8/32/64, INTEGER32/64 siblings)
-      reuse plain INTEGER's signed instructions -- two's complement
-      add/sub/mul don't care about signedness, and the reference hardcodes
-      sdiv/srem even for the WORD family. }
-    IF op = 'PLUS' THEN res := LLVMBuildAdd(builder, lval, rval, MakeCStr(''))
+    { Wrapping add/sub/mul have the same bit result for both families.
+      DIV/MOD use the adapted/promoted operand type's signedness and
+      mandatory safe lowering, including for legacy unchecked ASTs. }
+    { NVPTX has no host failure path: an operation MATHCK+ would check is
+      an unsupported boundary there (MathckDeviceBoundary). A fully constant
+      operation is not checked here: the typechecker range-checks its exact
+      folded value against the target, and consumers such as CoerceForAssign
+      rebuild it from the AST at the target width (Base + Step into
+      INTEGER32 is 33000, though the INTEGER operands would overflow). }
+    IF is_nvptx_device AND SiteMathCk(site) AND NOT TcFoldedOperation(site) AND
+       ((op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') OR (op = 'DIV') OR (op = 'MOD')) THEN
+      MathckDeviceBoundary(site);
+    IF ((op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL')) AND SiteMathCk(site) AND
+       NOT is_nvptx_device AND NOT TcFoldedOperation(site) THEN
+      res := CodegenCheckedArith(op, lval, rval, ltk, site)
+    ELSE IF op = 'PLUS' THEN res := LLVMBuildAdd(builder, lval, rval, MakeCStr(''))
     ELSE IF op = 'MINUS' THEN res := LLVMBuildSub(builder, lval, rval, MakeCStr(''))
     ELSE IF op = 'MUL' THEN res := LLVMBuildMul(builder, lval, rval, MakeCStr(''))
-    ELSE IF op = 'DIV' THEN res := LLVMBuildSDiv(builder, lval, rval, MakeCStr(''))
-    ELSE IF op = 'MOD' THEN res := LLVMBuildSRem(builder, lval, rval, MakeCStr(''))
+    ELSE IF (op = 'DIV') OR (op = 'MOD') THEN
+      res := CodegenSafeDivMod(op, lval, rval, ltk, site)
     ELSE
     BEGIN
       AbortWith2('codegen: unhandled integer-family operator: ', op);
@@ -564,26 +1238,48 @@ BEGIN
     res := NIL;
   END;
   END;
+  END;
   CodegenBinOp := res;
 END;
 
-FUNCTION CodegenUnaryOp(op: Str255; operand_node: ADRMEM): ADRMEM;
+FUNCTION CodegenUnaryOp(op: Str255; operand_node, site: ADRMEM): ADRMEM;
+{ site is the UnaryOp node itself: per-operation metadata is read from it. }
 VAR
   v, res: ADRMEM;
   tk: INTEGER;
 BEGIN
   v := CodegenExpr(operand_node);
+  tk := FoldedOperationTk(site);
+  IF tk <> TK_UNKNOWN THEN
+  BEGIN
+    { Same as CodegenBinOp: the exact checked constant. }
+    last_val_tk := tk;
+    CodegenUnaryOp := LLVMConstInt(LLVMTypeForTk(tk), IntLiteralValue(site), 1);
+    RETURN;
+  END;
   tk := last_val_tk;
   IF TypeKind(tk) = TK_VECTOR THEN
   BEGIN
-    res := CodegenVectorUnaryOp(op, v, tk);
+    IF (op = 'MINUS') AND IsIntegerFamilyTk(types[tk].elem_tid) AND SiteMathCk(site) THEN
+      res := CodegenLanewiseIntOp('NEG', v, NIL, tk, site)
+    ELSE
+      res := CodegenVectorUnaryOp(op, v, tk);
     last_val_tk := tk;
     CodegenUnaryOp := res;
     RETURN;
   END;
   IF op = 'MINUS' THEN
   BEGIN
-    IF (tk = TK_INTEGER) OR (tk = TK_WORD) THEN res := LLVMBuildSub(builder, LLVMConstInt(i16ty, 0, 1), v, MakeCStr(''))
+    { Same exemptions as checked + - *: legacy/MATHCK- nodes wrap, DEVICE
+      code is not checked yet, and a fully constant negation such as
+      -32768 is folded and range-checked by the typechecker. }
+    IF IsIntegerFamilyTk(tk) AND SiteMathCk(site) AND is_nvptx_device AND
+       NOT TcFoldedOperation(site) THEN
+      MathckDeviceBoundary(site);
+    IF IsIntegerFamilyTk(tk) AND SiteMathCk(site) AND NOT is_nvptx_device AND
+       NOT TcFoldedOperation(site) THEN
+      res := CodegenCheckedNegate(v, tk, site)
+    ELSE IF (tk = TK_INTEGER) OR (tk = TK_WORD) THEN res := LLVMBuildSub(builder, LLVMConstInt(i16ty, 0, 1), v, MakeCStr(''))
     ELSE IF (tk = TK_INTEGER8) OR (tk = TK_WORD8) THEN res := LLVMBuildSub(builder, LLVMConstInt(i8ty, 0, 1), v, MakeCStr(''))
     ELSE IF (tk = TK_INTEGER32) OR (tk = TK_WORD32) THEN res := LLVMBuildSub(builder, LLVMConstInt(i32ty, 0, 1), v, MakeCStr(''))
     ELSE IF (tk = TK_INTEGER64) OR (tk = TK_WORD64) THEN res := LLVMBuildSub(builder, LLVMConstInt(i64ty, 0, 1), v, MakeCStr(''))
@@ -660,6 +1356,17 @@ VAR
   ret_pk: SysVPieceArr;
   ret_pb: SysVPieceSzArr;
   sret_slot, sret_attr, noalias_attr, ret_ll, ret_cptr: ADRMEM;
+  arg_state: ARRAY [1..MAX_PARAMS] OF ADRMEM; { INITCK state temps of
+    tracked value actuals, published just before the call }
+  transports, track_arg, track_ret, track_agg, agg_taint: BOOLEAN;
+  saved_taint, agg_shadow, saved_source, var_shadow: ADRMEM;
+  publishes: BOOLEAN;
+  ack, acked, returned: ADRMEM;
+  ptr_actual: ARRAY [1..MAX_PARAMS] OF ADRMEM; { data addresses a plain
+    EXTERN receives (typed pointer values, the element data of descriptors
+    passed by value or bound by VAR/CONST), whose referents C may write }
+  call_base: INTEGER32; { initck_npending before this call's actuals }
+  outer_taint: ADRMEM;
 BEGIN
   ri := LookupRoutine(name);
   IF ri = 0 THEN
@@ -691,6 +1398,9 @@ BEGIN
         ClassifyAggregate(routines[ri].ret_tk, ret_class, ret_npieces, ret_pk, ret_pb);
     END;
     call_args := AllocPtrArray(nargs * 2 + 1);
+    transports := InitckTransports(ri);
+    FOR i := 1 TO MAX_PARAMS DO arg_state[i] := NIL;
+    FOR i := 1 TO MAX_PARAMS DO ptr_actual[i] := NIL;
     llvm_ai := 0;
     IF ret_class = SYSV_CLASS_MEMORY THEN
     BEGIN
@@ -702,9 +1412,18 @@ BEGIN
       SetPtrArrayElem(call_args, 0, sret_slot);
       llvm_ai := 1;
     END;
+    { Unmodeled effects of the call its actuals mention are queued and take
+      place just before the call (InitckReleaseAtCall). }
+    call_base := initck_npending;
+    initck_call_depth := initck_call_depth + 1;
     FOR i := 0 TO nargs - 1 DO
     BEGIN
       pieces_emitted := FALSE;
+      { Each actual is evaluated in its own accumulator: its unchecked reads
+        reach the callee only as the state it is handed (a transported
+        actual), never the caller's value, whose state comes from the result. }
+      outer_taint := initck_taint;
+      initck_taint := NIL;
       arg_node := ShadowedWriteArg(ArrItem(args_arr, i), name);
       IF i >= routines[ri].nparams THEN
       BEGIN
@@ -714,10 +1433,13 @@ BEGIN
           apply C's default argument promotions, exactly as the reference's
           codegen_c_abi_call does for the same tail. }
         v := CodegenExpr(arg_node);
+        IF InitckPointerTk(last_val_tk) AND NOT is_device_compiland THEN
+          InitckReleaseAtCall(v, 0);
         v := VariadicPromote(v, last_val_tk, name);
       END
       ELSE IF routines[ri].param_is_var[i + 1] THEN
       BEGIN
+        var_shadow := NIL;
         IF NodeType(arg_node) = 'Identifier' THEN
         BEGIN
           arg_nm := GetStr(arg_node, 'name');
@@ -732,6 +1454,9 @@ BEGIN
               materialize the call's result into a fresh temporary and
               pass that temporary's address, same as ComputeDesignatorAddress
               does for the same shape reached via a Designator. }
+            IF (IsHostDescriptor(routines[arg_routi].ret_tk) OR IsHostDescriptor(routines[ri].param_tk[i + 1])) AND
+               (routines[arg_routi].ret_tk <> routines[ri].param_tk[i + 1]) THEN
+              AbortWith('codegen: incompatible super-array descriptor VAR result argument');
             v := EntryAlloca(LLVMTypeForTk(routines[arg_routi].ret_tk), '');
             LLVMBuildStore(builder, CodegenCallCommon(arg_nm, NIL), v);
           END
@@ -746,11 +1471,13 @@ BEGIN
                          routines[ri].param_tk[i + 1]) THEN
               AbortWith2('codegen: VAR argument type mismatch calling: ', name);
             v := symbols[symi].llvm_val;
+            IF InitckTracked(symi) THEN var_shadow := symbols[symi].init_state;
           END;
         END
         ELSE IF NodeType(arg_node) = 'Designator' THEN
         BEGIN
           v := ComputeDesignatorAddress(arg_node);
+          var_shadow := last_desig_shadow;
           { See AggStringTypesInterchangeable -- equal-capacity string types. }
           IF (last_val_tk <> routines[ri].param_tk[i + 1])
              AND NOT AggStringTypesInterchangeable(last_val_tk,
@@ -762,6 +1489,24 @@ BEGIN
           AbortWith2('codegen: a VAR argument must be an lvalue, calling: ', name);
           v := NIL;
         END;
+        { A tracked VAR/CONST formal shares the actual's own state when the
+          actual is tracked storage: a direct slot or formal, a forwarded
+          VAR binding, a selected leaf, or a whole or sub-aggregate. Otherwise
+          nothing is published and the callee binds private initialized
+          state. Binding is not a read. }
+        IF transports AND (var_shadow <> NIL) THEN
+          IF InitckShadowSize(routines[ri].param_tk[i + 1]) > 0 THEN
+            arg_state[i + 1] := var_shadow;
+        { A [C] routine may write any leaf of the storage bound to its
+          VAR/CONST formal, and nothing tells us which: exactly that extent
+          becomes initialized at the call, never its siblings or other
+          storage. Binding is not a read. }
+        IF routines[ri].is_c AND (var_shadow <> NIL) AND (NOT is_device_compiland) THEN
+          IF InitckShadowSize(routines[ri].param_tk[i + 1]) > 0 THEN
+            InitckReleaseAtCall(var_shadow, routines[ri].param_tk[i + 1]);
+        IF transports AND routines[ri].is_extern AND
+           IsHostDescriptor(routines[ri].param_tk[i + 1]) THEN
+          ptr_actual[i + 1] := InitckDescriptorData(v, routines[ri].param_tk[i + 1]);
       END
       ELSE IF routines[ri].param_needs_copy[i + 1] THEN
       BEGIN
@@ -773,6 +1518,18 @@ BEGIN
         END
         ELSE
         BEGIN
+          { A tracked aggregate actual is a whole-value read: checked before
+            its bytes are copied, or (unchecked) a snapshot of its leaf
+            states travels to a transporting callee. }
+          track_agg := InitckShadowSize(routines[ri].param_tk[i + 1]) > 0;
+          agg_shadow := NIL;
+          IF track_agg THEN
+          BEGIN
+            saved_taint := BeginInitckValue(arg_node);
+            agg_taint := initck_taint <> NIL;
+            saved_source := initck_copy_source;
+            initck_copy_source := arg_node;
+          END;
           { Value-mode aggregate param, plain Pascal and [C] FOREIGN alike:
           SysV MEMORY-class byval -- compute the source's address, then
           ALWAYS copy it into a fresh per-call temp via EmitBlockCopy and
@@ -792,6 +1549,9 @@ BEGIN
           is_bare_niladic_call := (symi = 0) AND RoutineIsFunc(arg_routi);
           IF is_bare_niladic_call THEN
           BEGIN
+            IF (IsHostDescriptor(routines[arg_routi].ret_tk) OR IsHostDescriptor(routines[ri].param_tk[i + 1])) AND
+               (routines[arg_routi].ret_tk <> routines[ri].param_tk[i + 1]) THEN
+              AbortWith('codegen: incompatible super-array descriptor value result argument');
             v := EntryAlloca(LLVMTypeForTk(routines[arg_routi].ret_tk), '');
             LLVMBuildStore(builder, CodegenCallCommon(arg_nm, NIL), v);
           END
@@ -805,11 +1565,21 @@ BEGIN
                          routines[ri].param_tk[i + 1]) THEN
               AbortWith2('codegen: value-aggregate argument type mismatch calling: ', name);
             v := symbols[symi].llvm_val;
+            IF track_agg AND InitckTracked(symi) THEN
+            BEGIN
+              agg_shadow := symbols[symi].init_state;
+              GuardInitckRead(arg_node, symi);
+            END;
           END;
         END
         ELSE IF NodeType(arg_node) = 'Designator' THEN
         BEGIN
           v := ComputeDesignatorAddress(arg_node);
+          IF track_agg AND (last_desig_shadow <> NIL) THEN
+          BEGIN
+            agg_shadow := last_desig_shadow;
+            GuardInitckComponent(arg_node, agg_shadow, routines[ri].param_tk[i + 1]);
+          END;
           { See AggStringTypesInterchangeable -- equal-capacity string types. }
           IF (last_val_tk <> routines[ri].param_tk[i + 1])
              AND NOT AggStringTypesInterchangeable(last_val_tk,
@@ -828,7 +1598,9 @@ BEGIN
         ELSE IF NodeType(arg_node) = 'FuncCall' THEN
         BEGIN
           v := EntryAlloca(LLVMTypeForTk(routines[ri].param_tk[i + 1]), '');
-          LLVMBuildStore(builder, CodegenExpr(arg_node), v);
+          v_tmp := CodegenExpr(arg_node);
+          v_tmp := CoerceForAssign(v_tmp, last_val_tk, routines[ri].param_tk[i + 1], arg_node, name);
+          LLVMBuildStore(builder, v_tmp, v);
         END
         ELSE
         BEGIN
@@ -836,10 +1608,28 @@ BEGIN
             produces it as an SSA value, so materialize it into a fresh temp
             to get an address to classify/copy from. }
           v_tmp := CodegenExpr(arg_node);
+          v_tmp := CoerceForAssign(v_tmp, last_val_tk, routines[ri].param_tk[i + 1], arg_node, name);
           v := EntryAlloca(LLVMTypeForTk(routines[ri].param_tk[i + 1]), '');
           LLVMBuildStore(builder, v_tmp, v);
         END;
-        ClassifyAggregate(routines[ri].param_tk[i + 1], agg_class, n_pieces, piece_kind, piece_bytes);
+        IF transports AND routines[ri].is_extern AND
+           IsHostDescriptor(routines[ri].param_tk[i + 1]) THEN
+          ptr_actual[i + 1] := InitckDescriptorData(v, routines[ri].param_tk[i + 1]);
+        IF track_agg THEN
+        BEGIN
+          initck_copy_source := saved_source;
+          IF transports AND ((agg_shadow <> NIL) OR agg_taint) THEN
+          BEGIN
+            arg_state[i + 1] := EntryAlloca(InitckShadowTy(routines[ri].param_tk[i + 1]),
+                                            'initck.actual');
+            InitckTransferShadow(arg_state[i + 1], agg_shadow,
+                                 routines[ri].param_tk[i + 1], EndInitckValue(saved_taint));
+          END
+          ELSE initck_taint := saved_taint;
+        END;
+        ClassifyParamAt(routines[ri].param_tk, routines[ri].param_is_var,
+                        routines[ri].param_needs_copy, i + 1, ret_class = SYSV_CLASS_MEMORY,
+                        agg_class, n_pieces, piece_kind, piece_bytes);
         IF agg_class = SYSV_CLASS_MEMORY THEN
         BEGIN
           bv_temp := EntryAlloca(LLVMTypeForTk(routines[ri].param_tk[i + 1]), '');
@@ -882,21 +1672,116 @@ BEGIN
       END
       ELSE
       BEGIN
+        { A tracked value formal receives the evaluated actual's state:
+          collected like an assignment RHS, so an unchecked unset source
+          reaches the callee unset rather than blessed by the copy. }
+        track_arg := transports;
+        IF track_arg THEN track_arg := InitckTrackedTk(routines[ri].param_tk[i + 1]);
+        IF track_arg THEN saved_taint := BeginInitckValue(arg_node);
         v := CodegenExpr(arg_node);
         { Value-mode call arguments get the same literal-adaptation leniency
           as an assignment RHS (e.g. a bare INTEGER literal passed to a CINT
           [C] EXTERN parameter, as with cJSON_CreateBool(1) or exit(1)):
           reuse CoerceForAssign rather than a bare tid-equality check. A
           subrange parameter is range-checked like an assignment. }
+        initck_defer_conv := TRUE;
         v := CoerceCheckedForAssign(v, last_val_tk, routines[ri].param_tk[i + 1], arg_node, name);
+        initck_defer_conv := FALSE;
+        { A pointer handed to a [C] routine exposes its referent to writes
+          whose state is not modeled. }
+        IF (NOT transports) AND (NOT is_device_compiland) AND
+           InitckPointerTk(routines[ri].param_tk[i + 1]) THEN
+          InitckReleaseAtCall(v, 0);
+        IF transports AND routines[ri].is_extern AND
+           InitckPointerTk(routines[ri].param_tk[i + 1]) AND
+           NOT IsHostDescriptor(routines[ri].param_tk[i + 1]) THEN
+          ptr_actual[i + 1] := v;
+        IF track_arg THEN
+        BEGIN
+          arg_state[i + 1] := EntryAlloca(i1ty, 'initck.actual');
+          LLVMBuildStore(builder, EndInitckValue(saved_taint), arg_state[i + 1]);
+        END;
       END;
       IF NOT pieces_emitted THEN
       BEGIN
         SetPtrArrayElem(call_args, llvm_ai, v);
         llvm_ai := llvm_ai + 1;
       END;
+      initck_taint := outer_taint;
+    END;
+    initck_call_depth := initck_call_depth - 1;
+    InitckFlushReleases(call_base);
+    { Publish argument states only now: evaluating later actuals may itself
+      call routines that use the side channel. A caller-reset result flag
+      makes an uninstrumented callee's result read as initialized. }
+    track_ret := InitckResultTracked(ri);
+    { A data address a plain EXTERN receives needs the acknowledgement even
+      when no state is published (an untracked global descriptor, say). }
+    publishes := track_ret;
+    FOR i := 1 TO routines[ri].nparams DO
+      IF ptr_actual[i] <> NIL THEN publishes := TRUE;
+    IF transports THEN
+      FOR i := 1 TO routines[ri].nparams DO
+        IF arg_state[i] <> NIL THEN
+        BEGIN
+          LLVMBuildStore(builder, arg_state[i], InitckArgSlot(i));
+          publishes := TRUE;
+        END;
+    IF track_ret THEN
+      LLVMBuildStore(builder, LLVMConstInt(i1ty, 1, 0), InitckRetFlag);
+    { Tag the call for its callee (InitckAcceptChannel). A plain EXTERN may
+      be C, so it also gets a flag that only an instrumented callee sets. }
+    ack := NIL;
+    IF publishes THEN
+    BEGIN
+      LLVMBuildStore(builder, LLVMBuildBitCast(builder, routines[ri].fn, i8ptrty, MakeCStr('')),
+                     InitckTls('pas_initck_callee', i8ptrty));
+      IF routines[ri].is_extern THEN
+      BEGIN
+        ack := EntryAlloca(i1ty, 'initck.ack');
+        LLVMBuildStore(builder, LLVMConstInt(i1ty, 0, 0), ack);
+        LLVMBuildStore(builder, LLVMBuildBitCast(builder, ack, i8ptrty, MakeCStr('')),
+                       InitckTls('pas_initck_ack', i8ptrty));
+      END
+      ELSE
+        LLVMBuildStore(builder, LLVMConstNull(i8ptrty), InitckTls('pas_initck_ack', i8ptrty));
     END;
     res := LLVMBuildCall2(builder, routines[ri].fnty, routines[ri].fn, call_args, llvm_ai, MakeCStr(''));
+    { A Pascal callee clears its slots on entry; clear again in case an
+      EXTERN routine was not instrumented, so no slot can dangle. }
+    IF transports THEN
+      FOR i := 1 TO routines[ri].nparams DO
+        IF arg_state[i] <> NIL THEN
+          LLVMBuildStore(builder, LLVMConstNull(i8ptrty), InitckArgSlot(i));
+    acked := NIL;
+    IF ack <> NIL THEN
+    BEGIN
+      { An unacknowledged EXTERN was not instrumented Pascal: its tag is
+        still set, the VAR/CONST storage it was handed may have been written
+        by C, and its result state is not a published one. }
+      acked := LLVMBuildLoad2(builder, i1ty, ack, MakeCStr('initck.acked'));
+      LLVMBuildStore(builder, LLVMConstNull(i8ptrty), InitckTls('pas_initck_callee', i8ptrty));
+      LLVMBuildStore(builder, LLVMConstNull(i8ptrty), InitckTls('pas_initck_ack', i8ptrty));
+      FOR i := 1 TO routines[ri].nparams DO
+      BEGIN
+        IF (arg_state[i] <> NIL) AND routines[ri].param_is_var[i] THEN
+          InitckReleaseUnacked(acked, arg_state[i], routines[ri].param_tk[i]);
+        { The referent of a pointer, or the elements of a descriptor, C
+          received, as for a [C] routine; NULL is never registered, so an
+          acknowledged call releases nothing. }
+        IF ptr_actual[i] <> NIL THEN
+          InitckHeapRelease(LLVMBuildSelect(builder, acked, LLVMConstNull(i8ptrty),
+            LLVMBuildBitCast(builder, ptr_actual[i], i8ptrty, MakeCStr('')), MakeCStr('')));
+      END;
+    END;
+    IF track_ret AND (initck_taint <> NIL) THEN
+    BEGIN
+      returned := LLVMBuildLoad2(builder, i1ty, InitckRetFlag, MakeCStr('initck.returned'));
+      IF acked <> NIL THEN
+        returned := LLVMBuildOr(builder, returned,
+                                LLVMBuildNot(builder, acked, MakeCStr('')), MakeCStr(''));
+      NoteInitckState(returned);
+    END;
     { Attach byval(ty)/align (and sret(ty)/noalias/align for a MEMORY-class
       return) at the CALL SITE too, matching clang's own lowering
       (verification step 7) -- the declaration side alone
@@ -938,7 +1823,9 @@ BEGIN
           llvm_ai := llvm_ai + 1
         ELSE
         BEGIN
-          ClassifyAggregate(routines[ri].param_tk[i + 1], agg_class, n_pieces, piece_kind, piece_bytes);
+          ClassifyParamAt(routines[ri].param_tk, routines[ri].param_is_var,
+                          routines[ri].param_needs_copy, i + 1, ret_class = SYSV_CLASS_MEMORY,
+                          agg_class, n_pieces, piece_kind, piece_bytes);
           IF agg_class = SYSV_CLASS_MEMORY THEN
           BEGIN
             byval_attr := LLVMCreateTypeAttribute(ctx, byval_kind_id, LLVMTypeForTk(routines[ri].param_tk[i + 1]));
@@ -1006,13 +1893,29 @@ VAR
   fi: INTEGER;
   file_handle, file_fcb, file_call_args, file_raw_buf, discard: ADRMEM;
   folded: INTEGER64;
-  indexck, unsigned_idx: BOOLEAN;
+  indexck, unsigned_idx, super_checked: BOOLEAN;
   idx128, i128ty, in_bounds, upper_ok, bad_bb, ok_bb: ADRMEM;
+  nil_bad, nil_ok, nil_fnty, nil_fn, is_nil: ADRMEM;
   error_fn, error_fnty, error_params, error_args, discard_call: ADRMEM;
+  selected_upper, descriptor: ADRMEM;
   deref_ptr_tid: INTEGER; { committed to last_desig_deref_ptr_tid only at
     the end, since index expressions below recurse through here }
+  shadow: ADRMEM; { INITCK shadow of the storage selected so far, or NIL;
+    committed to last_desig_shadow at the end for the same reason }
+  heap_data: ADRMEM; { the tracked referent the last DEREF reached, or NIL }
+  super_leaves: ADRMEM; { its i64 leaf count, when it is SUPER ARRAY elements
+    whose INDEX comes next; else NIL }
+  file_state: ADRMEM; { the whole tracked file buffer state the last DEREF
+    reached, or NIL }
+  file_state_tid: INTEGER;
 BEGIN
   deref_ptr_tid := 0;
+  heap_data := NIL;
+  file_state := NIL;
+  file_state_tid := 0;
+  super_leaves := NIL;
+  selected_upper := NIL;
+  shadow := NIL;
   nm := GetStr(node, 'name');
   symi := LookupSym(nm);
   selectors := GetObj(node, 'selectors');
@@ -1043,6 +1946,7 @@ BEGIN
       AbortWith2('codegen: undefined variable: ', nm);
     base_ptr := symbols[symi].llvm_val;
     cur_tid := symbols[symi].tk;
+    IF InitckTracked(symi) THEN shadow := symbols[symi].init_state;
   END;
 
   FOR si := 0 TO nsel - 1 DO
@@ -1061,6 +1965,9 @@ BEGIN
       indexck := TRUE;
       IF HasKey(sel, 'indexck') THEN indexck := GetBool(sel, 'indexck');
       idx_expr := GetObj(sel, 'index_or_field');
+      IF (TypeKind(cur_tid) = TK_ARRAY) AND NOT is_device_compiland THEN
+        IF types[cur_tid].is_super AND (selected_upper = NIL) THEN
+          AbortWith('codegen: borrowed SUPER ARRAY subscript has no descriptor bound');
       { A vector lane index is 0-based (types[].lo = 0). A constant lane
         index outside 0..lanes-1 is a compile-time error -- the same
         re-validation M0 does for the type itself, since this file also
@@ -1071,10 +1978,13 @@ BEGIN
         IF (folded < 0) OR (folded > types[cur_tid].hi) THEN
           AbortWith('codegen: vector lane index out of range');
       idx_val := CodegenExpr(idx_expr);
-      { Only fixed ARRAY selectors are guarded. Even a constant outside
-        lo..hi takes the runtime failure branch when its access runs, not
-        a compile-time error. A SUPER ARRAY's stored hi is a placeholder,
-        not a runtime upper bound; string and vector selectors retain their
+      { Fixed ARRAY selectors are guarded against their static bounds and
+        host descriptor-backed SUPER ARRAY selectors against the selected
+        descriptor's declared lower and actual dynamic upper. Even a
+        constant outside the bounds takes the runtime failure branch when
+        its access runs, not a compile-time error. A SUPER ARRAY's stored
+        hi is a placeholder, so the guard reads the descriptor upper the
+        DEREF selector captured; string and vector selectors retain their
         existing behavior. Compare the original index before narrowing or
         subtracting lo, once per selector. }
       IF indexck AND (NOT is_device_compiland) AND
@@ -1135,12 +2045,108 @@ BEGIN
         discard_call := LLVMBuildUnreachable(builder);
         LLVMPositionBuilderAtEnd(builder, ok_bb);
       END;
+      { A descriptor-backed SUPER ARRAY selector checks against the actual
+        upper bound the DEREF selector captured. NEW and UNSAFESUPER both
+        reject uppers above INT64_MAX, so sign-extending the i64 descriptor
+        upper to i128 is faithful; the widened comparison covers signed and
+        unsigned indexes alike, and the offset path below reuses the
+        checked full-width value. The same once-only index evaluation and
+        INTEGER-constant preservation rules as the fixed-array guard apply;
+        $INDEXCK- suppresses this guard exactly like the fixed-array one. }
+      super_checked := FALSE;
+      IF indexck AND (NOT is_device_compiland) AND
+         (TypeKind(cur_tid) = TK_ARRAY) AND types[cur_tid].is_super AND
+         (selected_upper <> NIL) THEN
+      BEGIN
+        { A NIL descriptor fails deterministically before any bound
+          comparison or address formation: the bad block below only
+          diagnoses and never forms a GEP. The index expression has
+          already run exactly once above; whether its side effects happen
+          before this failure is deliberately not pinned down. }
+        is_nil := LLVMBuildICmp(builder, LLVMIntEQ, base_ptr,
+          LLVMConstPointerNull(i8ptrty), MakeCStr(''));
+        nil_bad := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('index.nil'));
+        nil_ok := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('index.nilk'));
+        LLVMBuildCondBr(builder, is_nil, nil_bad, nil_ok);
+        LLVMPositionBuilderAtEnd(builder, nil_bad);
+        nil_fnty := LLVMFunctionType(voidty, AllocPtrArray(0), 0, 0);
+        nil_fn := LLVMGetNamedFunction(modl, MakeCStr('pas_super_index_nil_error'));
+        IF nil_fn = NIL THEN
+          nil_fn := LLVMAddFunction(modl, MakeCStr('pas_super_index_nil_error'), nil_fnty);
+        discard_call := LLVMBuildCall2(builder, nil_fnty, nil_fn, AllocPtrArray(0), 0, MakeCStr(''));
+        discard_call := LLVMBuildUnreachable(builder);
+        LLVMPositionBuilderAtEnd(builder, nil_ok);
+        unsigned_idx := (last_val_tk = TK_CHAR) OR
+          (last_val_tk = TK_BOOLEAN) OR (TypeKind(last_val_tk) = TK_ENUM) OR
+          IsUnsignedWordTk(last_val_tk);
+        IF NOT (unsigned_idx OR IsIntegerFamilyTk(last_val_tk)) THEN
+          AbortWith('codegen: a super-array index must be ordinal');
+        i128ty := LLVMIntTypeInContext(ctx, 128);
+        IF (last_val_tk = TK_INTEGER) AND IsIntLiteralLike(idx_expr) AND
+           FoldConstInt(idx_expr, folded) AND
+           ((folded < -32768) OR (folded > 32767)) THEN
+          idx128 := LLVMConstInt(i128ty, folded, 1)
+        ELSE IF unsigned_idx THEN
+          idx128 := LLVMBuildZExt(builder, idx_val, i128ty, MakeCStr(''))
+        ELSE
+          idx128 := LLVMBuildSExt(builder, idx_val, i128ty, MakeCStr(''));
+        in_bounds := LLVMBuildICmp(builder, LLVMIntSGE, idx128,
+          LLVMConstInt(i128ty, types[cur_tid].lo, 1), MakeCStr(''));
+        upper_ok := LLVMBuildICmp(builder, LLVMIntSLE, idx128,
+          LLVMBuildSExt(builder, selected_upper, i128ty, MakeCStr('')), MakeCStr(''));
+        in_bounds := LLVMBuildAnd(builder, in_bounds, upper_ok, MakeCStr(''));
+        bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('index.bad'));
+        ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('index.ok'));
+        LLVMBuildCondBr(builder, in_bounds, ok_bb, bad_bb);
+        LLVMPositionBuilderAtEnd(builder, bad_bb);
+        { Same diagnostic as a fixed-array failure, but hi is the selected
+          descriptor's actual upper. No data address is touched before the
+          comparison; the GEP below only runs in the ok block. }
+        error_params := AllocPtrArray(4);
+        SetPtrArrayElem(error_params, 0, i64ty);
+        SetPtrArrayElem(error_params, 1, i32ty);
+        SetPtrArrayElem(error_params, 2, i64ty);
+        SetPtrArrayElem(error_params, 3, i64ty);
+        error_fnty := LLVMFunctionType(voidty, error_params, 4, 0);
+        error_fn := LLVMGetNamedFunction(modl, MakeCStr('pas_array_index_error'));
+        IF error_fn = NIL THEN
+          error_fn := LLVMAddFunction(modl, MakeCStr('pas_array_index_error'), error_fnty);
+        error_args := AllocPtrArray(4);
+        SetPtrArrayElem(error_args, 0, LLVMBuildTrunc(builder, idx128, i64ty, MakeCStr('')));
+        IF unsigned_idx THEN
+          SetPtrArrayElem(error_args, 1, LLVMConstInt(i32ty, 1, 0))
+        ELSE
+          SetPtrArrayElem(error_args, 1, LLVMConstInt(i32ty, 0, 0));
+        SetPtrArrayElem(error_args, 2, LLVMConstInt(i64ty, types[cur_tid].lo, 1));
+        SetPtrArrayElem(error_args, 3, selected_upper);
+        discard_call := LLVMBuildCall2(builder, error_fnty, error_fn, error_args, 4, MakeCStr(''));
+        discard_call := LLVMBuildUnreachable(builder);
+        LLVMPositionBuilderAtEnd(builder, ok_bb);
+        idx_val := LLVMBuildTrunc(builder, idx128, i64ty, MakeCStr(''));
+        super_checked := TRUE;
+      END;
       { The reference codegen (resolve_designator_ptr_typed, types_map.py)
         accepts any integer-family index width -- it just subtracts the
         lower bound using a constant of the index's own LLVM type and lets
         GEP take an index of whatever width it is, not just a plain
         16-bit INTEGER. Match that here instead of requiring TK_INTEGER. }
-      IF indexck AND (NOT is_device_compiland) AND
+      IF (NOT is_device_compiland) AND (TypeKind(cur_tid) = TK_ARRAY) AND types[cur_tid].is_super THEN
+      BEGIN
+        IF NOT super_checked THEN
+        BEGIN
+          IF (last_val_tk = TK_INTEGER) AND IsIntLiteralLike(idx_expr) AND FoldConstInt(idx_expr, folded) THEN
+            idx_val := LLVMConstInt(i64ty, folded, 1)
+          ELSE IF (last_val_tk <> TK_INTEGER64) AND (last_val_tk <> TK_WORD64) THEN
+            IF IsUnsignedWordTk(last_val_tk) OR (last_val_tk = TK_CHAR) OR
+               (last_val_tk = TK_BOOLEAN) OR (TypeKind(last_val_tk) = TK_ENUM) THEN
+              idx_val := LLVMBuildZExt(builder, idx_val, i64ty, MakeCStr(''))
+            ELSE IF IsIntegerFamilyTk(last_val_tk) THEN
+              idx_val := LLVMBuildSExt(builder, idx_val, i64ty, MakeCStr(''))
+            ELSE AbortWith('codegen: a super-array index must be ordinal');
+        END;
+        offset := LLVMBuildSub(builder, idx_val, LLVMConstInt(i64ty, types[cur_tid].lo, 1), MakeCStr(''));
+      END
+      ELSE IF indexck AND (NOT is_device_compiland) AND
          (TypeKind(cur_tid) = TK_ARRAY) AND (NOT types[cur_tid].is_super) THEN
       BEGIN
         { A checked fixed-array offset is nonnegative and at most 65535.
@@ -1181,7 +2187,19 @@ BEGIN
         SetPtrArrayElem(gep_idx, 1, offset);
         base_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(cur_tid), base_ptr, gep_idx, 2, MakeCStr(''));
       END;
+      { The element's shadow reuses the same, already checked offset: the
+        index ran exactly once above and any bounds failure precedes it. }
+      IF (shadow <> NIL) AND (TypeKind(cur_tid) = TK_ARRAY) AND
+         (NOT types[cur_tid].is_super) THEN
+        shadow := LLVMBuildGEP2(builder, InitckShadowTy(cur_tid), shadow, gep_idx, 2,
+                                MakeCStr('initck.elem'))
+      ELSE IF (super_leaves <> NIL) AND (TypeKind(cur_tid) = TK_ARRAY) AND
+              types[cur_tid].is_super THEN
+        shadow := InitckSuperElement(heap_data, super_leaves, offset, cur_tid)
+      ELSE shadow := NIL;
+      super_leaves := NIL;
       cur_tid := types[cur_tid].elem_tid;
+      selected_upper := NIL;
     END
     ELSE IF kind = 'DEREF' THEN
     BEGIN
@@ -1190,6 +2208,7 @@ BEGIN
         { F^: the runtime-owned current-component buffer, mirroring the
           reference's _file_buffer_ptr. TEXT files get a lazy-touch hook
           first (touch=True only for ASCII structure, types[].hi = 1). }
+        heap_data := NIL;
         file_handle := LLVMBuildLoad2(builder, i8ptrty, base_ptr, MakeCStr(''));
         file_fcb := LLVMBuildBitCast(builder, file_handle, LLVMPointerType(filefcbty, 0), MakeCStr(''));
         file_call_args := AllocPtrArray(1);
@@ -1199,19 +2218,57 @@ BEGIN
         file_raw_buf := LLVMBuildCall2(builder, file_buffer_fnty, file_buffer_fn, file_call_args, 1, MakeCStr(''));
         cur_tid := types[cur_tid].elem_tid;
         base_ptr := LLVMBuildBitCast(builder, file_raw_buf, LLVMPointerType(LLVMTypeForTk(cur_tid), 0), MakeCStr(''));
+        { The buffer's state lives beside it (InitFileStorage) and is read
+          after pas_file_buffer has completed any deferred fill. }
+        shadow := NIL;
+        file_state := NIL;
+        IF (InitckShadowSize(cur_tid) > 0) AND NOT is_device_compiland THEN
+        BEGIN
+          file_state := InitckFileState(file_fcb);
+          file_state_tid := cur_tid;
+          shadow := file_state;
+        END;
       END
       ELSE BEGIN
         IF TypeKind(cur_tid) <> TK_POINTER THEN
           AbortWith('codegen: a DEREF selector was applied to a non-pointer');
+        { Tracked pointer storage is read here, before the native load. }
+        IF shadow <> NIL THEN GuardInitckPointer(node, si, shadow);
+        shadow := NIL;
+        heap_data := NIL;
+        file_state := NIL;
+        super_leaves := NIL;
         base_ptr := LLVMBuildLoad2(builder, LLVMTypeForTk(cur_tid), base_ptr, MakeCStr(''));
+        selected_upper := NIL;
+        IF IsHostDescriptor(cur_tid) THEN
+        BEGIN
+          descriptor := base_ptr;
+          selected_upper := LLVMBuildExtractValue(builder, descriptor, 1, MakeCStr(''));
+          base_ptr := LLVMBuildExtractValue(builder, descriptor, 0, MakeCStr(''));
+          { The elements' state is found per element at the INDEX below,
+            within the allocation's leaves for this descriptor's bounds. }
+          IF InitckSuperHeapTracked(cur_tid) THEN
+          BEGIN
+            heap_data := base_ptr;
+            super_leaves := InitckSuperLeaves(selected_upper, types[cur_tid].elem_tid);
+          END;
+        END
+        ELSE IF InitckHeapTracked(cur_tid) THEN
+        BEGIN
+          { The referent's state, found by its address (registered by NEW). }
+          heap_data := base_ptr;
+          shadow := InitckHeapShadow(base_ptr, cur_tid);
+        END;
         deref_ptr_tid := cur_tid;
         cur_tid := types[cur_tid].elem_tid;
       END;
     END
     ELSE IF kind = 'FIELD' THEN
     BEGIN
+      selected_upper := NIL;
       IF TypeKind(cur_tid) = TK_LSTRING THEN
       BEGIN
+        shadow := NIL;
         { LSTRING.LEN: the leading length byte, which is simply element 0 of
           the same storage (cg_decl.pas's index-0-is-length convention), so
           this is the INDEX path above with a constant zero. The result is a
@@ -1244,6 +2301,12 @@ BEGIN
         gep_idx := AllocPtrArray(1);
         SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, fields[fi].byte_offset, 0));
         base_ptr := LLVMBuildGEP2(builder, i8ty, base_ptr, gep_idx, 1, MakeCStr(''));
+        IF shadow <> NIL THEN
+        BEGIN
+          gep_idx := AllocPtrArray(1);
+          SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, InitckFieldShadowOffset(fi), 0));
+          shadow := LLVMBuildGEP2(builder, i1ty, shadow, gep_idx, 1, MakeCStr('initck.field'));
+        END;
         cur_tid := fields[fi].field_tid;
         base_ptr := LLVMBuildBitCast(builder, base_ptr, LLVMPointerType(LLVMTypeForTk(cur_tid), 0), MakeCStr(''));
       END;
@@ -1252,19 +2315,36 @@ BEGIN
       AbortWith2('codegen: unhandled selector kind: ', kind);
   END;
 
+  { The prepass marked a designator that hands heap storage to an
+    unmodeled alias or effect (ValidateInitckDesignator): release the
+    referent it reaches, which no longer has modeled state. }
+  IF (heap_data <> NIL) AND HasKey(node, 'initck_release') THEN
+  BEGIN
+    InitckHeapRelease(heap_data);
+    shadow := NIL;
+  END;
+  { A file buffer handed to an unmodeled effect: initialized until its next
+    transition (fill, EOF, PUT, ...) resets it. }
+  IF (file_state <> NIL) AND HasKey(node, 'initck_release') THEN
+  BEGIN
+    InitckTransferShadow(file_state, NIL, file_state_tid, LLVMConstInt(i1ty, 1, 0));
+    shadow := NIL;
+  END;
   last_val_tk := cur_tid;
   last_desig_deref_ptr_tid := deref_ptr_tid;
+  last_desig_super_upper := selected_upper;
+  last_desig_shadow := shadow;
   ComputeDesignatorAddress := base_ptr;
 END;
 
 FUNCTION VectorArrayOperand(node: ADRMEM; VAR arr_tid: INTEGER;
-                            VAR has_bound_hdr: BOOLEAN): ADRMEM;
+                            VAR super_upper: ADRMEM): ADRMEM;
 VAR
   symi: INTEGER32;
   ptr_tid: INTEGER;
   res: ADRMEM;
 BEGIN
-  has_bound_hdr := FALSE;
+  super_upper := NIL;
   res := NIL;
   arr_tid := 0;
   IF NodeType(node) = 'Identifier' THEN
@@ -1282,7 +2362,7 @@ BEGIN
     ptr_tid := last_desig_deref_ptr_tid;
     IF ptr_tid <> 0 THEN
       IF (types[ptr_tid].ptr_space = PTR_SPACE_PLAIN) AND (NOT is_device_compiland) THEN
-        has_bound_hdr := TRUE;
+        super_upper := last_desig_super_upper;
   END
   ELSE
     AbortWith('codegen: VLOAD/VSTORE first argument must be an array variable or designator');
@@ -1301,18 +2381,115 @@ BEGIN
     (u = 'EXP') OR (u = 'ARCTAN');
 END;
 
+FUNCTION CodegenIntAbsSqr(is_abs: BOOLEAN; v: ADRMEM; argtk: INTEGER; site: ADRMEM): ADRMEM;
+{ Integer-family ABS/SQR at the argument's own width. A WORD-family ABS is
+  its argument (never negative). Signed ABS negates a negative value; as a
+  checked 0 - v under MATHCK+ (the call's own snapshot) only the minimum
+  overflows, which is exactly ABS's overflow. SQR is v * v, checked under
+  MATHCK+. MATHCK-, legacy nodes and NVPTX wrap. A fully constant call was
+  range-checked by the typechecker and is materialized at its resolved
+  type. }
+VAR
+  folded_tk, tk: INTEGER;
+  checked: BOOLEAN;
+  zero, neg, is_neg, res: ADRMEM;
+BEGIN
+  folded_tk := FoldedOperationTk(site);
+  IF folded_tk <> TK_UNKNOWN THEN
+  BEGIN
+    res := LLVMConstInt(LLVMTypeForTk(folded_tk), IntLiteralValue(site), 1);
+    last_val_tk := folded_tk;
+  END
+  ELSE
+  BEGIN
+    tk := TypeKind(argtk);
+    checked := SiteMathCk(site) AND NOT is_nvptx_device;
+    { WORD-family ABS has no arithmetic to check. }
+    IF SiteMathCk(site) AND is_nvptx_device AND
+       NOT (is_abs AND IsUnsignedWordTk(tk)) THEN
+      MathckDeviceBoundary(site);
+    IF NOT is_abs THEN
+    BEGIN
+      IF checked THEN res := CodegenCheckedUnary('MUL', v, v, v, 8, tk, site)
+      ELSE res := LLVMBuildMul(builder, v, v, MakeCStr(''));
+    END
+    ELSE IF IsUnsignedWordTk(tk) THEN
+      res := v
+    ELSE
+    BEGIN
+      zero := LLVMConstInt(LLVMTypeForTk(tk), 0, 0);
+      IF checked THEN neg := CodegenCheckedUnary('MINUS', zero, v, v, 7, tk, site)
+      ELSE neg := LLVMBuildSub(builder, zero, v, MakeCStr(''));
+      is_neg := LLVMBuildICmp(builder, LLVMIntSLT, v, zero, MakeCStr(''));
+      res := LLVMBuildSelect(builder, is_neg, neg, v, MakeCStr(''));
+    END;
+    last_val_tk := argtk;
+  END;
+  CodegenIntAbsSqr := res;
+END;
+
 FUNCTION RealArgToDouble(v: ADRMEM; argtk: INTEGER): ADRMEM;
 { Bring a builtin's numeric argument to REAL (double) for the libm calls,
   TRUNC, ROUND, and FLOAT: a REAL stays as it is, a REAL32 widens with
-  fpext, and an integer converts with sitofp. sitofp on a float is invalid
-  IR. }
+  fpext, and an integer converts by its own signedness (IntToFloat).
+  sitofp on a float is invalid IR. }
 BEGIN
   IF argtk = TK_REAL THEN RealArgToDouble := v
   ELSE IF argtk = TK_REAL32 THEN RealArgToDouble := LLVMBuildFPExt(builder, v, dblty, MakeCStr(''))
-  ELSE RealArgToDouble := LLVMBuildSIToFP(builder, v, dblty, MakeCStr(''));
+  ELSE RealArgToDouble := IntToFloat(v, argtk, dblty);
 END;
 
-FUNCTION CodegenSimpleBuiltin(nm: Str255; args: ADRMEM): ADRMEM;
+FUNCTION CodegenCheckedRealToInt(t, arg: ADRMEM; kind: INTEGER; site: ADRMEM): ADRMEM;
+{ TRUNC (kind 0) and ROUND (kind 1): t is the value to truncate toward zero
+  (ROUND has already added its signed half). IBM checks the INTEGER range
+  unconditionally, so this is independent of MATHCK: t must lie strictly
+  between -32769 and 32768, and the ordered compares also reject NaN; the
+  failure reports the argument at the function name. A bare fptosi would be
+  LLVM poison out of range. NVPTX has no host failure path, so device code
+  saturates (llvm.fptosi.sat; NaN gives 0) instead of failing. }
+VAR
+  in_range, bad_bb, ok_bb, ps, fnty, fn, args, discard: ADRMEM;
+  line, column: INTEGER32;
+BEGIN
+  IF is_nvptx_device THEN
+  BEGIN
+    ps := AllocPtrArray(1);
+    SetPtrArrayElem(ps, 0, dblty);
+    fnty := LLVMFunctionType(i16ty, ps, 1, 0);
+    fn := LLVMGetNamedFunction(modl, MakeCStr('llvm.fptosi.sat.i16.f64'));
+    IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr('llvm.fptosi.sat.i16.f64'), fnty);
+    CodegenCheckedRealToInt := LLVMBuildCall2(builder, fnty, fn, MakeArgs1(t), 1, MakeCStr(''));
+    RETURN;
+  END;
+  in_range := LLVMBuildAnd(builder,
+    LLVMBuildFCmp(builder, LLVMRealOGT, t, LLVMConstReal(dblty, -32769.0), MakeCStr('')),
+    LLVMBuildFCmp(builder, LLVMRealOLT, t, LLVMConstReal(dblty, 32768.0), MakeCStr('')),
+    MakeCStr('conv.in'));
+  bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('conv.bad'));
+  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('conv.ok'));
+  LLVMBuildCondBr(builder, in_range, ok_bb, bad_bb);
+  LLVMPositionBuilderAtEnd(builder, bad_bb);
+  ps := AllocPtrArray(4);
+  SetPtrArrayElem(ps, 0, i32ty);
+  SetPtrArrayElem(ps, 1, dblty);
+  SetPtrArrayElem(ps, 2, i32ty);
+  SetPtrArrayElem(ps, 3, i32ty);
+  fnty := LLVMFunctionType(voidty, ps, 4, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_conversion_error'));
+  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr('pas_conversion_error'), fnty);
+  OperationLocation(site, line, column);
+  args := AllocPtrArray(4);
+  SetPtrArrayElem(args, 0, LLVMConstInt(i32ty, kind, 0));
+  SetPtrArrayElem(args, 1, arg);
+  SetPtrArrayElem(args, 2, LLVMConstInt(i32ty, line, 0));
+  SetPtrArrayElem(args, 3, LLVMConstInt(i32ty, column, 0));
+  discard := LLVMBuildCall2(builder, fnty, fn, args, 4, MakeCStr(''));
+  discard := LLVMBuildUnreachable(builder);
+  LLVMPositionBuilderAtEnd(builder, ok_bb);
+  CodegenCheckedRealToInt := LLVMBuildFPToSI(builder, t, i16ty, MakeCStr(''));
+END;
+
+FUNCTION CodegenSimpleBuiltin(nm: Str255; site: ADRMEM): ADRMEM;
 { The math/ordinal builtins that need no libpascalrt support: pure inline
   LLVM IR (CHR/ORD/ODD/SUCC/PRED/ABS/SQR), or a single libm call
   (SQRT/SIN/COS/LN/EXP/ARCTAN), mirroring the Python reference's exprs.py
@@ -1322,7 +2499,7 @@ FUNCTION CodegenSimpleBuiltin(nm: Str255; args: ADRMEM): ADRMEM;
   this file, and with the dialect's own known 16-bit-INTEGER-overflow
   behavior (not a bug -- see the codebase's own vintage-dialect notes). }
 VAR
-  v, v2, is_neg, neg, half, res, hi16, lo16: ADRMEM;
+  v, v2, is_neg, neg, half, res, hi16, lo16, args: ADRMEM;
   argtk, argtk2: INTEGER;
 BEGIN
   { NVPTX only: a serial/CPU DEVICE compiland is an ordinary host module in
@@ -1330,6 +2507,7 @@ BEGIN
     the wrong key here. }
   IF is_nvptx_device AND IsDeviceUnsupportedTranscendental(nm) THEN
     AbortWith2('codegen: transcendental math function is not supported in DEVICE code: ', nm);
+  args := GetObj(site, 'args');
   v := CodegenExpr(ArrItem(args, 0));
   argtk := last_val_tk;
   IF nm = 'CHR' THEN
@@ -1347,11 +2525,12 @@ BEGIN
     END
     ELSE IF TypeKind(argtk) = TK_ENUM THEN
     BEGIN
-      { An enum ordinal is physically i32 (the enum's storage); tag the
-        result INTEGER32 rather than INTEGER so WRITE's %d path doesn't
-        try to sign-extend an already-32-bit value. }
-      res := v;
-      last_val_tk := TK_INTEGER32;
+      { An enum ordinal is stored as i32, but ORD's result is INTEGER
+        (the typechecker's type for it), so narrow it: every ordinal fits.
+        An INTEGER32 tag would check later arithmetic at 32 bits and then
+        silently truncate the result into an INTEGER target. }
+      res := LLVMBuildTrunc(builder, v, i16ty, MakeCStr(''));
+      last_val_tk := TK_INTEGER;
     END
     ELSE
     BEGIN
@@ -1367,42 +2546,25 @@ BEGIN
     res := LLVMBuildICmp(builder, LLVMIntNE, res, LLVMConstInt(i16ty, 0, 0), MakeCStr(''));
     last_val_tk := TK_BOOLEAN;
   END
-  ELSE IF nm = 'SUCC' THEN
-  BEGIN
-    IF argtk = TK_CHAR THEN res := LLVMBuildAdd(builder, v, LLVMConstInt(i8ty, 1, 0), MakeCStr(''))
-    ELSE IF TypeKind(argtk) = TK_ENUM THEN res := LLVMBuildAdd(builder, v, LLVMConstInt(i32ty, 1, 0), MakeCStr(''))
-    ELSE res := LLVMBuildAdd(builder, v, LLVMConstInt(i16ty, 1, 0), MakeCStr(''));
-    last_val_tk := argtk;
-  END
-  ELSE IF nm = 'PRED' THEN
-  BEGIN
-    IF argtk = TK_CHAR THEN res := LLVMBuildSub(builder, v, LLVMConstInt(i8ty, 1, 0), MakeCStr(''))
-    ELSE IF TypeKind(argtk) = TK_ENUM THEN res := LLVMBuildSub(builder, v, LLVMConstInt(i32ty, 1, 0), MakeCStr(''))
-    ELSE res := LLVMBuildSub(builder, v, LLVMConstInt(i16ty, 1, 0), MakeCStr(''));
-    last_val_tk := argtk;
-  END
-  ELSE IF nm = 'ABS' THEN
+  ELSE IF (nm = 'SUCC') OR (nm = 'PRED') THEN
+    res := CodegenSuccPred(nm = 'SUCC', v, argtk, site)
+  ELSE IF (nm = 'ABS') OR (nm = 'SQR') THEN
   BEGIN
     { ABS and SQR keep the argument's own width: REAL32 stays float, and
-      INTEGER8/32/64 compare against a zero of their own width. }
+      the integer family stays at its own width and signedness. }
     IF (argtk = TK_REAL) OR (argtk = TK_REAL32) THEN
     BEGIN
-      is_neg := LLVMBuildFCmp(builder, LLVMRealOLT, v, LLVMConstReal(LLVMTypeForTk(argtk), 0.0), MakeCStr(''));
-      neg := LLVMBuildFSub(builder, LLVMConstReal(LLVMTypeForTk(argtk), 0.0), v, MakeCStr(''));
+      IF nm = 'SQR' THEN res := LLVMBuildFMul(builder, v, v, MakeCStr(''))
+      ELSE
+      BEGIN
+        is_neg := LLVMBuildFCmp(builder, LLVMRealOLT, v, LLVMConstReal(LLVMTypeForTk(argtk), 0.0), MakeCStr(''));
+        neg := LLVMBuildFSub(builder, LLVMConstReal(LLVMTypeForTk(argtk), 0.0), v, MakeCStr(''));
+        res := LLVMBuildSelect(builder, is_neg, neg, v, MakeCStr(''));
+      END;
+      last_val_tk := argtk;
     END
     ELSE
-    BEGIN
-      is_neg := LLVMBuildICmp(builder, LLVMIntSLT, v, LLVMConstInt(LLVMTypeForTk(argtk), 0, 1), MakeCStr(''));
-      neg := LLVMBuildSub(builder, LLVMConstInt(LLVMTypeForTk(argtk), 0, 1), v, MakeCStr(''));
-    END;
-    res := LLVMBuildSelect(builder, is_neg, neg, v, MakeCStr(''));
-    last_val_tk := argtk;
-  END
-  ELSE IF nm = 'SQR' THEN
-  BEGIN
-    IF (argtk = TK_REAL) OR (argtk = TK_REAL32) THEN res := LLVMBuildFMul(builder, v, v, MakeCStr(''))
-    ELSE res := LLVMBuildMul(builder, v, v, MakeCStr(''));
-    last_val_tk := argtk;
+      res := CodegenIntAbsSqr(nm = 'ABS', v, argtk, site);
   END
   ELSE IF (nm = 'SQRT') OR (nm = 'SIN') OR (nm = 'COS') OR (nm = 'LN') OR (nm = 'EXP') OR (nm = 'ARCTAN') THEN
   BEGIN
@@ -1418,7 +2580,7 @@ BEGIN
   ELSE IF nm = 'TRUNC' THEN
   BEGIN
     v := RealArgToDouble(v, argtk);
-    res := LLVMBuildFPToSI(builder, v, i16ty, MakeCStr(''));
+    res := CodegenCheckedRealToInt(v, v, 0, site);
     last_val_tk := TK_INTEGER;
   END
   ELSE IF nm = 'ROUND' THEN
@@ -1426,8 +2588,7 @@ BEGIN
     v := RealArgToDouble(v, argtk);
     is_neg := LLVMBuildFCmp(builder, LLVMRealOLT, v, LLVMConstReal(dblty, 0.0), MakeCStr(''));
     half := LLVMBuildSelect(builder, is_neg, LLVMConstReal(dblty, -0.5), LLVMConstReal(dblty, 0.5), MakeCStr(''));
-    v := LLVMBuildFAdd(builder, v, half, MakeCStr(''));
-    res := LLVMBuildFPToSI(builder, v, i16ty, MakeCStr(''));
+    res := CodegenCheckedRealToInt(LLVMBuildFAdd(builder, v, half, MakeCStr('')), v, 1, site);
     last_val_tk := TK_INTEGER;
   END
   ELSE IF nm = 'FLOAT' THEN
@@ -1616,6 +2777,67 @@ BEGIN
   ELSE BoundOperandType := TK_UNKNOWN;
 END;
 
+FUNCTION SuperBoundBits(node: ADRMEM; VAR unsigned_flag: ADRMEM): ADRMEM;
+VAR v: ADRMEM; tid: INTEGER; folded: INTEGER64; uns: BOOLEAN;
+BEGIN
+  v := CodegenExpr(node); tid := last_val_tk;
+  uns := IsUnsignedWordTk(tid) OR (tid = TK_CHAR) OR (tid = TK_BOOLEAN) OR (TypeKind(tid) = TK_ENUM);
+  IF NOT (IsIntegerFamilyTk(tid) OR uns) THEN
+    AbortWith('codegen: SUPER ARRAY bounds must be ordinal values');
+  IF uns THEN unsigned_flag := LLVMConstInt(i32ty, 1, 0)
+  ELSE unsigned_flag := LLVMConstInt(i32ty, 0, 0);
+  { Preserve mathematical INTEGER constants before their vintage i16
+    materialization. WORD64 bits stay unsigned until runtime validation. }
+  IF (tid = TK_INTEGER) AND IsIntLiteralLike(node) AND FoldConstInt(node, folded) THEN
+    v := LLVMConstInt(i64ty, folded, 1)
+  ELSE IF (tid <> TK_INTEGER64) AND (tid <> TK_WORD64) THEN
+    IF uns THEN v := LLVMBuildZExt(builder, v, i64ty, MakeCStr(''))
+    ELSE v := LLVMBuildSExt(builder, v, i64ty, MakeCStr(''));
+  SuperBoundBits := v;
+END;
+
+FUNCTION CodegenUnsafeSuper(args: ADRMEM): ADRMEM;
+VAR target, raw_tid, arr_tid: INTEGER;
+    raw, lo_bits, hi_bits, lower_uns, upper_uns, params, vals, fnty, fn, discard: ADRMEM;
+    domain_low, domain_high: INTEGER64; i: INTEGER;
+BEGIN
+  IF ArrSize(args) <> 4 THEN AbortWith('codegen: UNSAFESUPER expects (pointer type, raw, lower, upper)');
+  IF NodeType(ArrItem(args, 0)) <> 'Identifier' THEN
+    AbortWith('codegen: UNSAFESUPER first argument must be a descriptor pointer type name');
+  target := LookupNamedType(GetStr(ArrItem(args, 0), 'name'));
+  IF NOT IsHostDescriptor(target) THEN
+    AbortWith('codegen: UNSAFESUPER target must be a host super-array descriptor pointer');
+  arr_tid := types[target].elem_tid;
+  SuperDomainLimits(arr_tid, domain_low, domain_high);
+  raw := CodegenExpr(ArrItem(args, 1)); raw_tid := last_val_tk;
+  IF raw_tid <> TK_ADRMEM THEN
+  BEGIN
+    IF TypeKind(raw_tid) <> TK_POINTER THEN AbortWith('codegen: UNSAFESUPER raw argument must be a host pointer');
+    IF IsHostDescriptor(raw_tid) OR (types[raw_tid].ptr_space <> PTR_SPACE_PLAIN) OR
+       (types[raw_tid].elem_tid <> types[arr_tid].elem_tid) THEN
+      AbortWith('codegen: UNSAFESUPER raw argument must be CPTR/ADRMEM or a compatible thin element pointer');
+  END;
+  lo_bits := SuperBoundBits(ArrItem(args, 2), lower_uns);
+  hi_bits := SuperBoundBits(ArrItem(args, 3), upper_uns);
+  params := AllocPtrArray(10); vals := AllocPtrArray(10);
+  FOR i := 0 TO 9 DO SetPtrArrayElem(params, i, i64ty);
+  SetPtrArrayElem(params, 0, i8ptrty);
+  SetPtrArrayElem(params, 2, i32ty); SetPtrArrayElem(params, 4, i32ty);
+  SetPtrArrayElem(vals, 0, raw); SetPtrArrayElem(vals, 1, lo_bits); SetPtrArrayElem(vals, 2, lower_uns);
+  SetPtrArrayElem(vals, 3, hi_bits); SetPtrArrayElem(vals, 4, upper_uns);
+  SetPtrArrayElem(vals, 5, LLVMConstInt(i64ty, types[arr_tid].lo, 1));
+  SetPtrArrayElem(vals, 6, LLVMConstInt(i64ty, domain_low, 1));
+  SetPtrArrayElem(vals, 7, LLVMConstInt(i64ty, domain_high, 1));
+  SetPtrArrayElem(vals, 8, LLVMConstInt(i64ty, SuperElementSize(types[arr_tid].elem_tid), 0));
+  SetPtrArrayElem(vals, 9, LLVMConstInt(i64ty, LLVMABIAlignmentOfType(LLVMGetModuleDataLayout(modl), LLVMTypeForTk(types[arr_tid].elem_tid)), 0));
+  fnty := LLVMFunctionType(voidty, params, 10, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_super_import_check'));
+  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr('pas_super_import_check'), fnty);
+  discard := LLVMBuildCall2(builder, fnty, fn, vals, 10, MakeCStr(''));
+  CodegenUnsafeSuper := MakeDescriptor(target, raw, hi_bits);
+  last_val_tk := target;
+END;
+
 FUNCTION CodegenExpr(node: ADRMEM): ADRMEM;
 VAR
   nt: Str255;
@@ -1636,9 +2858,12 @@ VAR
   vsel_mask_tid, vsel_a_tid, vsel_b_tid: INTEGER;
   vld_idx, vld_arr: ADRMEM;
   vld_idx_tk, vld_arr_tid: INTEGER;
-  vld_hdr, bound_is_subrange: BOOLEAN;
+  vld_hdr: ADRMEM;
+  bound_is_subrange: BOOLEAN;
+  value_shadow: ADRMEM; { committed to last_value_shadow at the end }
 BEGIN
   EnterExprLevel;
+  value_shadow := NIL;
   nt := NodeType(node);
   IF nt = 'IntLiteral' THEN
   BEGIN
@@ -1697,8 +2922,21 @@ BEGIN
     symi := LookupSym(GetStr(node, 'name'));
     IF symi = 0 THEN
       AbortWith2('codegen: undefined variable: ', GetStr(node, 'name'));
+    IF ExposesHostDescriptor(symbols[symi].tk) THEN
+      AbortWith('codegen: ADR cannot expose super-array descriptor storage; use UNSAFERAW');
+    IF TypeKind(symbols[symi].tk) = TK_ARRAY THEN
+      IF types[symbols[symi].tk].is_super THEN
+        AbortWith('codegen: ADR of a borrowed SUPER ARRAY is unsupported');
     res := LLVMBuildBitCast(builder, symbols[symi].llvm_val, i8ptrty, MakeCStr(''));
     last_val_tk := TK_ADRMEM;
+    { Raw writes through this address are not modeled, so every leaf of the
+      tracked slot is released (initialized) where the address becomes
+      usable: here, or as an actual at its call, after the later actuals
+      (InitckReleaseAtCall); the slot stays tracked (InitckLocalEscapes). A
+      WITH-bound field's ADR disqualified its whole object instead, so it
+      has no state here. }
+    IF InitckTracked(symi) AND NOT symbols[symi].is_with_field THEN
+      InitckReleaseAtCall(symbols[symi].init_state, symbols[symi].tk);
   END
   ELSE IF nt = 'Identifier' THEN
   BEGIN
@@ -1747,8 +2985,10 @@ BEGIN
     symi := LookupSym(nm);
     IF symi <> 0 THEN
     BEGIN
+      GuardInitckRead(node, symi);
       res := LLVMBuildLoad2(builder, LLVMTypeForTk(symbols[symi].tk), symbols[symi].llvm_val, MakeCStr(''));
       last_val_tk := symbols[symi].tk;
+      IF InitckTracked(symi) THEN value_shadow := symbols[symi].init_state;
     END
     ELSE
     BEGIN
@@ -1800,8 +3040,25 @@ BEGIN
     END;
   END
   ELSE IF (nt = 'Designator') OR (nt = 'PostfixExpr') THEN  BEGIN
+    { A zero-selector designator is a direct read: check it, or propagate
+      its state when unchecked (GuardInitckRead handles both). }
+    IF (nt = 'Designator') AND (ArrSize(GetObj(node, 'selectors')) = 0) THEN
+    BEGIN
+      symi := LookupSym(GetStr(node, 'name'));
+      IF symi <> 0 THEN GuardInitckRead(node, symi);
+    END;
     addr := ComputeDesignatorAddress(node);
     result_tid := last_val_tk;
+    value_shadow := last_desig_shadow;
+    { A selected tracked component is checked (or propagated) after its
+      index operands and bounds checks, before the native load below. }
+    IF (nt = 'PostfixExpr') OR (ArrSize(GetObj(node, 'selectors')) <> 0) THEN
+    BEGIN
+      IF value_shadow <> NIL THEN
+        GuardInitckComponent(node, value_shadow, result_tid)
+      ELSE IF GetBool(GetObj(node, 'read_flags'), 'INITCK') THEN
+        InitckBoundaryAt('selected storage', node);
+    END;
     res := LLVMBuildLoad2(builder, LLVMTypeForTk(result_tid), addr, MakeCStr(''));
     last_val_tk := result_tid;
   END
@@ -1834,11 +3091,11 @@ BEGIN
     last_val_tk := TK_WORD;
   END
   ELSE IF nt = 'BinOp' THEN
-    res := CodegenBinOp(GetStr(node, 'op'), GetObj(node, 'left'), GetObj(node, 'right'))
+    res := CodegenBinOp(GetStr(node, 'op'), GetObj(node, 'left'), GetObj(node, 'right'), node)
   ELSE IF nt = 'SetConstructor' THEN
     res := CodegenSetConstructor(node)
   ELSE IF nt = 'UnaryOp' THEN
-    res := CodegenUnaryOp(GetStr(node, 'op'), GetObj(node, 'operand'))
+    res := CodegenUnaryOp(GetStr(node, 'op'), GetObj(node, 'operand'), node)
   ELSE IF (nt = 'UpperExpr') OR (nt = 'LowerExpr') THEN
   BEGIN
     { Type-only walk for static bounds; only a final dereference of a
@@ -1881,10 +3138,19 @@ BEGIN
         discard := LLVMBuildCall2(builder, nil_fnty, nil_fn, err_args, 1, MakeCStr(''));
         discard := LLVMBuildUnreachable(builder);
         LLVMPositionBuilderAtEnd(builder, ok_bb);
-        super_header := LLVMBuildGEP2(builder, i8ty, super_ptr,
-          MakeArgs1(LLVMConstInt(i64ty, -8, 1)), 1, MakeCStr(''));
-        super_header := LLVMBuildBitCast(builder, super_header, LLVMPointerType(i64ty, 0), MakeCStr(''));
-        res := LLVMBuildLoad2(builder, i64ty, super_header, MakeCStr(''));
+        IF is_device_compiland THEN
+        BEGIN
+          { Preserve legacy DEVICE lowering; it is not a host descriptor. }
+          super_header := LLVMBuildGEP2(builder, i8ty, super_ptr,
+            MakeArgs1(LLVMConstInt(i64ty, -8, 1)), 1, MakeCStr(''));
+          res := LLVMBuildLoad2(builder, i64ty, super_header, MakeCStr(''));
+        END
+        ELSE
+        BEGIN
+          IF last_desig_super_upper = NIL THEN
+            AbortWith('codegen: UPPER super-array pointer has no host descriptor bound');
+          res := last_desig_super_upper;
+        END;
       END;
       last_val_tk := TK_INTEGER64;
     END
@@ -1936,6 +3202,9 @@ BEGIN
     ELSE
     BEGIN
       res := CodegenExpr(GetObj(node, 'expr'));
+      result_tid := LookupNamedType(GetStr(node, 'type_id'));
+      IF IsHostDescriptor(last_val_tk) OR IsHostDescriptor(result_tid) THEN
+        AbortWith('codegen: RETYPE cannot convert super-array descriptors; use explicit unsafe conversion');
       result_tid := TypeNameStrToTk(GetStr(node, 'type_id'));
       IF IsIntegerFamilyTk(last_val_tk) AND IsIntegerFamilyTk(result_tid) THEN
       BEGIN
@@ -2005,6 +3274,8 @@ BEGIN
       res := CodegenEncode(GetObj(node, 'args'));
       last_val_tk := TK_BOOLEAN;
     END
+    ELSE IF (nm = 'SADDOK') OR (nm = 'SMULOK') OR (nm = 'UADDOK') OR (nm = 'UMULOK') THEN
+      res := CodegenOverflowOk(nm, GetObj(node, 'args'))
     ELSE IF nm = 'DECODE' THEN
     BEGIN
       res := CodegenDecode(GetObj(node, 'args'));
@@ -2014,7 +3285,28 @@ BEGIN
       OR (nm = 'ABS') OR (nm = 'SQR') OR (nm = 'SQRT') OR (nm = 'SIN') OR (nm = 'COS')
       OR (nm = 'LN') OR (nm = 'EXP') OR (nm = 'ARCTAN') OR (nm = 'TRUNC') OR (nm = 'ROUND')
       OR (nm = 'FLOAT') OR (nm = 'HIBYTE') OR (nm = 'LOBYTE') OR (nm = 'WRD') OR (nm = 'WRD8') OR (nm = 'BYWORD') THEN
-      res := CodegenSimpleBuiltin(nm, GetObj(node, 'args'))
+      res := CodegenSimpleBuiltin(nm, node)
+    ELSE IF (nm = 'UNSAFERAW') OR (nm = 'UNSAFESUPER') THEN
+    BEGIN
+      IF NOT FeaturesAreExtended(active_features) THEN
+        AbortWith('codegen: unsafe super-array conversions require the extended dialect');
+      IF is_device_compiland THEN
+        AbortWith('codegen: unsafe super-array conversions are not permitted in DEVICE code');
+      IF nm = 'UNSAFESUPER' THEN res := CodegenUnsafeSuper(GetObj(node, 'args'))
+      ELSE
+      BEGIN
+        call_args := GetObj(node, 'args');
+        IF ArrSize(call_args) <> 1 THEN AbortWith('codegen: UNSAFERAW expects one descriptor pointer argument');
+        res := CodegenExpr(ArrItem(call_args, 0));
+        IF NOT IsHostDescriptor(last_val_tk) THEN
+          AbortWith('codegen: UNSAFERAW requires a host super-array descriptor pointer');
+        res := LLVMBuildExtractValue(builder, res, 0, MakeCStr(''));
+        { The exported elements leave the INITCK model. }
+        InitckHeapRelease(res);
+        last_val_tk := TK_ADRMEM;
+      END;
+      EPrint('warning: unsafe-super-array-conversion');
+    END
     ELSE IF nm = 'DEVALLOC' THEN
       res := CodegenDevAlloc(GetObj(node, 'args'))
     ELSE IF nm = 'VSPLAT' THEN
@@ -2046,7 +3338,11 @@ BEGIN
       res := CodegenExpr(ArrItem(call_args, 0));
       IF TypeKind(last_val_tk) <> TK_VECTOR THEN
         AbortWith2('codegen: reduction argument is not a VECTOR: ', nm);
-      res := CodegenVReduce(nm, res, last_val_tk);
+      IF ((nm = 'VSUM') OR (nm = 'VPROD')) AND
+         IsIntegerFamilyTk(types[last_val_tk].elem_tid) AND SiteMathCk(node) THEN
+        res := CodegenCheckedVReduce(nm, res, last_val_tk, node)
+      ELSE
+        res := CodegenVReduce(nm, res, last_val_tk);
     END
     ELSE IF nm = 'VSELECT' THEN
     BEGIN
@@ -2111,6 +3407,7 @@ BEGIN
   END;
   LeaveExprLevel;
   last_val_tk := SubrangeBaseTid(last_val_tk);
+  last_value_shadow := value_shadow;
   CodegenExpr := res;
 END;
 
@@ -2422,6 +3719,48 @@ BEGIN
   CodegenEncode := LLVMBuildICmp(builder, LLVMIntNE,
     LLVMBuildCall2(builder, encode_fnty, encode_fn, call_args, 7, MakeCStr('')),
     LLVMConstInt(i32ty, 0, 0), MakeCStr(''));
+END;
+
+FUNCTION CodegenOverflowOk(nm: Str255; args: ADRMEM): ADRMEM;
+{ The IBM library functions SADDOK/SMULOK (INTEGER) and UADDOK/UMULOK
+  (WORD), manual 11-21: store the 16-bit sum or product, wrapped, through
+  VAR C and return TRUE when it did not overflow. They never trap,
+  whatever MATHCK says. Reached only when no user declaration of the name
+  is visible. }
+VAR
+  tk: INTEGER;
+  a, b, c_node, c_addr, pair: ADRMEM;
+  symi: INTEGER32;
+  op: Str255;
+BEGIN
+  IF ArrSize(args) <> 3 THEN AbortWith2('codegen: expects (A, B, VAR C): ', nm);
+  IF (nm = 'SADDOK') OR (nm = 'SMULOK') THEN tk := TK_INTEGER ELSE tk := TK_WORD;
+  IF (nm = 'SADDOK') OR (nm = 'UADDOK') THEN op := 'PLUS' ELSE op := 'MUL';
+  a := CodegenExpr(ArrItem(args, 0));
+  a := CoerceForAssign(a, last_val_tk, tk, ArrItem(args, 0), nm);
+  b := CodegenExpr(ArrItem(args, 1));
+  b := CoerceForAssign(b, last_val_tk, tk, ArrItem(args, 1), nm);
+  c_node := ArrItem(args, 2);
+  c_addr := NIL;
+  IF NodeType(c_node) = 'Identifier' THEN
+  BEGIN
+    symi := LookupSym(GetStr(c_node, 'name'));
+    IF symi = 0 THEN AbortWith2('codegen: undefined variable: ', GetStr(c_node, 'name'));
+    IF symbols[symi].tk <> tk THEN AbortWith2('codegen: VAR argument type mismatch calling: ', nm);
+    c_addr := symbols[symi].llvm_val;
+  END
+  ELSE IF NodeType(c_node) = 'Designator' THEN
+  BEGIN
+    c_addr := ComputeDesignatorAddress(c_node);
+    IF last_val_tk <> tk THEN AbortWith2('codegen: VAR argument type mismatch calling: ', nm);
+  END
+  ELSE
+    AbortWith2('codegen: a VAR argument must be an lvalue, calling: ', nm);
+  pair := OverflowIntrinsicCall(op, a, b, tk);
+  LLVMBuildStore(builder, LLVMBuildExtractValue(builder, pair, 0, MakeCStr('')), c_addr);
+  last_val_tk := TK_BOOLEAN;
+  CodegenOverflowOk := LLVMBuildNot(builder,
+    LLVMBuildExtractValue(builder, pair, 1, MakeCStr('')), MakeCStr(''));
 END;
 
 FUNCTION CodegenDecode(args: ADRMEM): ADRMEM;

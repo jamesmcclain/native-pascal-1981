@@ -18,7 +18,7 @@ FUNCTION dup(old_fd: CINT): CINT [C]; EXTERN;
 FUNCTION dup2(old_fd: CINT; new_fd: CINT): CINT [C]; EXTERN;
 FUNCTION waitpid(pid: CINT; status: ADRMEM; options: CINT): CINT [C]; EXTERN;
 FUNCTION execvp(file_name: ADRMEM; args: ADRMEM): CINT [C]; EXTERN;
-FUNCTION mkstemps(template_name: ADRMEM; suffix_length: CINT): CINT [C]; EXTERN;
+FUNCTION pas_driver_temp_file(suffix: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION unlink(path: ADRMEM): CINT [C]; EXTERN;
 FUNCTION realpath(path: ADRMEM; resolved: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION strcmp(left: ADRMEM; right: ADRMEM): CINT [C]; EXTERN;
@@ -483,10 +483,8 @@ BEGIN
     temp_ll := output_file
   ELSE
   BEGIN
-    temp_ll := MakeCStr('/tmp/pascal1981_XXXXXX.ll');
-    out_fd := mkstemps(temp_ll, 3);
-    IF out_fd < 0 THEN Fail('error: opening output file for IR failed');
-    close(out_fd);
+    temp_ll := pas_driver_temp_file(MakeCStr('.ll'));
+    IF temp_ll = NIL THEN Fail('error: opening output file for IR failed');
   END;
   fail_code := RunPipeline(inputs[0], temp_ll);
   IF fail_code <> 0 THEN
@@ -509,16 +507,12 @@ BEGIN
     extra_object_count := 0;
     FOR i := 1 TO input_count - 1 DO
     BEGIN
-      extra_ll := MakeCStr('/tmp/pascal1981_XXXXXX.ll');
-      out_fd := mkstemps(extra_ll, 3);
-      IF out_fd < 0 THEN Fail('error: creating temporary IR file failed');
-      close(out_fd);
+      extra_ll := pas_driver_temp_file(MakeCStr('.ll'));
+      IF extra_ll = NIL THEN Fail('error: creating temporary IR file failed');
       fail_code := RunPipeline(inputs[i], extra_ll);
       IF fail_code <> 0 THEN BEGIN unlink(extra_ll); exit(fail_code); END;
-      extra_objects[extra_object_count] := MakeCStr('/tmp/pascal1981_XXXXXX.o');
-      out_fd := mkstemps(extra_objects[extra_object_count], 2);
-      IF out_fd < 0 THEN Fail('error: creating temporary object file failed');
-      close(out_fd);
+      extra_objects[extra_object_count] := pas_driver_temp_file(MakeCStr('.o'));
+      IF extra_objects[extra_object_count] = NIL THEN Fail('error: creating temporary object file failed');
       temp_ll := extra_ll;
       output_file := extra_objects[extra_object_count];
       compile_only := TRUE;

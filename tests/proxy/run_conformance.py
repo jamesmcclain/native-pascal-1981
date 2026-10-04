@@ -23,8 +23,15 @@ import shlex
 import socket
 import subprocess
 import sys
+import sys as _temp_sys
 import tempfile
+from pathlib import Path as _TempPath
+
+_temp_sys.path.insert(
+    0, str(_TempPath(__file__).resolve().parents[2] / 'scripts'))
 import time
+
+import native_temp  # owns this process's temporary workspace
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -166,33 +173,38 @@ class Harness:
             return saved.read()
 
     def start_stub(self, calibrate_ok=None):
-        port_file = os.path.join(HERE, '.stub-port-%d' % os.getpid())
-        if os.path.exists(port_file):
-            os.unlink(port_file)
-        argv = [
-            sys.executable,
-            os.path.join(HERE, 'stub_upstream.py'), '--port', '0',
-            '--port-file', port_file
-        ]
-        if calibrate_ok is not None:
-            argv += ['--calibrate-ok', calibrate_ok]
-        log = self._log_for('stub')
-        proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=log)
-        self.procs.append(proc)
-        deadline = time.time() + 20
-        while time.time() < deadline:
-            if os.path.exists(port_file):
-                text = open(port_file, encoding='utf-8').read().strip()
-                if text:
-                    port = int(text)
-                    os.unlink(port_file)
-                    if wait_for_port('127.0.0.1', port, 10, proc):
-                        return port
+        # Publication belongs to this startup, not to the source directory or
+        # the PID. A private child directory also prevents a late publisher
+        # from recreating a port file after a failed startup's cleanup.
+        with tempfile.TemporaryDirectory(prefix='stub-',
+                                         dir=self._log_dir) as directory:
+            port_file = os.path.join(directory, 'port')
+            argv = [
+                sys.executable,
+                os.path.join(HERE, 'stub_upstream.py'), '--port', '0',
+                '--port-file', port_file
+            ]
+            if calibrate_ok is not None:
+                argv += ['--calibrate-ok', calibrate_ok]
+            log = self._log_for('stub')
+            proc = subprocess.Popen(argv,
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=log)
+            self.procs.append(proc)
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                if os.path.exists(port_file):
+                    with open(port_file, encoding='utf-8') as published:
+                        text = published.read().strip()
+                    if text:
+                        port = int(text)
+                        if wait_for_port('127.0.0.1', port, 10, proc):
+                            return port
+                        break
+                if proc.poll() is not None:
                     break
-            if proc.poll() is not None:
-                break
-            time.sleep(0.05)
-        raise RuntimeError('stub upstream failed to start')
+                time.sleep(0.05)
+            raise RuntimeError('stub upstream failed to start')
 
     def start_proxy(self, upstream_url, reasoning_effort='none'):
         port = free_port()

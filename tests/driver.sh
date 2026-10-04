@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # Driver contract tests. These tests use temporary stage programs so they test
 # the command-line driver without depending on a bootstrap build.
 set -euo pipefail

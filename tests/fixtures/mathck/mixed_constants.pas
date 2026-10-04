@@ -1,0 +1,7 @@
+PROGRAM Adapt;
+CONST NEG = -1; BIG = 40000;
+VAR w: WORD; i: INTEGER;{WIDE}
+BEGIN
+  w := 5; i := -2;{INIT}
+  {STATEMENT}
+END.

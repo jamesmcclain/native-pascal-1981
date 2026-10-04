@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # Tests for the tracked pre-commit hook and beautify.sh.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -203,6 +204,38 @@ test_missing_python_formatters() {
         fail_test "$name" 'the C file was not formatted'
     elif ! grep -qF 'x = {   "a":1 }' "$BEAUTIFY_REPO/tests/z.py"; then
         fail_test "$name" 'the Python file changed'
+    else
+        pass_test "$name"
+    fi
+}
+
+test_formatted_c_keeps_mtime() {
+    local name='already formatted C file is not rewritten'
+    if ! command -v indent >/dev/null 2>&1; then
+        skip_test "$name" 'indent is not available'
+        return
+    fi
+
+    setup_beautify_repo keep-mtime
+    local tools="$work_dir/keep-mtime/tools"
+    make_tool_path "$tools" bash dirname find grep indent
+    write_tidy_c "$BEAUTIFY_REPO/runtime/tidy.c"
+    touch -d '2001-01-01 00:00:00' "$BEAUTIFY_REPO/runtime/tidy.c"
+    local before after status=0
+    before=$(stat -c %Y "$BEAUTIFY_REPO/runtime/tidy.c")
+
+    run_beautify "$BEAUTIFY_REPO" "$tools" || status=$?
+    after=$(stat -c %Y "$BEAUTIFY_REPO/runtime/tidy.c")
+    write_tidy_c "$work_dir/keep-mtime/expected.c"
+    if [ "$status" -ne 0 ]; then
+        fail_test "$name" "beautify.sh returned $status"
+        cat "$BEAUTIFY_REPO/stderr" >&2
+    elif [ "$before" != "$after" ]; then
+        fail_test "$name" 'the formatted file was rewritten (mtime changed)'
+    elif ! cmp -s "$work_dir/keep-mtime/expected.c" "$BEAUTIFY_REPO/runtime/tidy.c"; then
+        fail_test "$name" 'the formatted file changed'
+    elif ! grep -qF 'int f(int x)' "$BEAUTIFY_REPO/runtime/a.c"; then
+        fail_test "$name" 'the unformatted file was not formatted'
     else
         pass_test "$name"
     fi
@@ -423,6 +456,7 @@ test_broken_indent
 test_missing_indent
 test_broken_isort
 test_missing_python_formatters
+test_formatted_c_keeps_mtime
 test_reformats_and_restages_staged_file
 test_worktree_clean_after_commit
 test_unstaged_file_is_not_committed

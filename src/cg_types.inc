@@ -16,6 +16,9 @@ CONST
   SYSV_PIECE_DOUBLE = 3;
   SYSV_PIECE_SSEVEC = 4;
 
+TYPE
+  DescriptorVisitArr = ARRAY [1..MAX_TYPES] OF BOOLEAN;
+
 FUNCTION LLVMTypeForTk(tk: INTEGER): ADRMEM;
 FUNCTION TypeKind(tid: INTEGER): INTEGER;
 FUNCTION SubrangeBaseTid(tid: INTEGER): INTEGER;
@@ -28,6 +31,11 @@ FUNCTION RegisterType(tk, elem_tid: INTEGER; lo, hi: INTEGER32; llvm_ty: ADRMEM)
 FUNCTION EnsureGenericSetType: INTEGER;
 FUNCTION DeclaredSetBasesConflict(a, b: INTEGER): BOOLEAN;
 FUNCTION EnsureBoolVectorType(n: INTEGER32): INTEGER;
+FUNCTION IsHostDescriptor(tid: INTEGER): BOOLEAN;
+FUNCTION ContainsHostDescriptor(tid: INTEGER): BOOLEAN;
+FUNCTION ExposesHostDescriptor(tid: INTEGER): BOOLEAN;
+FUNCTION MakeDescriptor(tid: INTEGER; data, bound_value: ADRMEM): ADRMEM;
+PROCEDURE SuperDomainLimits(arr_tid: INTEGER; VAR low, high: INTEGER64);
 FUNCTION PointerSpacesCompatible(from_tid, to_tid: INTEGER): BOOLEAN;
 FUNCTION AggStringTypesInterchangeable(a, b: INTEGER): BOOLEAN;
 FUNCTION TypesCompatibleForAssign(from_tid, to_tid: INTEGER): BOOLEAN;
@@ -39,17 +47,24 @@ FUNCTION IsWideIntTk(tk: INTEGER): BOOLEAN;
 FUNCTION IsIntegerFamilyTk(tk: INTEGER): BOOLEAN;
 FUNCTION IsUnsignedWordTk(tk: INTEGER): BOOLEAN;
 FUNCTION IntFamilyWidth(tk: INTEGER): INTEGER;
+FUNCTION IntToFloat(v: ADRMEM; tk: INTEGER; destty: ADRMEM): ADRMEM;
 FUNCTION CoerceForAssign(v: ADRMEM; from_tid, to_tid: INTEGER; expr_node: ADRMEM; ctx_name: Str255): ADRMEM;
+PROCEDURE EmitSubrangeFailure(bad_value: ADRMEM; is_unsigned: BOOLEAN; lo, hi: INTEGER32);
 PROCEDURE EmitSubrangeCheck(v: ADRMEM; from_tid, to_tid: INTEGER);
 FUNCTION CoerceCheckedForAssign(v: ADRMEM; from_tid, to_tid: INTEGER; expr_node: ADRMEM; ctx_name: Str255): ADRMEM;
 FUNCTION RoundUpBytes(n, a: INTEGER32): INTEGER32;
 FUNCTION TypeAlignBytes(tid_in: INTEGER): INTEGER32;
 FUNCTION TypeSizeBytes(tid_in: INTEGER): INTEGER32;
+FUNCTION SuperElementSize(tid: INTEGER): CLONG;
 FUNCTION IsAggregateTk(tk: INTEGER): BOOLEAN;
 FUNCTION SysVMergeClass(a: INTEGER; b: INTEGER): INTEGER;
 FUNCTION IsSysVLeafTid(tid_in: INTEGER): BOOLEAN;
 PROCEDURE WalkTypeLeaves(tid_in: INTEGER; base_off: INTEGER32; VAR nleaves: INTEGER32; VAR leaf_off: SysVLeafOffArr; VAR leaf_tid: SysVLeafTidArr);
 PROCEDURE ClassifyAggregate(tk: INTEGER; VAR agg_class: INTEGER; VAR n_pieces: INTEGER; VAR piece_kind: SysVPieceArr; VAR piece_bytes: SysVPieceSzArr);
+PROCEDURE ClassifyParamAt(VAR tks: ParamTkArr; VAR refs, copies: ParamVarArr;
+                          at: INTEGER32; has_sret: BOOLEAN;
+                          VAR agg_class, n_pieces: INTEGER;
+                          VAR piece_kind: SysVPieceArr; VAR piece_bytes: SysVPieceSzArr);
 FUNCTION SysVAggClass(tk: INTEGER): INTEGER;
 FUNCTION SysVByvalAlign(tk: INTEGER): INTEGER32;
 FUNCTION SysVPieceLLVMType(kind: INTEGER; nbytes: INTEGER32): ADRMEM;

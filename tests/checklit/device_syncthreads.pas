@@ -2,6 +2,9 @@
 { CHECK-FLAGS: --emit-ptx --device-triple nvptx64-nvidia-cuda }
 { CHECK: .target sm_70 }
 { CHECK: bar.sync }
+{ NVPTX integer arithmetic is a MATHCK unsupported boundary (no device
+  failure path); this ABI/lowering fixture opts out. }
+{$MATHCK-}
 DEVICE MODULE DeviceSync;
 VAR
   [SPACE(SHARED)] scratch: ARRAY [0..31] OF INTEGER32;

@@ -1,0 +1,25 @@
+int to max 3
+int downto min 3
+int max once 1
+int min once 1
+int empty 0
+int empty down 0
+int cross zero 5
+int var bounds 8
+word cross sign 5
+word to max 3
+word downto zero 3
+word max once 1
+word zero once 1
+word empty 0
+word empty down 0
+word var high 3
+word var high down 3
+char to max 3
+char downto min 3
+bool up 2
+bool down 2
+enum up 3
+enum down 3
+enum empty 0
+int break 3

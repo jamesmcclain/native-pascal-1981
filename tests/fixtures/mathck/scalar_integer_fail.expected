@@ -1,0 +1,63 @@
+case 0
+status: nonzero
+stdout:
+prefix
+left
+right
+stderr:
+runtime error: MATHCK signed overflow in + at line 15 column 20 (left=32767, right=1)
+case 1
+status: nonzero
+stdout:
+prefix
+left
+right
+stderr:
+runtime error: MATHCK signed overflow in + at line 17 column 20 (left=-32768, right=-1)
+case 2
+status: nonzero
+stdout:
+prefix
+left
+right
+stderr:
+runtime error: MATHCK signed overflow in - at line 19 column 20 (left=-32768, right=1)
+case 3
+status: nonzero
+stdout:
+prefix
+left
+right
+stderr:
+runtime error: MATHCK signed overflow in - at line 21 column 20 (left=32767, right=-1)
+case 4
+status: nonzero
+stdout:
+prefix
+left
+right
+stderr:
+runtime error: MATHCK signed overflow in * at line 23 column 20 (left=32767, right=2)
+case 5
+status: nonzero
+stdout:
+prefix
+left
+right
+stderr:
+runtime error: MATHCK signed overflow in * at line 25 column 20 (left=-32768, right=-1)
+case 6
+status: nonzero
+stdout:
+prefix
+left
+right
+stderr:
+runtime error: MATHCK signed overflow in DIV at line 27 column 20 (left=-32768, right=-1)
+case 7
+status: nonzero
+stdout:
+prefix
+left
+stderr:
+runtime error: MATHCK signed overflow in - at line 29 column 18 (operand=-32768)

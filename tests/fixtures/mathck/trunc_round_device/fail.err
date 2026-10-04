@@ -1,0 +1,1 @@
+runtime error: TRUNC result out of INTEGER range at line 5 column 12 (value=100000)

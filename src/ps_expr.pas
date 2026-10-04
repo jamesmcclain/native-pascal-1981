@@ -13,6 +13,7 @@ FUNCTION ParseBooleanExpression: ADRMEM; FORWARD;
 FUNCTION ParseSimpleExpression: ADRMEM; FORWARD;
 FUNCTION ParseTerm: ADRMEM; FORWARD;
 FUNCTION ParseFactor: ADRMEM; FORWARD;
+FUNCTION ParseFactorBody(flags: ADRMEM): ADRMEM; FORWARD;
 FUNCTION ParseType: ADRMEM; FORWARD;
 FUNCTION ParseConstant: ADRMEM; FORWARD;
 FUNCTION ParseCaseConstant: ADRMEM; FORWARD;
@@ -39,8 +40,37 @@ BEGIN
   { Snapshot before parsing: nested indexes and later directives must not
     overwrite the setting at this index expression's first token. }
   AddBoolField(node, 'indexck', CurIndexCk());
+  AddField(node, 'read_flags', BuildMetaFlagsNode());
   AddField(node, 'index_or_field', ParseExpression);
   ParseIndexSelector := node;
+END;
+
+FUNCTION DerefLocation: ADRMEM;
+{ The `^` token's coordinates: a DEREF reads its pointer there (INITCK). }
+VAR
+  location: ADRMEM;
+  tok: PToken;
+BEGIN
+  tok := GetTok(0);
+  location := cJSON_CreateObject;
+  AddIntField(location, 'line', tok^.line);
+  AddIntField(location, 'column', tok^.col);
+  DerefLocation := location;
+END;
+
+FUNCTION ParseDerefSelector: ADRMEM;
+VAR
+  node, flags, location: ADRMEM;
+BEGIN
+  flags := BuildMetaFlagsNode();
+  location := DerefLocation;
+  Expect('POINTER');
+  node := CreateTriviaNode('Selector');
+  AddStringField(node, 'kind', 'DEREF');
+  AddField(node, 'read_flags', flags);
+  AddField(node, 'read_location', location);
+  AddNullField(node, 'index_or_field');
+  ParseDerefSelector := node;
 END;
 
 FUNCTION ParseDesignatorRest(name: Str255): ADRMEM;
@@ -77,10 +107,7 @@ BEGIN
     END
     ELSE IF CurKind = 'POINTER' THEN
     BEGIN
-      BEGIN RelayTokenTrivia; pos := pos + 1; END;
-      sel_obj := CreateTriviaNode('Selector');
-      AddStringField(sel_obj, 'kind', 'DEREF');
-      AddNullField(sel_obj, 'index_or_field');
+      sel_obj := ParseDerefSelector;
       cJSON_AddItemToArray(selectors_arr, sel_obj);
     END;
   END;
@@ -106,6 +133,7 @@ VAR
   name: Str255;
 BEGIN
   node := CreateTriviaNode('Designator');
+  AddField(node, 'read_flags', BuildMetaFlagsNode());
   name := CurLex;
   Expect('IDENTIFIER');
   AddStringField(node, 'name', name);
@@ -136,10 +164,7 @@ BEGIN
     END
     ELSE IF CurKind = 'POINTER' THEN
     BEGIN
-      BEGIN RelayTokenTrivia; pos := pos + 1; END;
-      sel_obj := CreateTriviaNode('Selector');
-      AddStringField(sel_obj, 'kind', 'DEREF');
-      AddNullField(sel_obj, 'index_or_field');
+      sel_obj := ParseDerefSelector;
       cJSON_AddItemToArray(selectors_arr, sel_obj);
     END;
   END;
@@ -156,6 +181,55 @@ BEGIN
   pt := GetTok(1);
   res := pt^.kind;
   NextKind := res;
+END;
+
+FUNCTION IsMathckOp(op_str: Str255): BOOLEAN;
+{ Binary operators whose source token carries a MATHCK snapshot. Whether a
+  given use is integer arithmetic is the typechecker's/codegen's decision. }
+BEGIN
+  IsMathckOp := (op_str = 'PLUS') OR (op_str = 'MINUS') OR (op_str = 'MUL') OR
+    (op_str = 'DIV') OR (op_str = 'MOD');
+END;
+
+FUNCTION IsMathckBuiltin(name: Str255): BOOLEAN;
+{ Builtin calls whose function-name token carries a MATHCK snapshot. A user
+  routine that shadows one of these names is the typechecker's concern. }
+VAR
+  up: Str255;
+BEGIN
+  up := UpperStr(name);
+  IsMathckBuiltin := StringEqual(up, 'SUCC') OR StringEqual(up, 'PRED') OR
+    StringEqual(up, 'ABS') OR StringEqual(up, 'SQR') OR
+    StringEqual(up, 'VSUM') OR StringEqual(up, 'VPROD');
+END;
+
+FUNCTION IsConversionBuiltin(name: Str255): BOOLEAN;
+{ Builtin calls whose always-on range check reports the function name's
+  coordinates (no directive snapshot: IBM checks them unconditionally). }
+VAR
+  up: Str255;
+BEGIN
+  up := UpperStr(name);
+  IsConversionBuiltin := StringEqual(up, 'TRUNC') OR StringEqual(up, 'ROUND');
+END;
+
+PROCEDURE AddOpLocation(node: ADRMEM; tok: PToken);
+VAR
+  location: ADRMEM;
+BEGIN
+  location := cJSON_CreateObject;
+  AddIntField(location, 'line', tok^.line);
+  AddIntField(location, 'column', tok^.col);
+  AddField(node, 'op_location', location);
+END;
+
+PROCEDURE AddMathckSnapshot(node: ADRMEM; tok: PToken);
+{ The operator or function-name token's effective MATHCK and coordinates.
+  Callers capture tok before advancing past it, so directives inside the
+  operands or arguments cannot change the operation's setting. }
+BEGIN
+  AddBoolField(node, 'mathck', tok^.f_mathck);
+  AddOpLocation(node, tok);
 END;
 
 FUNCTION MakeBinOp(op_str: Str255; left, right: ADRMEM): ADRMEM;
@@ -204,6 +278,7 @@ VAR
   val_str: Str255;
   sign_neg: BOOLEAN;
   res_c: CINT;
+  name_tok: PToken;
 BEGIN
   { Mirrors parser.py's parse_constant precedence exactly: an unsigned
     literal/identifier is tried first (no sign consumed here), and a leading
@@ -256,6 +331,7 @@ BEGIN
   ELSE IF CurKind = 'IDENTIFIER' THEN
   BEGIN
     val_str := CurLex;
+    name_tok := GetTok(0);
     Expect('IDENTIFIER');
     IF (StringEqual(UpperStr(val_str), 'WRD') OR StringEqual(UpperStr(val_str), 'BYWORD') OR
         StringEqual(UpperStr(val_str), 'ORD') OR StringEqual(UpperStr(val_str), 'CHR') OR
@@ -265,6 +341,8 @@ BEGIN
       BEGIN RelayTokenTrivia; pos := pos + 1; END;
       node := CreateTriviaNode('FuncCall');
       AddStringField(node, 'name', val_str);
+      IF IsMathckBuiltin(val_str) THEN AddMathckSnapshot(node, name_tok)
+      ELSE IF IsConversionBuiltin(val_str) THEN AddOpLocation(node, name_tok);
       args_arr_const := cJSON_CreateArray;
       cJSON_AddItemToArray(args_arr_const, ParseConstant());
       WHILE CurKind = 'COMMA' DO
@@ -338,11 +416,38 @@ BEGIN
     ParseSetElement := e;
 END;
 
+{ Capture before consuming any token. In particular, calls and designators
+  are built after their arguments/selectors, when the lexer state may differ.
+  Parentheses are transparent: retain the enclosed consumer's own snapshot. }
 FUNCTION ParseFactor: ADRMEM;
+VAR
+  node, flags, location: ADRMEM;
+  tok: PToken;
+  parenthesized: BOOLEAN;
+BEGIN
+  parenthesized := CurKind = 'LPAREN';
+  tok := GetTok(0);
+  location := cJSON_CreateObject;
+  AddIntField(location, 'line', tok^.line);
+  AddIntField(location, 'column', tok^.col);
+  flags := BuildMetaFlagsNode();
+  node := ParseFactorBody(flags);
+  IF NOT parenthesized THEN
+  BEGIN
+    IF NOT HasKey(node, 'read_flags') THEN
+      AddField(node, 'read_flags', flags);
+    AddField(node, 'read_location', location);
+  END
+  ELSE cJSON_Delete(location);
+  ParseFactor := node;
+END;
+
+FUNCTION ParseFactorBody(flags: ADRMEM): ADRMEM;
 VAR
   node, expr, args_arr, elements_arr: ADRMEM;
   val_str, name, kop: Str255;
   res_c: CINT;
+  name_tok: PToken;
 BEGIN
   IF CurKind = 'NOT' THEN
   BEGIN
@@ -350,14 +455,14 @@ BEGIN
     node := CreateTriviaNode('UnaryOp');
     AddStringField(node, 'op', 'NOT');
     AddField(node, 'operand', ParseFactor);
-    ParseFactor := node;
+    ParseFactorBody := node;
   END
   ELSE IF CurKind = 'INTEGER_LITERAL' THEN
   BEGIN
     node := CreateTriviaNode('IntLiteral');
     AddIntField(node, 'value', CurValueInt());
     Expect('INTEGER_LITERAL');
-    ParseFactor := node;
+    ParseFactorBody := node;
   END
   ELSE IF CurKind = 'REAL_LITERAL' THEN
   BEGIN
@@ -365,7 +470,7 @@ BEGIN
     val_str := CurLex;
     Expect('REAL_LITERAL');
     AddRealField(node, 'value', StrToRealVal(val_str));
-    ParseFactor := node;
+    ParseFactorBody := node;
   END
   ELSE IF CurKind = 'CHAR_LITERAL' THEN
   BEGIN
@@ -373,7 +478,7 @@ BEGIN
     val_str := CurValueStr;
     Expect('CHAR_LITERAL');
     AddStringField(node, 'value', val_str);
-    ParseFactor := node;
+    ParseFactorBody := node;
   END
   ELSE IF CurKind = 'STRING_LITERAL' THEN
   BEGIN
@@ -381,7 +486,7 @@ BEGIN
     val_str := CurLex;
     Expect('STRING_LITERAL');
     AddStringField(node, 'value', val_str);
-    ParseFactor := node;
+    ParseFactorBody := node;
   END
   ELSE IF CurKind = 'BOOLEAN_LITERAL' THEN
   BEGIN
@@ -389,13 +494,13 @@ BEGIN
     val_str := CurLex;
     Expect('BOOLEAN_LITERAL');
     AddBoolField(node, 'value', StringEqual(val_str, 'TRUE') OR StringEqual(val_str, 'true'));
-    ParseFactor := node;
+    ParseFactorBody := node;
   END
   ELSE IF CurKind = 'NIL' THEN
   BEGIN
     BEGIN RelayTokenTrivia; pos := pos + 1; END;
     node := CreateTriviaNode('NilLiteral');
-    ParseFactor := node;
+    ParseFactorBody := node;
   END
   ELSE IF CurKind = 'IDENTIFIER' THEN
   BEGIN
@@ -412,10 +517,11 @@ BEGIN
       AddStringField(node, 'type_id', val_str);
       AddField(node, 'expr', expr);
       AddField(node, 'selectors', cJSON_CreateArray);
-      ParseFactor := node;
+      ParseFactorBody := node;
     END
     ELSE IF NextKind = 'LPAREN' THEN
     BEGIN
+      name_tok := GetTok(0);
       pos := pos + 2;
       IF CurKind <> 'RPAREN' THEN
         args_arr := ParseActualParameterList
@@ -424,22 +530,26 @@ BEGIN
       Expect('RPAREN');
       node := CreateTriviaNode('FuncCall');
       AddStringField(node, 'name', name);
+      IF IsMathckBuiltin(name) THEN AddMathckSnapshot(node, name_tok)
+      ELSE IF IsConversionBuiltin(name) THEN AddOpLocation(node, name_tok);
       AddField(node, 'args', args_arr);
       IF (bound_expr_depth > 0) AND
          ((CurKind = 'LBRACKET') OR (CurKind = 'DOT') OR (CurKind = 'POINTER')) THEN
       BEGIN
+        { The call and postfix consumer must own separate JSON snapshots. }
+        AddField(node, 'read_flags', cJSON_Duplicate(flags, 1));
         expr := ParseDesignatorRest('');
         args_arr := CreateTriviaNode('PostfixExpr');
         AddField(args_arr, 'base', node);
         AddField(args_arr, 'selectors', GetObj(expr, 'selectors'));
         node := args_arr;
       END;
-      ParseFactor := node;
+      ParseFactorBody := node;
     END
     ELSE
     BEGIN
       BEGIN RelayTokenTrivia; pos := pos + 1; END;
-      ParseFactor := ParseDesignatorRest(name);
+      ParseFactorBody := ParseDesignatorRest(name);
     END;
   END
   ELSE IF CurKind = 'LPAREN' THEN
@@ -447,7 +557,7 @@ BEGIN
     Expect('LPAREN');
     expr := ParseExpression;
     Expect('RPAREN');
-    ParseFactor := expr;
+    ParseFactorBody := expr;
   END
   ELSE IF CurKind = 'LBRACKET' THEN
   BEGIN
@@ -463,7 +573,7 @@ BEGIN
     node := CreateTriviaNode('SetConstructor');
     AddField(node, 'elements', elements_arr);
     AddNullField(node, 'type_name');
-    ParseFactor := node;
+    ParseFactorBody := node;
   END
   ELSE IF CurKind = 'ADR' THEN
   BEGIN
@@ -477,7 +587,7 @@ BEGIN
     Expect('IDENTIFIER');
     node := CreateTriviaNode('AdrExpr');
     AddStringField(node, 'name', name);
-    ParseFactor := node;
+    ParseFactorBody := node;
   END
   ELSE IF CurKind = 'SIZEOF' THEN
   BEGIN
@@ -493,7 +603,7 @@ BEGIN
     ELSE
       AddField(node, 'target', ParseType);
     Expect('RPAREN');
-    ParseFactor := node;
+    ParseFactorBody := node;
   END
   ELSE IF CurKind = 'UPPER' THEN
   BEGIN
@@ -504,7 +614,7 @@ BEGIN
     AddField(node, 'operand', ParseExpression);
     bound_expr_depth := bound_expr_depth - 1;
     Expect('RPAREN');
-    ParseFactor := node;
+    ParseFactorBody := node;
   END
   ELSE IF CurKind = 'LOWER' THEN
   BEGIN
@@ -515,7 +625,7 @@ BEGIN
     AddField(node, 'operand', ParseExpression);
     bound_expr_depth := bound_expr_depth - 1;
     Expect('RPAREN');
-    ParseFactor := node;
+    ParseFactorBody := node;
   END
   ELSE
   BEGIN
@@ -530,6 +640,7 @@ VAR
   left: ADRMEM;
   op_str: Str255;
   k: Str255;
+  op_tok: PToken;
 BEGIN
   left := ParseFactor;
   k := CurKind;
@@ -540,8 +651,11 @@ BEGIN
     ELSE
     BEGIN
       op_str := k;
+      { Snapshot at the operator token, before the right operand's tokens. }
+      op_tok := GetTok(0);
       BEGIN RelayTokenTrivia; pos := pos + 1; END;
       left := MakeBinOp(op_str, left, ParseFactor);
+      IF IsMathckOp(op_str) THEN AddMathckSnapshot(left, op_tok);
       k := CurKind;
     END;
   END;
@@ -552,6 +666,7 @@ FUNCTION ParseSimpleExpression: ADRMEM;
 VAR
   left: ADRMEM;
   sign_minus: BOOLEAN;
+  op_tok, sign_tok: PToken;
   op_str, k: Str255;
   un: ADRMEM;
 BEGIN
@@ -559,6 +674,8 @@ BEGIN
   IF CurKind = 'MINUS' THEN
   BEGIN
     sign_minus := TRUE;
+    { The UnaryOp is built after its operand: snapshot the sign token now. }
+    sign_tok := GetTok(0);
     BEGIN RelayTokenTrivia; pos := pos + 1; END;
   END
   ELSE IF CurKind = 'PLUS' THEN
@@ -569,6 +686,7 @@ BEGIN
     un := CreateTriviaNode('UnaryOp');
     AddStringField(un, 'op', 'MINUS');
     AddField(un, 'operand', left);
+    AddMathckSnapshot(un, sign_tok);
     left := un;
   END;
   k := CurKind;
@@ -579,8 +697,10 @@ BEGIN
     ELSE
     BEGIN
       op_str := k;
+      op_tok := GetTok(0);
       BEGIN RelayTokenTrivia; pos := pos + 1; END;
       left := MakeBinOp(op_str, left, ParseTerm);
+      IF IsMathckOp(op_str) THEN AddMathckSnapshot(left, op_tok);
       k := CurKind;
     END;
   END;

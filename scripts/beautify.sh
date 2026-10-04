@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Format C (GNU indent) and Python sources in place.
+# Format C (GNU indent) and Python sources in place, leaving files that are
+# already formatted (and their mtimes) untouched.
 # find -exec is used instead of `$(find | grep ...)` so paths with
 # whitespace can't word-split, and skips .git/venv/build byproducts.
 set -euo pipefail
@@ -45,8 +46,24 @@ c_dirs=()
 for d in runtime bootstrap; do
     [ -d "$d" ] && c_dirs+=("$d")
 done
+# A file is rewritten only when indent changes it: rewriting an unchanged file
+# would still bump its mtime, and every runtime/*.c is a prerequisite of the
+# runtime archive and so of all four bootstrap generations, so each commit
+# would force a full rebuild. Only bash builtins besides find and indent are
+# used (tests/test_precommit_hook.sh runs this with a minimal PATH). read -d ''
+# keeps the file's exact bytes; the trailing x keeps $(...) from stripping
+# trailing newlines, and && makes an indent failure fail the assignment.
+format_c() {
+    local file old new
+    while IFS= read -r -d '' file; do
+        IFS= read -r -d '' old < "$file" || true
+        new=$(indent -kr -nut -l180 -st "$file" && printf x)
+        new=${new%x}
+        [ "$new" = "$old" ] || printf '%s' "$new" > "$file"
+    done
+}
 if [ "${#c_dirs[@]}" -gt 0 ]; then
-    VERSION_CONTROL=none find "${c_dirs[@]}" -maxdepth 1 -name '*.c' -exec indent -kr -nut -l180 {} +
+    format_c < <(find "${c_dirs[@]}" -maxdepth 1 -name '*.c' -print0)
 fi
 
 # Format Python test files if present

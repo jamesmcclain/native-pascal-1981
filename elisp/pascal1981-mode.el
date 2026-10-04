@@ -193,14 +193,58 @@ gone -- this command is now a plain toggle."
 ;; Low-level process helpers — pipe text through stage binaries
 ;; -------------------------------------------------------------------
 
+(defvar pascal1981--temp-directories nil
+  "Private workspaces owned by this Emacs process, never the shared root.")
+
+(defun pascal1981--make-temp-directory ()
+  "Allocate an owned invocation directory in the project namespace."
+  (let ((root "/tmp/native-pascal-1981"))
+    (unless (file-exists-p root)
+      ;; Private like the C, Python and shell allocators: a umask-derived
+      ;; mode (0775 under umask 002) would fail the check below.
+      (with-file-modes #o700
+        (make-directory root t)))
+    (unless (and (file-directory-p root)
+                 (not (file-symlink-p root))
+                 (equal (nth 2 (file-attributes root)) (user-uid))
+                 (zerop (logand (file-modes root) #o022)))
+      (error "Unsafe temporary root: %s" root))
+    (let ((directory (make-temp-file (concat root "/emacs.") t)))
+      (push directory pascal1981--temp-directories)
+      directory)))
+
+(defun pascal1981--remove-temp-directory (directory)
+  "Remove only the registered workspace DIRECTORY."
+  (when (member directory pascal1981--temp-directories)
+    (delete-directory directory t)
+    (setq pascal1981--temp-directories
+          (delete directory pascal1981--temp-directories))))
+
+(defun pascal1981--cleanup-temp-directories ()
+  "Reclaim this process's workspaces on orderly Emacs termination."
+  (dolist (directory (copy-sequence pascal1981--temp-directories))
+    (ignore-errors (pascal1981--remove-temp-directory directory))))
+
+(add-hook 'kill-emacs-hook #'pascal1981--cleanup-temp-directories)
+
+(defmacro pascal1981--with-temp-directory (&rest body)
+  "Run BODY with private temporary storage; clean up on errors and quits."
+  (declare (indent 0) (debug t))
+  `(let ((directory (pascal1981--make-temp-directory)))
+     (unwind-protect
+         (let ((temporary-file-directory (file-name-as-directory directory)))
+           ,@body)
+       (pascal1981--remove-temp-directory directory))))
+
 (defun pascal1981--call-process-to-json (program stdin-text)
   "Pipe STDIN-TEXT to PROGRAM (found via PATH) and parse stdout as JSON.
 Return (STATUS . PAYLOAD) where STATUS is `ok' or `error'.
 On `ok', PAYLOAD is the parsed JSON.  On `error', PAYLOAD is a
 string with stderr / exit info.  PROGRAM is resolved via
 `exec-path' so callers just pass \"lexer\" or \"parser\"."
-  (let ((out-buf (generate-new-buffer " *pascal1981-out*"))
-        (err-file (make-temp-file "pascal1981-err")))
+  (pascal1981--with-temp-directory
+   (let ((out-buf (generate-new-buffer " *pascal1981-out*"))
+         (err-file (make-temp-file "pascal1981-err")))
     (unwind-protect
         ;; `call-process-region' signals `file-missing' when PROGRAM is not
         ;; on `exec-path' -- it does not return non-zero.  An uncaught
@@ -239,7 +283,7 @@ string with stderr / exit info.  PROGRAM is resolved via
                                (format "%s exited %d" program exit-code)
                              stderr))))))
       (kill-buffer out-buf)
-      (ignore-errors (delete-file err-file)))))
+      (ignore-errors (delete-file err-file))))))
 
 (defun pascal1981-lex-string (source)
   "Lex SOURCE (a string of Pascal) via the `lexer' binary.
@@ -1468,7 +1512,8 @@ this shells out to the *driver*: pretty81 is a fourth pipeline stage
 knows how to chain, and the driver's `-o' flag writes to a real file
 -- it does not accept `-o -' for stdout -- so both sides of the
 round trip go through temp files rather than process buffers."
-  (let* ((in-file (make-temp-file "pascal1981-fmt-in" nil ".pas"))
+  (pascal1981--with-temp-directory
+   (let* ((in-file (make-temp-file "pascal1981-fmt-in" nil ".pas"))
          (out-file (make-temp-file "pascal1981-fmt-out" nil ".pas"))
          (err-file (make-temp-file "pascal1981-fmt-err")))
     (unwind-protect
@@ -1499,7 +1544,7 @@ round trip go through temp files rather than process buffers."
                         stderr)))))))
       (ignore-errors (delete-file in-file))
       (ignore-errors (delete-file out-file))
-      (ignore-errors (delete-file err-file)))))
+      (ignore-errors (delete-file err-file))))))
 
 (defun pascal1981-format-buffer ()
   "Reformat the current buffer with pretty81.

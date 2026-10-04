@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # Exercise the reusable filesystem and child-process substrate from Pascal.
 set -euo pipefail
 

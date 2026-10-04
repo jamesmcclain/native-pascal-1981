@@ -8,6 +8,10 @@
 { CHECK: and <4 x i8> }
 { CHECK: fneg <4 x float> }
 { CHECK: xor <8 x i32> }
+{ MATHCK+ (the default) adds overflow checks to integer lanes and VSUM
+  (tests/mathck_vector.sh; check shape in tests/mathck_optimization.sh);
+  these shapes are the MATHCK- form. }
+{$MATHCK-}
 PROGRAM VArith(output);
 TYPE
   V4F = VECTOR [4] OF REAL32;

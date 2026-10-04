@@ -19,9 +19,16 @@ import os
 import shutil
 import subprocess
 import sys
+import sys as _temp_sys
 import tempfile
+from pathlib import Path as _TempPath
+
+_temp_sys.path.insert(
+    0, str(_TempPath(__file__).resolve().parents[2] / 'scripts'))
 import unittest
 from pathlib import Path
+
+import native_temp  # owns this process's temporary workspace
 
 from tests.support import RUNTIME_LIB
 
@@ -124,6 +131,9 @@ def _without_trivia(value):
             # Native-only semantic snapshot, validated by indexck_metadata.sh.
             # The reference still uses statement-level directive state.
             and not (key == "indexck" and value.get("kind") == "INDEX")
+            # Likewise per-operation MATHCK, validated by mathck_metadata.sh.
+            and not (key in ("mathck", "op_location") and value.get(
+                "__node_type__") in ("BinOp", "UnaryOp", "FuncCall"))
         }
     return value
 

@@ -2,6 +2,9 @@
 { CHECK-FLAGS: --emit-ptx --device-triple nvptx64-nvidia-cuda }
 { Gap 6: a 12-byte NVPTX value aggregate is one CUDA ABI parameter buffer. }
 { CHECK: .param .align 4 .b8 Sum12_param_0[12] }
+{ NVPTX integer arithmetic is a MATHCK unsupported boundary (no device
+  failure path); this ABI/lowering fixture opts out. }
+{$MATHCK-}
 DEVICE MODULE DeviceAggregate12ByteParam;
 TYPE
   TInt3 = ARRAY [1..3] OF INTEGER32;

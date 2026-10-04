@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../scripts/temp-env.sh"
 # Lightweight, zero-dependency POSIX Shell test runner for native-pascal-1981.
 # Runs golden-file test fixtures, comparing exit code, stdout, and stderr.
 #
@@ -57,7 +58,7 @@ if [ ${#TEST_FILES[@]} -eq 0 ]; then
 fi
 
 # Run single test
-run_single_test() {
+run_single_test() (
   local test_src="$1"
   local test_dir
   test_dir="$(dirname "$test_src")"
@@ -78,6 +79,10 @@ run_single_test() {
 
   local work_dir
   work_dir="$(mktemp -d)"
+  trap 'rm -rf -- "$work_dir"' EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 
   local dialect=""
   dialect="$(grep -E '^\{ *DIALECT: *(vintage|extended) *\}$' "$test_src" \
@@ -173,12 +178,20 @@ EOF
   local run_args=()
   if [ -f "$args_file" ]; then
     mapfile -t run_args < "$args_file"
+    # File-valued arguments were historically relative to the repository.
+    # Preserve those read-only inputs while running in a private data directory.
+    local arg_index
+    for arg_index in "${!run_args[@]}"; do
+      if [ -e "${run_args[$arg_index]}" ]; then
+        run_args[$arg_index]="$(realpath "${run_args[$arg_index]}")"
+      fi
+    done
   fi
   local run_code=0
   if [ -f "$stdin_file" ]; then
-    "$test_bin" "${run_args[@]}" < "$stdin_file" > "$actual_out" 2> "$actual_err" || run_code=$?
+    (cd "$work_dir" && "$test_bin" "${run_args[@]}") < "$stdin_file" > "$actual_out" 2> "$actual_err" || run_code=$?
   else
-    "$test_bin" "${run_args[@]}" > "$actual_out" 2> "$actual_err" || run_code=$?
+    (cd "$work_dir" && "$test_bin" "${run_args[@]}") > "$actual_out" 2> "$actual_err" || run_code=$?
   fi
 
   if [ "$run_code" -ne "$exp_code" ]; then
@@ -212,7 +225,7 @@ EOF
   rm -rf "$work_dir"
   echo "PASS: $test_src"
   return 0
-}
+)
 
 export -f run_single_test
 export DRIVER VERBOSE
@@ -226,7 +239,7 @@ trap 'rm -rf "$TMP_RESULTS"' EXIT
 if [ "$JOBS" -gt 1 ] && command -v xargs >/dev/null 2>&1; then
   printf '%s\n' "${TEST_FILES[@]}" | xargs -n 1 -P "$JOBS" bash -c '
     src="$1"
-    res_file="'"$TMP_RESULTS"'/$(echo "$src" | tr "/" "_")"
+    res_file="$(mktemp "'"$TMP_RESULTS"'/result.XXXXXXXXXX")"
     if run_single_test "$src"; then
       echo 0 > "$res_file"
     else
@@ -235,7 +248,7 @@ if [ "$JOBS" -gt 1 ] && command -v xargs >/dev/null 2>&1; then
   ' _
 else
   for src in "${TEST_FILES[@]}"; do
-    res_file="$TMP_RESULTS/$(echo "$src" | tr "/" "_")"
+    res_file="$(mktemp "$TMP_RESULTS/result.XXXXXXXXXX")"
     if run_single_test "$src"; then
       echo 0 > "$res_file"
     else

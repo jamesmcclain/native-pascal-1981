@@ -1,0 +1,8 @@
+{$MATHCK+}
+PROGRAM Shadow;
+VAR i: INTEGER;
+FUNCTION Succ(x: INTEGER): INTEGER; BEGIN Succ := x DIV 2 END;
+FUNCTION Sqr(x: INTEGER): INTEGER; BEGIN Sqr := x DIV 4 END;
+BEGIN
+  i := 32767; WRITELN(SUCC(i), ' ', PRED(i), ' ', SQR(i), ' ', SQR(-32767), ' ', ABS(-32767))
+END.

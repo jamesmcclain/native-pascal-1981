@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../../scripts/temp-env.sh"
 # Check a proxy implementation against the recorded conformance golden.
 #
 #   tests/proxy/run.sh                        # bin/pascal1981-proxy

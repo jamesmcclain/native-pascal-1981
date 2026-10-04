@@ -1,0 +1,42 @@
+{$MATHCK+}
+PROGRAM Safety;
+VAR a16, b16: INTEGER;
+u16, v16: WORD;
+BEGIN
+a16 := -1; b16 := 2;
+a16 := a16 * b16;
+a16 := a16 * b16;
+a16 := a16 * b16;
+a16 := a16 * b16;
+a16 := a16 * b16;
+a16 := a16 * b16;
+a16 := a16 * b16;
+a16 := a16 * b16;
+a16 := a16 * b16;
+a16 := a16 * b16;
+a16 := a16 * b16;
+a16 := a16 * b16;
+a16 := a16 * b16;
+a16 := a16 * b16;
+a16 := a16 * b16;
+b16 := -1;
+WRITELN(a16 MOD b16);
+a16 := -7; b16 := 2;
+WRITELN(a16 DIV b16);
+WRITELN(a16 MOD b16);
+a16 := 7; b16 := -2;
+WRITELN(a16 DIV b16);
+WRITELN(a16 MOD b16);
+a16 := -7; b16 := -2;
+WRITELN(a16 DIV b16);
+WRITELN(a16 MOD b16);
+a16 := 0; b16 := -1;
+WRITELN(a16 DIV b16);
+WRITELN(a16 MOD b16);
+a16 := 7; b16 := 1;
+WRITELN(a16 DIV b16);
+WRITELN(a16 MOD b16);
+u16 := 65535; v16 := 2;
+WRITELN(u16 DIV v16);
+WRITELN(u16 MOD v16);
+END.

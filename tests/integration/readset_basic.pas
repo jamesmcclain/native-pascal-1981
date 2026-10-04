@@ -6,7 +6,7 @@ VAR
   word: LSTRING(80);
   vowel_set: Vowels;
 BEGIN
-  ASSIGN(f, '/tmp/native_pascal_test_readset_basic.txt');
+  ASSIGN(f, 'native_pascal_test_readset_basic.txt');
   REWRITE(f);
   WRITELN(f, 'aeiouXYZ');
   CLOSE(f);

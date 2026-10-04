@@ -1,0 +1,14 @@
+# Fully constant SUCC/PRED/ABS/SQR that do not fit: dialect|statement|
+# typechecker message|derivation. The suite fills builtin_constants.pas
+# ({WIDE} adds g: INTEGER64 in the extended dialect), prepends {$MATHCK+} or
+# {$MATHCK-}, and requires the exact three-line stderr, empty stdout and no
+# executable under both settings.
+vintage|WRITELN(SUCC(M));|Positive integer constant out of range for INTEGER|32767 + 1
+vintage|WRITELN(PRED(N));|Negative integer constant out of range for INTEGER|-32768 - 1
+vintage|i := SUCC(M) - 1;|Positive integer constant out of range for INTEGER|SUCC(M) = 32768 before the subtraction
+extended|WRITELN(SUCC(M));|Positive integer constant out of range for INTEGER|M is INTEGER in either dialect
+vintage|WRITELN(ABS(N));|Positive integer constant out of range for INTEGER||-32768| = 32768
+vintage|WRITELN(SQR(200));|Positive integer constant out of range for INTEGER|40000
+vintage|i := SQR(-182);|Positive integer constant out of range for INTEGER|33124
+extended|WRITELN(SQR(M));|Positive integer constant out of range for INTEGER|1073676289
+extended|g := SQR(3037000500);|Positive integer constant out of range for INTEGER64|9223372037000250000 > 2^63 - 1; reported, never a trap inside the compiler

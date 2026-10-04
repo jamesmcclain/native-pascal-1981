@@ -1,0 +1,9 @@
+DEVICE MODULE DevEnum;
+TYPE C = (r, g, b);
+VAR i: INTEGER;
+{$MATHCK{FLAG}}
+PROCEDURE work;
+BEGIN
+  {STATEMENT}
+END;
+.

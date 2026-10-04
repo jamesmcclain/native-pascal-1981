@@ -1,0 +1,42 @@
+case 0
+status: 0
+stdout:
+prefix
+after
+stderr:
+case 1
+status: 0
+stdout:
+prefix
+after
+stderr:
+case 2
+status: 0
+stdout:
+prefix
+after
+stderr:
+case 3
+status: 0
+stdout:
+prefix
+after
+stderr:
+case 4
+status: 0
+stdout:
+prefix
+after
+stderr:
+case 5
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK signed division by zero in DIV at line 28 column 21 (left=32767, right=0)
+case 6
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK unsigned division by zero in MOD at line 29 column 21 (left=65535, right=0)

@@ -10,20 +10,21 @@ PROCEDURE EmitSetRangeLoop(slot: ADRMEM; low_node, high_node: ADRMEM);
 FUNCTION CodegenSetConstructor(node: ADRMEM): ADRMEM;
 FUNCTION CodegenStringBinOp(op: Str255; left_node, right_node: ADRMEM): ADRMEM;
 FUNCTION CodegenShortCircuitBinOp(op: Str255; left_node, right_node: ADRMEM): ADRMEM;
-FUNCTION CodegenBinOp(op: Str255; left_node, right_node: ADRMEM): ADRMEM;
-FUNCTION CodegenUnaryOp(op: Str255; operand_node: ADRMEM): ADRMEM;
+FUNCTION CodegenBinOp(op: Str255; left_node, right_node, site: ADRMEM): ADRMEM;
+FUNCTION CodegenUnaryOp(op: Str255; operand_node, site: ADRMEM): ADRMEM;
 FUNCTION CodegenCallCommon(name: Str255; args_arr: ADRMEM): ADRMEM;
 FUNCTION ComputeDesignatorAddress(node: ADRMEM): ADRMEM;
 { The array operand of VLOAD/VSTORE: a bare array variable (Identifier) or
   any array-typed Designator (e.g. p^, r.buf). Returns its storage address;
-  arr_tid is its type id and has_bound_hdr is TRUE only when the operand is
+  arr_tid is its type id and super_upper carries the selected bound when the operand is
   the pointee of a plain ^T pointer in a non-DEVICE compiland -- the one
   shape where NEW's i64 upper-bound header sits 8 bytes before the data. }
 FUNCTION VectorArrayOperand(node: ADRMEM; VAR arr_tid: INTEGER;
-                            VAR has_bound_hdr: BOOLEAN): ADRMEM;
-FUNCTION CodegenSimpleBuiltin(nm: Str255; args: ADRMEM): ADRMEM;
+                            VAR super_upper: ADRMEM): ADRMEM;
+FUNCTION CodegenSimpleBuiltin(nm: Str255; site: ADRMEM): ADRMEM;
 FUNCTION CodegenDevAlloc(args: ADRMEM): ADRMEM;
 FUNCTION CodegenExpr(node: ADRMEM): ADRMEM;
+FUNCTION SuperBoundBits(node: ADRMEM; VAR unsigned_flag: ADRMEM): ADRMEM;
 PROCEDURE ResolveStringExprCharsLen(expr: ADRMEM; VAR chars_ptr: ADRMEM; VAR len_val: ADRMEM);
 PROCEDURE ResolveStringDestVar(expr: ADRMEM; VAR d_symi: INTEGER32; VAR d_tid: INTEGER;
   VAR d_addr, chars_ptr, len_val: ADRMEM);

@@ -1,0 +1,18 @@
+case 0
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK signed overflow in + at line 13 column 21 (left=-128, right=-32768)
+case 1
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK signed overflow in - at line 15 column 21 (left=-128, right=32767)
+case 2
+status: nonzero
+stdout:
+prefix
+stderr:
+runtime error: MATHCK signed overflow in * at line 17 column 21 (left=-128, right=-32768)

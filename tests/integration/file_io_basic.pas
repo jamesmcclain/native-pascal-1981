@@ -3,7 +3,7 @@ VAR
   f: TEXT;
   line: LSTRING(80);
 BEGIN
-  ASSIGN(f, '/tmp/native_pascal_test_file_io_basic.txt');
+  ASSIGN(f, 'native_pascal_test_file_io_basic.txt');
   REWRITE(f);
   WRITELN(f, 'hello file');
   WRITELN(f, 42);

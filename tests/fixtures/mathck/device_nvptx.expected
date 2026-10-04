@@ -1,0 +1,170 @@
+cell: device_module.pas + i := k + 1
+status: nonzero
+ir: none
+stderr:
+MATHCK unsupported boundary: DEVICE arithmetic at line 6 column 10
+cell: device_module.pas - i := k + 1
+status: 0
+ir: clean
+stderr:
+cell: device_module.pas + i := k - 1
+status: nonzero
+ir: none
+stderr:
+MATHCK unsupported boundary: DEVICE arithmetic at line 6 column 10
+cell: device_module.pas - i := k - 1
+status: 0
+ir: clean
+stderr:
+cell: device_module.pas + i := k * 2
+status: nonzero
+ir: none
+stderr:
+MATHCK unsupported boundary: DEVICE arithmetic at line 6 column 10
+cell: device_module.pas - i := k * 2
+status: 0
+ir: clean
+stderr:
+cell: device_module.pas + i := -k
+status: nonzero
+ir: none
+stderr:
+MATHCK unsupported boundary: DEVICE arithmetic at line 6 column 8
+cell: device_module.pas - i := -k
+status: 0
+ir: clean
+stderr:
+cell: device_module.pas + i := SUCC(k)
+status: nonzero
+ir: none
+stderr:
+MATHCK unsupported boundary: DEVICE arithmetic at line 6 column 8
+cell: device_module.pas - i := SUCC(k)
+status: 0
+ir: clean
+stderr:
+cell: device_module.pas + i := PRED(k)
+status: nonzero
+ir: none
+stderr:
+MATHCK unsupported boundary: DEVICE arithmetic at line 6 column 8
+cell: device_module.pas - i := PRED(k)
+status: 0
+ir: clean
+stderr:
+cell: device_module.pas + i := ABS(k)
+status: nonzero
+ir: none
+stderr:
+MATHCK unsupported boundary: DEVICE arithmetic at line 6 column 8
+cell: device_module.pas - i := ABS(k)
+status: 0
+ir: clean
+stderr:
+cell: device_module.pas + i := SQR(k)
+status: nonzero
+ir: none
+stderr:
+MATHCK unsupported boundary: DEVICE arithmetic at line 6 column 8
+cell: device_module.pas - i := SQR(k)
+status: 0
+ir: clean
+stderr:
+cell: device_module.pas + d := e + 1
+status: nonzero
+ir: none
+stderr:
+MATHCK unsupported boundary: DEVICE arithmetic at line 6 column 10
+cell: device_module.pas - d := e + 1
+status: 0
+ir: clean
+stderr:
+cell: device_module.pas + d := e * e
+status: nonzero
+ir: none
+stderr:
+MATHCK unsupported boundary: DEVICE arithmetic at line 6 column 10
+cell: device_module.pas - d := e * e
+status: 0
+ir: clean
+stderr:
+cell: device_module.pas + w := v + 1
+status: nonzero
+ir: none
+stderr:
+MATHCK unsupported boundary: DEVICE arithmetic at line 6 column 10
+cell: device_module.pas - w := v + 1
+status: 0
+ir: clean
+stderr:
+cell: device_module.pas + w := SQR(v)
+status: nonzero
+ir: none
+stderr:
+MATHCK unsupported boundary: DEVICE arithmetic at line 6 column 8
+cell: device_module.pas - w := SQR(v)
+status: 0
+ir: clean
+stderr:
+cell: device_module.pas + i := k DIV 2
+status: nonzero
+ir: none
+stderr:
+MATHCK unsupported boundary: DEVICE arithmetic at line 6 column 10
+cell: device_module.pas - i := k DIV 2
+status: nonzero
+ir: none
+stderr:
+codegen: scalar DIV/MOD safety is unsupported on DEVICE
+cell: device_module.pas + i := k MOD 2
+status: nonzero
+ir: none
+stderr:
+MATHCK unsupported boundary: DEVICE arithmetic at line 6 column 10
+cell: device_module.pas - i := k MOD 2
+status: nonzero
+ir: none
+stderr:
+codegen: scalar DIV/MOD safety is unsupported on DEVICE
+cell: device_module.pas + i := 3 + 4
+status: 0
+ir: clean
+stderr:
+cell: device_module.pas + w := ABS(v)
+status: 0
+ir: clean
+stderr:
+cell: device_module.pas + r := r * 2.0 + 1.0
+status: 0
+ir: clean
+stderr:
+cell: device_module.pas + i := TRUNC(r)
+status: 0
+ir: clean
+stderr:
+cell: device_module.pas + i := k
+status: 0
+ir: clean
+stderr:
+cell: device_module.pas + i := ORD(c)
+status: 0
+ir: clean
+stderr:
+cell: device_module.pas + {$MATHCK-} i := k + 1 {$MATHCK+}; i := 5
+status: 0
+ir: clean
+stderr:
+cell: device_module.pas + {$MATHCK-} i := k + 1; {$MATHCK+} i := i * 3
+status: nonzero
+ir: none
+stderr:
+MATHCK unsupported boundary: DEVICE arithmetic at line 6 column 44
+cell: device_enum.pas + i := ORD(b) * 2
+status: nonzero
+ir: none
+stderr:
+MATHCK unsupported boundary: DEVICE arithmetic at line 7 column 15
+cell: device_enum.pas - i := ORD(b) * 2
+status: 0
+ir: clean
+stderr:

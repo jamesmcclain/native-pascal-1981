@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/../../scripts/temp-env.sh"
 # Check tests/proxy/oneshot.pas -- one upstream call, in Pascal -- against the
 # deterministic stub backend.
 #

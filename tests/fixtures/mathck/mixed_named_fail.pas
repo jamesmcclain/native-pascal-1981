@@ -1,0 +1,6 @@
+{$MATHCK+}
+PROGRAM Named;
+VAR a: INTEGER32; i: INTEGER;
+BEGIN
+  a := 2147483647; i := 2; WRITELN(a * i)
+END.

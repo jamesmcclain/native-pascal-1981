@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/temp-env.sh"
 # Build one native (pascal1981-dialect) compiler stage into a standalone
 # linked binary. Every stage USES jsonutil, so this always compiles and
 # links jsonutil.pas's object file alongside the stage's own source.

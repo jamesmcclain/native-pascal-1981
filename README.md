@@ -2,6 +2,18 @@
 
 This repository contains a native compiler for the 1981 IBM Pascal dialect. It targets LLVM IR, the System V AMD64 ABI, and NVIDIA NVPTX.
 
+**Compatibility rule: fun, not pathology.** Follow the IBM manual where it
+preserves the language's character, not where historical machine constraints
+make modern behavior needlessly pathological. Deliberate differences must be
+documented and tested. For example, native `INTEGER` accepts the full signed
+16-bit range, including `-32768` in both dialects; INITCK uses separate shadow
+state, never a reserved program-data sentinel. Host enforcement covers supported
+scalar locals/formals/results, fixed aggregates, typed pointers and tracked
+NEW/SUPER ARRAY storage, with explicit external/raw/file/DEVICE boundaries.
+It is not whole-program protection: globals, untracked types and aggregate
+results remain outside the checked slice. See the
+[INITCK contract and limits](docs/dialect_notes.md#initialization-checking-host-storage-native).
+
 <img width="1536" height="864" alt="image" src="https://github.com/user-attachments/assets/f59a2d0f-468b-41b2-838c-b76729f15975" />
 
 > **If you write Pascal in this repository,** read
@@ -9,6 +21,16 @@ This repository contains a native compiler for the 1981 IBM Pascal dialect. It t
 > what the vintage and extended dialects each provide. They show the width
 > of each integer type. They list the constructs that fail without an error.
 > For example, `TRUNC` narrows the result to 16 bits.
+
+> **GPU kernels must use `{$MATHCK-}` for integer arithmetic.** Integer
+> overflow checking (`$MATHCK`) is on by default, and NVPTX code has no way to
+> report a run-time error. So in DEVICE code compiled for NVPTX, every integer
+> operation MATHCK would check (`+ - * DIV MOD`, unary `-`, `SUCC`, `PRED`,
+> `ABS`, `SQR`) is a compile-time error,
+> `MATHCK unsupported boundary: DEVICE arithmetic at line L column C`, until
+> the kernel says `{$MATHCK-}`. That arithmetic is then unchecked and wraps.
+> CPU (serial) DEVICE code is checked like host code. See
+> [GPU kernels and `$MATHCK`](docs/dialect_notes.md#gpu-nvptx-kernels-need-mathck--for-integer-arithmetic-extended).
 
 ## System Prerequisites
 
@@ -47,6 +69,13 @@ groups need more; see [Running Tests](#running-tests).
 - `scripts/`: Build scripts (`build-stage.sh`), formatting scripts (`beautify.sh`), and git hooks (`scripts/hooks`). To enable the pre-commit formatting hook, run `git config core.hooksPath scripts/hooks` once per clone. This setting is local config. A fresh checkout does not enable the hook. The root `Makefile` drives the multi-generation bootstrap with the `bootstrap` target. It is not a standalone script.
 - `tests/`: Test suites (golden files, unit tests, integration tests, dialect fixtures).
 - `docs/`: The [EBNF grammar](docs/ebnf_grammar.md) of the dialect. The dialect notes cover [widths, literals, and silent failure modes](docs/dialect_notes.md).
+
+## Temporary files
+
+The [temporary-file ownership contract](docs/temporary_files.md) is the
+canonical guide to scratch isolation and cleanup for the compiler, runtime,
+test harnesses, and Emacs mode. Read it before changing temporary-file handling
+or manually removing abandoned workspaces.
 
 ## Building
 
@@ -94,7 +123,7 @@ Supported options:
 - `--dialect <vintage|extended>`: Select the language dialect (default `vintage`)
 - `--target-cpu <cpu>`: Host target CPU, e.g. `x86-64-v3` (LLVM `target-cpu` attribute; default baseline x86-64)
 - `--target-features <list>`: Host target features, comma-separated, e.g. `+avx2,+fma`
-- `--emit-ptx`: Emit NVPTX assembly for device kernels
+- `--emit-ptx`: Emit NVPTX assembly for device kernels (kernels doing integer arithmetic need `{$MATHCK-}`; see above)
 - `-v`: Print pipeline commands
 
 ## Running Tests
@@ -107,7 +136,7 @@ make test
 
 This target runs the bootstrap-subset check, the `pasboot` fixtures, and the driver, sysutil, native, proxy, and pre-commit-hook test groups. The test runners do not require pytest. The proxy tests need `python3`.
 
-This target does not run the reference-parity, bootstrap, or Emacs tests.
+This target does not run the bootstrap or Emacs tests.
 
 Use these targets for a specific test group:
 
@@ -120,22 +149,17 @@ Use these targets for a specific test group:
 | `make test-sysutil` | POSIX filesystem and process primitives, exercised from Pascal |
 | `make test-proxy` | Differential conformance for the completion proxy (needs `python3`) |
 | `make test-gpu` | CUDA compilation and execution on an NVIDIA GPU |
-| `make test-reference-parity` | Native compiler parity with the Python reference compiler |
 | `make test-elisp` | Emacs major-mode ERT tests |
 | `make test-bootstrap` | Clean bootstrap and fixed-point comparison, with Python made unavailable |
 
 If a CUDA prerequisite is not available, the `test-gpu` target skips the test.
 
-The `test-reference-parity` target requires Python, pytest, and the reference compiler package:
-```bash
-pip3 install 'https://github.com/jamesmcclain/pascal-1981/archive/5fe71893fd8b16a415a6c67c2fad12bd729e7279.zip'
-```
-With the same package, `scripts/cross-bootstrap-check.sh` builds Generation 1 with `pasboot` and with the Python reference compiler. Then it checks that the two Generation 2 builds are identical. The `test-elisp` target requires Emacs and builds the compiler stages first.
+The native compiler is the authoritative implementation. A parity suite comparing it with an earlier Python implementation remains in `tests/parity/` but is disabled and slated for removal; see [tests/README.md](tests/README.md) if you need it. The `test-elisp` target requires Emacs and builds the compiler stages first.
 
 See [tests/README.md](tests/README.md). It describes the compiler test suites.
 
 To run all available test groups, run:
 
 ```bash
-make test-bootstrap test test-gpu test-reference-parity test-elisp
+make test-bootstrap test test-gpu test-elisp
 ```

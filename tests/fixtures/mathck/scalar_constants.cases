@@ -1,0 +1,65 @@
+# Constant operands, one program per row: scalar_constants.pas with
+# {STATEMENT} replaced, and in the extended dialect {WIDE} replaced by
+# " b: INTEGER8; j: INTEGER32; g: INTEGER64;". The suite prepends
+# {$MATHCK+} or {$MATHCK-}, so the statement is on line 7.
+# kind|dialects|statement|expected
+#
+# reject: fully constant overflow, rejected under both settings at its own
+# (context) type, once, never wrapped or trapped; expected is the
+# typechecker's message (the whole stderr is checked) and no IR is written.
+reject|both|WRITELN(32767 + 1)|Positive integer constant out of range for INTEGER
+reject|both|WRITELN(N - 1)|Negative integer constant out of range for INTEGER
+reject|both|WRITELN(-N)|Positive integer constant out of range for INTEGER
+reject|both|WRITELN(N DIV (0 - 1))|Positive integer constant out of range for INTEGER
+reject|both|k := i + (M + 1)|Positive integer constant out of range for INTEGER
+reject|both|k := i * (300 * 300)|Positive integer constant out of range for INTEGER
+reject|both|k := (M + 1) - 1|Positive integer constant out of range for INTEGER
+reject|both|IF k > M + 1 THEN WRITELN(1)|Positive integer constant out of range for INTEGER
+reject|extended|b := b + (100 + 100)|Positive integer constant out of range for INTEGER8
+reject|extended|j := j + (2147483647 + 1)|Positive integer constant out of range for INTEGER32
+# Exact values beyond INTEGER64: 3037000500^2 = 9223372037000250000 > 2^63 - 1.
+# The compiler's own (checked) folder reports them; it does not trap.
+reject|extended|g := 3037000500 * 3037000500|Positive integer constant out of range for INTEGER64
+reject|extended|g := (0 - 3037000500) * 3037000500|Negative integer constant out of range for INTEGER64
+# Sign minus applies to the product, which overflows positively.
+reject|extended|g := -3037000500 * 3037000500|Positive integer constant out of range for INTEGER64
+reject|extended|g := 4611686018427387904 + 4611686018427387904|Positive integer constant out of range for INTEGER64
+reject|extended|g := -4611686018427387904 - 4611686018427387904 - 1|Negative integer constant out of range for INTEGER64
+reject|extended|g := ((0 - 4611686018427387904) * 2) DIV (0 - 1)|Positive integer constant out of range for INTEGER64
+reject|extended|g := -((0 - 4611686018427387904) * 2)|Positive integer constant out of range for INTEGER64
+#
+# value: exact at the context type, identical under both settings, O0-O3.
+value|both|k := -32768; WRITELN(k)|-32768
+value|both|WRITELN(-32767 - 1)|-32768
+value|both|k := (M - 1) + 1; WRITELN(k)|32767
+value|both|w := 0 - 1; WRITELN(w)|65535
+value|both|WRITELN(40000 + 1)|40001
+value|extended|j := M + 1; WRITELN(j)|32768
+value|extended|j := i + (M + 1); WRITELN(j)|32773
+value|extended|g := (0 - 4611686018427387904) * 2; WRITELN(g)|-9223372036854775808
+value|extended|g := 3037000499 * 3037000499; WRITELN(g)|9223372030926249001
+value|extended|g := ((0 - 4611686018427387904) * 2) MOD (0 - 1); WRITELN(g)|0
+#
+# partial: the constant operand fits (32767 - 4 = 32763) but 5 + 32763 does
+# not. MATHCK+ traps at the + (column 10) with empty stdout; MATHCK- prints
+# 32768 - 65536 = -32768. Fields: MATHCK+ stderr, then MATHCK- stdout.
+partial|both|k := i + (M - 4); WRITELN(k)|runtime error: MATHCK signed overflow in + at line 7 column 10 (left=5, right=32763)|-32768
+#
+# Enumeration constants: ORD(red..blue) = 0..2. The typechecker neither folds
+# nor range-checks an operation on them, so it is checked at run time like
+# the partial row above (codegen must not exempt it as a fold), and ORD of an
+# enumeration is INTEGER, not a 32-bit value truncated afterwards.
+# 2 * 20000 = 40000 -> -25536; 32767 + 1 -> -32768;
+# (0 - 32767) - 2 = -32769 -> 32767; -(0 - 32767 - 1) = 32768 -> -32768;
+# -32768 DIV -1 = 32768 -> -32768. Columns are the operator's.
+partial|both|i := ORD(blue) * 20000; WRITELN(i)|runtime error: MATHCK signed overflow in * at line 7 column 18 (left=2, right=20000)|-25536
+partial|both|i := 32767 + ORD(green); WRITELN(i)|runtime error: MATHCK signed overflow in + at line 7 column 14 (left=32767, right=1)|-32768
+partial|both|i := ORD(red) - 32767 - ORD(blue); WRITELN(i)|runtime error: MATHCK signed overflow in - at line 7 column 25 (left=-32767, right=2)|32767
+partial|both|i := -(ORD(red) - 32767 - ORD(green)); WRITELN(i)|runtime error: MATHCK signed overflow in - at line 7 column 8 (operand=-32768)|-32768
+partial|both|i := (ORD(red) - 32767 - ORD(green)) DIV (ORD(red) - ORD(green)); WRITELN(i)|runtime error: MATHCK signed overflow in DIV at line 7 column 40 (left=-32768, right=-1)|-32768
+partial|both|e := blue; i := ORD(e) * 20000; WRITELN(i)|runtime error: MATHCK signed overflow in * at line 7 column 26 (left=2, right=20000)|-25536
+# Non-overflowing operations on them keep their exact values:
+# 2 * 100 - 1 = 199; -(2 * 16383 + 1) = -32767; (2 - 32767) DIV (0 - 1) = 32765.
+value|both|i := ORD(blue) * 100 - ORD(green); WRITELN(i)|199
+value|both|i := -(ORD(blue) * 16383 + 1); WRITELN(i)|-32767
+value|both|i := (ORD(blue) - 32767) DIV (ORD(red) - ORD(green)); WRITELN(i)|32765

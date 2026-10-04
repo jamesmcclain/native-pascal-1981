@@ -1,0 +1,10 @@
+PROGRAM Init(output);
+PROCEDURE p;
+VAR x: INTEGER;
+BEGIN
+  WRITELN('prefix');
+  {$INITCK+} WRITELN(x)
+END;
+BEGIN
+  p
+END.

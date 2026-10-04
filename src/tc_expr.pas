@@ -15,12 +15,16 @@ FUNCTION pas_double_to_int64(x: REAL): CLONG [C]; EXTERN;
 
 FUNCTION CheckExpr(node: ADRMEM): INTEGER; FORWARD;
 FUNCTION CheckFuncCall(node: ADRMEM): INTEGER; FORWARD;
+PROCEDURE CheckFoldedOperation(node: ADRMEM; result_tk: INTEGER;
+  errors_before: INTEGER32); FORWARD;
 
 VAR
   expr_context_tk: INTEGER;
   last_set_base_tk: INTEGER; { bounds-only base; see SetBoundsBaseAfterCheck. }
   expr_context_set_base: INTEGER; { expected SET base, independent of bounds }
   last_sem_set_base, last_sem_scalar_base: INTEGER;
+  fold_overflowed: BOOLEAN; { set by FoldArith; see CheckFoldedOperation }
+  fold_overflow_negative: BOOLEAN;
 
 FUNCTION IsDeviceIndexName(name: Str255): BOOLEAN;
 VAR
@@ -53,10 +57,47 @@ BEGIN
     pas_double_to_int64(GetReal(node, 'value')));
 END;
 
+FUNCTION FoldArith(op: Str255; left, right: INTEGER64;
+  VAR folded: INTEGER64): BOOLEAN;
+{ The exact constant left + - * right, or FALSE when it leaves INTEGER64.
+  The folder runs inside a MATHCK-checked compiler, so a constant from the
+  program must not trap it: the operation wraps and the overflow is tested
+  explicitly. A failure sets fold_overflowed and records the sign of the
+  exact value in fold_overflow_negative for CheckFoldedOperation. }
+VAR
+  r, neg_right: INTEGER64;
+  fits: BOOLEAN;
+BEGIN
+  (*$MATHCK-*)
+  IF op = 'PLUS' THEN r := left + right
+  ELSE IF op = 'MINUS' THEN r := left - right
+  ELSE r := left * right;
+  neg_right := 0 - right;
+  (*$MATHCK+*)
+  IF op = 'PLUS' THEN
+    fits := ((left >= 0) <> (right >= 0)) OR ((r >= 0) = (left >= 0))
+  ELSE IF op = 'MINUS' THEN
+    fits := ((left >= 0) = (right >= 0)) OR ((r >= 0) = (left >= 0))
+  ELSE IF (left = 0) OR (right = 0) THEN
+    fits := TRUE
+  ELSE IF left = -1 THEN
+    fits := neg_right <> right { only the minimum negates to itself }
+  ELSE
+    fits := r DIV left = right;
+  IF NOT fits THEN
+  BEGIN
+    fold_overflowed := TRUE;
+    IF op = 'MUL' THEN fold_overflow_negative := (left < 0) <> (right < 0)
+    ELSE fold_overflow_negative := left < 0;
+  END;
+  folded := r;
+  FoldArith := fits;
+END;
+
 FUNCTION FoldConstInt(node: ADRMEM; VAR folded_value: INTEGER64): BOOLEAN;
 VAR
   nt, op, name, ch: Str255;
-  left, right, quotient, remainder: INTEGER64;
+  left, right: INTEGER64;
   si: INTEGER32;
   args: ADRMEM;
 BEGIN
@@ -78,8 +119,10 @@ BEGIN
     op := GetStr(node, 'op');
     IF ((op = 'PLUS') OR (op = 'MINUS')) AND FoldConstInt(GetObj(node, 'operand'), folded_value) THEN
     BEGIN
-      IF op = 'MINUS' THEN folded_value := 0 - folded_value;
-      FoldConstInt := TRUE;
+      IF op = 'MINUS' THEN
+        FoldConstInt := FoldArith('MINUS', 0, folded_value, folded_value)
+      ELSE
+        FoldConstInt := TRUE;
     END;
   END
   ELSE IF nt = 'BinOp' THEN
@@ -90,21 +133,28 @@ BEGIN
        FoldConstInt(GetObj(node, 'left'), left) AND
        FoldConstInt(GetObj(node, 'right'), right) THEN
     BEGIN
-      IF op = 'PLUS' THEN folded_value := left + right
-      ELSE IF op = 'MINUS' THEN folded_value := left - right
-      ELSE IF op = 'MUL' THEN folded_value := left * right
+      IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') THEN
+        FoldConstInt := FoldArith(op, left, right, folded_value)
+      ELSE IF right = -1 THEN
+      BEGIN
+        { x DIV -1 is -x, which overflows only for the minimum; x MOD -1
+          is 0. }
+        IF op = 'DIV' THEN FoldConstInt := FoldArith('MINUS', 0, left, folded_value)
+        ELSE
+        BEGIN
+          folded_value := 0;
+          FoldConstInt := TRUE;
+        END;
+      END
       ELSE IF right <> 0 THEN
       BEGIN
-        quotient := left DIV right;
-        remainder := left MOD right;
-        IF (remainder <> 0) AND (((left < 0) AND (right > 0)) OR
-           ((left > 0) AND (right < 0))) THEN quotient := quotient - 1;
-        IF op = 'DIV' THEN folded_value := quotient
-        ELSE folded_value := left - quotient * right;
+        { Truncate toward zero; MOD has the dividend's sign, like runtime. }
+        IF op = 'DIV' THEN folded_value := left DIV right
+        ELSE folded_value := left MOD right;
         FoldConstInt := TRUE;
       END;
-      IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') THEN
-        FoldConstInt := TRUE;
+      { A zero divisor does not fold. The BinOp check in CheckExpr reports
+        it once; this folder also answers "is it constant?" for callers. }
     END;
   END
   ELSE IF (nt = 'Identifier') OR (nt = 'Designator') THEN
@@ -126,13 +176,17 @@ BEGIN
     name := UpperStr(GetStr(node, 'name'));
     args := GetObj(node, 'args');
     IF NOT UserDeclarationShadows(name) AND
-       ((name = 'ORD') OR (name = 'CHR') OR (name = 'SUCC') OR (name = 'PRED')) AND
+       ((name = 'ORD') OR (name = 'CHR') OR (name = 'SUCC') OR (name = 'PRED') OR
+        (name = 'ABS') OR (name = 'SQR')) AND
        (cJSON_GetArraySize(args) = 1) AND
        FoldConstInt(cJSON_GetArrayItem(args, 0), folded_value) THEN
     BEGIN
-      IF name = 'SUCC' THEN folded_value := folded_value + 1
-      ELSE IF name = 'PRED' THEN folded_value := folded_value - 1;
-      FoldConstInt := TRUE;
+      IF name = 'SUCC' THEN FoldConstInt := FoldArith('PLUS', folded_value, 1, folded_value)
+      ELSE IF name = 'PRED' THEN FoldConstInt := FoldArith('MINUS', folded_value, 1, folded_value)
+      ELSE IF name = 'SQR' THEN FoldConstInt := FoldArith('MUL', folded_value, folded_value, folded_value)
+      ELSE IF (name = 'ABS') AND (folded_value < 0) THEN
+        FoldConstInt := FoldArith('MINUS', 0, folded_value, folded_value)
+      ELSE FoldConstInt := TRUE;
     END;
   END;
 END;
@@ -151,8 +205,12 @@ BEGIN
 END;
 
 FUNCTION MaxWord16Value: INTEGER64;
+VAR
+  n: INTEGER64;
 BEGIN
-  MaxWord16Value := 32767 * 2 + 1;
+  { Build at the operand width, without relying on later constant adaptation. }
+  n := 32767;
+  MaxWord16Value := n * 2 + 1;
 END;
 
 FUNCTION MaxInteger32Value: INTEGER64;
@@ -180,7 +238,10 @@ END;
 FUNCTION IntegerConstantFits(tk: INTEGER; ival: INTEGER64): BOOLEAN;
 BEGIN
   IF tk = TK_INTEGER8 THEN IntegerConstantFits := (ival >= -128) AND (ival <= 127)
-  ELSE IF tk = TK_INTEGER THEN IntegerConstantFits := (ival >= -32767) AND (ival <= 32767)
+  { IBM compatibility is for fun, not pathology on modern systems: native
+    INTEGER uses the full signed 16-bit range. -32768 is ordinary data,
+    never a reserved INITCK sentinel, in either dialect mode. }
+  ELSE IF tk = TK_INTEGER THEN IntegerConstantFits := (ival >= -32768) AND (ival <= 32767)
   ELSE IF tk = TK_INTEGER32 THEN IntegerConstantFits :=
     (ival >= (-MaxInteger32Value - 1)) AND (ival <= MaxInteger32Value)
   ELSE IF tk = TK_INTEGER64 THEN IntegerConstantFits := TRUE
@@ -188,7 +249,7 @@ BEGIN
   ELSE IF tk = TK_WORD THEN
     { The manual converts a negative INTEGER constant to its 16-bit WORD bit
       pattern when a WORD context requires it. }
-    IntegerConstantFits := (ival >= -32767) AND (ival <= MaxWord16Value)
+    IntegerConstantFits := (ival >= -32768) AND (ival <= MaxWord16Value)
   ELSE IF tk = TK_WORD32 THEN IntegerConstantFits := (ival >= 0) AND (ival <= MaxWord32Value)
   ELSE IF tk = TK_WORD64 THEN IntegerConstantFits := ival >= 0
   ELSE IntegerConstantFits := FALSE;
@@ -212,7 +273,7 @@ END;
 
 FUNCTION NaturalIntegerType(ival: INTEGER64): INTEGER;
 BEGIN
-  IF (ival >= -32767) AND (ival <= 32767) THEN NaturalIntegerType := TK_INTEGER
+  IF (ival >= -32768) AND (ival <= 32767) THEN NaturalIntegerType := TK_INTEGER
   ELSE IF (ival >= 0) AND (ival <= MaxWord16Value) THEN NaturalIntegerType := TK_WORD
   ELSE IF active_features.wide_integers OR is_device_compiland THEN
   BEGIN
@@ -221,7 +282,7 @@ BEGIN
     ELSE NaturalIntegerType := TK_INTEGER64;
   END
   ELSE BEGIN
-    AddError('Integer constant is outside the vintage range -32767..65535');
+    AddError('Integer constant is outside the native 16-bit range -32768..65535');
     NaturalIntegerType := TK_UNKNOWN;
   END;
 END;
@@ -288,6 +349,19 @@ BEGIN
   ELSE IF right_bits > left_bits THEN IntegerResultType := right_tk
   ELSE IF IsUnsignedInteger(left_tk) THEN IntegerResultType := left_tk
   ELSE IntegerResultType := right_tk;
+END;
+
+{ G24's constant exception for a signed/unsigned operand pair. An
+  INTEGER-family constant adapts to a WORD-family operand (a negative one by
+  its bit pattern, as IBM converts constants for a WORD context); a
+  WORD-family constant adapts to a signed operand only when its value fits. }
+FUNCTION ConstantAdaptsToOperand(const_node: ADRMEM; const_tk, other_tk: INTEGER): BOOLEAN;
+VAR
+  folded_value: INTEGER64;
+BEGIN
+  IF NOT FoldConstInt(const_node, folded_value) THEN ConstantAdaptsToOperand := FALSE
+  ELSE IF IsUnsignedInteger(other_tk) THEN ConstantAdaptsToOperand := TRUE
+  ELSE ConstantAdaptsToOperand := IntegerConstantFits(other_tk, folded_value);
 END;
 
 PROCEDURE CheckCompatibleSetBases(a, b: INTEGER);
@@ -409,9 +483,17 @@ BEGIN
     tk := CheckFuncCall(GetObj(node, 'base'));
     IF si = 0 THEN
     BEGIN
-      CheckDesignator := TK_UNKNOWN;
-      RETURN;
-    END;
+      IF (UpperStr(name) = 'UNSAFESUPER') AND NOT UserDeclarationShadows(name) AND
+         (ArrSize(GetObj(GetObj(node, 'base'), 'args')) = 4) THEN
+      BEGIN
+        sem_node := CreateNode('NamedType');
+        AddStringField(sem_node, 'name', GetStr(ArrItem(GetObj(GetObj(node, 'base'), 'args'), 0), 'name'));
+        ResolveTypeExpr(sem_node, tk, aux, aux2, aux3, current_idx_tk);
+        super_value := FALSE; sem_set := SB_UNKNOWN; sem_scalar := SB_UNKNOWN;
+      END
+      ELSE BEGIN CheckDesignator := TK_UNKNOWN; RETURN END;
+    END
+    ELSE BEGIN
     aux := symbols[si].ret_aux;
     aux2 := symbols[si].ret_aux2;
     aux3 := symbols[si].ret_aux3;
@@ -420,6 +502,7 @@ BEGIN
     sem_node := symbols[si].ret_type_node;
     sem_set := symbols[si].ret_set_sem_base;
     sem_scalar := symbols[si].ret_scalar_sem_base;
+    END;
   END
   ELSE BEGIN
     name := GetStr(node, 'name');
@@ -644,9 +727,11 @@ FUNCTION CheckFuncCall(node: ADRMEM): INTEGER;
 VAR
   name, orig_name: Str255;
   args_arr, warg: ADRMEM;
-  nargs, i, si: INTEGER32;
+  nargs, i, si, errors_before: INTEGER32;
   atk: INTEGER;
   valid_vec: BOOLEAN;
+  unsafe_type: ADRMEM;
+  unsafe_tk, unsafe_aux, unsafe_aux2, unsafe_aux3, unsafe_idx: INTEGER;
 BEGIN
   orig_name := GetStr(node, 'name');
   name := UpperStr(orig_name);
@@ -654,6 +739,75 @@ BEGIN
   nargs := cJSON_GetArraySize(args_arr);
   IF NOT UserDeclarationShadows(name) THEN
   BEGIN
+  IF (name = 'UNSAFERAW') OR (name = 'UNSAFESUPER') THEN
+  BEGIN
+    IF NOT FeaturesAreExtended(active_features) THEN
+      AddError('Unsafe super-array conversions require the extended dialect');
+    IF is_device_compiland THEN
+      AddError('Unsafe super-array conversions are not permitted in DEVICE code');
+    IF name = 'UNSAFERAW' THEN
+    BEGIN
+      IF nargs <> 1 THEN AddError('UNSAFERAW expects one descriptor pointer argument')
+      ELSE IF CheckExpr(ArrItem(args_arr, 0)) <> TK_POINTER THEN
+        AddError('UNSAFERAW requires a super-array descriptor pointer');
+    END
+    ELSE IF nargs <> 4 THEN AddError('UNSAFESUPER expects (pointer type, raw, lower, upper)')
+    ELSE
+    BEGIN
+      unsafe_type := ArrItem(args_arr, 0);
+      IF NodeType(unsafe_type) <> 'Identifier' THEN
+        AddError('UNSAFESUPER first argument must be a descriptor pointer type name')
+      ELSE
+      BEGIN
+        unsafe_type := CreateNode('NamedType');
+        AddStringField(unsafe_type, 'name', GetStr(ArrItem(args_arr, 0), 'name'));
+        ResolveTypeExpr(unsafe_type, unsafe_tk, unsafe_aux, unsafe_aux2, unsafe_aux3, unsafe_idx);
+        IF (unsafe_tk <> TK_POINTER) OR (unsafe_aux <> TK_ARRAY) THEN
+          AddError('UNSAFESUPER target must be a super-array descriptor pointer type');
+      END;
+      IF CheckExpr(ArrItem(args_arr, 1)) <> TK_POINTER THEN
+        AddError('UNSAFESUPER raw argument must be a host pointer');
+      FOR i := 2 TO 3 DO
+        IF NOT IsOrdinal(CheckExpr(ArrItem(args_arr, i))) THEN
+          AddError('UNSAFESUPER bounds must be ordinal values');
+    END;
+    { Rich pointer identity/domain checks are codegen backstops, as for
+      ordinary pointer arguments in this bounded coarse type model. }
+    CheckFuncCall := TK_POINTER;
+    RETURN;
+  END;
+  IF (name = 'SADDOK') OR (name = 'SMULOK') OR (name = 'UADDOK') OR (name = 'UMULOK') THEN
+  BEGIN
+    { IBM library functions (11-21): A, B: INTEGER (S) or WORD (U); VAR C of
+      the same type receives the wrapped 16-bit result. They never trap. A
+      user declaration of the name (an IBM program declares them EXTERN)
+      takes precedence like any other builtin. }
+    IF (name = 'SADDOK') OR (name = 'SMULOK') THEN atk := TK_INTEGER ELSE atk := TK_WORD;
+    IF nargs <> 3 THEN
+      AddError2('Argument count mismatch in call to ', orig_name)
+    ELSE
+    BEGIN
+      FOR i := 0 TO 1 DO
+        IF NOT CanAssign(atk, CheckExprForTarget(cJSON_GetArrayItem(args_arr, i), atk)) THEN
+          AddError2('Argument type mismatch or implicit narrowing in call to ', orig_name);
+      warg := cJSON_GetArrayItem(args_arr, 2);
+      si := 0;
+      IF (NodeType(warg) = 'Identifier') OR (NodeType(warg) = 'Designator') THEN
+        si := LookupSymbol(GetStr(warg, 'name'));
+      IF si <> 0 THEN
+        IF symbols[si].kind <> 'VAR' THEN si := 0;
+      IF si = 0 THEN
+        AddError2('VAR argument must be a variable in call to ', orig_name)
+      ELSE IF CheckExpr(warg) <> atk THEN
+        AddError2('VAR argument type mismatch in call to ', orig_name)
+      { VAR C needs the identical type: a subrange of the host is not. }
+      ELSE IF ((NodeType(warg) = 'Identifier') AND (symbols[si].aux = -1)) OR
+              ((NodeType(warg) = 'Designator') AND (last_designator_aux = -1)) THEN
+        AddError2('VAR argument type mismatch in call to ', orig_name);
+    END;
+    CheckFuncCall := TK_BOOLEAN;
+    RETURN;
+  END;
   IF name = 'DEVALLOC' THEN
   BEGIN
     IF is_device_compiland THEN
@@ -753,9 +907,11 @@ BEGIN
       CheckFuncCall := TK_UNKNOWN;
     END
     ELSE BEGIN
+      errors_before := nerrors;
       atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
       IF NOT IsOrdinal(atk) AND (atk <> TK_UNKNOWN) THEN
         AddError('SUCC/PRED argument must be an ordinal type');
+      CheckFoldedOperation(node, atk, errors_before);
       CheckFuncCall := atk;
     END;
     RETURN;
@@ -768,9 +924,11 @@ BEGIN
       CheckFuncCall := TK_UNKNOWN;
     END
     ELSE BEGIN
+      errors_before := nerrors;
       atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
       IF NOT IsNumeric(atk) AND (atk <> TK_UNKNOWN) THEN
         AddError('ABS/SQR argument must be numeric');
+      CheckFoldedOperation(node, atk, errors_before);
       CheckFuncCall := atk;
     END;
     RETURN;
@@ -1035,6 +1193,53 @@ BEGIN
   END
   ELSE IF nt = 'BinOp' THEN
     SetBoundsBaseAfterCheck := last_set_base_tk;
+END;
+
+PROCEDURE CheckFoldedOperation(node: ADRMEM; result_tk: INTEGER;
+  errors_before: INTEGER32);
+{ An integer + - * DIV MOD, negation, SUCC/PRED or ABS/SQR whose value is fully
+  determined at compile time must fit its own result type, at every node
+  and under either MATHCK setting (G23): otherwise its overflow would be
+  silent wrapping or an unconditional runtime trap. Like a literal
+  (CheckIntegerConstant), the constant takes an integer context's type when
+  there is one, so `i32 := Base + Step` is 33000 although both CONSTs are
+  INTEGER. Tag a valid one so codegen materializes the exact value at that
+  type instead of re-evaluating the operands at their narrower literal
+  width. }
+VAR
+  folded_value: INTEGER64;
+  op: Str255;
+BEGIN
+  IF NodeType(node) = 'FuncCall' THEN op := UpperStr(GetStr(node, 'name'))
+  ELSE op := GetStr(node, 'op');
+  IF IsInteger(expr_context_tk) AND IsInteger(result_tk) THEN
+    result_tk := expr_context_tk;
+  IF IsInteger(result_tk) AND (nerrors = errors_before) AND
+     ((op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') OR (op = 'DIV') OR (op = 'MOD') OR
+      (op = 'SUCC') OR (op = 'PRED') OR (op = 'ABS') OR (op = 'SQR')) THEN
+  BEGIN
+    fold_overflowed := FALSE;
+    IF FoldConstInt(node, folded_value) THEN
+    BEGIN
+      IF NOT IntegerConstantFits(result_tk, folded_value) THEN
+      BEGIN
+        IF folded_value < 0 THEN
+          AddError2('Negative integer constant out of range for ', IntegerTypeName(result_tk))
+        ELSE
+          AddError2('Positive integer constant out of range for ', IntegerTypeName(result_tk));
+      END
+      ELSE
+        TagIntegerType(node, result_tk);
+    END
+    { An exact value beyond INTEGER64 fits no integer type. }
+    ELSE IF fold_overflowed THEN
+    BEGIN
+      IF fold_overflow_negative THEN
+        AddError2('Negative integer constant out of range for ', IntegerTypeName(result_tk))
+      ELSE
+        AddError2('Positive integer constant out of range for ', IntegerTypeName(result_tk));
+    END;
+  END;
 END;
 
 FUNCTION CheckExpr(node: ADRMEM): INTEGER;
@@ -1339,6 +1544,16 @@ BEGIN
       sem_set_r := last_sem_set_base;
     END;
     op := GetStr(node, 'op');
+    { A constant zero divisor is invalid even when the dividend is dynamic.
+      Check the right operand independently of whole-expression folding. }
+    IF ((op = 'DIV') OR (op = 'MOD')) AND IsInteger(lt) AND IsInteger(rt) AND
+       (nerrors = operands_errors_before) THEN
+      IF FoldConstInt(right_node, folded_value) THEN
+        IF folded_value = 0 THEN
+        BEGIN
+          AddError('Constant division by zero');
+          rt := TK_UNKNOWN;
+        END;
     IF (lt = TK_UNKNOWN) OR (rt = TK_UNKNOWN) THEN
       CheckExpr := TK_UNKNOWN
     ELSE IF (lt = TK_VECTOR) OR (rt = TK_VECTOR) THEN
@@ -1437,10 +1652,19 @@ BEGIN
         pattern in this repository's own native sources' hand-rolled
         growable buffers, so a POINTER operand paired with a numeric one
         stays a POINTER rather than tripping the numeric-operands error. }
-      IF (lt = TK_POINTER) AND IsNumeric(rt) THEN
-        CheckExpr := TK_POINTER
-      ELSE IF (rt = TK_POINTER) AND IsNumeric(lt) THEN
-        CheckExpr := TK_POINTER
+      IF ((lt = TK_POINTER) AND IsNumeric(rt)) OR ((rt = TK_POINTER) AND IsNumeric(lt)) THEN
+      BEGIN
+        { Only pointer + integer offset is lowered (an element-scaled GEP,
+          outside MATHCK); anything else used to reach codegen and abort
+          there without a location. }
+        IF (op = 'PLUS') AND (IsInteger(lt) OR IsInteger(rt)) THEN
+          CheckExpr := TK_POINTER
+        ELSE
+        BEGIN
+          AddError('Pointer arithmetic supports only pointer + integer offset');
+          CheckExpr := TK_UNKNOWN;
+        END;
+      END
       ELSE IF NOT (IsNumeric(lt) AND IsNumeric(rt)) THEN
       BEGIN
         AddError('Arithmetic operator requires numeric operands');
@@ -1453,9 +1677,27 @@ BEGIN
         CheckExpr := TK_REAL32;
         TagResolvedType(node, 'Real32Type');
       END
+      ELSE IF (op <> 'SLASH') AND IsInteger(lt) AND IsInteger(rt) AND
+              (IsUnsignedInteger(lt) <> IsUnsignedInteger(rt)) AND
+              NOT ConstantAdaptsToOperand(left_node, lt, rt) AND
+              NOT ConstantAdaptsToOperand(right_node, rt, lt) THEN
+      BEGIN
+        { G24 (docs/dialect_notes.md): no wider-wins or unsigned-wins rule
+          admits a nonconstant signed/unsigned mixture; constants still adapt. }
+        IF op = 'PLUS' THEN
+          AddError('Mixed INTEGER-family and WORD-family operands need an explicit conversion (e.g. WRD) in +')
+        ELSE IF op = 'MINUS' THEN
+          AddError('Mixed INTEGER-family and WORD-family operands need an explicit conversion (e.g. WRD) in -')
+        ELSE IF op = 'MUL' THEN
+          AddError('Mixed INTEGER-family and WORD-family operands need an explicit conversion (e.g. WRD) in *')
+        ELSE
+          AddError2('Mixed INTEGER-family and WORD-family operands need an explicit conversion (e.g. WRD) in ', op);
+        CheckExpr := TK_UNKNOWN;
+      END
       ELSE BEGIN
         CheckExpr := IntegerResultType(lt, rt);
         last_sem_scalar_base := SemanticOrdinalBase(IntegerResultType(lt, rt), 0);
+        CheckFoldedOperation(node, IntegerResultType(lt, rt), operands_errors_before);
       END;
     END;
   END
@@ -1463,6 +1705,7 @@ BEGIN
   BEGIN
     operand_node := GetObj(node, 'operand');
     op := GetStr(node, 'op');
+    operands_errors_before := nerrors;
     IF ((op = 'PLUS') OR (op = 'MINUS')) AND
        (NodeType(operand_node) = 'IntLiteral') AND FoldConstInt(node, folded_value) THEN
     BEGIN
@@ -1486,6 +1729,10 @@ BEGIN
       CheckExpr := ot;
       IF IsOrdinal(ot) AND (ot <> TK_ENUM) THEN
         last_sem_scalar_base := SemanticOrdinalBase(ot, 0);
+      { A literal operand was already checked as one constant above. }
+      IF (op = 'MINUS') AND IsInteger(ot) AND
+         (NodeType(operand_node) <> 'IntLiteral') THEN
+        CheckFoldedOperation(node, ot, operands_errors_before);
     END;
     IF op = 'NOT' THEN last_sem_scalar_base := TK_BOOLEAN;
   END
