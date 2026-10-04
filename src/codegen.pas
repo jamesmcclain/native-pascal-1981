@@ -313,7 +313,7 @@ BEGIN
   voidty := LLVMVoidTypeInContext(ctx);
   setty := LLVMArrayType(i64ty, 4);
   generic_set_tid := 0;
-  param_arr := AllocPtrArray(10);
+  param_arr := AllocPtrArray(12);
   SetPtrArrayElem(param_arr, 0, i32ty);
   SetPtrArrayElem(param_arr, 1, i32ty);
   SetPtrArrayElem(param_arr, 2, i32ty);
@@ -324,7 +324,9 @@ BEGIN
   SetPtrArrayElem(param_arr, 7, i32ty);
   SetPtrArrayElem(param_arr, 8, i8ty);
   SetPtrArrayElem(param_arr, 9, i32ty);
-  filefcbty := LLVMStructTypeInContext(ctx, param_arr, 10, 0);
+  SetPtrArrayElem(param_arr, 10, i8ptrty); { INITCK buffer state, or null }
+  SetPtrArrayElem(param_arr, 11, i32ty);   { its leaf count }
+  filefcbty := LLVMStructTypeInContext(ctx, param_arr, 12, 0);
 
   { A UNIT compiland (ImplementationUnit) is a library object, not a program
     -- no main/entry block, matching the reference's is_root_compiland check
@@ -813,6 +815,9 @@ BEGIN
     CodegenProgramParameters(root);
 
     body := GetObj(block, 'body');
+    { Program-level variables are globals of the main body, not its locals. }
+    initck_scope_base := nsymbols;
+    PrepareInitckLocals(body);
     SetupFunctionLabels(body);
     CodegenStmtArray(body);
 
@@ -868,6 +873,8 @@ BEGIN
       cur_func_name := '';
       IF (init_body <> NIL) AND (ArrSize(init_body) > 0) THEN
       BEGIN
+        initck_scope_base := nsymbols;
+        PrepareInitckLocals(init_body);
         SetupFunctionLabels(init_body);
         CodegenStmtArray(init_body);
       END;

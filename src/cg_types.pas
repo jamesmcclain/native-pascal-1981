@@ -117,6 +117,7 @@ BEGIN
   types[ntypes].is_super := FALSE;
   types[ntypes].is_descriptor := FALSE;
   types[ntypes].is_subrange := FALSE;
+  types[ntypes].variant_empty := FALSE;
   types[ntypes].ptr_space := PTR_SPACE_PLAIN;
   types[ntypes].enum_values := NIL;
   types[ntypes].llvm_ty := llvm_ty;
@@ -550,6 +551,43 @@ BEGIN
   ELSE IntFamilyWidth := 64;
 END;
 
+PROCEDURE ReleaseReinterpretedReferent(v: ADRMEM; from_tid, to_tid: INTEGER; expr_node: ADRMEM);
+{ INITCK: a typed host pointer converted to ADRMEM or to a pointer to
+  another type hands its referent to accesses whose state is not modeled,
+  so the referent's heap state is released (pas_initck_heap_release in
+  runtime/initck_heap.c; a no-op for an untracked address). Raw and
+  external access is otherwise outside the INITCK slice. }
+VAR
+  tys, args, fnty, fn, discard: ADRMEM;
+BEGIN
+  IF is_device_compiland OR (from_tid = to_tid) THEN RETURN;
+  IF NodeType(expr_node) = 'NilLiteral' THEN RETURN;
+  IF TypeKind(from_tid) <> TK_POINTER THEN RETURN;
+  IF IsHostDescriptor(from_tid) OR (types[from_tid].ptr_space <> PTR_SPACE_PLAIN) THEN RETURN;
+  IF to_tid <> TK_ADRMEM THEN
+  BEGIN
+    IF TypeKind(to_tid) <> TK_POINTER THEN RETURN;
+    IF types[to_tid].elem_tid = types[from_tid].elem_tid THEN RETURN;
+  END;
+  { A converted actual hands its referent over at the call, after the
+    later actuals (InitckReleaseAtCall in cg_symbols). }
+  IF initck_defer_conv AND (initck_npending < INITCK_MAX_PENDING) THEN
+  BEGIN
+    initck_npending := initck_npending + 1;
+    initck_pending[initck_npending] := LLVMBuildBitCast(builder, v, i8ptrty, MakeCStr(''));
+    initck_pending_tid[initck_npending] := 0;
+    RETURN;
+  END;
+  tys := AllocPtrArray(1);
+  SetPtrArrayElem(tys, 0, i8ptrty);
+  fnty := LLVMFunctionType(voidty, tys, 1, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_initck_heap_release'));
+  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr('pas_initck_heap_release'), fnty);
+  args := AllocPtrArray(1);
+  SetPtrArrayElem(args, 0, LLVMBuildBitCast(builder, v, i8ptrty, MakeCStr('')));
+  discard := LLVMBuildCall2(builder, fnty, fn, args, 1, MakeCStr(''));
+END;
+
 FUNCTION CoerceForAssign(v: ADRMEM; from_tid, to_tid: INTEGER; expr_node: ADRMEM; ctx_name: Str255): ADRMEM;
 { Resolve an assignment's RHS value against its target type, mirroring the
   Python reference's can_assign plus its _const_adapts_to_int_target
@@ -579,7 +617,10 @@ BEGIN
     END;
   END
   ELSE IF TypesCompatibleForAssign(from_tid, to_tid) THEN
-    CoerceForAssign := v
+  BEGIN
+    ReleaseReinterpretedReferent(v, from_tid, to_tid, expr_node);
+    CoerceForAssign := v;
+  END
   ELSE IF (from_tid = TK_INTEGER) AND ((to_tid = TK_INTEGER8) OR (to_tid = TK_WORD8)) AND IsIntLiteralLike(expr_node) THEN
     CoerceForAssign := LLVMConstInt(i8ty, IntLiteralValue(expr_node), 1)
   ELSE IF (from_tid = TK_INTEGER) AND ((to_tid = TK_INTEGER32) OR (to_tid = TK_WORD32)) AND IsIntLiteralLike(expr_node) THEN
@@ -1308,9 +1349,9 @@ END;
   negative-INTEGER-to-WORD adaptation when one bound selects WORD. }
 FUNCTION CheckedIndexBound(wide: INTEGER64): INTEGER32;
 BEGIN
-  IF (wide > MAXWORD) OR (wide < -32767) THEN
+  IF (wide > MAXWORD) OR (wide < -32768) THEN
   BEGIN
-    AbortWith('codegen: array index bound is outside -32767..65535');
+    AbortWith('codegen: array index bound is outside -32768..65535');
     CheckedIndexBound := 0;
   END
   ELSE
@@ -1851,7 +1892,7 @@ BEGIN
         fname := CStrToStr255(cJSON_GetStringValue(ArrItem(fnames_arr, fni)));
         nfields := nfields + 1; fields[nfields].rec_tid := tid; fields[nfields].fname := fname;
         fields[nfields].field_tid := field_tid; fields[nfields].field_index := field_index;
-        fields[nfields].byte_offset := fixed_off;
+        fields[nfields].byte_offset := fixed_off; fields[nfields].arm := 0;
         SetPtrArrayElem(elem_llvm_types, field_index, LLVMTypeForTk(field_tid));
         fixed_off := fixed_off + TypeSizeBytes(field_tid); field_index := field_index + 1;
       END;
@@ -1862,7 +1903,7 @@ BEGIN
       fixed_off := RoundUpBytes(fixed_off, TypeAlignBytes(tag_tid));
       nfields := nfields + 1; fields[nfields].rec_tid := tid; fields[nfields].fname := GetStr(te, 'tag_name');
       fields[nfields].field_tid := tag_tid; fields[nfields].field_index := field_index;
-      fields[nfields].byte_offset := fixed_off;
+      fields[nfields].byte_offset := fixed_off; fields[nfields].arm := 0;
       SetPtrArrayElem(elem_llvm_types, field_index, LLVMTypeForTk(tag_tid));
       fixed_off := fixed_off + TypeSizeBytes(tag_tid); field_index := field_index + 1;
     END;
@@ -1883,6 +1924,7 @@ BEGIN
     FOR ai := 0 TO ArrSize(variants_arr) - 1 DO
     BEGIN
       arm_off := fixed_off; arm_node := ArrItem(variants_arr, ai); fields_arr := GetObj(arm_node, 'fields');
+      IF ArrSize(fields_arr) = 0 THEN types[tid].variant_empty := TRUE;
       FOR fi := 0 TO ArrSize(fields_arr) - 1 DO
       BEGIN
         field_tuple := ArrItem(fields_arr, fi); items := GetObj(field_tuple, 'items'); fnames_arr := ArrItem(items, 0);
@@ -1892,7 +1934,7 @@ BEGIN
           fname := CStrToStr255(cJSON_GetStringValue(ArrItem(fnames_arr, fni)));
           nfields := nfields + 1; fields[nfields].rec_tid := tid; fields[nfields].fname := fname;
           fields[nfields].field_tid := field_tid; fields[nfields].field_index := field_index;
-          fields[nfields].byte_offset := arm_off;
+          fields[nfields].byte_offset := arm_off; fields[nfields].arm := RETYPE(INTEGER, ai + 1);
           arm_off := arm_off + TypeSizeBytes(field_tid);
         END;
       END;
@@ -1995,7 +2037,7 @@ BEGIN
     ELSE IF elem_tid = TK_BOOLEAN THEN
       tid := RegisterType(TK_BOOLEAN, TK_BOOLEAN, lo, hi, i1ty)
     ELSE BEGIN
-      IF (lo < -32767) OR (hi > 32767) THEN
+      IF (lo < -32768) OR (hi > 32767) THEN
         AbortWith('codegen: INTEGER subrange bounds must fit vintage INTEGER');
       tid := RegisterType(TK_INTEGER, TK_INTEGER, lo, hi, i16ty);
     END;

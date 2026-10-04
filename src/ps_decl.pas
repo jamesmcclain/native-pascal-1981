@@ -185,11 +185,14 @@ END;
 
 PROCEDURE ParseVarSection(decls_arr: ADRMEM);
 VAR
-  node, names_arr, attrs_arr: ADRMEM;
+  node, names_arr, attrs_arr, meta_flags: ADRMEM;
 BEGIN
   Expect('VAR');
   WHILE (CurKind = 'IDENTIFIER') OR (CurKind = 'LBRACKET') DO
   BEGIN
+    { Snapshot the declaration's first token, not the next declaration or
+      BEGIN token reached after consuming its semicolon. }
+    meta_flags := BuildMetaFlagsNode();
     attrs_arr := ParseAttributeSectionOptional;
     names_arr := ParseIdentListArr;
     Expect('COLON');
@@ -199,7 +202,7 @@ BEGIN
     AddField(node, 'attributes', attrs_arr);
     PinTrailingCommentTarget(node);
     Expect('SEMICOLON');
-    AddField(node, 'meta_flags', BuildMetaFlagsNode());
+    AddField(node, 'meta_flags', meta_flags);
     cJSON_AddItemToArray(decls_arr, node);
   END;
 END;
@@ -597,7 +600,8 @@ END;
 
 FUNCTION ParseBlock: ADRMEM;
 VAR
-  node, decls_arr: ADRMEM;
+  node, decls_arr, location: ADRMEM;
+  tok: PToken;
 BEGIN
   node := CreateTriviaNode('Block');
   decls_arr := cJSON_CreateArray;
@@ -605,7 +609,19 @@ BEGIN
   AddField(node, 'decls', decls_arr);
 
   IF CurKind = 'BEGIN' THEN
-    AddField(node, 'body', ParseCompoundStmtList)
+  BEGIN
+    AddField(node, 'body', ParseCompoundStmtList);
+    { The closing END is the read site of a function's fallthrough return:
+      keep its INITCK snapshot and coordinates (the token just consumed). }
+    pos := pos - 1;
+    AddField(node, 'read_flags', BuildMetaFlagsNode());
+    tok := GetTok(0);
+    location := cJSON_CreateObject;
+    AddIntField(location, 'line', tok^.line);
+    AddIntField(location, 'column', tok^.col);
+    AddField(node, 'read_location', location);
+    pos := pos + 1;
+  END
   ELSE
     AddField(node, 'body', cJSON_CreateArray);
 

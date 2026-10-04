@@ -325,7 +325,7 @@ BEGIN
       IF FoldConstInt(cJSON_GetArrayItem(args, 0), folded_value) THEN
       BEGIN
         IF nm = 'SUCC' THEN folded_value := folded_value + 1 ELSE folded_value := folded_value - 1;
-        IF (arg_tk = TK_INTEGER) AND ((folded_value < -32767) OR (folded_value > 32767)) THEN
+        IF (arg_tk = TK_INTEGER) AND ((folded_value < -32768) OR (folded_value > 32767)) THEN
         BEGIN
           IF nm = 'SUCC' THEN AddError('Constant SUCC result outside INTEGER range')
           ELSE AddError('Constant PRED result outside INTEGER range');

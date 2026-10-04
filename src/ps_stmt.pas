@@ -325,12 +325,14 @@ END;
 
 FUNCTION ParseWithTarget: ADRMEM;
 VAR
-  node, selectors_arr, sel_obj: ADRMEM;
+  node, selectors_arr, sel_obj, flags, location: ADRMEM;
   nm: Str255;
 BEGIN
+  flags := BuildMetaFlagsNode();
   nm := CurLex;
   Expect('IDENTIFIER');
   node := CreateTriviaNode('Designator');
+  AddField(node, 'read_flags', flags);
   AddStringField(node, 'name', nm);
   selectors_arr := cJSON_CreateArray;
   WHILE (CurKind = 'LBRACKET') OR (CurKind = 'DOT') OR (CurKind = 'POINTER') DO
@@ -353,8 +355,12 @@ BEGIN
     END
     ELSE
     BEGIN
+      flags := BuildMetaFlagsNode();
+      location := DerefLocation;
       BEGIN RelayTokenTrivia; pos := pos + 1; END;
       sel_obj := CreateTriviaNode('Selector');
+      AddField(sel_obj, 'read_flags', flags);
+      AddField(sel_obj, 'read_location', location);
       AddStringField(sel_obj, 'kind', 'DEREF');
       AddNullField(sel_obj, 'index_or_field');
       cJSON_AddItemToArray(selectors_arr, sel_obj);
@@ -402,7 +408,8 @@ END;
 
 FUNCTION ParseStatement: ADRMEM;
 VAR
-  node: ADRMEM;
+  node, location: ADRMEM;
+  tok: PToken;
   k: Str255;
   res_c: CINT;
 BEGIN
@@ -447,8 +454,17 @@ BEGIN
   END
   ELSE IF k = 'RETURN' THEN
   BEGIN
+    { A function RETURN reads the result it publishes: keep the RETURN
+      token's INITCK snapshot and coordinates for that read site. }
+    node := CreateTriviaNode('ReturnStmt');
+    AddField(node, 'read_flags', BuildMetaFlagsNode());
+    tok := GetTok(0);
+    location := cJSON_CreateObject;
+    AddIntField(location, 'line', tok^.line);
+    AddIntField(location, 'column', tok^.col);
+    AddField(node, 'read_location', location);
     BEGIN RelayTokenTrivia; pos := pos + 1; END;
-    ParseStatement := CreateTriviaNode('ReturnStmt');
+    ParseStatement := node;
   END
   ELSE IF k = 'BREAK' THEN
   BEGIN

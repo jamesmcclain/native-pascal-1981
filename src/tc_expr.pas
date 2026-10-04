@@ -180,7 +180,10 @@ END;
 FUNCTION IntegerConstantFits(tk: INTEGER; ival: INTEGER64): BOOLEAN;
 BEGIN
   IF tk = TK_INTEGER8 THEN IntegerConstantFits := (ival >= -128) AND (ival <= 127)
-  ELSE IF tk = TK_INTEGER THEN IntegerConstantFits := (ival >= -32767) AND (ival <= 32767)
+  { IBM compatibility is for fun, not pathology on modern systems: native
+    INTEGER uses the full signed 16-bit range. -32768 is ordinary data,
+    never a reserved INITCK sentinel, in either dialect mode. }
+  ELSE IF tk = TK_INTEGER THEN IntegerConstantFits := (ival >= -32768) AND (ival <= 32767)
   ELSE IF tk = TK_INTEGER32 THEN IntegerConstantFits :=
     (ival >= (-MaxInteger32Value - 1)) AND (ival <= MaxInteger32Value)
   ELSE IF tk = TK_INTEGER64 THEN IntegerConstantFits := TRUE
@@ -188,7 +191,7 @@ BEGIN
   ELSE IF tk = TK_WORD THEN
     { The manual converts a negative INTEGER constant to its 16-bit WORD bit
       pattern when a WORD context requires it. }
-    IntegerConstantFits := (ival >= -32767) AND (ival <= MaxWord16Value)
+    IntegerConstantFits := (ival >= -32768) AND (ival <= MaxWord16Value)
   ELSE IF tk = TK_WORD32 THEN IntegerConstantFits := (ival >= 0) AND (ival <= MaxWord32Value)
   ELSE IF tk = TK_WORD64 THEN IntegerConstantFits := ival >= 0
   ELSE IntegerConstantFits := FALSE;
@@ -212,7 +215,7 @@ END;
 
 FUNCTION NaturalIntegerType(ival: INTEGER64): INTEGER;
 BEGIN
-  IF (ival >= -32767) AND (ival <= 32767) THEN NaturalIntegerType := TK_INTEGER
+  IF (ival >= -32768) AND (ival <= 32767) THEN NaturalIntegerType := TK_INTEGER
   ELSE IF (ival >= 0) AND (ival <= MaxWord16Value) THEN NaturalIntegerType := TK_WORD
   ELSE IF active_features.wide_integers OR is_device_compiland THEN
   BEGIN
@@ -221,7 +224,7 @@ BEGIN
     ELSE NaturalIntegerType := TK_INTEGER64;
   END
   ELSE BEGIN
-    AddError('Integer constant is outside the vintage range -32767..65535');
+    AddError('Integer constant is outside the native 16-bit range -32768..65535');
     NaturalIntegerType := TK_UNKNOWN;
   END;
 END;

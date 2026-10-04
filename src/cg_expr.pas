@@ -679,6 +679,17 @@ VAR
   ret_pk: SysVPieceArr;
   ret_pb: SysVPieceSzArr;
   sret_slot, sret_attr, noalias_attr, ret_ll, ret_cptr: ADRMEM;
+  arg_state: ARRAY [1..MAX_PARAMS] OF ADRMEM; { INITCK state temps of
+    tracked value actuals, published just before the call }
+  transports, track_arg, track_ret, track_agg, agg_taint: BOOLEAN;
+  saved_taint, agg_shadow, saved_source, var_shadow: ADRMEM;
+  publishes: BOOLEAN;
+  ack, acked, returned: ADRMEM;
+  ptr_actual: ARRAY [1..MAX_PARAMS] OF ADRMEM; { data addresses a plain
+    EXTERN receives (typed pointer values, the element data of descriptors
+    passed by value or bound by VAR/CONST), whose referents C may write }
+  call_base: INTEGER32; { initck_npending before this call's actuals }
+  outer_taint: ADRMEM;
 BEGIN
   ri := LookupRoutine(name);
   IF ri = 0 THEN
@@ -710,6 +721,9 @@ BEGIN
         ClassifyAggregate(routines[ri].ret_tk, ret_class, ret_npieces, ret_pk, ret_pb);
     END;
     call_args := AllocPtrArray(nargs * 2 + 1);
+    transports := InitckTransports(ri);
+    FOR i := 1 TO MAX_PARAMS DO arg_state[i] := NIL;
+    FOR i := 1 TO MAX_PARAMS DO ptr_actual[i] := NIL;
     llvm_ai := 0;
     IF ret_class = SYSV_CLASS_MEMORY THEN
     BEGIN
@@ -721,9 +735,18 @@ BEGIN
       SetPtrArrayElem(call_args, 0, sret_slot);
       llvm_ai := 1;
     END;
+    { Unmodeled effects of the call its actuals mention are queued and take
+      place just before the call (InitckReleaseAtCall). }
+    call_base := initck_npending;
+    initck_call_depth := initck_call_depth + 1;
     FOR i := 0 TO nargs - 1 DO
     BEGIN
       pieces_emitted := FALSE;
+      { Each actual is evaluated in its own accumulator: its unchecked reads
+        reach the callee only as the state it is handed (a transported
+        actual), never the caller's value, whose state comes from the result. }
+      outer_taint := initck_taint;
+      initck_taint := NIL;
       arg_node := ShadowedWriteArg(ArrItem(args_arr, i), name);
       IF i >= routines[ri].nparams THEN
       BEGIN
@@ -733,10 +756,13 @@ BEGIN
           apply C's default argument promotions, exactly as the reference's
           codegen_c_abi_call does for the same tail. }
         v := CodegenExpr(arg_node);
+        IF InitckPointerTk(last_val_tk) AND NOT is_device_compiland THEN
+          InitckReleaseAtCall(v, 0);
         v := VariadicPromote(v, last_val_tk, name);
       END
       ELSE IF routines[ri].param_is_var[i + 1] THEN
       BEGIN
+        var_shadow := NIL;
         IF NodeType(arg_node) = 'Identifier' THEN
         BEGIN
           arg_nm := GetStr(arg_node, 'name');
@@ -768,11 +794,13 @@ BEGIN
                          routines[ri].param_tk[i + 1]) THEN
               AbortWith2('codegen: VAR argument type mismatch calling: ', name);
             v := symbols[symi].llvm_val;
+            IF InitckTracked(symi) THEN var_shadow := symbols[symi].init_state;
           END;
         END
         ELSE IF NodeType(arg_node) = 'Designator' THEN
         BEGIN
           v := ComputeDesignatorAddress(arg_node);
+          var_shadow := last_desig_shadow;
           { See AggStringTypesInterchangeable -- equal-capacity string types. }
           IF (last_val_tk <> routines[ri].param_tk[i + 1])
              AND NOT AggStringTypesInterchangeable(last_val_tk,
@@ -784,6 +812,24 @@ BEGIN
           AbortWith2('codegen: a VAR argument must be an lvalue, calling: ', name);
           v := NIL;
         END;
+        { A tracked VAR/CONST formal shares the actual's own state when the
+          actual is tracked storage: a direct slot or formal, a forwarded
+          VAR binding, a selected leaf, or a whole or sub-aggregate. Otherwise
+          nothing is published and the callee binds private initialized
+          state. Binding is not a read. }
+        IF transports AND (var_shadow <> NIL) THEN
+          IF InitckShadowSize(routines[ri].param_tk[i + 1]) > 0 THEN
+            arg_state[i + 1] := var_shadow;
+        { A [C] routine may write any leaf of the storage bound to its
+          VAR/CONST formal, and nothing tells us which: exactly that extent
+          becomes initialized at the call, never its siblings or other
+          storage. Binding is not a read. }
+        IF routines[ri].is_c AND (var_shadow <> NIL) AND (NOT is_device_compiland) THEN
+          IF InitckShadowSize(routines[ri].param_tk[i + 1]) > 0 THEN
+            InitckReleaseAtCall(var_shadow, routines[ri].param_tk[i + 1]);
+        IF transports AND routines[ri].is_extern AND
+           IsHostDescriptor(routines[ri].param_tk[i + 1]) THEN
+          ptr_actual[i + 1] := InitckDescriptorData(v, routines[ri].param_tk[i + 1]);
       END
       ELSE IF routines[ri].param_needs_copy[i + 1] THEN
       BEGIN
@@ -795,6 +841,18 @@ BEGIN
         END
         ELSE
         BEGIN
+          { A tracked aggregate actual is a whole-value read: checked before
+            its bytes are copied, or (unchecked) a snapshot of its leaf
+            states travels to a transporting callee. }
+          track_agg := InitckShadowSize(routines[ri].param_tk[i + 1]) > 0;
+          agg_shadow := NIL;
+          IF track_agg THEN
+          BEGIN
+            saved_taint := BeginInitckValue(arg_node);
+            agg_taint := initck_taint <> NIL;
+            saved_source := initck_copy_source;
+            initck_copy_source := arg_node;
+          END;
           { Value-mode aggregate param, plain Pascal and [C] FOREIGN alike:
           SysV MEMORY-class byval -- compute the source's address, then
           ALWAYS copy it into a fresh per-call temp via EmitBlockCopy and
@@ -830,11 +888,21 @@ BEGIN
                          routines[ri].param_tk[i + 1]) THEN
               AbortWith2('codegen: value-aggregate argument type mismatch calling: ', name);
             v := symbols[symi].llvm_val;
+            IF track_agg AND InitckTracked(symi) THEN
+            BEGIN
+              agg_shadow := symbols[symi].init_state;
+              GuardInitckRead(arg_node, symi);
+            END;
           END;
         END
         ELSE IF NodeType(arg_node) = 'Designator' THEN
         BEGIN
           v := ComputeDesignatorAddress(arg_node);
+          IF track_agg AND (last_desig_shadow <> NIL) THEN
+          BEGIN
+            agg_shadow := last_desig_shadow;
+            GuardInitckComponent(arg_node, agg_shadow, routines[ri].param_tk[i + 1]);
+          END;
           { See AggStringTypesInterchangeable -- equal-capacity string types. }
           IF (last_val_tk <> routines[ri].param_tk[i + 1])
              AND NOT AggStringTypesInterchangeable(last_val_tk,
@@ -866,6 +934,21 @@ BEGIN
           v_tmp := CoerceForAssign(v_tmp, last_val_tk, routines[ri].param_tk[i + 1], arg_node, name);
           v := EntryAlloca(LLVMTypeForTk(routines[ri].param_tk[i + 1]), '');
           LLVMBuildStore(builder, v_tmp, v);
+        END;
+        IF transports AND routines[ri].is_extern AND
+           IsHostDescriptor(routines[ri].param_tk[i + 1]) THEN
+          ptr_actual[i + 1] := InitckDescriptorData(v, routines[ri].param_tk[i + 1]);
+        IF track_agg THEN
+        BEGIN
+          initck_copy_source := saved_source;
+          IF transports AND ((agg_shadow <> NIL) OR agg_taint) THEN
+          BEGIN
+            arg_state[i + 1] := EntryAlloca(InitckShadowTy(routines[ri].param_tk[i + 1]),
+                                            'initck.actual');
+            InitckTransferShadow(arg_state[i + 1], agg_shadow,
+                                 routines[ri].param_tk[i + 1], EndInitckValue(saved_taint));
+          END
+          ELSE initck_taint := saved_taint;
         END;
         ClassifyParamAt(routines[ri].param_tk, routines[ri].param_is_var,
                         routines[ri].param_needs_copy, i + 1, ret_class = SYSV_CLASS_MEMORY,
@@ -912,21 +995,116 @@ BEGIN
       END
       ELSE
       BEGIN
+        { A tracked value formal receives the evaluated actual's state:
+          collected like an assignment RHS, so an unchecked unset source
+          reaches the callee unset rather than blessed by the copy. }
+        track_arg := transports;
+        IF track_arg THEN track_arg := InitckTrackedTk(routines[ri].param_tk[i + 1]);
+        IF track_arg THEN saved_taint := BeginInitckValue(arg_node);
         v := CodegenExpr(arg_node);
         { Value-mode call arguments get the same literal-adaptation leniency
           as an assignment RHS (e.g. a bare INTEGER literal passed to a CINT
           [C] EXTERN parameter, as with cJSON_CreateBool(1) or exit(1)):
           reuse CoerceForAssign rather than a bare tid-equality check. A
           subrange parameter is range-checked like an assignment. }
+        initck_defer_conv := TRUE;
         v := CoerceCheckedForAssign(v, last_val_tk, routines[ri].param_tk[i + 1], arg_node, name);
+        initck_defer_conv := FALSE;
+        { A pointer handed to a [C] routine exposes its referent to writes
+          whose state is not modeled. }
+        IF (NOT transports) AND (NOT is_device_compiland) AND
+           InitckPointerTk(routines[ri].param_tk[i + 1]) THEN
+          InitckReleaseAtCall(v, 0);
+        IF transports AND routines[ri].is_extern AND
+           InitckPointerTk(routines[ri].param_tk[i + 1]) AND
+           NOT IsHostDescriptor(routines[ri].param_tk[i + 1]) THEN
+          ptr_actual[i + 1] := v;
+        IF track_arg THEN
+        BEGIN
+          arg_state[i + 1] := EntryAlloca(i1ty, 'initck.actual');
+          LLVMBuildStore(builder, EndInitckValue(saved_taint), arg_state[i + 1]);
+        END;
       END;
       IF NOT pieces_emitted THEN
       BEGIN
         SetPtrArrayElem(call_args, llvm_ai, v);
         llvm_ai := llvm_ai + 1;
       END;
+      initck_taint := outer_taint;
+    END;
+    initck_call_depth := initck_call_depth - 1;
+    InitckFlushReleases(call_base);
+    { Publish argument states only now: evaluating later actuals may itself
+      call routines that use the side channel. A caller-reset result flag
+      makes an uninstrumented callee's result read as initialized. }
+    track_ret := InitckResultTracked(ri);
+    { A data address a plain EXTERN receives needs the acknowledgement even
+      when no state is published (an untracked global descriptor, say). }
+    publishes := track_ret;
+    FOR i := 1 TO routines[ri].nparams DO
+      IF ptr_actual[i] <> NIL THEN publishes := TRUE;
+    IF transports THEN
+      FOR i := 1 TO routines[ri].nparams DO
+        IF arg_state[i] <> NIL THEN
+        BEGIN
+          LLVMBuildStore(builder, arg_state[i], InitckArgSlot(i));
+          publishes := TRUE;
+        END;
+    IF track_ret THEN
+      LLVMBuildStore(builder, LLVMConstInt(i1ty, 1, 0), InitckRetFlag);
+    { Tag the call for its callee (InitckAcceptChannel). A plain EXTERN may
+      be C, so it also gets a flag that only an instrumented callee sets. }
+    ack := NIL;
+    IF publishes THEN
+    BEGIN
+      LLVMBuildStore(builder, LLVMBuildBitCast(builder, routines[ri].fn, i8ptrty, MakeCStr('')),
+                     InitckTls('pas_initck_callee', i8ptrty));
+      IF routines[ri].is_extern THEN
+      BEGIN
+        ack := EntryAlloca(i1ty, 'initck.ack');
+        LLVMBuildStore(builder, LLVMConstInt(i1ty, 0, 0), ack);
+        LLVMBuildStore(builder, LLVMBuildBitCast(builder, ack, i8ptrty, MakeCStr('')),
+                       InitckTls('pas_initck_ack', i8ptrty));
+      END
+      ELSE
+        LLVMBuildStore(builder, LLVMConstNull(i8ptrty), InitckTls('pas_initck_ack', i8ptrty));
     END;
     res := LLVMBuildCall2(builder, routines[ri].fnty, routines[ri].fn, call_args, llvm_ai, MakeCStr(''));
+    { A Pascal callee clears its slots on entry; clear again in case an
+      EXTERN routine was not instrumented, so no slot can dangle. }
+    IF transports THEN
+      FOR i := 1 TO routines[ri].nparams DO
+        IF arg_state[i] <> NIL THEN
+          LLVMBuildStore(builder, LLVMConstNull(i8ptrty), InitckArgSlot(i));
+    acked := NIL;
+    IF ack <> NIL THEN
+    BEGIN
+      { An unacknowledged EXTERN was not instrumented Pascal: its tag is
+        still set, the VAR/CONST storage it was handed may have been written
+        by C, and its result state is not a published one. }
+      acked := LLVMBuildLoad2(builder, i1ty, ack, MakeCStr('initck.acked'));
+      LLVMBuildStore(builder, LLVMConstNull(i8ptrty), InitckTls('pas_initck_callee', i8ptrty));
+      LLVMBuildStore(builder, LLVMConstNull(i8ptrty), InitckTls('pas_initck_ack', i8ptrty));
+      FOR i := 1 TO routines[ri].nparams DO
+      BEGIN
+        IF (arg_state[i] <> NIL) AND routines[ri].param_is_var[i] THEN
+          InitckReleaseUnacked(acked, arg_state[i], routines[ri].param_tk[i]);
+        { The referent of a pointer, or the elements of a descriptor, C
+          received, as for a [C] routine; NULL is never registered, so an
+          acknowledged call releases nothing. }
+        IF ptr_actual[i] <> NIL THEN
+          InitckHeapRelease(LLVMBuildSelect(builder, acked, LLVMConstNull(i8ptrty),
+            LLVMBuildBitCast(builder, ptr_actual[i], i8ptrty, MakeCStr('')), MakeCStr('')));
+      END;
+    END;
+    IF track_ret AND (initck_taint <> NIL) THEN
+    BEGIN
+      returned := LLVMBuildLoad2(builder, i1ty, InitckRetFlag, MakeCStr('initck.returned'));
+      IF acked <> NIL THEN
+        returned := LLVMBuildOr(builder, returned,
+                                LLVMBuildNot(builder, acked, MakeCStr('')), MakeCStr(''));
+      NoteInitckState(returned);
+    END;
     { Attach byval(ty)/align (and sret(ty)/noalias/align for a MEMORY-class
       return) at the CALL SITE too, matching clang's own lowering
       (verification step 7) -- the declaration side alone
@@ -1045,9 +1223,22 @@ VAR
   selected_upper, descriptor: ADRMEM;
   deref_ptr_tid: INTEGER; { committed to last_desig_deref_ptr_tid only at
     the end, since index expressions below recurse through here }
+  shadow: ADRMEM; { INITCK shadow of the storage selected so far, or NIL;
+    committed to last_desig_shadow at the end for the same reason }
+  heap_data: ADRMEM; { the tracked referent the last DEREF reached, or NIL }
+  super_leaves: ADRMEM; { its i64 leaf count, when it is SUPER ARRAY elements
+    whose INDEX comes next; else NIL }
+  file_state: ADRMEM; { the whole tracked file buffer state the last DEREF
+    reached, or NIL }
+  file_state_tid: INTEGER;
 BEGIN
   deref_ptr_tid := 0;
+  heap_data := NIL;
+  file_state := NIL;
+  file_state_tid := 0;
+  super_leaves := NIL;
   selected_upper := NIL;
+  shadow := NIL;
   nm := GetStr(node, 'name');
   symi := LookupSym(nm);
   selectors := GetObj(node, 'selectors');
@@ -1078,6 +1269,7 @@ BEGIN
       AbortWith2('codegen: undefined variable: ', nm);
     base_ptr := symbols[symi].llvm_val;
     cur_tid := symbols[symi].tk;
+    IF InitckTracked(symi) THEN shadow := symbols[symi].init_state;
   END;
 
   FOR si := 0 TO nsel - 1 DO
@@ -1318,6 +1510,17 @@ BEGIN
         SetPtrArrayElem(gep_idx, 1, offset);
         base_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(cur_tid), base_ptr, gep_idx, 2, MakeCStr(''));
       END;
+      { The element's shadow reuses the same, already checked offset: the
+        index ran exactly once above and any bounds failure precedes it. }
+      IF (shadow <> NIL) AND (TypeKind(cur_tid) = TK_ARRAY) AND
+         (NOT types[cur_tid].is_super) THEN
+        shadow := LLVMBuildGEP2(builder, InitckShadowTy(cur_tid), shadow, gep_idx, 2,
+                                MakeCStr('initck.elem'))
+      ELSE IF (super_leaves <> NIL) AND (TypeKind(cur_tid) = TK_ARRAY) AND
+              types[cur_tid].is_super THEN
+        shadow := InitckSuperElement(heap_data, super_leaves, offset, cur_tid)
+      ELSE shadow := NIL;
+      super_leaves := NIL;
       cur_tid := types[cur_tid].elem_tid;
       selected_upper := NIL;
     END
@@ -1328,6 +1531,7 @@ BEGIN
         { F^: the runtime-owned current-component buffer, mirroring the
           reference's _file_buffer_ptr. TEXT files get a lazy-touch hook
           first (touch=True only for ASCII structure, types[].hi = 1). }
+        heap_data := NIL;
         file_handle := LLVMBuildLoad2(builder, i8ptrty, base_ptr, MakeCStr(''));
         file_fcb := LLVMBuildBitCast(builder, file_handle, LLVMPointerType(filefcbty, 0), MakeCStr(''));
         file_call_args := AllocPtrArray(1);
@@ -1337,10 +1541,26 @@ BEGIN
         file_raw_buf := LLVMBuildCall2(builder, file_buffer_fnty, file_buffer_fn, file_call_args, 1, MakeCStr(''));
         cur_tid := types[cur_tid].elem_tid;
         base_ptr := LLVMBuildBitCast(builder, file_raw_buf, LLVMPointerType(LLVMTypeForTk(cur_tid), 0), MakeCStr(''));
+        { The buffer's state lives beside it (InitFileStorage) and is read
+          after pas_file_buffer has completed any deferred fill. }
+        shadow := NIL;
+        file_state := NIL;
+        IF (InitckShadowSize(cur_tid) > 0) AND NOT is_device_compiland THEN
+        BEGIN
+          file_state := InitckFileState(file_fcb);
+          file_state_tid := cur_tid;
+          shadow := file_state;
+        END;
       END
       ELSE BEGIN
         IF TypeKind(cur_tid) <> TK_POINTER THEN
           AbortWith('codegen: a DEREF selector was applied to a non-pointer');
+        { Tracked pointer storage is read here, before the native load. }
+        IF shadow <> NIL THEN GuardInitckPointer(node, si, shadow);
+        shadow := NIL;
+        heap_data := NIL;
+        file_state := NIL;
+        super_leaves := NIL;
         base_ptr := LLVMBuildLoad2(builder, LLVMTypeForTk(cur_tid), base_ptr, MakeCStr(''));
         selected_upper := NIL;
         IF IsHostDescriptor(cur_tid) THEN
@@ -1348,6 +1568,19 @@ BEGIN
           descriptor := base_ptr;
           selected_upper := LLVMBuildExtractValue(builder, descriptor, 1, MakeCStr(''));
           base_ptr := LLVMBuildExtractValue(builder, descriptor, 0, MakeCStr(''));
+          { The elements' state is found per element at the INDEX below,
+            within the allocation's leaves for this descriptor's bounds. }
+          IF InitckSuperHeapTracked(cur_tid) THEN
+          BEGIN
+            heap_data := base_ptr;
+            super_leaves := InitckSuperLeaves(selected_upper, types[cur_tid].elem_tid);
+          END;
+        END
+        ELSE IF InitckHeapTracked(cur_tid) THEN
+        BEGIN
+          { The referent's state, found by its address (registered by NEW). }
+          heap_data := base_ptr;
+          shadow := InitckHeapShadow(base_ptr, cur_tid);
         END;
         deref_ptr_tid := cur_tid;
         cur_tid := types[cur_tid].elem_tid;
@@ -1358,6 +1591,7 @@ BEGIN
       selected_upper := NIL;
       IF TypeKind(cur_tid) = TK_LSTRING THEN
       BEGIN
+        shadow := NIL;
         { LSTRING.LEN: the leading length byte, which is simply element 0 of
           the same storage (cg_decl.pas's index-0-is-length convention), so
           this is the INDEX path above with a constant zero. The result is a
@@ -1390,6 +1624,12 @@ BEGIN
         gep_idx := AllocPtrArray(1);
         SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, fields[fi].byte_offset, 0));
         base_ptr := LLVMBuildGEP2(builder, i8ty, base_ptr, gep_idx, 1, MakeCStr(''));
+        IF shadow <> NIL THEN
+        BEGIN
+          gep_idx := AllocPtrArray(1);
+          SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, InitckFieldShadowOffset(fi), 0));
+          shadow := LLVMBuildGEP2(builder, i1ty, shadow, gep_idx, 1, MakeCStr('initck.field'));
+        END;
         cur_tid := fields[fi].field_tid;
         base_ptr := LLVMBuildBitCast(builder, base_ptr, LLVMPointerType(LLVMTypeForTk(cur_tid), 0), MakeCStr(''));
       END;
@@ -1398,9 +1638,25 @@ BEGIN
       AbortWith2('codegen: unhandled selector kind: ', kind);
   END;
 
+  { The prepass marked a designator that hands heap storage to an
+    unmodeled alias or effect (ValidateInitckDesignator): release the
+    referent it reaches, which no longer has modeled state. }
+  IF (heap_data <> NIL) AND HasKey(node, 'initck_release') THEN
+  BEGIN
+    InitckHeapRelease(heap_data);
+    shadow := NIL;
+  END;
+  { A file buffer handed to an unmodeled effect: initialized until its next
+    transition (fill, EOF, PUT, ...) resets it. }
+  IF (file_state <> NIL) AND HasKey(node, 'initck_release') THEN
+  BEGIN
+    InitckTransferShadow(file_state, NIL, file_state_tid, LLVMConstInt(i1ty, 1, 0));
+    shadow := NIL;
+  END;
   last_val_tk := cur_tid;
   last_desig_deref_ptr_tid := deref_ptr_tid;
   last_desig_super_upper := selected_upper;
+  last_desig_shadow := shadow;
   ComputeDesignatorAddress := base_ptr;
 END;
 
@@ -1846,8 +2102,10 @@ VAR
   vld_idx_tk, vld_arr_tid: INTEGER;
   vld_hdr: ADRMEM;
   bound_is_subrange: BOOLEAN;
+  value_shadow: ADRMEM; { committed to last_value_shadow at the end }
 BEGIN
   EnterExprLevel;
+  value_shadow := NIL;
   nt := NodeType(node);
   IF nt = 'IntLiteral' THEN
   BEGIN
@@ -1913,6 +2171,14 @@ BEGIN
         AbortWith('codegen: ADR of a borrowed SUPER ARRAY is unsupported');
     res := LLVMBuildBitCast(builder, symbols[symi].llvm_val, i8ptrty, MakeCStr(''));
     last_val_tk := TK_ADRMEM;
+    { Raw writes through this address are not modeled, so every leaf of the
+      tracked slot is released (initialized) where the address becomes
+      usable: here, or as an actual at its call, after the later actuals
+      (InitckReleaseAtCall); the slot stays tracked (InitckLocalEscapes). A
+      WITH-bound field's ADR disqualified its whole object instead, so it
+      has no state here. }
+    IF InitckTracked(symi) AND NOT symbols[symi].is_with_field THEN
+      InitckReleaseAtCall(symbols[symi].init_state, symbols[symi].tk);
   END
   ELSE IF nt = 'Identifier' THEN
   BEGIN
@@ -1961,8 +2227,10 @@ BEGIN
     symi := LookupSym(nm);
     IF symi <> 0 THEN
     BEGIN
+      GuardInitckRead(node, symi);
       res := LLVMBuildLoad2(builder, LLVMTypeForTk(symbols[symi].tk), symbols[symi].llvm_val, MakeCStr(''));
       last_val_tk := symbols[symi].tk;
+      IF InitckTracked(symi) THEN value_shadow := symbols[symi].init_state;
     END
     ELSE
     BEGIN
@@ -2014,8 +2282,25 @@ BEGIN
     END;
   END
   ELSE IF (nt = 'Designator') OR (nt = 'PostfixExpr') THEN  BEGIN
+    { A zero-selector designator is a direct read: check it, or propagate
+      its state when unchecked (GuardInitckRead handles both). }
+    IF (nt = 'Designator') AND (ArrSize(GetObj(node, 'selectors')) = 0) THEN
+    BEGIN
+      symi := LookupSym(GetStr(node, 'name'));
+      IF symi <> 0 THEN GuardInitckRead(node, symi);
+    END;
     addr := ComputeDesignatorAddress(node);
     result_tid := last_val_tk;
+    value_shadow := last_desig_shadow;
+    { A selected tracked component is checked (or propagated) after its
+      index operands and bounds checks, before the native load below. }
+    IF (nt = 'PostfixExpr') OR (ArrSize(GetObj(node, 'selectors')) <> 0) THEN
+    BEGIN
+      IF value_shadow <> NIL THEN
+        GuardInitckComponent(node, value_shadow, result_tid)
+      ELSE IF GetBool(GetObj(node, 'read_flags'), 'INITCK') THEN
+        InitckBoundaryAt('selected storage', node);
+    END;
     res := LLVMBuildLoad2(builder, LLVMTypeForTk(result_tid), addr, MakeCStr(''));
     last_val_tk := result_tid;
   END
@@ -2256,6 +2541,8 @@ BEGIN
         IF NOT IsHostDescriptor(last_val_tk) THEN
           AbortWith('codegen: UNSAFERAW requires a host super-array descriptor pointer');
         res := LLVMBuildExtractValue(builder, res, 0, MakeCStr(''));
+        { The exported elements leave the INITCK model. }
+        InitckHeapRelease(res);
         last_val_tk := TK_ADRMEM;
       END;
       EPrint('warning: unsafe-super-array-conversion');
@@ -2356,6 +2643,7 @@ BEGIN
   END;
   LeaveExprLevel;
   last_val_tk := SubrangeBaseTid(last_val_tk);
+  last_value_shadow := value_shadow;
   CodegenExpr := res;
 END;
 

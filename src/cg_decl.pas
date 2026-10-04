@@ -325,6 +325,10 @@ BEGIN
       symbols[nsymbols].name := alias;
       symbols[nsymbols].tk := symbols[si].tk;
       symbols[nsymbols].llvm_val := symbols[si].llvm_val;
+      symbols[nsymbols].init_state := NIL; { imported alias, not a direct local }
+      symbols[nsymbols].is_param := FALSE;
+      symbols[nsymbols].is_with_field := FALSE;
+      symbols[nsymbols].init_shared := FALSE;
     END
     ELSE
       AbortWith2('codegen: USES import renames an export this compiler cannot alias (only PROCEDURE/FUNCTION/VAR are supported): ', ename);
@@ -399,7 +403,7 @@ PROCEDURE InitFileStorage(slot: ADRMEM; elem_tid: INTEGER; structure: INTEGER32;
   comment for the field layout/order). INPUT/OUTPUT start pre-opened
   (mode 1); every other file starts unopened (mode 0) until RESET/REWRITE. }
 VAR
-  fcb, buf, gep_idx, field_ptr, zero: ADRMEM;
+  fcb, buf, gep_idx, field_ptr, zero, state: ADRMEM;
   elem_size, default_mode: INTEGER32;
   uname: Str255;
 BEGIN
@@ -470,6 +474,30 @@ BEGIN
   SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 9, 0));
   field_ptr := LLVMBuildGEP2(builder, filefcbty, fcb, gep_idx, 2, MakeCStr(''));
   LLVMBuildStore(builder, LLVMConstInt(i32ty, 0, 0), field_ptr);
+
+  { INITCK: a tracked component type gets per-leaf buffer state beside the
+    buffer, with the same lifetime; the runtime sets it wholly at each
+    buffer transition (set_mode_flags), Pascal writes to F^ per leaf. It
+    starts undefined: no component has been read. }
+  state := NIL;
+  IF (InitckShadowSize(elem_tid) > 0) AND NOT is_device_compiland THEN
+  BEGIN
+    state := EntryAlloca(InitckShadowTy(elem_tid), 'file_initck');
+    IF InitckTrackedTk(elem_tid) THEN LLVMBuildStore(builder, LLVMConstInt(i1ty, 0, 0), state)
+    ELSE InitckTransferShadow(state, NIL, elem_tid, LLVMConstInt(i1ty, 0, 0));
+  END;
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, zero);
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 10, 0));
+  field_ptr := LLVMBuildGEP2(builder, filefcbty, fcb, gep_idx, 2, MakeCStr(''));
+  IF state = NIL THEN LLVMBuildStore(builder, LLVMConstNull(i8ptrty), field_ptr)
+  ELSE LLVMBuildStore(builder, LLVMBuildBitCast(builder, state, i8ptrty, MakeCStr('')), field_ptr);
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, zero);
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 11, 0));
+  field_ptr := LLVMBuildGEP2(builder, filefcbty, fcb, gep_idx, 2, MakeCStr(''));
+  IF state = NIL THEN LLVMBuildStore(builder, zero, field_ptr)
+  ELSE LLVMBuildStore(builder, LLVMConstInt(i32ty, InitckShadowSize(elem_tid), 0), field_ptr);
 
   LLVMBuildStore(builder, LLVMBuildBitCast(builder, fcb, i8ptrty, MakeCStr('')), slot);
 END;
@@ -1173,7 +1201,8 @@ VAR
   ret_tk: INTEGER;
   ret_llvm_ty, fnty, fn, entry_bb2: ADRMEM;
   param_val, palloca, ret_load: ADRMEM;
-  saved_fn, saved_bb, saved_ret_slot: ADRMEM;
+  saved_fn, saved_bb, saved_ret_slot, saved_ret_state: ADRMEM;
+  saved_initck_base: INTEGER32;
   saved_func_name, saved_routine_name: Str255;
   saved_ret_tk: INTEGER;
   saved_in_local_scope: BOOLEAN;
@@ -1194,6 +1223,7 @@ VAR
   sret_attr, noalias_attr: ADRMEM;
   prev_n: INTEGER32;
   sig_ok: BOOLEAN;
+  initck_any: BOOLEAN;
 BEGIN
   name := GetStr(decl, 'name');
   IF HasCAttribute(decl) AND (NOT FeaturesAreExtended(active_features)) THEN
@@ -1630,11 +1660,14 @@ BEGIN
     saved_routine_name := cur_routine_name;
     saved_ret_tk := cur_func_ret_tk;
     saved_ret_slot := cur_func_ret_slot;
+    saved_ret_state := cur_func_ret_state;
     saved_in_local_scope := in_local_scope;
     entry_bb2 := LLVMAppendBasicBlockInContext(ctx, fn, MakeCStr('entry'));
     LLVMPositionBuilderAtEnd(builder, entry_bb2);
     cur_fn := fn;
     PushScope;
+    saved_initck_base := initck_scope_base;
+    initck_scope_base := CurScopeBase;
     in_local_scope := TRUE;
     cur_routine_name := name;
 
@@ -1675,9 +1708,21 @@ BEGIN
           type), not ret_llvm_ty, which for a MEMORY/COERCED aggregate
           return no longer matches that storage's type. }
         LLVMBuildStore(builder, LLVMConstNull(LLVMTypeForTk(ret_tk)), cur_func_ret_slot);
+      { The zero/default bytes above are retained compatibility behavior,
+        not an INITCK producer: a tracked scalar result starts unset in every
+        activation, independently of the routine's flags. }
+      cur_func_ret_state := NIL;
+      IF InitckTrackedTk(ret_tk) AND (NOT is_device_compiland) THEN
+      BEGIN
+        cur_func_ret_state := EntryAlloca(i1ty, 'initck.result');
+        LLVMBuildStore(builder, LLVMConstInt(i1ty, 0, 0), cur_func_ret_state);
+      END;
     END
     ELSE
+    BEGIN
       cur_func_name := '';
+      cur_func_ret_state := NIL;
+    END;
 
     { llvm_idx is the running LLVM parameter index: it starts at 1 instead
       of 0 when a hidden sret result pointer occupies LLVM parameter 0 (see
@@ -1685,6 +1730,16 @@ BEGIN
       code above), and from there only tracks the Pascal parameter index
       while no COERCED aggregate parameter has been seen, since such a
       parameter arrives as one LLVM parameter per eightbyte (at most two). }
+    { Side-channel handshake before any receive: the published slots are
+      this routine's only when its caller tagged it (InitckAcceptChannel). }
+    initck_accept := NIL;
+    IF (NOT is_c) AND (NOT is_device_compiland) THEN
+    BEGIN
+      initck_any := cur_func_ret_state <> NIL;
+      FOR i := 1 TO n DO
+        IF InitckShadowSize(tks[i]) > 0 THEN initck_any := TRUE;
+      IF initck_any THEN InitckAcceptChannel(fn);
+    END;
     IF ret_class = SYSV_CLASS_MEMORY THEN llvm_idx := 1 ELSE llvm_idx := 0;
     FOR i := 1 TO n DO
     BEGIN
@@ -1750,9 +1805,33 @@ BEGIN
       symbols[nsymbols].name := names[i];
       symbols[nsymbols].tk := tks[i];
       symbols[nsymbols].llvm_val := palloca;
+      symbols[nsymbols].init_state := NIL;
+      symbols[nsymbols].is_param := TRUE;
+      symbols[nsymbols].is_with_field := FALSE;
+      symbols[nsymbols].init_shared := FALSE;
+      { A tracked value formal starts with the state its Pascal caller
+        published (a tracked aggregate, with a snapshot of its leaves); a
+        tracked VAR/CONST formal shares its caller's state slot. Either is
+        initialized/private when no instrumented caller published one.
+        [C]/DEVICE routines stay outside the slice. The prologue has made no
+        call yet, so the side channel is still ours. }
+      IF (NOT is_c) AND (NOT is_device_compiland) THEN
+        IF (NOT needs_copy[i]) AND InitckTrackedTk(tks[i]) THEN
+        BEGIN
+          symbols[nsymbols].init_state := ReceiveInitckArg(i, names[i], isvar[i]);
+          symbols[nsymbols].init_shared := isvar[i];
+        END
+        ELSE IF isvar[i] AND (InitckShadowSize(tks[i]) > 0) THEN
+        BEGIN
+          symbols[nsymbols].init_state := ReceiveInitckAggregate(i, names[i], tks[i], TRUE);
+          symbols[nsymbols].init_shared := TRUE;
+        END
+        ELSE IF needs_copy[i] AND (InitckShadowSize(tks[i]) > 0) THEN
+          symbols[nsymbols].init_state := ReceiveInitckAggregate(i, names[i], tks[i], FALSE);
     END;
 
     CodegenDeclList(GetObj(body_blk, 'decls'));
+    PrepareInitckLocals(body_blk);
     SetupFunctionLabels(GetObj(body_blk, 'body'));
     CodegenStmtArray(GetObj(body_blk, 'body'));
 
@@ -1760,6 +1839,8 @@ BEGIN
     BEGIN
     IF is_func THEN
     BEGIN
+      { Fallthrough return: its read site is the body's closing END. }
+      InitckPublishResult(body_blk);
       IF ret_class = SYSV_CLASS_MEMORY THEN
         { Every RETURN/function-name-assignment already stored straight
           into the caller's sret buffer (cur_func_ret_slot IS that pointer)
@@ -1790,11 +1871,13 @@ BEGIN
     END;
 
     PopScope;
+    initck_scope_base := saved_initck_base;
     in_local_scope := saved_in_local_scope;
     cur_routine_name := saved_routine_name;
     cur_func_name := saved_func_name;
     cur_func_ret_tk := saved_ret_tk;
     cur_func_ret_slot := saved_ret_slot;
+    cur_func_ret_state := saved_ret_state;
     cur_fn := saved_fn;
     IF saved_bb = NIL THEN
       LLVMPositionBuilderAtEnd(builder, entry_bb)
@@ -1914,7 +1997,7 @@ VAR
   max_i32: INTEGER64;
 BEGIN
   max_i32 := MaxConstInteger32;
-  IF (ival >= -32767) AND (ival <= 32767) THEN ConstIntegerType := TK_INTEGER
+  IF (ival >= -32768) AND (ival <= 32767) THEN ConstIntegerType := TK_INTEGER
   ELSE IF (ival >= 0) AND (ival <= 32767 * 2 + 1) THEN ConstIntegerType := TK_WORD
   ELSE IF (ival >= (-max_i32 - 1)) AND (ival <= max_i32) THEN ConstIntegerType := TK_INTEGER32
   ELSE IF (ival >= 0) AND (ival <= max_i32 * 2 + 1) THEN ConstIntegerType := TK_WORD32

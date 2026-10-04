@@ -152,8 +152,29 @@ else
 fi
 sed 's/"column":[[:space:]]*[0-9][0-9]*/"column":40000/g' \
   "$work_dir/wide_cap.tokens" > "$work_dir/wide_col.tokens"
+# Columns reach the AST only as read-site coordinates (here the body's closing
+# END, an INITCK fallthrough-return site): they must carry 40000 exactly and
+# leave everything else unchanged.
 if bin/parser < "$work_dir/wide_col.tokens" > "$work_dir/wide_col.ast" 2> "$work_dir/wide_col.err" \
-   && cmp -s "$work_dir/wide_cap.ast" "$work_dir/wide_col.ast"; then
+   && python3 - "$work_dir/wide_cap.ast" "$work_dir/wide_col.ast" <<'PY'
+import json, sys
+narrow, wide = (json.load(open(p)) for p in sys.argv[1:])
+columns = []
+def strip(node, keep):
+    if isinstance(node, dict):
+        loc = node.get('read_location')
+        if isinstance(loc, dict) and 'column' in loc:
+            keep.append(loc.pop('column'))
+        for value in node.values():
+            strip(value, keep)
+    elif isinstance(node, list):
+        for value in node:
+            strip(value, keep)
+strip(narrow, [])
+strip(wide, columns)
+sys.exit(0 if narrow == wide and columns and set(columns) == {40000} else 1)
+PY
+then
   pass_test 'parser accepts a column past 16 bits unchanged'
 else
   fail_test 'parser accepts a column past 16 bits unchanged'

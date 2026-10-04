@@ -51,6 +51,9 @@ struct pas_file_fcb {
     int          filemode;
     unsigned char trap;         /* F.TRAP  — trapped-I/O switch (manual ch.12) */
     int          errs;          /* F.ERRS  — last trapped error code           */
+    unsigned char *initck_state; /* INITCK: one byte per leaf of the buffer, or
+                                    NULL when the component type is untracked */
+    int          initck_n;
 };
 
 /* ------------------------------------------------------------------ *
@@ -227,6 +230,7 @@ int   movesr(adsmem src, adsmem dst, unsigned short len);
 void  pas_vector_nil_error(int32_t is_store) __attribute__((noreturn));
 void  pas_upper_nil_error(int32_t unused) __attribute__((noreturn));
 void  pas_super_index_nil_error(void) __attribute__((noreturn));
+void  pas_new_error(void) __attribute__((noreturn));
 void *pas_super_new(int64_t upper_bits, int32_t upper_unsigned, int64_t lower,
                     int64_t domain_low, int64_t domain_high,
                     uint64_t stride, uint64_t alignment);
@@ -236,6 +240,33 @@ void  pas_super_import_check(void *raw, int64_t lower_bits, int32_t lower_unsign
                             int64_t domain_high, uint64_t stride, uint64_t alignment);
 void  pas_vector_range_error(int32_t is_store, int64_t idx, int32_t idx_unsigned,
                              int32_t lanes, int64_t lo, int64_t hi) __attribute__((noreturn));
+
+/* ---- $INITCK host locals, formals, results and aggregates (initck.c) ---- */
+void pas_initck_error(const char *name, int32_t line, int32_t column);
+/* what is "local", "parameter", "result of", "component" or "part of". */
+void pas_initck_fail(const char *what, const char *name, int32_t line, int32_t column);
+/* Must cover MAX_PARAMS in src/cg_base.inc. */
+#define PAS_INITCK_MAX_ARGS 16
+extern _Thread_local void *pas_initck_args[PAS_INITCK_MAX_ARGS];
+extern _Thread_local _Bool pas_initck_ret;
+extern _Thread_local void *pas_initck_callee;
+extern _Thread_local _Bool *pas_initck_ack;
+/* Aggregate shadows: one byte per scalar leaf, nonzero when initialized. */
+int32_t pas_initck_all(const unsigned char *s, int64_t n);
+void pas_initck_copy(unsigned char *dst, const unsigned char *src, int64_t n, int32_t ok);
+void pas_initck_fill(unsigned char *dst, int64_t n, int32_t ok);
+void pas_initck_receive(unsigned char *own, const unsigned char *p, int64_t n);
+void pas_initck_release_unacked(unsigned char *dst, int64_t n, int32_t acked);
+/* Heap referent state (initck_heap.c), keyed by the data address NEW
+ * published; unregistered or released referents read as initialized. */
+void pas_initck_heap_new(const void *data, int64_t n);
+unsigned char *pas_initck_heap(const void *data, int64_t n);
+unsigned char *pas_initck_heap_part(const void *data, int64_t n, int64_t offset, int64_t count);
+unsigned char *pas_initck_heap_at(const void *data, int64_t n, unsigned char *fallback);
+unsigned char *pas_initck_heap_part_at(const void *data, int64_t n, int64_t offset, int64_t count,
+                                       unsigned char *fallback);
+void pas_initck_heap_release(const void *data);
+void pas_initck_heap_dispose(const void *data);
 
 /* ---- $INDEXCK fixed-array indexes (array_index.c) ---- */
 

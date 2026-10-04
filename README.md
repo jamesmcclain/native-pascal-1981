@@ -2,6 +2,18 @@
 
 This repository contains a native compiler for the 1981 IBM Pascal dialect. It targets LLVM IR, the System V AMD64 ABI, and NVIDIA NVPTX.
 
+**Compatibility rule: fun, not pathology.** Follow the IBM manual where it
+preserves the language's character, not where historical machine constraints
+make modern behavior needlessly pathological. Deliberate differences must be
+documented and tested. For example, native `INTEGER` accepts the full signed
+16-bit range, including `-32768` in both dialects; INITCK uses separate shadow
+state, never a reserved program-data sentinel. Host enforcement covers supported
+scalar locals/formals/results, fixed aggregates, typed pointers and tracked
+NEW/SUPER ARRAY storage, with explicit external/raw/file/DEVICE boundaries.
+It is not whole-program protection: globals, untracked types and aggregate
+results remain outside the checked slice. See the
+[INITCK contract and limits](docs/dialect_notes.md#initialization-checking-host-storage-native).
+
 <img width="1536" height="864" alt="image" src="https://github.com/user-attachments/assets/f59a2d0f-468b-41b2-838c-b76729f15975" />
 
 > **If you write Pascal in this repository,** read
@@ -107,7 +119,7 @@ make test
 
 This target runs the bootstrap-subset check, the `pasboot` fixtures, and the driver, sysutil, native, proxy, and pre-commit-hook test groups. The test runners do not require pytest. The proxy tests need `python3`.
 
-This target does not run the reference-parity, bootstrap, or Emacs tests.
+This target does not run the bootstrap or Emacs tests.
 
 Use these targets for a specific test group:
 
@@ -120,22 +132,17 @@ Use these targets for a specific test group:
 | `make test-sysutil` | POSIX filesystem and process primitives, exercised from Pascal |
 | `make test-proxy` | Differential conformance for the completion proxy (needs `python3`) |
 | `make test-gpu` | CUDA compilation and execution on an NVIDIA GPU |
-| `make test-reference-parity` | Native compiler parity with the Python reference compiler |
 | `make test-elisp` | Emacs major-mode ERT tests |
 | `make test-bootstrap` | Clean bootstrap and fixed-point comparison, with Python made unavailable |
 
 If a CUDA prerequisite is not available, the `test-gpu` target skips the test.
 
-The `test-reference-parity` target requires Python, pytest, and the reference compiler package:
-```bash
-pip3 install 'https://github.com/jamesmcclain/pascal-1981/archive/5fe71893fd8b16a415a6c67c2fad12bd729e7279.zip'
-```
-With the same package, `scripts/cross-bootstrap-check.sh` builds Generation 1 with `pasboot` and with the Python reference compiler. Then it checks that the two Generation 2 builds are identical. The `test-elisp` target requires Emacs and builds the compiler stages first.
+The native compiler is the authoritative implementation. A parity suite comparing it with an earlier Python implementation remains in `tests/parity/` but is disabled and slated for removal; see [tests/README.md](tests/README.md) if you need it. The `test-elisp` target requires Emacs and builds the compiler stages first.
 
 See [tests/README.md](tests/README.md). It describes the compiler test suites.
 
 To run all available test groups, run:
 
 ```bash
-make test-bootstrap test test-gpu test-reference-parity test-elisp
+make test-bootstrap test test-gpu test-elisp
 ```

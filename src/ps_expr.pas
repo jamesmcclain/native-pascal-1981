@@ -13,6 +13,7 @@ FUNCTION ParseBooleanExpression: ADRMEM; FORWARD;
 FUNCTION ParseSimpleExpression: ADRMEM; FORWARD;
 FUNCTION ParseTerm: ADRMEM; FORWARD;
 FUNCTION ParseFactor: ADRMEM; FORWARD;
+FUNCTION ParseFactorBody(flags: ADRMEM): ADRMEM; FORWARD;
 FUNCTION ParseType: ADRMEM; FORWARD;
 FUNCTION ParseConstant: ADRMEM; FORWARD;
 FUNCTION ParseCaseConstant: ADRMEM; FORWARD;
@@ -39,8 +40,37 @@ BEGIN
   { Snapshot before parsing: nested indexes and later directives must not
     overwrite the setting at this index expression's first token. }
   AddBoolField(node, 'indexck', CurIndexCk());
+  AddField(node, 'read_flags', BuildMetaFlagsNode());
   AddField(node, 'index_or_field', ParseExpression);
   ParseIndexSelector := node;
+END;
+
+FUNCTION DerefLocation: ADRMEM;
+{ The `^` token's coordinates: a DEREF reads its pointer there (INITCK). }
+VAR
+  location: ADRMEM;
+  tok: PToken;
+BEGIN
+  tok := GetTok(0);
+  location := cJSON_CreateObject;
+  AddIntField(location, 'line', tok^.line);
+  AddIntField(location, 'column', tok^.col);
+  DerefLocation := location;
+END;
+
+FUNCTION ParseDerefSelector: ADRMEM;
+VAR
+  node, flags, location: ADRMEM;
+BEGIN
+  flags := BuildMetaFlagsNode();
+  location := DerefLocation;
+  Expect('POINTER');
+  node := CreateTriviaNode('Selector');
+  AddStringField(node, 'kind', 'DEREF');
+  AddField(node, 'read_flags', flags);
+  AddField(node, 'read_location', location);
+  AddNullField(node, 'index_or_field');
+  ParseDerefSelector := node;
 END;
 
 FUNCTION ParseDesignatorRest(name: Str255): ADRMEM;
@@ -77,10 +107,7 @@ BEGIN
     END
     ELSE IF CurKind = 'POINTER' THEN
     BEGIN
-      BEGIN RelayTokenTrivia; pos := pos + 1; END;
-      sel_obj := CreateTriviaNode('Selector');
-      AddStringField(sel_obj, 'kind', 'DEREF');
-      AddNullField(sel_obj, 'index_or_field');
+      sel_obj := ParseDerefSelector;
       cJSON_AddItemToArray(selectors_arr, sel_obj);
     END;
   END;
@@ -106,6 +133,7 @@ VAR
   name: Str255;
 BEGIN
   node := CreateTriviaNode('Designator');
+  AddField(node, 'read_flags', BuildMetaFlagsNode());
   name := CurLex;
   Expect('IDENTIFIER');
   AddStringField(node, 'name', name);
@@ -136,10 +164,7 @@ BEGIN
     END
     ELSE IF CurKind = 'POINTER' THEN
     BEGIN
-      BEGIN RelayTokenTrivia; pos := pos + 1; END;
-      sel_obj := CreateTriviaNode('Selector');
-      AddStringField(sel_obj, 'kind', 'DEREF');
-      AddNullField(sel_obj, 'index_or_field');
+      sel_obj := ParseDerefSelector;
       cJSON_AddItemToArray(selectors_arr, sel_obj);
     END;
   END;
@@ -338,7 +363,33 @@ BEGIN
     ParseSetElement := e;
 END;
 
+{ Capture before consuming any token. In particular, calls and designators
+  are built after their arguments/selectors, when the lexer state may differ.
+  Parentheses are transparent: retain the enclosed consumer's own snapshot. }
 FUNCTION ParseFactor: ADRMEM;
+VAR
+  node, flags, location: ADRMEM;
+  tok: PToken;
+  parenthesized: BOOLEAN;
+BEGIN
+  parenthesized := CurKind = 'LPAREN';
+  tok := GetTok(0);
+  location := cJSON_CreateObject;
+  AddIntField(location, 'line', tok^.line);
+  AddIntField(location, 'column', tok^.col);
+  flags := BuildMetaFlagsNode();
+  node := ParseFactorBody(flags);
+  IF NOT parenthesized THEN
+  BEGIN
+    IF NOT HasKey(node, 'read_flags') THEN
+      AddField(node, 'read_flags', flags);
+    AddField(node, 'read_location', location);
+  END
+  ELSE cJSON_Delete(location);
+  ParseFactor := node;
+END;
+
+FUNCTION ParseFactorBody(flags: ADRMEM): ADRMEM;
 VAR
   node, expr, args_arr, elements_arr: ADRMEM;
   val_str, name, kop: Str255;
@@ -350,14 +401,14 @@ BEGIN
     node := CreateTriviaNode('UnaryOp');
     AddStringField(node, 'op', 'NOT');
     AddField(node, 'operand', ParseFactor);
-    ParseFactor := node;
+    ParseFactorBody := node;
   END
   ELSE IF CurKind = 'INTEGER_LITERAL' THEN
   BEGIN
     node := CreateTriviaNode('IntLiteral');
     AddIntField(node, 'value', CurValueInt());
     Expect('INTEGER_LITERAL');
-    ParseFactor := node;
+    ParseFactorBody := node;
   END
   ELSE IF CurKind = 'REAL_LITERAL' THEN
   BEGIN
@@ -365,7 +416,7 @@ BEGIN
     val_str := CurLex;
     Expect('REAL_LITERAL');
     AddRealField(node, 'value', StrToRealVal(val_str));
-    ParseFactor := node;
+    ParseFactorBody := node;
   END
   ELSE IF CurKind = 'CHAR_LITERAL' THEN
   BEGIN
@@ -373,7 +424,7 @@ BEGIN
     val_str := CurValueStr;
     Expect('CHAR_LITERAL');
     AddStringField(node, 'value', val_str);
-    ParseFactor := node;
+    ParseFactorBody := node;
   END
   ELSE IF CurKind = 'STRING_LITERAL' THEN
   BEGIN
@@ -381,7 +432,7 @@ BEGIN
     val_str := CurLex;
     Expect('STRING_LITERAL');
     AddStringField(node, 'value', val_str);
-    ParseFactor := node;
+    ParseFactorBody := node;
   END
   ELSE IF CurKind = 'BOOLEAN_LITERAL' THEN
   BEGIN
@@ -389,13 +440,13 @@ BEGIN
     val_str := CurLex;
     Expect('BOOLEAN_LITERAL');
     AddBoolField(node, 'value', StringEqual(val_str, 'TRUE') OR StringEqual(val_str, 'true'));
-    ParseFactor := node;
+    ParseFactorBody := node;
   END
   ELSE IF CurKind = 'NIL' THEN
   BEGIN
     BEGIN RelayTokenTrivia; pos := pos + 1; END;
     node := CreateTriviaNode('NilLiteral');
-    ParseFactor := node;
+    ParseFactorBody := node;
   END
   ELSE IF CurKind = 'IDENTIFIER' THEN
   BEGIN
@@ -412,7 +463,7 @@ BEGIN
       AddStringField(node, 'type_id', val_str);
       AddField(node, 'expr', expr);
       AddField(node, 'selectors', cJSON_CreateArray);
-      ParseFactor := node;
+      ParseFactorBody := node;
     END
     ELSE IF NextKind = 'LPAREN' THEN
     BEGIN
@@ -428,18 +479,20 @@ BEGIN
       IF (bound_expr_depth > 0) AND
          ((CurKind = 'LBRACKET') OR (CurKind = 'DOT') OR (CurKind = 'POINTER')) THEN
       BEGIN
+        { The call and postfix consumer must own separate JSON snapshots. }
+        AddField(node, 'read_flags', cJSON_Duplicate(flags, 1));
         expr := ParseDesignatorRest('');
         args_arr := CreateTriviaNode('PostfixExpr');
         AddField(args_arr, 'base', node);
         AddField(args_arr, 'selectors', GetObj(expr, 'selectors'));
         node := args_arr;
       END;
-      ParseFactor := node;
+      ParseFactorBody := node;
     END
     ELSE
     BEGIN
       BEGIN RelayTokenTrivia; pos := pos + 1; END;
-      ParseFactor := ParseDesignatorRest(name);
+      ParseFactorBody := ParseDesignatorRest(name);
     END;
   END
   ELSE IF CurKind = 'LPAREN' THEN
@@ -447,7 +500,7 @@ BEGIN
     Expect('LPAREN');
     expr := ParseExpression;
     Expect('RPAREN');
-    ParseFactor := expr;
+    ParseFactorBody := expr;
   END
   ELSE IF CurKind = 'LBRACKET' THEN
   BEGIN
@@ -463,7 +516,7 @@ BEGIN
     node := CreateTriviaNode('SetConstructor');
     AddField(node, 'elements', elements_arr);
     AddNullField(node, 'type_name');
-    ParseFactor := node;
+    ParseFactorBody := node;
   END
   ELSE IF CurKind = 'ADR' THEN
   BEGIN
@@ -477,7 +530,7 @@ BEGIN
     Expect('IDENTIFIER');
     node := CreateTriviaNode('AdrExpr');
     AddStringField(node, 'name', name);
-    ParseFactor := node;
+    ParseFactorBody := node;
   END
   ELSE IF CurKind = 'SIZEOF' THEN
   BEGIN
@@ -493,7 +546,7 @@ BEGIN
     ELSE
       AddField(node, 'target', ParseType);
     Expect('RPAREN');
-    ParseFactor := node;
+    ParseFactorBody := node;
   END
   ELSE IF CurKind = 'UPPER' THEN
   BEGIN
@@ -504,7 +557,7 @@ BEGIN
     AddField(node, 'operand', ParseExpression);
     bound_expr_depth := bound_expr_depth - 1;
     Expect('RPAREN');
-    ParseFactor := node;
+    ParseFactorBody := node;
   END
   ELSE IF CurKind = 'LOWER' THEN
   BEGIN
@@ -515,7 +568,7 @@ BEGIN
     AddField(node, 'operand', ParseExpression);
     bound_expr_depth := bound_expr_depth - 1;
     Expect('RPAREN');
-    ParseFactor := node;
+    ParseFactorBody := node;
   END
   ELSE
   BEGIN

@@ -1,0 +1,12 @@
+{ DIALECT: extended }
+DEVICE INTERFACE;
+UNIT STATEDEVICE (run);
+PROCEDURE run(supplied: INTEGER);
+END;
+DEVICE IMPLEMENTATION OF STATEDEVICE;
+PROCEDURE run(supplied: INTEGER);
+VAR x: INTEGER;
+    b: BOOLEAN;
+    c: CHAR;
+BEGIN x := supplied; b := TRUE; c := 'a' END;
+.

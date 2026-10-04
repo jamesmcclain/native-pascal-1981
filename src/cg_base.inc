@@ -59,7 +59,7 @@ FUNCTION LLVMConstInt(ty: ADRMEM; n: CLONG; signext: CINT): ADRMEM [C];
 
 { Truncation toward zero into 64 bits, in the runtime because Pascal's TRUNC
   cannot do it: TRUNC lowers to a float-to-int conversion at this dialect's
-  16-bit INTEGER width, so it destroys any value outside -32767..32767. This
+  16-bit INTEGER width, so it destroys any value outside -32768..32767. This
   is how an integer literal's value is read out of the AST. }
 FUNCTION pas_double_to_int64(val: REAL): CLONG [C];
 FUNCTION LLVMConstReal(ty: ADRMEM; n: REAL): ADRMEM [C];
@@ -253,6 +253,8 @@ CONST
   MAX_SYMBOLS = 500;
   MAX_SCOPES = 64;
   MAX_PARAMS = 16;
+  INITCK_MAX_PENDING = 64; { effects of one call nest deferred to its call
+    (InitckReleaseAtCall); beyond this they happen where evaluated }
   MAX_SYSV_LEAVES = 32; { Upper bound on the scalar leaves of an aggregate the
     SysV classifier ever walks: it only runs on types of at most 16 bytes and
     the smallest leaf is 1 byte, so 16 is the true maximum; 32 leaves headroom
@@ -326,6 +328,9 @@ TYPE
     is_descriptor: BOOLEAN; { POINTER storage chosen at registration, not
                               when later queried across a DEVICE interface }
     is_subrange: BOOLEAN; { scalar whose declared bounds are lo..hi }
+    variant_empty: BOOLEAN; { RECORD only: some variant alternative declares
+                              no fields (INITCK: an empty alternative is
+                              always complete) }
     ptr_space: INTEGER; { POINTER only: PTR_SPACE_PLAIN for `^T`, or the
                           PTR_SPACE_* code of an ADS pointer's space. Part of
                           the pointer's identity for assignment compatibility,
@@ -342,6 +347,8 @@ TYPE
     field_tid: INTEGER;
     field_index: INTEGER; { 0-based LLVM struct member for fixed records }
     byte_offset: INTEGER32; { explicit offset; variant arms may overlap }
+    arm: INTEGER; { 0 for a fixed field or tag, else the 1-based variant
+                    alternative the field belongs to }
   END;
 
   ConstRec = RECORD
@@ -373,6 +380,16 @@ TYPE
   SymRec = RECORD
     name: Str255;
     tk: INTEGER;
+    init_state: ADRMEM; { activation-local INITCK shadow for ordinary host
+      locals: one i1 for an INTEGER/BOOLEAN/CHAR slot, or an InitckShadowTy
+      aggregate with one i1 per scalar leaf for a fixed ARRAY/RECORD built
+      only from those types; NIL for other storage or conservatively
+      excluded alias/effect boundaries. Producers and read guards share it. }
+    is_param: BOOLEAN; { a formal parameter: INITCK failures name it as one }
+    is_with_field: BOOLEAN; { a WITH-bound field: INITCK failures name it as one }
+    init_shared: BOOLEAN; { init_state is a VAR/CONST formal's binding to its
+      caller's state slot (or a private always-initialized slot), not owned
+      by this activation }
     llvm_val: ADRMEM; { the LLVMValueRef of the variable's storage: an
                         LLVMAddGlobal for a global, an LLVMBuildAlloca for a
                         local or a value-mode parameter, or the raw incoming
@@ -692,6 +709,38 @@ VAR
                            routine table instead of being shadowed. }
   cur_func_ret_tk: INTEGER;
   cur_func_ret_slot: ADRMEM;
+  cur_func_ret_state: ADRMEM; { i1 INITCK state of the current function's
+                                tracked scalar result, or NIL when the
+                                result is outside the supported slice. }
+  initck_scope_base: INTEGER32; { symbol-table base of the routine whose
+                                  body is being lowered: its own symbols lie
+                                  above it even inside WITH's pushed scopes,
+                                  while enclosing routines' lie at or below. }
+  initck_taint: ADRMEM; { NIL, or an i1 alloca accumulating the INITCK state
+                          of the value being produced: each evaluated
+                          unchecked read of tracked storage ANDs its shadow
+                          state in, so a copy cannot launder unset data. }
+  initck_copy_source: ADRMEM; { the RHS node of an aggregate copy being
+                          lowered: its unchecked whole-value read transfers
+                          leaf states instead of joining initck_taint. }
+  initck_field_scan: BOOLEAN; { InitckLocalEscapes is checking a WITH-bound
+                               field name: ADR of a field still escapes,
+                               because raw writes from it may reach siblings. }
+  initck_routine_body: ADRMEM; { the body PrepareInitckLocals last prepared:
+                                 the routine whose statements are lowering. }
+  initck_accept: ADRMEM; { NIL, or the i1 a transporting routine's prologue
+                           computed: its caller tagged this routine, so the
+                           published side-channel slots are meant for it
+                           (InitckAcceptChannel). }
+  initck_call_depth: INTEGER32; { > 0 while a call's actuals are lowered }
+  initck_defer_conv: BOOLEAN; { a pointer conversion's referent release
+                                belongs to the call whose actual it is }
+  initck_npending: INTEGER32; { InitckReleaseAtCall's queue: state (of type
+                                initck_pending_tid) or, for tid 0, a heap
+                                referent's data address to release at the
+                                enclosing call, after its last actual }
+  initck_pending: ARRAY [1..INITCK_MAX_PENDING] OF ADRMEM;
+  initck_pending_tid: ARRAY [1..INITCK_MAX_PENDING] OF INTEGER;
 
   loop_break_blocks: ARRAY [1..32] OF ADRMEM; { one entry per lexically
                                                 enclosing WHILE/REPEAT/FOR,
@@ -734,6 +783,14 @@ VAR
                           parameter through every call site. }
   last_desig_super_upper: ADRMEM; { selected host descriptor upper, or NIL;
                           committed with the address after recursive traversal }
+  last_value_shadow: ADRMEM; { side-channel result of CodegenExpr: the INITCK
+                          shadow of the storage a designator or identifier
+                          value was loaded from, else NIL. }
+  last_desig_shadow: ADRMEM; { side-channel result of ComputeDesignatorAddress:
+                          the INITCK shadow of the selected storage when its
+                          root is a tracked slot and every selector stayed
+                          within shadowed representations (one i1 per scalar
+                          leaf), else NIL. Committed after recursive traversal. }
   last_desig_deref_ptr_tid: INTEGER; { side-channel result of
                           ComputeDesignatorAddress: the POINTER type id
                           dereferenced by the designator's final selector

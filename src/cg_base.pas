@@ -240,6 +240,18 @@ VAR
                            routine table instead of being shadowed. }
   cur_func_ret_tk: INTEGER;
   cur_func_ret_slot: ADRMEM;
+  cur_func_ret_state: ADRMEM;
+  initck_scope_base: INTEGER32;
+  initck_taint: ADRMEM;
+  initck_copy_source: ADRMEM;
+  initck_accept: ADRMEM;
+  initck_call_depth: INTEGER32;
+  initck_defer_conv: BOOLEAN;
+  initck_npending: INTEGER32;
+  initck_pending: ARRAY [1..INITCK_MAX_PENDING] OF ADRMEM;
+  initck_pending_tid: ARRAY [1..INITCK_MAX_PENDING] OF INTEGER;
+  initck_field_scan: BOOLEAN;
+  initck_routine_body: ADRMEM;
 
   loop_break_blocks: ARRAY [1..32] OF ADRMEM; { one entry per lexically
                                                 enclosing WHILE/REPEAT/FOR,
@@ -282,6 +294,8 @@ VAR
                           parameter through every call site. }
   last_desig_deref_ptr_tid: INTEGER;
   last_desig_super_upper: ADRMEM;
+  last_desig_shadow: ADRMEM;
+  last_value_shadow: ADRMEM;
 
   { Unit dependency graph: built once per compiland by BuildUnitInitOrder
     from local_interfaces (each spliced INTERFACE header's own 'uses'
