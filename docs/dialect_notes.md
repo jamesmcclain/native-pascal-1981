@@ -249,12 +249,13 @@ it from a routine, take its `SIZEOF` / `LOWER` / `UPPER`.
   `VSTORE`) value, then the bounds check, then the memory access.
 - **Fixed-bound arrays: constant indices only.** A constant `v[i]` or a
   constant `VLOAD` / `VSTORE` offset whose lanes leave the declared range
-  is a compile error; a variable index is unchecked, exactly as for arrays
-  (`$INDEXCK` does not apply).
+  is a compile error; a variable vector-lane/transfer index is unchecked.
+  This vector policy is separate from scalar fixed-array `$INDEXCK`.
 - **`SUPER ARRAY`: whole-lane-range run-time check.** The operand must be
-  the pointee of a `NEW(p, ub)`-allocated plain `^` pointer (`p^`), whose
-  upper bound `NEW` stores in front of the data (the value `UPPER(p^)`
-  reads). Once, before any lane is loaded or stored, the compiler checks
+  pointee of a host descriptor pointer (`p^`, including selected fields,
+  array slots and aliases). Its upper bound travels in the descriptor,
+  including through native calls/results and explicit unsafe imports; no
+  pre-data header is read. Once, before any lane is loaded or stored, the compiler checks
   `p <> NIL`, `i >= LOWER(p^)` and `i + n - 1 <= UPPER(p^)` in 128-bit
   arithmetic (a `WORD` index is unsigned), and on failure prints
   `runtime error: VLOAD|VSTORE index I with N lanes is outside array bounds
@@ -262,8 +263,8 @@ it from a routine, take its `SIZEOF` / `LOWER` / `UPPER`.
   A constant index below the static lower bound is still a compile error.
   A bare `SUPER ARRAY` variable, a VAR parameter, an `ADS` pointee, or any
   DEVICE-code operand has no run-time bound and is rejected at compile
-  time. Not detected: a dangling pointer after `DISPOSE`, or any other
-  pointer not produced by `NEW`.
+  time. Not detected: a dangling pointer after `DISPOSE`, inaccessible storage
+  or a false capacity/lifetime warranty at unsafe import.
 - **The type-name argument** (`VSPLAT`, `VLOAD`, `VSTORE`) names a declared
   `VECTOR` type; it is not an expression.
 - **ISA selection** is `--target-cpu` / `--target-features` on the driver
@@ -344,12 +345,62 @@ set's base type. Then the result is FALSE. This includes a value outside
 
 ## Bound expressions **[native]**
 
+The following describes implemented behavior. Host super-array pointers now use
+[the descriptor ABI](host_super_array_abi.md): nonpacked `{ptr, i64}` storage,
+16-byte size/stride and 8-byte alignment on x86-64 Linux/SysV. Assignment,
+record/array slots, value/reference parameters and function results preserve the
+whole value. Native value/result ABI uses two INTEGER eightbytes, or byval/sret
+for larger aggregates and register exhaustion. NIL is `{null, 0}`; equality
+compares data addresses. The declared lower/index domain stays type metadata.
+Same resolved pointer type (including aliases) is required; separately declared
+pointer types are not interchangeable. Use a shared named pointer type in
+variables, fields and repeated routine headings. Rebuild affected host units.
+DEVICE pointers and DEVICE-interface storage remain thin and unchanged.
+Host descriptor parameters/results/storage imported into DEVICE code are
+explicitly rejected, not silently reinterpreted as thin pointers.
+
+Extended `UNSAFERAW(p)` explicitly exports element data as CPTR/ADRMEM.
+`UNSAFESUPER(P, raw, lower, upper)` explicitly imports to descriptor type P;
+runtime operands execute once. It requires matching lower, representable/domain-
+valid upper, non-NIL aligned data and nonoverflowing extent/address arithmetic,
+including under INDEXCK-. Both emit `unsafe-super-array-conversion` warnings
+and respect user routine shadowing; vintage and DEVICE uses are rejected.
+Import validates metadata, **not capacity, provenance, ownership or lifetime**;
+those are unsafe caller warranties. DISPOSE requires an exact compatible native
+allocation and an exclusive right to free it. C descriptor signatures, known
+slot-address escapes, implicit raw/ADS conversions, pointer arithmetic/ordering,
+numeric descriptor I/O and direct descriptor LAUNCH arguments are rejected.
+
+Host SUPER ARRAY NEW evaluates destination selection and upper once, validates
+representability/domain and lower <= upper, checks count/bytes in 128-bit
+arithmetic, then allocates elements directly. NULL allocation and invalid bounds/
+size produce deterministic `runtime error: NEW SUPER ARRAY ...` diagnostics and
+abort, even under INDEXCK-. Only success reaches one complete-descriptor store;
+the bound expression's own side effects are not rolled back. No element-zeroing
+or concurrent atomicity promise. LLVM allocation strides avoid narrow SIZEOF
+arithmetic; oversized element layouts, records beyond supported 32-bit field
+offsets, dynamic non-pointer element extents and over-aligned (>16) NEW elements
+are rejected. Ordinary thin-pointer NEW behavior is unchanged. DISPOSE frees the
+unchanged exact data base; aliases are not invalidated or protected from dangling
+access. Host `$INDEXCK+` now checks scalar super-array subscripts against the
+selected descriptor's declared lower and actual upper in widened signed/
+unsigned arithmetic, with the same executed-only constant diagnostic as fixed
+arrays; the offset/GEP reuses the checked full-width value and `$INDEXCK-`
+suppresses the guard. A checked subscript through a NIL descriptor fails
+deterministically (`runtime error: index through NIL super-array pointer`)
+before the bound comparison and before any data access; the index expression
+has already run exactly once, and whether its side effects happen before the
+NIL failure is deliberately not specified. `$INDEXCK` snapshot semantics and
+guard-free IR for disabled snapshots are probed for super subscripts in
+`tests/indexck_guard_ir.sh`. Borrowed non-pointer formals and dangling-alias
+detection remain deferred.
+
 `LOWER(expression)` and `UPPER(expression)` accept the 1981 manual's array,
 set, enumerated and subrange operands, subject to these native ABI limits:
 
 | Operand type | LOWER | UPPER | Evaluation |
 | --- | --- | --- | --- |
-| `^SUPER ARRAY` final dereference, including indexed/record designators and pointer-valued function call results such as `f(x)^` | declared lower bound | actual selected `NEW` allocation's upper-bound header | UPPER evaluates selection exactly once; LOWER does not evaluate |
+| host `^SUPER ARRAY` final dereference, including indexed/record designators and pointer-valued function call results such as `f(x)^` | declared lower bound | actual selected descriptor's upper bound | UPPER evaluates selection exactly once; LOWER does not evaluate |
 | fixed array | declared lower | declared upper | type only |
 | `STRING(n)` / `LSTRING(n)` | 1 / 0 | capacity `n` (not current length) | type only |
 | `VECTOR[n] OF T` (local extension) | 0 | `n-1` | type only |
@@ -375,9 +426,9 @@ rejected as bound operands.
 
 Static operands and `LOWER` use **only the type, not the value**, and never
 execute their index/call side effects. Dynamic `UPPER` evaluates a selected
-pointer, index or function call once, then reads the allocation header. A NIL
+pointer, index or function call once, then uses that descriptor's upper. A NIL
 selected pointer produces `runtime error: UPPER through NIL super-array pointer`
-before the header access; `LOWER` of the same NIL pointer stays type-only.
+before treating its upper as an array bound; `LOWER` of the same NIL pointer stays type-only.
 This defined NIL check intentionally changes the old unchecked `UPPER(p^)`
 behavior. Dangling pointers after `DISPOSE` are not detected.
 
@@ -389,8 +440,9 @@ subrange type declarations are supported for vintage INTEGER bounds within
 type; stores into them are range-checked as described under
 [Subrange range checks](#subrange-range-checks). Function call
 postfix selectors are supported only inside a bound operand; this does not
-make `f(x)^` a general expression elsewhere. Super-array formal-parameter
-bound propagation remains unaudited. The manual does not prescribe this
+make `f(x)^` a general expression elsewhere. Pointer descriptor formals preserve
+bounds; borrowed non-pointer super-array formals are explicitly rejected until
+their separate view ABI is implemented. The manual does not prescribe this
 implementation's NIL diagnostic or side-effect count.
 
 The Python reference parser accepts only `identifier ["^"]` here. Field,
@@ -454,7 +506,13 @@ index's snapshot, but does affect subsequent indexes.
 On host programs, an enabled snapshot guards a fixed `ARRAY [lo..hi] OF T`
 selector before computing its offset/address or accessing memory. This covers
 reads and writes through ordinary arrays, nested dimensions, record fields and
-pointers. Each index expression runs once. A checked out-of-range index,
+pointers. It also guards a host descriptor-backed `SUPER ARRAY` scalar
+subscript against the selected descriptor's declared lower and actual dynamic
+upper (the type table's high bound is a placeholder), reusing the same
+diagnostic with the actual upper printed as `HI`; a borrowed non-pointer
+super-array subscript is rejected rather than guarded, and `$INDEXCK-`
+suppresses the super-array guard as well. Each index expression runs once. A
+checked out-of-range index,
 including a constant, fails **when the access runs**, not at compile time: the
 runtime flushes stdout, prints
 
@@ -466,10 +524,10 @@ values) and the declared bounds, flushes stderr, then aborts (normally status
 guard; this does not make an out-of-bounds access safe. `$RANGECK` does not
 control array indexes.
 
-This slice does **not** add checks to `SUPER ARRAY` dynamic-bound subscripts
-(the type table's high bound is a placeholder), `STRING`/`LSTRING` subscripts,
+This slice does **not** add checks to `STRING`/`LSTRING` subscripts,
 or the capacities of `CONCAT`, `COPYLST`, `COPYSTR` and `INSERT`. Nor does it
-change `VECTOR` lane indexing or `VLOAD`/`VSTORE`: constant out-of-range vector
+change `VECTOR` lane indexing or the super-array guard's interaction with
+`VLOAD`/`VSTORE`: constant out-of-range vector
 lanes and fixed-array vector transfers retain their compile-time diagnostics;
 variable vector lanes and fixed-array transfer offsets do not use `$INDEXCK`.
 `VLOAD`/`VSTORE` through a `NEW`-allocated super-array pointer retain their

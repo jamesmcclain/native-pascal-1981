@@ -251,6 +251,7 @@ BEGIN
   root_nt := NodeType(root);
   is_device_root := GetBool(root, 'is_device');
   is_device_compiland := is_device_root;
+  lowering_host_interface_in_device := FALSE;
   is_nvptx_device := FALSE;
   lowering_spliced_interface := FALSE;
   defining_implementation := root_nt = 'ImplementationUnit';
@@ -787,11 +788,14 @@ BEGIN
         collapses to address space zero, which is exactly the flat pointer
         the CPU shim's kernel definition expects. }
       saved_device := is_device_compiland;
+      lowering_host_interface_in_device := saved_device AND
+        NOT GetBool(ArrItem(local_ifaces, li), 'is_device');
       is_device_compiland := is_device_compiland OR
         GetBool(ArrItem(local_ifaces, li), 'is_device');
       lowering_spliced_interface := TRUE;
       CodegenDeclList(GetObj(ArrItem(local_ifaces, li), 'decls'));
       lowering_spliced_interface := FALSE;
+      lowering_host_interface_in_device := FALSE;
       is_device_compiland := saved_device;
     END;
   END;

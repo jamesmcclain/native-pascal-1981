@@ -10,7 +10,12 @@ IMPLEMENTATION OF cg_expr_support;
 
 FUNCTION VariadicPromote(v: ADRMEM; tk: INTEGER; name: Str255): ADRMEM;
 BEGIN
-  IF IsAggregateTk(tk) THEN
+  IF ExposesHostDescriptor(tk) THEN
+  BEGIN
+    AbortWith2('codegen: a super-array descriptor cannot be a C variadic argument: ', name);
+    VariadicPromote := v;
+  END
+  ELSE IF IsAggregateTk(tk) THEN
   BEGIN
     AbortWith2('codegen: an aggregate cannot be a variadic argument, calling: ', name);
     VariadicPromote := v;

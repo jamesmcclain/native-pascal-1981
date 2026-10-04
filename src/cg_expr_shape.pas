@@ -39,10 +39,12 @@ BEGIN
     symi := LookupRoutine(nm);
     IF (symi = 0) OR (NOT RoutineIsFunc(symi)) THEN
     BEGIN
-      StaticDesignatorType := TK_UNKNOWN;
-      RETURN;
-    END;
-    cur_tid := routines[symi].ret_tk;
+      IF (UpperStr(nm) = 'UNSAFESUPER') AND NOT UserRoutineShadows(nm) AND
+         (ArrSize(GetObj(GetObj(node, 'base'), 'args')) = 4) THEN
+        cur_tid := LookupNamedType(GetStr(ArrItem(GetObj(GetObj(node, 'base'), 'args'), 0), 'name'))
+      ELSE BEGIN StaticDesignatorType := TK_UNKNOWN; RETURN END;
+    END
+    ELSE cur_tid := routines[symi].ret_tk;
   END
   ELSE BEGIN
     nm := GetStr(node, 'name');

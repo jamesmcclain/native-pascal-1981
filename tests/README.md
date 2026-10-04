@@ -2,6 +2,17 @@
 
 This directory contains the automated test suites for the native Pascal 1981 compiler toolchain.
 
+## Host descriptor contracts
+
+`make test-descriptor-contract` runs host SUPER ARRAY ABI/propagation, unsafe
+import/export and boundary-rejection probes, including DEVICE preservation.
+It is also part of `make test-native`. See
+[descriptor/README.md](descriptor/README.md) for coverage, the historical red
+baseline and how to run the focused goldens.
+`make test-super-new` (also in `make test-native`) checks mandatory bounds/size/
+allocation failures, once-only evaluation and transactional slot publication with
+test-only linker failure injection; no production allocator test hook.
+
 ## Overview of Test Suites
 
 ### 1. Driver Contract Test Suite (`tests/driver.sh`)

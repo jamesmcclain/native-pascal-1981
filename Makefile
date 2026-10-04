@@ -51,7 +51,7 @@ GEN4_BINS := $(addprefix $(BUILD_DIR)/gen4/,$(STAGES))
 BOOTSTRAP_BINS := $(addprefix $(BIN_DIR)/,$(STAGES))
 FIXED_POINT := $(BUILD_DIR)/.fixed-point-verified
 
-.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-driver test-native test-parser-named-index test-typecheck-named-index test-sysutil test-proxy test-gpu test-reference-parity test-elisp test-bootstrap test-pasboot check-bootstrap-subset
+.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-driver test-native test-descriptor-contract test-super-new test-parser-named-index test-typecheck-named-index test-sysutil test-proxy test-gpu test-reference-parity test-elisp test-bootstrap test-pasboot check-bootstrap-subset
 
 all: runtime driver bootstrap $(PROXY_BIN) $(PRETTY81_BIN)
 
@@ -65,7 +65,7 @@ $(PASBOOT): $(PASBOOT_SRCS)
 
 driver: $(DRIVER_BIN)
 
-$(DRIVER_BIN): src/driver.pas src/argparse.pas src/argparse.inc $(STAGE_SRCS) $(GEN4_BINS) $(FIXED_POINT) $(RUNTIME_LIB) | $(BIN_DIR)
+$(DRIVER_BIN): src/driver.pas src/argparse.pas src/argparse.inc $(STAGE_SRCS) $(GEN4_BINS) $(BOOTSTRAP_BINS) $(FIXED_POINT) $(RUNTIME_LIB) | $(BIN_DIR)
 	NATIVE_LEXER="$(abspath $(BUILD_DIR)/gen4/lexer)" NATIVE_PARSER="$(abspath $(BUILD_DIR)/gen4/parser)" NATIVE_TYPECHECKER="$(abspath $(BUILD_DIR)/gen4/typechecker)" NATIVE_CODEGEN="$(abspath $(BUILD_DIR)/gen4/codegen)" ./scripts/build-stage.sh $< $@
 	ln -sf pascal1981-native $(DRIVER_ALIAS)
 
@@ -162,13 +162,21 @@ test-pasboot: $(PASBOOT) $(RUNTIME_LIB)
 test-driver: $(DRIVER_BIN)
 	./tests/driver.sh
 
+# Whole host descriptor transport and explicit unsafe-boundary contracts.
+# Install current stages as well: the driver dispatches through bin/.
+test-descriptor-contract: $(DRIVER_BIN) bootstrap
+	./tests/descriptor_contract.sh
+
 test-parser-named-index: $(PRETTY81_BIN)
 	./tests/array_named_index_parser.sh
 
 test-typecheck-named-index: $(BIN_DIR)/typechecker $(BIN_DIR)/parser $(BIN_DIR)/lexer
 	./tests/array_named_index_typecheck.sh
 
-test-native: test-driver test-sysutil test-parser-named-index test-typecheck-named-index $(ASTCOMPARE_BIN) $(PROXY_BIN)
+test-super-new: $(DRIVER_BIN) bootstrap
+	bash tests/super_new_contract.sh
+
+test-native: test-driver test-sysutil test-parser-named-index test-typecheck-named-index test-descriptor-contract test-super-new $(ASTCOMPARE_BIN) $(PROXY_BIN)
 	$(CC) -o $(BUILD_DIR)/read_wide_runtime tests/read_wide_runtime.c $(RUNTIME_LIB)
 	$(BUILD_DIR)/read_wide_runtime
 	./tests/run.sh

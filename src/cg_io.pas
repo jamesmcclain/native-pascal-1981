@@ -218,8 +218,10 @@ BEGIN
       IF have_width THEN CONCAT(fmt, '%*d') ELSE CONCAT(fmt, '%d');
     END;
   END
-  ELSE IF TypeKind(tid) = TK_POINTER THEN
+  ELSE IF (TypeKind(tid) = TK_POINTER) OR (tid = TK_ADRMEM) THEN
   BEGIN
+    IF IsHostDescriptor(tid) THEN
+      AbortWith('codegen: numeric WRITE of a super-array descriptor is unsupported; use UNSAFERAW');
     { The manual reads pointer variables as numbers, in an
       implementation-defined format such that writing then reading
       preserves the value (13620-13623); this toolchain's format is
@@ -524,6 +526,8 @@ BEGIN
   END
   ELSE IF TypeKind(tid) = TK_POINTER THEN
   BEGIN
+    IF IsHostDescriptor(tid) THEN
+      AbortWith('codegen: numeric READ of a super-array descriptor is unsupported');
     { Pointer-as-number read, the implementation-defined round-trip format
       shared with WRITE's pointer path (manual 13620-13623). }
     tmp64 := EntryAlloca(i64ty, '');
@@ -913,6 +917,8 @@ BEGIN
     END
     ELSE IF TypeKind(tid) = TK_POINTER THEN
     BEGIN
+      IF IsHostDescriptor(tid) THEN
+        AbortWith('codegen: numeric READ of a super-array descriptor is unsupported');
       { Pointer-as-number read, round-tripping WRITE's unsigned-decimal
         pointer format (manual 13620-13623). }
       tmp64 := EntryAlloca(i64ty, '');

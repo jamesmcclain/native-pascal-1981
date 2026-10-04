@@ -1172,6 +1172,8 @@ BEGIN
     ELSE actual := ArrItem(args, i + 7);
     val := CodegenExpr(actual);
     actual_tk := last_val_tk;
+    IF ExposesHostDescriptor(actual_tk) THEN
+      AbortWith('codegen: LAUNCH cannot pass a host super-array descriptor; use UNSAFERAW');
     val := CoerceForAssign(val, actual_tk, routines[ridx].param_tk[i + 1], actual, kernel_name);
     cell := EntryAlloca(LLVMTypeForTk(routines[ridx].param_tk[i + 1]), 'launch_arg');
     LLVMBuildStore(builder, val, cell);
@@ -1268,6 +1270,8 @@ FUNCTION CoerceToI8Ptr(v: ADRMEM; tk: INTEGER): ADRMEM;
   representation (ADRMEM, e.g. DEVALLOC's own result) or a typed ^T POINTER
   value; either way the shim's C signature wants a flat i8*. }
 BEGIN
+  IF IsHostDescriptor(tk) THEN
+    AbortWith('codegen: DEVICE address conversion cannot discard a super-array descriptor; use UNSAFERAW');
   IF tk = TK_ADRMEM THEN CoerceToI8Ptr := v
   ELSE CoerceToI8Ptr := LLVMBuildBitCast(builder, v, i8ptrty, MakeCStr(''));
 END;
@@ -1320,7 +1324,7 @@ PROCEDURE CodegenVStoreStmt(args: ADRMEM);
 VAR
   arr_v, idx_v, vec_v: ADRMEM;
   arr_tid, idx_tk, vec_tk: INTEGER;
-  has_hdr: BOOLEAN;
+  has_hdr: ADRMEM;
 BEGIN
   IF ArrSize(args) <> 3 THEN
     AbortWith('codegen: VSTORE expects (array, index, vector)');
@@ -1332,6 +1336,28 @@ BEGIN
   CodegenVStore(arr_v, arr_tid, idx_v, idx_tk, vec_v, vec_tk, ArrItem(args, 1), has_hdr);
 END;
 
+FUNCTION AllocateSuper(arr_tid: INTEGER; bound, bound_unsigned: ADRMEM): ADRMEM;
+VAR vals, tys, fnty, fn: ADRMEM; low, high, stride: CLONG; alignment: INTEGER32;
+BEGIN
+  SuperDomainLimits(arr_tid, low, high);
+  stride := SuperElementSize(types[arr_tid].elem_tid);
+  alignment := LLVMABIAlignmentOfType(LLVMGetModuleDataLayout(modl), LLVMTypeForTk(types[arr_tid].elem_tid));
+  IF alignment > 16 THEN
+    AbortWith('codegen: NEW of over-aligned SUPER ARRAY elements is unsupported');
+  vals := AllocPtrArray(7); tys := AllocPtrArray(7);
+  SetPtrArrayElem(vals, 0, bound); SetPtrArrayElem(tys, 0, i64ty);
+  SetPtrArrayElem(vals, 1, bound_unsigned); SetPtrArrayElem(tys, 1, i32ty);
+  SetPtrArrayElem(vals, 2, LLVMConstInt(i64ty, types[arr_tid].lo, 1)); SetPtrArrayElem(tys, 2, i64ty);
+  SetPtrArrayElem(vals, 3, LLVMConstInt(i64ty, low, 1)); SetPtrArrayElem(tys, 3, i64ty);
+  SetPtrArrayElem(vals, 4, LLVMConstInt(i64ty, high, 1)); SetPtrArrayElem(tys, 4, i64ty);
+  SetPtrArrayElem(vals, 5, LLVMConstInt(i64ty, stride, 0)); SetPtrArrayElem(tys, 5, i64ty);
+  SetPtrArrayElem(vals, 6, LLVMConstInt(i64ty, alignment, 0)); SetPtrArrayElem(tys, 6, i64ty);
+  fnty := LLVMFunctionType(i8ptrty, tys, 7, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_super_new'));
+  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr('pas_super_new'), fnty);
+  AllocateSuper := LLVMBuildCall2(builder, fnty, fn, vals, 7, MakeCStr(''));
+END;
+
 PROCEDURE CodegenProcCallStmt(stmt: ADRMEM);
 VAR
   name: Str255;
@@ -1339,7 +1365,7 @@ VAR
   args, arg0: ADRMEM;
   symi: INTEGER32;
   ptr_tid, pointee_tid: INTEGER;
-  raw, casted, call_args, bound, bytes, header, ptr_slot: ADRMEM;
+  raw, casted, call_args, bound, bound_unsigned, ptr_slot: ADRMEM;
   narg: INTEGER32;
   fcb_ptr, assign_chars, assign_len: ADRMEM;
 BEGIN
@@ -1446,6 +1472,10 @@ BEGIN
       AbortWith2('codegen: argument must be a pointer variable: ', name);
     IF TypeKind(ptr_tid) <> TK_POINTER THEN
       AbortWith2('codegen: argument is not a POINTER variable: ', name);
+    pointee_tid := types[ptr_tid].elem_tid;
+    IF TypeKind(pointee_tid) = TK_ARRAY THEN
+      IF types[pointee_tid].is_super AND NOT IsHostDescriptor(ptr_tid) THEN
+        AbortWith('codegen: host NEW/DISPOSE of SUPER ARRAY requires a descriptor pointer');
     IF name = 'NEW' THEN
     BEGIN
       pointee_tid := types[ptr_tid].elem_tid;
@@ -1453,17 +1483,11 @@ BEGIN
       IF types[pointee_tid].is_super THEN
       BEGIN
         IF narg <> 2 THEN AbortWith('codegen: NEW of SUPER ARRAY needs an upper bound');
-        bound := CodegenExpr(ArrItem(args, 1));
-        bound := LaunchI64(bound, last_val_tk);
-        { malloc holds an i64 upper-bound header followed by flat elements. }
-        bytes := LLVMBuildAdd(builder, bound, LLVMConstInt(i64ty, 1 - types[pointee_tid].lo, 1), MakeCStr(''));
-        bytes := LLVMBuildMul(builder, bytes, LLVMConstInt(i64ty, TypeSizeBytes(types[pointee_tid].elem_tid), 0), MakeCStr(''));
-        bytes := LLVMBuildAdd(builder, bytes, LLVMConstInt(i64ty, 8, 0), MakeCStr(''));
-        SetPtrArrayElem(call_args, 0, bytes);
-        raw := LLVMBuildCall2(builder, malloc_fnty, malloc_fn, call_args, 1, MakeCStr(''));
-        LLVMBuildStore(builder, bound, raw);
-        header := LLVMBuildGEP2(builder, i8ty, raw, MakeArgs1(LLVMConstInt(i64ty, 8, 0)), 1, MakeCStr(''));
-        casted := LLVMBuildBitCast(builder, header, LLVMTypeForTk(ptr_tid), MakeCStr(''));
+        bound := SuperBoundBits(ArrItem(args, 1), bound_unsigned);
+        { The helper validates widened bounds/size and must return allocated
+          data before the sole complete-descriptor publication below. }
+        raw := AllocateSuper(pointee_tid, bound, bound_unsigned);
+        casted := MakeDescriptor(ptr_tid, raw, bound);
       END
       ELSE
       BEGIN
@@ -1476,10 +1500,9 @@ BEGIN
     ELSE
     BEGIN
       raw := LLVMBuildLoad2(builder, LLVMTypeForTk(ptr_tid), ptr_slot, MakeCStr(''));
+      IF IsHostDescriptor(ptr_tid) THEN
+        raw := LLVMBuildExtractValue(builder, raw, 0, MakeCStr(''));
       casted := LLVMBuildBitCast(builder, raw, i8ptrty, MakeCStr(''));
-      IF types[types[ptr_tid].elem_tid].is_super THEN
-        casted := LLVMBuildGEP2(builder, i8ty, casted,
-          MakeArgs1(LLVMConstInt(i64ty, -8, 1)), 1, MakeCStr(''));
       call_args := AllocPtrArray(1);
       SetPtrArrayElem(call_args, 0, casted);
       discard := LLVMBuildCall2(builder, free_fnty, free_fn, call_args, 1, MakeCStr(''));

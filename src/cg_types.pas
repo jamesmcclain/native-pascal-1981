@@ -115,6 +115,7 @@ BEGIN
   types[ntypes].hi := hi;
   types[ntypes].index_tid := TK_INTEGER;
   types[ntypes].is_super := FALSE;
+  types[ntypes].is_descriptor := FALSE;
   types[ntypes].is_subrange := FALSE;
   types[ntypes].ptr_space := PTR_SPACE_PLAIN;
   types[ntypes].enum_values := NIL;
@@ -175,6 +176,85 @@ BEGIN
   EnsureBoolVectorType := found;
 END;
 
+FUNCTION IsHostDescriptor(tid: INTEGER): BOOLEAN;
+BEGIN
+  IsHostDescriptor := FALSE;
+  IF TypeKind(tid) = TK_POINTER THEN
+    IsHostDescriptor := types[tid].is_descriptor;
+END;
+
+FUNCTION ContainsHostDescriptor(tid: INTEGER): BOOLEAN;
+VAR i: INTEGER; found: BOOLEAN;
+BEGIN
+  found := IsHostDescriptor(tid);
+  IF TypeKind(tid) = TK_ARRAY THEN
+    found := ContainsHostDescriptor(types[tid].elem_tid)
+  ELSE IF TypeKind(tid) = TK_RECORD THEN
+    FOR i := 1 TO nfields DO
+      IF fields[i].rec_tid = tid THEN
+        IF ContainsHostDescriptor(fields[i].field_tid) THEN found := TRUE;
+  ContainsHostDescriptor := found;
+END;
+
+FUNCTION WalkDescriptorExposure(tid: INTEGER; VAR seen: DescriptorVisitArr): BOOLEAN;
+VAR i: INTEGER; found: BOOLEAN;
+BEGIN
+  found := FALSE;
+  IF tid >= 14 THEN
+    IF NOT seen[tid] THEN
+    BEGIN
+      seen[tid] := TRUE;
+      found := IsHostDescriptor(tid);
+      IF (TypeKind(tid) = TK_POINTER) OR (TypeKind(tid) = TK_ARRAY) THEN
+        IF WalkDescriptorExposure(types[tid].elem_tid, seen) THEN found := TRUE;
+      IF TypeKind(tid) = TK_RECORD THEN
+        FOR i := 1 TO nfields DO
+          IF fields[i].rec_tid = tid THEN
+            IF WalkDescriptorExposure(fields[i].field_tid, seen) THEN found := TRUE;
+    END;
+  WalkDescriptorExposure := found;
+END;
+
+FUNCTION ExposesHostDescriptor(tid: INTEGER): BOOLEAN;
+{ Follow statically typed address paths as well as embedded values; a visited
+  set terminates recursive records. Opaque ADRMEM/CPTR paths remain unsafe. }
+VAR seen: DescriptorVisitArr; i: INTEGER;
+BEGIN
+  IF tid < 14 THEN ExposesHostDescriptor := FALSE
+  ELSE
+  BEGIN
+    FOR i := 1 TO MAX_TYPES DO seen[i] := FALSE;
+    ExposesHostDescriptor := WalkDescriptorExposure(tid, seen);
+  END;
+END;
+
+FUNCTION SameStoragePointerTarget(a, b: INTEGER): BOOLEAN;
+BEGIN
+  SameStoragePointerTarget := FALSE;
+  IF (TypeKind(a) = TK_POINTER) AND (TypeKind(b) = TK_POINTER) THEN
+    SameStoragePointerTarget := (types[a].elem_tid = types[b].elem_tid) AND PointerSpacesCompatible(a, b);
+END;
+
+FUNCTION MakeDescriptor(tid: INTEGER; data, bound_value: ADRMEM): ADRMEM;
+VAR v: ADRMEM;
+BEGIN
+  v := LLVMBuildInsertValue(builder, LLVMConstNull(LLVMTypeForTk(tid)), data, 0, MakeCStr(''));
+  MakeDescriptor := LLVMBuildInsertValue(builder, v, bound_value, 1, MakeCStr(''));
+END;
+
+PROCEDURE SuperDomainLimits(arr_tid: INTEGER; VAR low, high: INTEGER64);
+VAR host: INTEGER;
+BEGIN
+  host := types[arr_tid].index_tid;
+  IF host = TK_INTEGER THEN BEGIN low := -32768; high := 32767 END
+  ELSE IF host = TK_WORD THEN BEGIN low := 0; high := 65535 END
+  ELSE IF host = TK_CHAR THEN BEGIN low := 0; high := 255 END
+  ELSE IF host = TK_BOOLEAN THEN BEGIN low := 0; high := 1 END
+  ELSE IF TypeKind(host) = TK_ENUM THEN
+  BEGIN low := types[host].lo; high := types[host].hi END
+  ELSE AbortWith('codegen: unsupported SUPER ARRAY index domain');
+END;
+
 FUNCTION PointerSpacesCompatible(from_tid, to_tid: INTEGER): BOOLEAN;
 { Assignment compatibility between two pointer types, mirroring the reference
   type system's PointerType.equivalent_to: a plain `^T` is a wildcard against
@@ -184,7 +264,9 @@ FUNCTION PointerSpacesCompatible(from_tid, to_tid: INTEGER): BOOLEAN;
   kernel declared `ADS(GLOBAL) OF T` by an imported DEVICE INTERFACE, since
   the two type_exprs register separate tids. }
 BEGIN
-  IF (TypeKind(from_tid) <> TK_POINTER) OR (TypeKind(to_tid) <> TK_POINTER) THEN
+  IF IsHostDescriptor(from_tid) OR IsHostDescriptor(to_tid) THEN
+    PointerSpacesCompatible := from_tid = to_tid
+  ELSE IF (TypeKind(from_tid) <> TK_POINTER) OR (TypeKind(to_tid) <> TK_POINTER) THEN
     PointerSpacesCompatible := FALSE
   ELSE IF (types[from_tid].ptr_space = PTR_SPACE_PLAIN) OR
           (types[to_tid].ptr_space = PTR_SPACE_PLAIN) THEN
@@ -236,7 +318,9 @@ BEGIN
     none -- a comparison result via EnsureBoolVectorType, a VSPLAT/VSELECT
     result) produced the tid. Same structural rule as SET just above; every
     such vector has the identical <n x T> layout. }
-  TypesCompatibleForAssign := (from_tid = to_tid) OR
+  IF IsHostDescriptor(from_tid) OR IsHostDescriptor(to_tid) THEN
+    TypesCompatibleForAssign := from_tid = to_tid
+  ELSE TypesCompatibleForAssign := (from_tid = to_tid) OR
     ((TypeKind(from_tid) = TK_VECTOR) AND (TypeKind(to_tid) = TK_VECTOR)
        AND (types[from_tid].elem_tid = types[to_tid].elem_tid)
        AND (types[from_tid].lo = types[to_tid].lo)
@@ -477,7 +561,24 @@ FUNCTION CoerceForAssign(v: ADRMEM; from_tid, to_tid: INTEGER; expr_node: ADRMEM
   same as the reference (use WRD(...) / an INTEGER8-typed expression
   explicitly). }
 BEGIN
-  IF TypesCompatibleForAssign(from_tid, to_tid) THEN
+  IF IsHostDescriptor(to_tid) AND (NodeType(expr_node) = 'NilLiteral') THEN
+    CoerceForAssign := LLVMConstNull(LLVMTypeForTk(to_tid))
+  ELSE IF (IsHostDescriptor(from_tid) OR IsHostDescriptor(to_tid)) AND (from_tid <> to_tid) THEN
+  BEGIN
+    AbortWith2('codegen: incompatible super-array descriptor pointer; use explicit unsafe conversion: ', ctx_name);
+    CoerceForAssign := NIL;
+  END
+  ELSE IF (from_tid <> to_tid) AND ExposesHostDescriptor(from_tid) AND
+          ((to_tid = TK_ADRMEM) OR (TypeKind(to_tid) = TK_POINTER)) THEN
+  BEGIN
+    IF SameStoragePointerTarget(from_tid, to_tid) THEN CoerceForAssign := v
+    ELSE
+    BEGIN
+      AbortWith2('codegen: implicit escape of super-array descriptor storage is unsupported: ', ctx_name);
+      CoerceForAssign := NIL;
+    END;
+  END
+  ELSE IF TypesCompatibleForAssign(from_tid, to_tid) THEN
     CoerceForAssign := v
   ELSE IF (from_tid = TK_INTEGER) AND ((to_tid = TK_INTEGER8) OR (to_tid = TK_WORD8)) AND IsIntLiteralLike(expr_node) THEN
     CoerceForAssign := LLVMConstInt(i8ty, IntLiteralValue(expr_node), 1)
@@ -777,6 +878,7 @@ BEGIN
   ELSE IF TypeKind(tid) = TK_LSTRING THEN TypeSizeBytes := types[tid].hi + 1
   ELSE IF TypeKind(tid) = TK_STRING THEN TypeSizeBytes := types[tid].hi
   ELSE IF TypeKind(tid) = TK_SET THEN TypeSizeBytes := 32
+  ELSE IF IsHostDescriptor(tid) THEN TypeSizeBytes := 16
   ELSE IF TypeKind(tid) = TK_POINTER THEN TypeSizeBytes := 8
   ELSE IF TypeKind(tid) = TK_VECTOR THEN
     { Vector lanes are packed -- no inter-lane padding, unlike an ARRAY's
@@ -791,6 +893,45 @@ BEGIN
   END;
 END;
 
+FUNCTION SuperElementSize(tid: INTEGER): CLONG;
+{ Validate before LLVM computes an overflowing layout. Arrays use wide actual
+  allocation strides; record offsets still have the compiler's INTEGER32 limit.
+  Check each field span, including overlapping variant alternatives. }
+VAR child, count, limit: CLONG; i: INTEGER;
+BEGIN
+  limit := 2147483647;
+  limit := limit * 4294967296 + 4294967295;
+  IF TypeKind(tid) = TK_ARRAY THEN
+  BEGIN
+    IF types[tid].is_super THEN
+      AbortWith('codegen: SUPER ARRAY allocation requires statically sized elements');
+    child := SuperElementSize(types[tid].elem_tid);
+    count := types[tid].hi; count := count - types[tid].lo + 1;
+    IF count < 0 THEN AbortWith('codegen: SUPER ARRAY element layout is too large');
+    IF child > 0 THEN
+      IF count > limit DIV child THEN
+        AbortWith('codegen: SUPER ARRAY element layout is too large');
+  END
+  ELSE IF TypeKind(tid) = TK_RECORD THEN
+  BEGIN
+    FOR i := 1 TO nfields DO
+      IF fields[i].rec_tid = tid THEN
+      BEGIN
+        child := SuperElementSize(fields[i].field_tid);
+        IF fields[i].byte_offset < 0 THEN
+          AbortWith('codegen: SUPER ARRAY element record layout exceeds supported offsets');
+        IF child > 2147483647 - fields[i].byte_offset THEN
+          AbortWith('codegen: SUPER ARRAY element record layout exceeds supported offsets');
+      END;
+  END;
+  child := LLVMABISizeOfType(LLVMGetModuleDataLayout(modl), LLVMTypeForTk(tid));
+  IF child < 0 THEN AbortWith('codegen: SUPER ARRAY element layout is too large');
+  IF TypeKind(tid) = TK_RECORD THEN
+    IF child > 2147483647 THEN
+      AbortWith('codegen: SUPER ARRAY element record layout exceeds supported offsets');
+  SuperElementSize := child;
+END;
+
 FUNCTION IsAggregateTk(tk: INTEGER): BOOLEAN;
 { The types that cross the C ABI as aggregates rather than as single
   machine values -- exactly the set FlattenParams marks needs_copy for, kept
@@ -799,7 +940,7 @@ FUNCTION IsAggregateTk(tk: INTEGER): BOOLEAN;
 BEGIN
   IsAggregateTk := (TypeKind(tk) = TK_ARRAY) OR (TypeKind(tk) = TK_RECORD) OR
                    (TypeKind(tk) = TK_LSTRING) OR (TypeKind(tk) = TK_STRING) OR
-                   (TypeKind(tk) = TK_VECTOR);
+                   (TypeKind(tk) = TK_VECTOR) OR IsHostDescriptor(tk);
 END;
 
 FUNCTION SysVMergeClass(a: INTEGER; b: INTEGER): INTEGER;
@@ -824,7 +965,7 @@ BEGIN
                 OR (tid = TK_WORD8) OR (tid = TK_BOOLEAN) OR (tid = TK_CHAR)
                 OR (tid = TK_INTEGER32) OR (tid = TK_WORD32) OR (tid = TK_REAL32)
                 OR (tid = TK_INTEGER64) OR (tid = TK_WORD64) OR (tid = TK_REAL)
-                OR (tid = TK_ADRMEM) OR (TypeKind(tid) = TK_POINTER);
+                OR (tid = TK_ADRMEM) OR ((TypeKind(tid) = TK_POINTER) AND NOT IsHostDescriptor(tid));
 END;
 
 PROCEDURE WalkTypeLeaves(tid_in: INTEGER; base_off: INTEGER32; VAR nleaves: INTEGER32;
@@ -850,6 +991,11 @@ BEGIN
     nleaves := nleaves + 1;
     leaf_off[nleaves] := base_off;
     leaf_tid[nleaves] := tid;
+  END
+  ELSE IF IsHostDescriptor(tid) THEN
+  BEGIN
+    WalkTypeLeaves(TK_ADRMEM, base_off, nleaves, leaf_off, leaf_tid);
+    WalkTypeLeaves(TK_INTEGER64, base_off + 8, nleaves, leaf_off, leaf_tid);
   END
   ELSE IF TypeKind(tid) = TK_ARRAY THEN
   BEGIN
@@ -1034,6 +1180,44 @@ BEGIN
   END;
 END;
 
+PROCEDURE ClassifyParamAt(VAR tks: ParamTkArr; VAR refs, copies: ParamVarArr;
+                          at: INTEGER32; has_sret: BOOLEAN;
+                          VAR agg_class, n_pieces: INTEGER;
+                          VAR piece_kind: SysVPieceArr; VAR piece_bytes: SysVPieceSzArr);
+{ SysV rolls an aggregate back to MEMORY when all its register pieces do
+  not fit. Recompute from the signature at every declaration/body/call site
+  so register exhaustion cannot split a descriptor or drift between units. }
+VAR i: INTEGER32; gp, fp, ngp, nfp, eb: INTEGER;
+BEGIN
+  gp := 6; fp := 8;
+  IF has_sret THEN gp := gp - 1;
+  FOR i := 1 TO at DO
+  BEGIN
+    agg_class := 0; n_pieces := 0;
+    IF refs[i] THEN gp := gp - 1
+    ELSE IF copies[i] THEN
+    BEGIN
+      ClassifyAggregate(tks[i], agg_class, n_pieces, piece_kind, piece_bytes);
+      IF agg_class = SYSV_CLASS_COERCED THEN
+      BEGIN
+        ngp := 0; nfp := 0;
+        FOR eb := 1 TO n_pieces DO
+          IF piece_kind[eb] = SYSV_PIECE_INTEGER THEN ngp := ngp + 1
+          ELSE nfp := nfp + 1;
+        IF (ngp > gp) OR (nfp > fp) THEN
+        BEGIN agg_class := SYSV_CLASS_MEMORY; n_pieces := 0 END
+        ELSE BEGIN gp := gp - ngp; fp := fp - nfp END;
+      END;
+    END
+    ELSE IF (tks[i] = TK_REAL) OR (tks[i] = TK_REAL32) OR
+                 (TypeKind(tks[i]) = TK_VECTOR) THEN fp := fp - 1
+    ELSE IF TypeKind(tks[i]) = TK_SET THEN gp := gp - 4
+    ELSE gp := gp - 1;
+    IF gp < 0 THEN gp := 0;
+    IF fp < 0 THEN fp := 0;
+  END;
+END;
+
 FUNCTION SysVAggClass(tk: INTEGER): INTEGER;
 { Memory-vs-register answer only, for callers that do not need the per-piece
   breakdown ClassifyAggregate reports. Returns plain INTEGER (not INTEGER32),
@@ -1195,7 +1379,7 @@ BEGIN
     IF ci <> 0 THEN
       IF const_tbl[ci].enum_tid <> 0 THEN BoundHostTid := const_tbl[ci].enum_tid
       ELSE IF const_tbl[ci].is_char THEN BoundHostTid := TK_CHAR
-      ELSE IF const_tbl[ci].integer_tid = TK_BOOLEAN THEN BoundHostTid := TK_BOOLEAN;
+      ELSE IF const_tbl[ci].integer_tid <> 0 THEN BoundHostTid := const_tbl[ci].integer_tid;
   END;
 END;
 
@@ -1445,6 +1629,7 @@ VAR
   mi: INTEGER32;
   named_tid: INTEGER;
   idx_host: INTEGER; { named array index: the index type's host tid }
+  domain_low, domain_high: INTEGER64;
 BEGIN
   nt := NodeType(te);
   IF nt = 'NamedType' THEN
@@ -1574,6 +1759,16 @@ BEGIN
         flat element pointer and c^[i] can use a one-index GEP. }
       tid := RegisterType(TK_ARRAY, elem_tid, lo, lo, LLVMTypeForTk(elem_tid));
       types[tid].is_super := TRUE;
+      types[tid].index_tid := BoundHostTid(GetObj(GetObj(te, 'index_range'), 'low'));
+      IF (types[tid].index_tid = TK_INTEGER) AND (lo > 32767) AND
+         (NodeType(GetObj(GetObj(te, 'index_range'), 'low')) <> 'Identifier') THEN
+        types[tid].index_tid := TK_WORD;
+      IF (NOT is_device_compiland) OR lowering_host_interface_in_device THEN
+      BEGIN
+        SuperDomainLimits(tid, domain_low, domain_high);
+        IF (lo < domain_low) OR (lo > domain_high) THEN
+          AbortWith('codegen: SUPER ARRAY lower bound is outside declared index domain');
+      END;
     END
     ELSE
     BEGIN
@@ -1764,6 +1959,16 @@ BEGIN
     IF arr_ty = NIL THEN arr_ty := LLVMPointerType(LLVMTypeForTk(elem_tid), lo);
     tid := RegisterType(TK_POINTER, elem_tid, 0, 0, arr_ty);
     types[tid].ptr_space := space_code;
+    IF ((NOT is_device_compiland) OR lowering_host_interface_in_device) AND (space_code = PTR_SPACE_PLAIN) THEN
+      IF TypeKind(elem_tid) = TK_ARRAY THEN
+        types[tid].is_descriptor := types[elem_tid].is_super;
+    IF IsHostDescriptor(tid) THEN
+    BEGIN
+      arr_ty := AllocPtrArray(2);
+      SetPtrArrayElem(arr_ty, 0, i8ptrty);
+      SetPtrArrayElem(arr_ty, 1, i64ty);
+      types[tid].llvm_ty := LLVMStructTypeInContext(ctx, arr_ty, 2, 0);
+    END;
   END
   ELSE IF nt = 'FileType' THEN
   BEGIN

@@ -1,0 +1,8 @@
+(*$INCLUDE:'descriptor_units.api.inc'*)
+IMPLEMENTATION OF descriptorapi;
+VAR shared: PCells;
+FUNCTION Relay(src: PCells): PCells;
+BEGIN Relay := src END;
+PROCEDURE Replace(VAR dest: PCells; src: PCells);
+BEGIN dest := src END;
+BEGIN shared := NIL END.

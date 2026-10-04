@@ -428,16 +428,16 @@ END;
 
 FUNCTION SuperLaneRangeCheck(arr_ptr: ADRMEM; arr_tid: INTEGER;
                              idx_val: ADRMEM; idx_tk: INTEGER;
-                             n: INTEGER32; is_store: BOOLEAN): ADRMEM;
+                             n: INTEGER32; super_upper: ADRMEM; is_store: BOOLEAN): ADRMEM;
 { Whole-lane-range check for a NEW-allocated SUPER ARRAY, emitted once
   before any lane is touched: arr_ptr must be non-NIL, and
-  lo <= idx AND idx + (n-1) <= hi, where hi is the i64 upper bound NEW
-  stored 8 bytes in front of the data. The arithmetic is done in i128 so no
+  lo <= idx AND idx + (n-1) <= hi, where hi is the selected descriptor's
+  i64 upper bound (never a pre-data header). The arithmetic is done in i128 so no
   index width (WORD64 included) or bound can overflow the comparison. On
   failure a cold block calls a noreturn runtime diagnostic. Returns the
   i64 element offset idx - lo for the GEP. }
 VAR
-  i128ty, idx128, lo128, hi128, last128, bytep, hdrp, hi64: ADRMEM;
+  i128ty, idx128, lo128, hi128, last128, bytep, hi64: ADRMEM;
   isnull, ok, okhi, nil_bb, hdr_bb, oob_bb, ok_bb, args, discard: ADRMEM;
   op_code: INTEGER;
 BEGIN
@@ -465,11 +465,7 @@ BEGIN
   discard := LLVMBuildUnreachable(builder);
 
   LLVMPositionBuilderAtEnd(builder, hdr_bb);
-  args := AllocPtrArray(1);
-  SetPtrArrayElem(args, 0, LLVMConstInt(i64ty, -8, 1));
-  hdrp := LLVMBuildGEP2(builder, i8ty, bytep, args, 1, MakeCStr(''));
-  hdrp := LLVMBuildBitCast(builder, hdrp, LLVMPointerType(i64ty, 0), MakeCStr(''));
-  hi64 := LLVMBuildLoad2(builder, i64ty, hdrp, MakeCStr(''));
+  hi64 := super_upper;
   hi128 := LLVMBuildSExt(builder, hi64, i128ty, MakeCStr(''));
   last128 := LLVMBuildAdd(builder, idx128, LLVMConstInt(i128ty, n - 1, 0), MakeCStr(''));
   ok := LLVMBuildICmp(builder, LLVMIntSGE, idx128, lo128, MakeCStr(''));
@@ -500,7 +496,7 @@ END;
 FUNCTION CodegenVectorEltPtr(arr_ptr: ADRMEM; arr_tid: INTEGER;
                              idx_val: ADRMEM; idx_tk: INTEGER;
                              vec_tid: INTEGER; idx_node: ADRMEM;
-                             has_bound_hdr: BOOLEAN; is_store: BOOLEAN): ADRMEM;
+                             has_bound_hdr: ADRMEM; is_store: BOOLEAN): ADRMEM;
 VAR
   n: INTEGER32;
   folded, lo64, last_ok: INTEGER64;
@@ -518,16 +514,14 @@ BEGIN
   lo64 := types[arr_tid].lo;
   IF types[arr_tid].is_super THEN
   BEGIN
-    { A SUPER ARRAY's upper bound exists only at run time, and only in
-      NEW's header in front of a p^ pointee. Anything else (a bare SUPER
-      variable, a VAR parameter, an ADS pointee, DEVICE code) has no bound
-      to check against, so it is rejected rather than lowered unchecked. }
-    IF NOT has_bound_hdr THEN
+    { Only selected host descriptor dereferences supply a bound. Bare
+      borrowed arrays and DEVICE pointers do not acquire fabricated bounds. }
+    IF has_bound_hdr = NIL THEN
       AbortWith('codegen: VLOAD/VSTORE of a SUPER ARRAY has no runtime bound; use a NEW-allocated pointer dereference (p^)');
     IF IsIntLiteralLike(idx_node) AND FoldConstInt(idx_node, folded) THEN
       IF folded < lo64 THEN
         AbortWith('codegen: VLOAD/VSTORE index is below the array lower bound');
-    offset := SuperLaneRangeCheck(arr_ptr, arr_tid, idx_val, idx_tk, n, is_store);
+    offset := SuperLaneRangeCheck(arr_ptr, arr_tid, idx_val, idx_tk, n, has_bound_hdr, is_store);
     gep_idx := AllocPtrArray(1);
     SetPtrArrayElem(gep_idx, 0, offset);
     CodegenVectorEltPtr := LLVMBuildGEP2(builder, LLVMTypeForTk(arr_tid), arr_ptr, gep_idx, 1, MakeCStr(''));
@@ -555,7 +549,7 @@ END;
 FUNCTION CodegenVLoad(arr_ptr: ADRMEM; arr_tid: INTEGER;
                       idx_val: ADRMEM; idx_tk: INTEGER;
                       vec_tid: INTEGER; idx_node: ADRMEM;
-                      has_bound_hdr: BOOLEAN): ADRMEM;
+                      has_bound_hdr: ADRMEM): ADRMEM;
 VAR
   eltp, ld: ADRMEM;
 BEGIN
@@ -571,7 +565,7 @@ END;
 PROCEDURE CodegenVStore(arr_ptr: ADRMEM; arr_tid: INTEGER;
                         idx_val: ADRMEM; idx_tk: INTEGER;
                         vec_val: ADRMEM; vec_tid: INTEGER; idx_node: ADRMEM;
-                        has_bound_hdr: BOOLEAN);
+                        has_bound_hdr: ADRMEM);
 { Per-lane extract + scalar store. A single `store <n x T>` would default
   to the vector's ABI alignment, an over-claim for an element-aligned
   array, and the [C] binding for LLVMBuildStore discards the instruction

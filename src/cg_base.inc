@@ -42,6 +42,9 @@ FUNCTION LLVMCreateBuilderInContext(ctx: ADRMEM): ADRMEM [C];
 PROCEDURE LLVMPositionBuilderAtEnd(b: ADRMEM; bb: ADRMEM) [C];
 PROCEDURE LLVMSetTarget(m: ADRMEM; triple: ADRMEM) [C];
 PROCEDURE LLVMSetDataLayout(m: ADRMEM; layout: ADRMEM) [C];
+FUNCTION LLVMGetModuleDataLayout(m: ADRMEM): ADRMEM [C];
+FUNCTION LLVMABISizeOfType(layout, ty: ADRMEM): CLONG [C];
+FUNCTION LLVMABIAlignmentOfType(layout, ty: ADRMEM): CINT [C];
 PROCEDURE LLVMSetFunctionCallConv(fn: ADRMEM; cc: CINT) [C];
 FUNCTION LLVMMDStringInContext2(ctx: ADRMEM; str: ADRMEM; slen: CLONG): ADRMEM [C];
 FUNCTION LLVMMDNodeInContext2(ctx: ADRMEM; mds: ADRMEM; nmds: CLONG): ADRMEM [C];
@@ -254,7 +257,7 @@ CONST
     SysV classifier ever walks: it only runs on types of at most 16 bytes and
     the smallest leaf is 1 byte, so 16 is the true maximum; 32 leaves headroom
     and the walker aborts loudly rather than truncating if it is ever hit. }
-  MAX_ROUTINES = 384;
+  MAX_ROUTINES = 512;
   MAX_TYPES = 200;
   MAX_TYPE_NAMES = 200;
   MAX_FWD_TYPES = 64;
@@ -318,8 +321,10 @@ TYPE
     tk: INTEGER;      { TK_ARRAY or TK_RECORD }
     elem_tid: INTEGER; { ARRAY only: the element type's id }
     lo, hi: INTEGER32; { ARRAY/SET bounds can include vintage WORD values }
-    index_tid: INTEGER; { fixed ARRAY's ordinal index type }
-    is_super: BOOLEAN; { SUPER ARRAY is represented as a flat element pointer }
+    index_tid: INTEGER; { ARRAY's immutable ordinal index domain }
+    is_super: BOOLEAN; { SUPER ARRAY referent uses flat element storage }
+    is_descriptor: BOOLEAN; { POINTER storage chosen at registration, not
+                              when later queried across a DEVICE interface }
     is_subrange: BOOLEAN; { scalar whose declared bounds are lo..hi }
     ptr_space: INTEGER; { POINTER only: PTR_SPACE_PLAIN for `^T`, or the
                           PTR_SPACE_* code of an ADS pointer's space. Part of
@@ -637,6 +642,8 @@ VAR
                              (global storage), TRUE while inside a routine
                              body (alloca'd local storage). }
   lowering_spliced_interface: BOOLEAN;
+  lowering_host_interface_in_device: BOOLEAN; { retain host type ABI metadata;
+                                               reject DEVICE use, not thin-retype it }
   defining_implementation: BOOLEAN;
 
   routines: ARRAY [1..MAX_ROUTINES] OF RoutineRec;
@@ -725,13 +732,15 @@ VAR
                           recently codegen'd expression is communicated back
                           through this global rather than threaded as a var
                           parameter through every call site. }
+  last_desig_super_upper: ADRMEM; { selected host descriptor upper, or NIL;
+                          committed with the address after recursive traversal }
   last_desig_deref_ptr_tid: INTEGER; { side-channel result of
                           ComputeDesignatorAddress: the POINTER type id
                           dereferenced by the designator's final selector
                           (`p^`), or 0 when the final selector is not a
                           pointer DEREF. VLOAD/VSTORE use it to decide
-                          whether a SUPER ARRAY operand has NEW's runtime
-                          upper-bound header in front of it. }
+                          whether a SUPER ARRAY operand carries a selected
+                          host descriptor bound. }
 
   { Unit dependency graph: built once per compiland by BuildUnitInitOrder
     from local_interfaces (each spliced INTERFACE header's own 'uses'

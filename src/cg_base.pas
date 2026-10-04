@@ -191,6 +191,7 @@ VAR
                              (global storage), TRUE while inside a routine
                              body (alloca'd local storage). }
   lowering_spliced_interface: BOOLEAN;
+  lowering_host_interface_in_device: BOOLEAN;
   defining_implementation: BOOLEAN;
 
   routines: ARRAY [1..MAX_ROUTINES] OF RoutineRec;
@@ -280,6 +281,7 @@ VAR
                           through this global rather than threaded as a var
                           parameter through every call site. }
   last_desig_deref_ptr_tid: INTEGER;
+  last_desig_super_upper: ADRMEM;
 
   { Unit dependency graph: built once per compiland by BuildUnitInitOrder
     from local_interfaces (each spliced INTERFACE header's own 'uses'

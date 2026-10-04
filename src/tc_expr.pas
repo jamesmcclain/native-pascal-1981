@@ -409,9 +409,17 @@ BEGIN
     tk := CheckFuncCall(GetObj(node, 'base'));
     IF si = 0 THEN
     BEGIN
-      CheckDesignator := TK_UNKNOWN;
-      RETURN;
-    END;
+      IF (UpperStr(name) = 'UNSAFESUPER') AND NOT UserDeclarationShadows(name) AND
+         (ArrSize(GetObj(GetObj(node, 'base'), 'args')) = 4) THEN
+      BEGIN
+        sem_node := CreateNode('NamedType');
+        AddStringField(sem_node, 'name', GetStr(ArrItem(GetObj(GetObj(node, 'base'), 'args'), 0), 'name'));
+        ResolveTypeExpr(sem_node, tk, aux, aux2, aux3, current_idx_tk);
+        super_value := FALSE; sem_set := SB_UNKNOWN; sem_scalar := SB_UNKNOWN;
+      END
+      ELSE BEGIN CheckDesignator := TK_UNKNOWN; RETURN END;
+    END
+    ELSE BEGIN
     aux := symbols[si].ret_aux;
     aux2 := symbols[si].ret_aux2;
     aux3 := symbols[si].ret_aux3;
@@ -420,6 +428,7 @@ BEGIN
     sem_node := symbols[si].ret_type_node;
     sem_set := symbols[si].ret_set_sem_base;
     sem_scalar := symbols[si].ret_scalar_sem_base;
+    END;
   END
   ELSE BEGIN
     name := GetStr(node, 'name');
@@ -647,6 +656,8 @@ VAR
   nargs, i, si: INTEGER32;
   atk: INTEGER;
   valid_vec: BOOLEAN;
+  unsafe_type: ADRMEM;
+  unsafe_tk, unsafe_aux, unsafe_aux2, unsafe_aux3, unsafe_idx: INTEGER;
 BEGIN
   orig_name := GetStr(node, 'name');
   name := UpperStr(orig_name);
@@ -654,6 +665,43 @@ BEGIN
   nargs := cJSON_GetArraySize(args_arr);
   IF NOT UserDeclarationShadows(name) THEN
   BEGIN
+  IF (name = 'UNSAFERAW') OR (name = 'UNSAFESUPER') THEN
+  BEGIN
+    IF NOT FeaturesAreExtended(active_features) THEN
+      AddError('Unsafe super-array conversions require the extended dialect');
+    IF is_device_compiland THEN
+      AddError('Unsafe super-array conversions are not permitted in DEVICE code');
+    IF name = 'UNSAFERAW' THEN
+    BEGIN
+      IF nargs <> 1 THEN AddError('UNSAFERAW expects one descriptor pointer argument')
+      ELSE IF CheckExpr(ArrItem(args_arr, 0)) <> TK_POINTER THEN
+        AddError('UNSAFERAW requires a super-array descriptor pointer');
+    END
+    ELSE IF nargs <> 4 THEN AddError('UNSAFESUPER expects (pointer type, raw, lower, upper)')
+    ELSE
+    BEGIN
+      unsafe_type := ArrItem(args_arr, 0);
+      IF NodeType(unsafe_type) <> 'Identifier' THEN
+        AddError('UNSAFESUPER first argument must be a descriptor pointer type name')
+      ELSE
+      BEGIN
+        unsafe_type := CreateNode('NamedType');
+        AddStringField(unsafe_type, 'name', GetStr(ArrItem(args_arr, 0), 'name'));
+        ResolveTypeExpr(unsafe_type, unsafe_tk, unsafe_aux, unsafe_aux2, unsafe_aux3, unsafe_idx);
+        IF (unsafe_tk <> TK_POINTER) OR (unsafe_aux <> TK_ARRAY) THEN
+          AddError('UNSAFESUPER target must be a super-array descriptor pointer type');
+      END;
+      IF CheckExpr(ArrItem(args_arr, 1)) <> TK_POINTER THEN
+        AddError('UNSAFESUPER raw argument must be a host pointer');
+      FOR i := 2 TO 3 DO
+        IF NOT IsOrdinal(CheckExpr(ArrItem(args_arr, i))) THEN
+          AddError('UNSAFESUPER bounds must be ordinal values');
+    END;
+    { Rich pointer identity/domain checks are codegen backstops, as for
+      ordinary pointer arguments in this bounded coarse type model. }
+    CheckFuncCall := TK_POINTER;
+    RETURN;
+  END;
   IF name = 'DEVALLOC' THEN
   BEGIN
     IF is_device_compiland THEN

@@ -548,6 +548,8 @@ VAR
   vname: Str255;
 BEGIN
   tk := ResolveTypeExpr(GetObj(decl, 'type_expr'));
+  IF is_device_compiland AND ExposesHostDescriptor(tk) THEN
+    AbortWith('codegen: host super-array descriptor storage is not supported in DEVICE code');
   address_space := VarResidenceAddressSpace(decl);
   names := GetObj(decl, 'names');
   n := ArrSize(names);
@@ -737,6 +739,8 @@ BEGIN
   BEGIN
     param := ArrItem(params_arr, pi);
     tk := ResolveTypeExpr(GetObj(param, 'type_expr'));
+    IF is_device_compiland AND ExposesHostDescriptor(tk) THEN
+      AbortWith('codegen: host super-array descriptors are not permitted in DEVICE signatures');
     { VAR/VARS/CONST/CONSTS are all reference-mode at the ABI level -- CONST
       only additionally forbids mutation, a typechecker-level restriction,
       not a codegen one, so it is passed the same way as VAR here: as a
@@ -749,7 +753,10 @@ BEGIN
       but unlike VAR/CONST the callee must copy it so mutations don't leak
       back into the caller's own storage. }
     needs_c := (NOT is_v) AND ((TypeKind(tk) = TK_ARRAY) OR (TypeKind(tk) = TK_RECORD) OR
-       (TypeKind(tk) = TK_LSTRING) OR (TypeKind(tk) = TK_STRING));
+       (TypeKind(tk) = TK_LSTRING) OR (TypeKind(tk) = TK_STRING) OR IsHostDescriptor(tk));
+    IF (TypeKind(tk) = TK_ARRAY) AND NOT is_device_compiland THEN
+      IF types[tk].is_super THEN
+        AbortWith('codegen: borrowed SUPER ARRAY formals are not implemented; use a descriptor pointer');
     pnames := GetObj(param, 'names');
     nn := ArrSize(pnames);
     FOR ni := 0 TO nn - 1 DO
@@ -1137,6 +1144,8 @@ FUNCTION RoutineTypeMatches(left_tk, right_tk: INTEGER): BOOLEAN;
 BEGIN
   IF left_tk = right_tk THEN
     RoutineTypeMatches := TRUE
+  ELSE IF IsHostDescriptor(left_tk) OR IsHostDescriptor(right_tk) THEN
+    RoutineTypeMatches := FALSE { descriptor headings must use the same named type }
   ELSE IF (TypeKind(left_tk) = TK_POINTER) AND
           (TypeKind(right_tk) = TK_POINTER) THEN
   BEGIN
@@ -1275,8 +1284,13 @@ BEGIN
     IF IsForwardDirectiveDecl(decl) THEN routines[ridx].is_forward := TRUE;
     is_c := routines[ridx].is_c; { source of truth once ridx is known -- see note above }
     is_vararg := routines[ridx].is_vararg; { likewise }
-    IF is_c THEN
+    IF is_c OR HasCAttribute(decl) THEN
     BEGIN
+      IF ExposesHostDescriptor(ret_tk) THEN
+        AbortWith2('codegen: a super-array descriptor cannot cross a [C] routine signature: ', name);
+      FOR i := 1 TO n DO
+        IF ExposesHostDescriptor(tks[i]) THEN
+          AbortWith2('codegen: a super-array descriptor cannot cross a [C] routine signature: ', name);
       { Mirror of the fresh-declaration guard in the ELSE branch: a bare
         VECTOR cannot cross a [C] signature (SSEUP vector-register classes
         are not implemented). A [C] EXTERN is never FORWARD-restated, so
@@ -1332,6 +1346,8 @@ BEGIN
     IF is_func THEN
     BEGIN
       ret_tk := ResolveTypeExpr(GetObj(decl, 'return_type'));
+      IF is_device_compiland AND ExposesHostDescriptor(ret_tk) THEN
+        AbortWith('codegen: host super-array descriptor results are not supported in DEVICE code');
       ret_llvm_ty := LLVMTypeForTk(ret_tk);
     END
     ELSE
@@ -1340,8 +1356,13 @@ BEGIN
       ret_llvm_ty := voidty;
     END;
 
-    IF IsCForeignDecl(decl) THEN
+    IF HasCAttribute(decl) THEN
     BEGIN
+      IF ExposesHostDescriptor(ret_tk) THEN
+        AbortWith2('codegen: a super-array descriptor cannot cross a [C] routine signature: ', name);
+      FOR i := 1 TO n DO
+        IF ExposesHostDescriptor(tks[i]) THEN
+          AbortWith2('codegen: a super-array descriptor cannot cross a [C] routine signature: ', name);
       { A bare VECTOR can never cross a [C] signature: the SysV
         vector-register classes (SSEUP) are not implemented, and silently
         routing a vector through MEMORY byval would disagree with the ABI
@@ -1416,7 +1437,8 @@ BEGIN
         END
         ELSE
         BEGIN
-          ClassifyAggregate(tks[i], agg_class, n_pieces, piece_kind, piece_bytes);
+          ClassifyParamAt(tks, isvar, needs_copy, i, ret_class = SYSV_CLASS_MEMORY,
+                          agg_class, n_pieces, piece_kind, piece_bytes);
           IF agg_class = SYSV_CLASS_MEMORY THEN
           BEGIN
             SetPtrArrayElem(param_llvm_types, llvm_idx, LLVMPointerType(LLVMTypeForTk(tks[i]), 0));
@@ -1556,7 +1578,8 @@ BEGIN
           llvm_idx := llvm_idx + 1
         ELSE
         BEGIN
-          ClassifyAggregate(tks[i], agg_class, n_pieces, piece_kind, piece_bytes);
+          ClassifyParamAt(tks, isvar, needs_copy, i, ret_class = SYSV_CLASS_MEMORY,
+                          agg_class, n_pieces, piece_kind, piece_bytes);
           IF agg_class = SYSV_CLASS_MEMORY THEN
           BEGIN
             agg_llvm_ty := LLVMTypeForTk(tks[i]);
@@ -1680,7 +1703,8 @@ BEGIN
         END
         ELSE
         BEGIN
-          ClassifyAggregate(tks[i], agg_class, n_pieces, piece_kind, piece_bytes);
+          ClassifyParamAt(tks, isvar, needs_copy, i, ret_class = SYSV_CLASS_MEMORY,
+                          agg_class, n_pieces, piece_kind, piece_bytes);
           IF agg_class = SYSV_CLASS_MEMORY THEN
           { SysV byval: the incoming pointer already refers to a private
             per-call copy the caller made (see the byval caller-side temp in
@@ -1732,6 +1756,8 @@ BEGIN
     SetupFunctionLabels(GetObj(body_blk, 'body'));
     CodegenStmtArray(GetObj(body_blk, 'body'));
 
+    IF LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder)) = NIL THEN
+    BEGIN
     IF is_func THEN
     BEGIN
       IF ret_class = SYSV_CLASS_MEMORY THEN
@@ -1761,6 +1787,7 @@ BEGIN
     END
     ELSE
       LLVMBuildRetVoid(builder);
+    END;
 
     PopScope;
     in_local_scope := saved_in_local_scope;
