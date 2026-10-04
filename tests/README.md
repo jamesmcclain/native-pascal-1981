@@ -45,7 +45,8 @@ scope/ownership decisions; none is retired by this infrastructure decision.
 
 The regression needs built native driver/stages, a C compiler (`CC`, default
 clang), GNU/Linux process/filesystem tools and Python 3. Its unsafe-root case
-uses the `bwrap` executable and skips when the sandbox probe cannot run;
+uses bubblewrap (`bwrap`; install the `bubblewrap` package, which is
+recommended) and skips when `bwrap` is not installed or cannot run;
 Emacs allocator coverage is conditional on Emacs being installed. Report these
 coverage limitations rather than treating a sandbox skip as security validation.
 
@@ -313,6 +314,22 @@ Set `PASCAL_TEST_CORES=1` to opt out for crash debugging (subject to your
 shell/system core limits). The Linux shim is built/cached independently at
 `build/test-no-core.so`; this never requires a compiler bootstrap. Existing
 `LD_PRELOAD` entries are preserved. No system-wide crash-report setting changes.
+
+### Host compiler warnings
+
+`scripts/test-env.sh` also sets `PASCAL1981_CC` to `scripts/test-cc.sh`,
+which runs the real compiler (`PASCAL1981_TEST_CC`, defaulting to the
+caller's `PASCAL1981_CC`, then `CC`, then `clang`). Compilers print
+harmless text that varies by version and host, so the wrapper drops clang's
+warning lines: `clang: warning: ...` from its driver, warnings tagged
+`[-W...]`, and `N warnings generated.`. Suites that require an empty
+compiler stderr then check only what the Pascal stages print. Errors and
+the exit status pass through unchanged. A suite
+that sets `PASCAL1981_CC` itself (`tests/driver.sh`'s fake clang) bypasses
+the wrapper. The C helper programs that suites build directly use the
+Makefile's `-Wall -Wextra` without `-Werror`, so a new compiler's new
+warning is reported without failing the suite. See
+[test portability](../docs/test_portability.md) for the rules behind this.
 
 During iteration, build tools incrementally and run affected fixtures/scripts.
 Reserve the full bootstrap/native suite for the final integration gate, after

@@ -58,7 +58,7 @@ GEN4_BINS := $(addprefix $(BUILD_DIR)/gen4/,$(STAGES))
 BOOTSTRAP_BINS := $(addprefix $(BIN_DIR)/,$(STAGES))
 FIXED_POINT := $(BUILD_DIR)/.fixed-point-verified
 
-.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-driver test-native test-descriptor-contract test-super-new test-parser-named-index test-typecheck-named-index test-sysutil test-proxy test-gpu test-reference-parity test-elisp test-bootstrap test-pasboot check-bootstrap-subset
+.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-routine test-precommit-hook test-driver test-native test-descriptor-contract test-super-new test-parser-named-index test-typecheck-named-index test-sysutil test-proxy test-gpu test-reference-parity test-elisp test-bootstrap test-pasboot check-bootstrap-subset
 
 all: runtime driver bootstrap $(PROXY_BIN) $(PRETTY81_BIN)
 
@@ -123,6 +123,10 @@ $(BUILD_DIR)/gen4/%: src/%.pas $(STAGE_SRCS) $(GEN3_BINS) $(RUNTIME_LIB) | $(BUI
 $(BUILD_DIR)/gen1/codegen $(BUILD_DIR)/gen2/codegen $(BUILD_DIR)/gen3/codegen $(BUILD_DIR)/gen4/codegen: $(CODEGEN_SRCS)
 $(BUILD_DIR)/gen1/typechecker $(BUILD_DIR)/gen2/typechecker $(BUILD_DIR)/gen3/typechecker $(BUILD_DIR)/gen4/typechecker: $(TYPECHECKER_SRCS)
 $(BUILD_DIR)/gen1/parser $(BUILD_DIR)/gen2/parser $(BUILD_DIR)/gen3/parser $(BUILD_DIR)/gen4/parser: $(PARSER_SRCS)
+# Name every generation's stages as targets. GNU make 4.3 otherwise treats a
+# stage reached only through the pattern rules (each lexer) as intermediate
+# and deletes it after the build; mathck_bootstrap_audit runs them.
+$(GEN1_BINS) $(GEN2_BINS) $(GEN3_BINS) $(GEN4_BINS):
 
 $(BUILD_DIR) $(BUILD_DIR)/gen1 $(BUILD_DIR)/gen2 $(BUILD_DIR)/gen3 $(BUILD_DIR)/gen4:
 	mkdir -p $@
@@ -154,7 +158,15 @@ cleaner: clean
 cleanest: cleaner
 	rm -rf .pytest_cache
 
-test: check-bootstrap-subset test-pasboot test-native test-proxy
+# make test runs every routine group even after one fails (make -k) and ends
+# with a summary of failed targets and checks; see scripts/test-report.sh.
+# make test-routine runs the same groups without the summary.
+test:
+	+@MAKE="$(MAKE)" TEST_REPORT_LABEL="make test" ./scripts/test-report.sh $(BUILD_DIR)/test-report.log test-routine
+
+test-routine: check-bootstrap-subset test-pasboot test-native test-proxy test-precommit-hook
+
+test-precommit-hook:
 	$(TEST_ENV) ./tests/test_precommit_hook.sh
 
 # Every gen1 compiland must stay inside the subset pasboot translates

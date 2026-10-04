@@ -118,6 +118,24 @@ The native command line does not support `-f` feature overrides. Thus, users
 cannot activate one extended feature in vintage mode. Use `--dialect extended`
 to activate the complete extended feature set.
 
+### Host clang invocation
+
+The driver hands the generated IR to `clang` (or `$PASCAL1981_CC`, then
+`$CC`) to compile and link, with no target option, so clang uses its own
+default triple, runtime library layout and linker. Host IR states
+`x86_64-pc-linux-gnu`; a clang whose default triple differs only in vendor
+(`x86_64-unknown-linux-gnu`, typical of source builds) warns
+`-Woverride-module` and compiles it for its own triple, which is the same
+target. Do not pass `--target` from the driver to silence that: a clang
+that installs its runtime libraries under its default triple
+(`lib/clang/N/lib/x86_64-unknown-linux-gnu/`) then fails to find
+`libclang_rt.builtins.a` when linking.
+
+Clang warnings, including ones about the host's toolchain installation
+such as LLVM 22's `-Wgcc-install-dir-libstdcxx`, reach the driver's stderr
+unchanged. Test suites do not depend on them: see
+[Host compiler warnings](../tests/README.md#host-compiler-warnings).
+
 ### Bootstrap dialect
 
 Compiler sources use extended types and C interoperability declarations.

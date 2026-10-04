@@ -189,9 +189,9 @@ EOF
   fi
   local run_code=0
   if [ -f "$stdin_file" ]; then
-    (cd "$work_dir" && "$test_bin" "${run_args[@]}") < "$stdin_file" > "$actual_out" 2> "$actual_err" || run_code=$?
+    (cd "$work_dir" && exec "$test_bin" "${run_args[@]}") < "$stdin_file" > "$actual_out" 2> "$actual_err" || run_code=$?
   else
-    (cd "$work_dir" && "$test_bin" "${run_args[@]}") > "$actual_out" 2> "$actual_err" || run_code=$?
+    (cd "$work_dir" && exec "$test_bin" "${run_args[@]}") > "$actual_out" 2> "$actual_err" || run_code=$?
   fi
 
   if [ "$run_code" -ne "$exp_code" ]; then

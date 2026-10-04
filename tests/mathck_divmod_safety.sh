@@ -62,7 +62,7 @@ guarded_ir() { # label ir widths: every division takes a sanitized divisor
     /div\.ok/ { ok = 1 }
     END { print found + 0 }' "$2") || die "$1: unguarded division"
   [ "$found" -ge $(( $(wc -w <<< "$3") * 4 )) ] || die "$1: $found divisions"
-  ! grep -Eq 'poison|undef' "$2" || die "$1: poison/undef"
+  ! grep -Ewq 'poison|undef' "$2" || die "$1: poison/undef"
 }
 
 success_unit() { # dialect setting

@@ -134,9 +134,14 @@ Run the routine test suites:
 make test
 ```
 
-This target runs the bootstrap-subset check, the `pasboot` fixtures, and the driver, sysutil, native, proxy, and pre-commit-hook test groups. The test runners do not require pytest. The proxy tests need `python3`.
+This target runs the bootstrap-subset check, the `pasboot` fixtures, and the driver, sysutil, native, proxy, and pre-commit-hook test groups. It keeps going after a failing group (`make -k`) and ends with a summary of every failed target and failing check; the full output is kept in `build/test-report.log`. `make test-routine` runs the same groups without the summary. The test runners do not require pytest. The proxy tests need `python3`.
 
 This target does not run the bootstrap or Emacs tests.
+
+Install bubblewrap (`bwrap`; the `bubblewrap` package on Debian or Ubuntu) as
+well. The temporary-directory safety test runs its cases in a `bwrap`
+sandbox with a private `/tmp`; without `bwrap` that test is skipped rather
+than failed, so `make test` passes with less coverage.
 
 Use these targets for a specific test group:
 
@@ -156,7 +161,7 @@ If a CUDA prerequisite is not available, the `test-gpu` target skips the test.
 
 The native compiler is the authoritative implementation. A parity suite comparing it with an earlier Python implementation remains in `tests/parity/` but is disabled and slated for removal; see [tests/README.md](tests/README.md) if you need it. The `test-elisp` target requires Emacs and builds the compiler stages first.
 
-See [tests/README.md](tests/README.md). It describes the compiler test suites.
+See [tests/README.md](tests/README.md). It describes the compiler test suites. Before adding or changing a test, read [docs/test_portability.md](docs/test_portability.md): the suites must not depend on a quiet compiler, particular bash/make/LLVM versions, or optional tools.
 
 To run all available test groups, run:
 
