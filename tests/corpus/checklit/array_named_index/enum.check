@@ -1,0 +1,4 @@
+{ A named enum index type typechecks in both dialects. }
+{ DIALECT: vintage extended }
+{ CHECK-INPUT: tests/corpus/golden/array_named_enum.pas }
+{ CHECK-STAGES: lexer parser typechecker }

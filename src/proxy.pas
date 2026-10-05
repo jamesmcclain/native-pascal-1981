@@ -10,7 +10,7 @@ PROGRAM proxy(input, output);
 
   This program is the composition root and holds only two things of its own:
   the command line, and the mapping from an outcome to an HTTP status. Both
-  are policy, and both are pinned by tests/proxy/golden.json -- the mapping in
+  are policy, and both are pinned by tests/service/proxy/golden.json -- the mapping in
   particular is not the obvious one, and the comments below say why at each
   point where it surprises.
 

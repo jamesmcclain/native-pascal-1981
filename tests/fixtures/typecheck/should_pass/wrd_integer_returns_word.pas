@@ -1,5 +1,0 @@
-PROGRAM P(OUTPUT);
-VAR w: WORD; i: INTEGER;
-BEGIN
-  i := 42; w := WRD(i)
-END.

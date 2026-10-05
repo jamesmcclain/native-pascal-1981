@@ -1,5 +1,0 @@
-PROGRAM P;
-VAR x: INTEGER;
-BEGIN
-  WHILE x DO x := x + 1
-END.

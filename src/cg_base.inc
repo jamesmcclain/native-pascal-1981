@@ -45,6 +45,7 @@ PROCEDURE LLVMSetDataLayout(m: ADRMEM; layout: ADRMEM) [C];
 FUNCTION LLVMGetModuleDataLayout(m: ADRMEM): ADRMEM [C];
 FUNCTION LLVMABISizeOfType(layout, ty: ADRMEM): CLONG [C];
 FUNCTION LLVMABIAlignmentOfType(layout, ty: ADRMEM): CINT [C];
+FUNCTION LLVMOffsetOfElement(layout, struct_ty: ADRMEM; element: CINT): CLONG [C];
 PROCEDURE LLVMSetFunctionCallConv(fn: ADRMEM; cc: CINT) [C];
 FUNCTION LLVMMDStringInContext2(ctx: ADRMEM; str: ADRMEM; slen: CLONG): ADRMEM [C];
 FUNCTION LLVMMDNodeInContext2(ctx: ADRMEM; mds: ADRMEM; nmds: CLONG): ADRMEM [C];

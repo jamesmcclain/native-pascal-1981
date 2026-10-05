@@ -1,0 +1,10 @@
+PROGRAM formalbad;
+PROCEDURE loop(VAR v: INTEGER); BEGIN FOR v := 1 TO 2 DO WRITELN(v) END;
+PROCEDURE probe;
+VAR x: INTEGER;
+BEGIN
+  x := 5; loop(x);
+  {$INITCK+} WRITELN(x)
+  {$INITCK-}
+END;
+BEGIN probe END.

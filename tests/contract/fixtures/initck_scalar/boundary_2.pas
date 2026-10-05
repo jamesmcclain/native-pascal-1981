@@ -1,0 +1,4 @@
+PROGRAM boundary;
+FUNCTION answer: REAL;
+BEGIN answer := 1.0; {$INITCK+} RETURN {$INITCK-} END;
+BEGIN WRITELN(answer:3:1) END.

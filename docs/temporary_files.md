@@ -36,10 +36,10 @@ Do not clean the namespace wholesale while builds or tests are active.
   still owns the returned directory and must call `SysRemoveTree`; harnesses
   supply a private parent so abnormal harness termination reclaims it too.
 
-`tests/run.sh` runs every fixture executable in its own private work directory.
+`tests/corpus/fixtures.sh` runs every fixture executable in its own private work directory.
 File-writing Pascal fixtures use relative filenames. Existing file-valued
 `.args` inputs are resolved from the repository before switching directories.
-`tests/mathck_twins.sh` likewise gives each fixture/flag/optimization cell a
+`tests/contract/mathck_twins.sh` likewise gives each fixture/flag/optimization cell a
 separate data directory. A shared filename in a shared namespace would still
 race; merely changing `/tmp/foo` to `/tmp/native-pascal-1981/foo` is not isolation.
 
@@ -54,7 +54,7 @@ No cleanup mechanism can run after SIGKILL, power loss, or an interpreter's
 immediate `_exit`. Any abandoned private directory must be inspected for
 ownership/activity before manual removal; never remove other active runs.
 
-Regression coverage: `python3 tests/temp_hygiene.py` (also in `make test-native`)
+Regression coverage: `python3 tests/contract/temp_hygiene.py` (in `make test`)
 checks shell/Python/runtime success, failure and HUP/INT/TERM cleanup; fork
 ownership; preservation of another active workspace; driver multifile failures
 and termination; anonymous runtime storage; pipeline failures; migration

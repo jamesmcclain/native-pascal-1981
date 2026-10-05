@@ -1,0 +1,5 @@
+{ The codegen backstop: with the typechecker bypassed, codegen still
+  rejects incompatible SET bases. The driver rejects these at typecheck. }
+{ CHECK-INPUT: tests/corpus/golden/set_bounds_incompatible_rejected.pas }
+{ CHECK-STAGES: lexer parser codegen }
+{ CHECK-FAIL: codegen: incompatible declared SET bases }

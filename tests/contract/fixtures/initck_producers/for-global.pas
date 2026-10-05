@@ -1,0 +1,6 @@
+PROGRAM forglobal;
+VAR g: INTEGER;
+PROCEDURE probe;
+VAR e: INTEGER32;
+BEGIN {$INITCK+} FOR g := 1 TO 2 DO ; FOR e := 1 TO 2 DO ; {$INITCK-} END;
+BEGIN probe END.

@@ -1,4 +1,0 @@
-PROGRAM P;
-CONST x = 42;
-BEGIN
-END.

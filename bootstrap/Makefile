@@ -3,7 +3,7 @@
 #
 # Usage:
 #   make            Build build/pasboot.
-#   make test       Run the per-feature fixtures in tests/.
+#   make test       Run the per-feature fixtures (../tests/unit/pasboot/).
 #   make clean      Remove build artifacts.
 
 # GNU make supplies CC=cc by default; do not silently inherit it.  A caller
@@ -31,7 +31,8 @@ $(BUILDDIR):
 	mkdir -p $(BUILDDIR)
 
 test: $(BUILDDIR)/pasboot
-	./tests/run.sh
+	$(MAKE) -C ../runtime
+	../tests/unit/pasboot.sh
 
 clean:
 	rm -rf $(BUILDDIR)

@@ -1,0 +1,4 @@
+{ A named subrange index type typechecks in both dialects. }
+{ DIALECT: vintage extended }
+{ CHECK-INPUT: tests/corpus/golden/array_named_subrange.pas }
+{ CHECK-STAGES: lexer parser typechecker }

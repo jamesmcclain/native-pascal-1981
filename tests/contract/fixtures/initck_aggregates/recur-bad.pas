@@ -1,0 +1,8 @@
+PROGRAM recurbad;
+PROCEDURE down(n: INTEGER);
+VAR a: ARRAY [1..2] OF INTEGER;
+BEGIN
+  IF n > 0 THEN BEGIN a[1] := n; down(n - 1) END
+  ELSE BEGIN {$INITCK+} WRITELN(a[1]) {$INITCK-} END
+END;
+BEGIN WRITELN('prefix'); down(2) END.

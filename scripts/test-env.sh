@@ -15,6 +15,9 @@ if [ -z "${PASCAL1981_TEST_CC:-}" ]; then
   export PASCAL1981_TEST_CC="${PASCAL1981_CC:-${CC:-clang}}"
   export PASCAL1981_CC="$(cd "$(dirname "$0")" && pwd)/test-cc.sh"
 fi
+# tests/lib/harness.sh re-executes a suite through this launcher unless
+# this is set.
+export PASCAL_TEST_ENV=1
 if [ "${PASCAL_TEST_CORES:-0}" = 1 ]; then
   exec "$@"
 fi

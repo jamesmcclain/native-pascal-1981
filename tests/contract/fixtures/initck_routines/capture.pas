@@ -1,0 +1,6 @@
+PROGRAM capture;
+PROCEDURE outer;
+VAR x: INTEGER;
+  PROCEDURE inner; BEGIN {$INITCK+} WRITELN(x) {$INITCK-} END;
+BEGIN x := 1; inner END;
+BEGIN outer END.

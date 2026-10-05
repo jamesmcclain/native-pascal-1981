@@ -1,0 +1,4 @@
+{ A named boolean index type typechecks in both dialects. }
+{ DIALECT: vintage extended }
+{ CHECK-INPUT: tests/corpus/golden/array_named_boolean.pas }
+{ CHECK-STAGES: lexer parser typechecker }

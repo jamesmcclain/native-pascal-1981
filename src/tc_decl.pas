@@ -6,7 +6,7 @@
   tree on standard output. On any error it prints diagnostics to stderr
   and exits 1 without emitting AST JSON, matching cli_typecheck.py.
 
-  Scope (v1): the rule set exercised by tests/fixtures/typecheck/, plus
+  Scope (v1): the rule set exercised by tests/corpus/checklit/typecheck/, plus
   enough of the C-ABI/UNIT/pointer surface to self-host lex+parse+typecheck
   on this repository's own native .pas sources (lexer.pas, parser.pas,
   jsonutil.pas, and this file) end to end: EXTERN/FORWARD declarations (no

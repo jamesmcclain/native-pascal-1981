@@ -1,0 +1,4 @@
+{ CHECK-INPUT: tests/corpus/reference/codegen/device_kernel_attrs/kh.ast.json }
+{ CHECK-FLAGS: --device-triple nvptx64-nvidia-cuda --emit-ptx }
+{ CHECK: .visible .entry scale }
+{ CHECK: .ptr .global .align 4 }

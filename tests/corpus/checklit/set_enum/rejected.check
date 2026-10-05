@@ -1,0 +1,6 @@
+{ Distinct enum declarations must fail in the checker, not later in codegen:
+  every one of the twelve mismatches is reported (rejected.err). }
+{ DIALECT: vintage extended }
+{ CHECK-INPUT: tests/corpus/sources/set_enum_identity_rejected.pas }
+{ CHECK-STAGES: lexer parser typechecker }
+{ CHECK-FAIL: Incompatible set base types }

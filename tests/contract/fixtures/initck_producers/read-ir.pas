@@ -1,0 +1,5 @@
+PROGRAM readir;
+PROCEDURE probe(VAR f: TEXT);
+VAR n: INTEGER;
+BEGIN READ(f, n) END;
+BEGIN END.

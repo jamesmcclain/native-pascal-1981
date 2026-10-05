@@ -50,7 +50,7 @@ done
 # would still bump its mtime, and every runtime/*.c is a prerequisite of the
 # runtime archive and so of all four bootstrap generations, so each commit
 # would force a full rebuild. Only bash builtins besides find and indent are
-# used (tests/test_precommit_hook.sh runs this with a minimal PATH). read -d ''
+# used (tests/check/precommit_hook.sh runs this with a minimal PATH). read -d ''
 # keeps the file's exact bytes; the trailing x keeps $(...) from stripping
 # trailing newlines, and && makes an indent failure fail the assignment.
 format_c() {

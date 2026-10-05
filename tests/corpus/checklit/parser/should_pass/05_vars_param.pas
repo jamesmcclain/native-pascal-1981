@@ -1,0 +1,9 @@
+{ DIALECT: extended }
+{ CHECK-STAGES: lexer parser }
+(* should_pass: parameter_group allows VAR/CONST/VARS/CONSTS. *)
+PROGRAM P;
+PROCEDURE Q(VARS x : INTEGER; CONSTS y : INTEGER);
+BEGIN
+END;
+BEGIN
+END.

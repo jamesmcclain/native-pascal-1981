@@ -31,53 +31,6 @@ PROCEDURE CodegenStmt(stmt: ADRMEM); FORWARD;
   the reference's own per-routine label_blocks and its "GOTO to undefined
   label" restriction against cross-routine jumps. }
 
-FUNCTION IntToStr255(n: INTEGER32): Str255;
-{ No such helper exists anywhere else in this file -- every other numeric
-  diagnostic is either a fixed string or routed through AbortWith2's plain
-  Str255 concatenation, never a formatted integer. Needed here because a
-  numeric GOTO label (e.g. `GOTO 100;`) arrives from the parser as a JSON
-  number, not a string, and the `labels` table's lookup key is always text.
-  Builds digits into `tmp` least-significant-first via direct Str255
-  indexing (the same s[0]=length-byte convention CStrToStr255 uses), then
-  reverses into `res` -- no CONCAT needed, this is plain char-array work. }
-VAR
-  neg: BOOLEAN;
-  v: INTEGER32;
-  digit: INTEGER32;
-  tmp, res: Str255;
-  len, i, out_i: INTEGER;
-BEGIN
-  neg := n < 0;
-  IF neg THEN v := -n ELSE v := n;
-  len := 0;
-  IF v = 0 THEN
-  BEGIN
-    len := 1;
-    tmp[1] := '0';
-  END
-  ELSE
-    WHILE v > 0 DO
-    BEGIN
-      len := len + 1;
-      digit := ORD('0') + (v MOD 10);
-      tmp[len] := CHR(RETYPE(INTEGER, digit));
-      v := v DIV 10;
-    END;
-  out_i := 0;
-  IF neg THEN
-  BEGIN
-    out_i := out_i + 1;
-    res[out_i] := '-';
-  END;
-  FOR i := len DOWNTO 1 DO
-  BEGIN
-    out_i := out_i + 1;
-    res[out_i] := tmp[i];
-  END;
-  res[0] := CHR(out_i);
-  IntToStr255 := res;
-END;
-
 FUNCTION LabelKey(node: ADRMEM; key: Str255): Str255;
 { The parser's 'label' field (GotoStmt/LabelStmt/BreakStmt/CycleStmt) is a
   JSON number for a numeric label, a JSON string for an identifier label --
