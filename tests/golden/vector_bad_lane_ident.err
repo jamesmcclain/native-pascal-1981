@@ -1,3 +1,2 @@
 Type checking failed:
-Vector lane count must be an integer literal or a CONST integer identifier
-Error: Failed to parse input AST JSON
+Vector lane count must be an integer literal or a CONST integer identifier at line 8 column 3

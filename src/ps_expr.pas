@@ -134,6 +134,7 @@ VAR
 BEGIN
   node := CreateTriviaNode('Designator');
   AddField(node, 'read_flags', BuildMetaFlagsNode());
+  AddField(node, 'location', CurLocation);
   name := CurLex;
   Expect('IDENTIFIER');
   AddStringField(node, 'name', name);

@@ -1,5 +1,4 @@
 Type checking failed:
-Cannot assign incompatible type without narrowing: narrow_i
-Cannot assign incompatible type without narrowing: narrow_w
-Argument type mismatch or implicit narrowing in call to TakeInteger
-Error: Failed to parse input AST JSON
+Cannot assign incompatible type without narrowing: narrow_i at line 14 column 3
+Cannot assign incompatible type without narrowing: narrow_w at line 15 column 3
+Argument type mismatch or implicit narrowing in call to TakeInteger at line 16 column 3

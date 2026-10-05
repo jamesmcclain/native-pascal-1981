@@ -1,3 +1,2 @@
 Type checking failed:
-Pointer type cycle through type: Q
-Error: Failed to parse input AST JSON
+Pointer type cycle through type: Q at line 4 column 3

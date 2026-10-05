@@ -53,8 +53,8 @@ END;
 
 FUNCTION JsonIntegerValue(node: ADRMEM): INTEGER64;
 BEGIN
-  JsonIntegerValue := RETYPE(INTEGER64,
-    pas_double_to_int64(GetReal(node, 'value')));
+  { Exact, not through GetReal: a JSON number keeps 15 digits. }
+  JsonIntegerValue := GetInt64(node, 'value');
 END;
 
 FUNCTION FoldArith(op: Str255; left, right: INTEGER64;
@@ -278,7 +278,9 @@ BEGIN
   ELSE IF active_features.wide_integers OR is_device_compiland THEN
   BEGIN
     IF (ival >= (-MaxInteger32Value - 1)) AND (ival <= MaxInteger32Value) THEN NaturalIntegerType := TK_INTEGER32
-    ELSE IF ival >= 0 THEN NaturalIntegerType := TK_WORD32
+    { WORD32 only while it fits: a larger literal is INTEGER64, so
+      `q + 4294967296` is not rejected as out of range for WORD32. }
+    ELSE IF (ival >= 0) AND (ival <= MaxWord32Value) THEN NaturalIntegerType := TK_WORD32
     ELSE NaturalIntegerType := TK_INTEGER64;
   END
   ELSE BEGIN
@@ -318,7 +320,7 @@ BEGIN
   ELSE IF target_tk = expr_tk THEN
     CanAssign := TRUE
   ELSE IF (target_tk = TK_REAL) AND
-          (IsSignedInteger(expr_tk) OR (expr_tk = TK_REAL32)) THEN
+          (IsInteger(expr_tk) OR (expr_tk = TK_REAL32)) THEN
     CanAssign := TRUE
   ELSE IF (target_tk = TK_REAL32) AND IsInteger(expr_tk) THEN
     CanAssign := TRUE
@@ -509,7 +511,7 @@ BEGIN
     si := LookupSymbol(name);
     IF si = 0 THEN
     BEGIN
-      AddError('Undefined identifier');
+      AddError2('Undefined identifier: ', name);
       CheckDesignator := TK_UNKNOWN;
       RETURN;
     END;
@@ -575,7 +577,7 @@ BEGIN
         fi := LookupField(aux, fname);
         IF fi = 0 THEN
         BEGIN
-          AddError('Unknown field');
+          AddError2('Unknown field: ', fname);
           tk := TK_UNKNOWN;
           aux := 0;
           aux2 := 0;
@@ -808,6 +810,40 @@ BEGIN
     CheckFuncCall := TK_BOOLEAN;
     RETURN;
   END;
+  IF (name = 'SCANEQ') OR (name = 'SCANNE') THEN
+  BEGIN
+    IF is_device_compiland THEN
+      AddError('SCANEQ/SCANNE are host-only and cannot appear in DEVICE code');
+    IF nargs <> 4 THEN
+      AddError('SCANEQ/SCANNE expects exactly four arguments (L, P, S, I)')
+    ELSE
+    BEGIN
+      FOR i := 0 TO 3 DO
+      BEGIN
+        warg := ArrItem(args_arr, i);
+        IF (i = 0) OR (i = 3) THEN
+        BEGIN
+          atk := CheckExprForTarget(warg, TK_INTEGER);
+          IF NOT CanAssign(TK_INTEGER, atk) THEN
+            AddError('SCANEQ/SCANNE count and position must be INTEGER');
+        END
+        ELSE IF i = 1 THEN
+        BEGIN
+          atk := CheckExprForTarget(warg, TK_CHAR);
+          IF atk <> TK_CHAR THEN
+            AddError('SCANEQ/SCANNE pattern must be CHAR');
+        END
+        ELSE
+        BEGIN
+          atk := CheckExpr(warg);
+          IF atk <> TK_STRING THEN
+            AddError('SCANEQ/SCANNE source must be STRING or LSTRING');
+        END;
+      END;
+    END;
+    CheckFuncCall := TK_INTEGER;
+    RETURN;
+  END;
   IF name = 'DEVALLOC' THEN
   BEGIN
     IF is_device_compiland THEN
@@ -990,7 +1026,7 @@ BEGIN
       ELSE BEGIN
         si := LookupSymbol(GetStr(warg, 'name'));
         IF si = 0 THEN
-          AddError('Undefined identifier')
+          AddUndefinedIdentifier(warg)
         ELSE IF symbols[si].tk <> TK_FILE THEN
           AddError('EOF/EOLN argument must be a file variable')
         ELSE IF (name = 'EOLN') AND ((symbols[si].aux <> TK_CHAR) OR (symbols[si].aux2 <> 1)) THEN
@@ -1130,7 +1166,7 @@ BEGIN
   si := LookupSymbol(name);
   IF si = 0 THEN
   BEGIN
-    AddError('Undefined function');
+    AddError2('Undefined function: ', name);
     FOR i := 0 TO nargs - 1 DO
       atk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
     CheckFuncCall := TK_UNKNOWN;
@@ -1242,7 +1278,7 @@ BEGIN
   END;
 END;
 
-FUNCTION CheckExpr(node: ADRMEM): INTEGER;
+FUNCTION CheckExprBody(node: ADRMEM): INTEGER;
 VAR
   nt, name: Str255;
   si: INTEGER32;
@@ -1263,7 +1299,7 @@ BEGIN
     AddError('expression too complex (nesting deeper than 64); try breaking it up with intermediate value assigns');
     last_sem_set_base := SB_UNKNOWN;
     last_sem_scalar_base := SB_UNKNOWN;
-    CheckExpr := TK_UNKNOWN;
+    CheckExprBody := TK_UNKNOWN;
   END
   ELSE BEGIN
   nt := NodeType(node);
@@ -1272,7 +1308,7 @@ BEGIN
   IF nt = 'IntLiteral' THEN
   BEGIN
     ot := CheckIntegerConstant(node, JsonIntegerValue(node));
-    CheckExpr := ot;
+    CheckExprBody := ot;
     last_sem_scalar_base := SemanticOrdinalBase(ot, 0);
   END
   ELSE IF nt = 'RealLiteral' THEN
@@ -1280,26 +1316,26 @@ BEGIN
     IF expr_context_tk = TK_REAL32 THEN
     BEGIN
       TagResolvedType(node, 'Real32Type');
-      CheckExpr := TK_REAL32;
+      CheckExprBody := TK_REAL32;
     END
     ELSE BEGIN
       TagResolvedType(node, 'RealType');
-      CheckExpr := TK_REAL;
+      CheckExprBody := TK_REAL;
     END;
   END
   ELSE IF nt = 'BoolLiteral' THEN
   BEGIN
-    CheckExpr := TK_BOOLEAN;
+    CheckExprBody := TK_BOOLEAN;
     last_sem_scalar_base := TK_BOOLEAN;
   END
   ELSE IF nt = 'CharLiteral' THEN
   BEGIN
-    CheckExpr := TK_CHAR;
+    CheckExprBody := TK_CHAR;
     last_sem_scalar_base := TK_CHAR;
   END
-  ELSE IF nt = 'StringLiteral' THEN CheckExpr := TK_STRING
-  ELSE IF nt = 'NilLiteral' THEN CheckExpr := TK_POINTER
-  ELSE IF nt = 'SizeofExpr' THEN CheckExpr := TK_INTEGER
+  ELSE IF nt = 'StringLiteral' THEN CheckExprBody := TK_STRING
+  ELSE IF nt = 'NilLiteral' THEN CheckExprBody := TK_POINTER
+  ELSE IF nt = 'SizeofExpr' THEN CheckExprBody := TK_INTEGER
   ELSE IF nt = 'AdrExpr' THEN
   BEGIN
     { ADR <var>: address-of a bare variable. This stage's type model has no
@@ -1309,11 +1345,11 @@ BEGIN
     si := LookupSymbol(GetStr(node, 'name'));
     IF si = 0 THEN
     BEGIN
-      AddError('Undefined identifier');
-      CheckExpr := TK_UNKNOWN;
+      AddUndefinedIdentifier(node);
+      CheckExprBody := TK_UNKNOWN;
     END
     ELSE
-      CheckExpr := TK_POINTER;
+      CheckExprBody := TK_POINTER;
   END
   ELSE IF nt = 'Identifier' THEN
   BEGIN
@@ -1323,27 +1359,27 @@ BEGIN
       IF NOT is_device_compiland THEN
       BEGIN
         AddError2('Device index builtin requires DEVICE code: ', name);
-        CheckExpr := TK_UNKNOWN;
+        CheckExprBody := TK_UNKNOWN;
       END
       ELSE
-        CheckExpr := TK_INTEGER32;
+        CheckExprBody := TK_INTEGER32;
     END
     ELSE
     BEGIN
       si := LookupSymbol(name);
       IF si = 0 THEN
       BEGIN
-        AddError('Undefined identifier');
-        CheckExpr := TK_UNKNOWN;
+        AddError2('Undefined identifier: ', name);
+        CheckExprBody := TK_UNKNOWN;
       END
       ELSE IF symbols[si].kind = 'FUNC' THEN
       BEGIN
-        CheckExpr := symbols[si].ret_tk;
+        CheckExprBody := symbols[si].ret_tk;
         last_sem_set_base := symbols[si].ret_set_sem_base;
         last_sem_scalar_base := symbols[si].ret_scalar_sem_base;
       END
       ELSE BEGIN
-        CheckExpr := symbols[si].tk;
+        CheckExprBody := symbols[si].tk;
         last_sem_set_base := symbols[si].set_sem_base;
         last_sem_scalar_base := symbols[si].scalar_sem_base;
       END;
@@ -1382,11 +1418,11 @@ BEGIN
       last_sem_set_base := SB_UNKNOWN
     ELSE
       last_sem_set_base := constructor_base;
-    CheckExpr := TK_SET;
+    CheckExprBody := TK_SET;
   END
   ELSE IF (nt = 'Designator') OR (nt = 'PostfixExpr') THEN
   BEGIN
-    CheckExpr := CheckDesignator(node);
+    CheckExprBody := CheckDesignator(node);
     last_sem_set_base := last_designator_set_sem_base;
     last_sem_scalar_base := last_designator_scalar_sem_base;
   END
@@ -1480,29 +1516,29 @@ BEGIN
       IF (ot = TK_ARRAY) AND bound_super THEN
         AddError('UPPER/LOWER non-pointer SUPER ARRAY has no runtime bound');
       IF (ot = TK_ARRAY) AND (op = 'DEREF') THEN
-        CheckExpr := TK_INTEGER64
+        CheckExprBody := TK_INTEGER64
       ELSE IF (ot = TK_ARRAY) AND bound_idx_unknown THEN
-        CheckExpr := TK_UNKNOWN
+        CheckExprBody := TK_UNKNOWN
       ELSE IF (ot = TK_SET) OR (ot = TK_ARRAY) THEN
       BEGIN
-        CheckExpr := bound_base_tk;
+        CheckExprBody := bound_base_tk;
         last_sem_scalar_base := SemanticOrdinalBase(bound_base_tk, 0);
       END
       ELSE IF (ot = TK_ENUM) OR bound_subrange THEN
-        CheckExpr := ot
+        CheckExprBody := ot
       ELSE
-        CheckExpr := TK_INTEGER;
+        CheckExprBody := TK_INTEGER;
     END
     ELSE BEGIN
       IF (ot <> TK_UNKNOWN) AND (ot <> TK_POINTER) THEN
         AddError('UPPER/LOWER requires an array, set, enum or subrange expression');
-      CheckExpr := TK_UNKNOWN;
+      CheckExprBody := TK_UNKNOWN;
     END;
   END
   ELSE IF nt = 'FuncCall' THEN
   BEGIN
     ot := CheckFuncCall(node);
-    CheckExpr := ot;
+    CheckExprBody := ot;
     IF IsOrdinal(ot) AND (ot <> TK_ENUM) THEN
       last_sem_scalar_base := SemanticOrdinalBase(ot, 0);
   END
@@ -1515,7 +1551,7 @@ BEGIN
     type_node := CreateNode('NamedType');
     AddStringField(type_node, 'name', GetStr(node, 'type_id'));
     ResolveTypeExpr(type_node, lt, aux, aux2, aux3, idx_tk);
-    CheckExpr := lt;
+    CheckExprBody := lt;
     IF lt = TK_SET THEN last_sem_set_base := SemanticSetBaseType(type_node);
     IF IsOrdinal(lt) THEN last_sem_scalar_base := SemanticBaseOfOrdinalType(type_node);
   END
@@ -1555,7 +1591,7 @@ BEGIN
           rt := TK_UNKNOWN;
         END;
     IF (lt = TK_UNKNOWN) OR (rt = TK_UNKNOWN) THEN
-      CheckExpr := TK_UNKNOWN
+      CheckExprBody := TK_UNKNOWN
     ELSE IF (lt = TK_VECTOR) OR (rt = TK_VECTOR) THEN
     BEGIN
       { Elementwise arithmetic/logic (and, later, comparison) on VECTORs.
@@ -1566,17 +1602,17 @@ BEGIN
       IF (lt <> TK_VECTOR) OR (rt <> TK_VECTOR) THEN
       BEGIN
         AddError('VECTOR operators require both operands to be the same VECTOR type (use VSPLAT for a scalar)');
-        CheckExpr := TK_UNKNOWN;
+        CheckExprBody := TK_UNKNOWN;
       END
       ELSE IF (op = 'EQ') OR (op = 'NEQ') OR (op = 'LT') OR (op = 'LE') OR
               (op = 'GT') OR (op = 'GE') OR (op = 'AND') OR (op = 'OR') OR
               (op = 'XOR') OR (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') OR
               (op = 'SLASH') OR (op = 'DIV') OR (op = 'MOD') THEN
-        CheckExpr := TK_VECTOR
+        CheckExprBody := TK_VECTOR
       ELSE
       BEGIN
         AddError('Unsupported VECTOR operator');
-        CheckExpr := TK_UNKNOWN;
+        CheckExprBody := TK_UNKNOWN;
       END;
     END
     ELSE IF (op = 'AND') OR (op = 'OR') OR (op = 'AND_THEN') OR (op = 'OR_ELSE') THEN
@@ -1584,10 +1620,10 @@ BEGIN
       IF (lt <> TK_BOOLEAN) OR (rt <> TK_BOOLEAN) THEN
       BEGIN
         AddError('Boolean operator requires BOOLEAN operands');
-        CheckExpr := TK_UNKNOWN;
+        CheckExprBody := TK_UNKNOWN;
       END
       ELSE
-        CheckExpr := TK_BOOLEAN;
+        CheckExprBody := TK_BOOLEAN;
     END
     ELSE IF (op = 'EQ') OR (op = 'NEQ') OR (op = 'LT') OR (op = 'LE') OR (op = 'GT') OR (op = 'GE') THEN
     BEGIN
@@ -1598,7 +1634,7 @@ BEGIN
       END
       ELSE IF NOT (IsNumeric(lt) AND IsNumeric(rt)) AND (lt <> rt) THEN
         AddError('Comparison operands are not comparable');
-      CheckExpr := TK_BOOLEAN;
+      CheckExprBody := TK_BOOLEAN;
       last_sem_scalar_base := TK_BOOLEAN;
     END
     ELSE IF op = 'IN' THEN
@@ -1610,7 +1646,7 @@ BEGIN
       IF IsOrdinal(lt) AND (rt = TK_SET) AND
          (nerrors = operands_errors_before) THEN
         CheckCompatibleSetBases(sem_scalar_l, sem_set_r);
-      CheckExpr := TK_BOOLEAN;
+      CheckExprBody := TK_BOOLEAN;
       last_sem_scalar_base := TK_BOOLEAN;
     END
     ELSE IF (lt = TK_SET) OR (rt = TK_SET) THEN
@@ -1620,7 +1656,7 @@ BEGIN
       IF (lt <> TK_SET) OR (rt <> TK_SET) THEN
       BEGIN
         AddError('Set operator requires SET operands');
-        CheckExpr := TK_UNKNOWN;
+        CheckExprBody := TK_UNKNOWN;
       END
       ELSE IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') THEN
       BEGIN
@@ -1638,12 +1674,12 @@ BEGIN
         ELSE IF sem_set_r = SB_EMPTY THEN last_sem_set_base := sem_set_l
         ELSE IF sem_set_l = sem_set_r THEN last_sem_set_base := sem_set_l
         ELSE last_sem_set_base := SB_UNKNOWN;
-        CheckExpr := TK_SET;
+        CheckExprBody := TK_SET;
       END
       ELSE
       BEGIN
         AddError('Unsupported SET operator');
-        CheckExpr := TK_UNKNOWN;
+        CheckExprBody := TK_UNKNOWN;
       END;
     END
     ELSE BEGIN
@@ -1658,26 +1694,31 @@ BEGIN
           outside MATHCK); anything else used to reach codegen and abort
           there without a location. }
         IF (op = 'PLUS') AND (IsInteger(lt) OR IsInteger(rt)) THEN
-          CheckExpr := TK_POINTER
+          CheckExprBody := TK_POINTER
         ELSE
         BEGIN
           AddError('Pointer arithmetic supports only pointer + integer offset');
-          CheckExpr := TK_UNKNOWN;
+          CheckExprBody := TK_UNKNOWN;
         END;
       END
       ELSE IF NOT (IsNumeric(lt) AND IsNumeric(rt)) THEN
       BEGIN
         AddError('Arithmetic operator requires numeric operands');
-        CheckExpr := TK_UNKNOWN;
+        CheckExprBody := TK_UNKNOWN;
       END
       ELSE IF (lt = TK_REAL) OR (rt = TK_REAL) THEN
-        CheckExpr := TK_REAL
+        CheckExprBody := TK_REAL
       ELSE IF (lt = TK_REAL32) OR (rt = TK_REAL32) THEN
       BEGIN
-        CheckExpr := TK_REAL32;
+        CheckExprBody := TK_REAL32;
         TagResolvedType(node, 'Real32Type');
       END
-      ELSE IF (op <> 'SLASH') AND IsInteger(lt) AND IsInteger(rt) AND
+      ELSE IF op = 'SLASH' THEN
+      BEGIN
+        CheckExprBody := TK_REAL;
+        TagResolvedType(node, 'RealType');
+      END
+      ELSE IF IsInteger(lt) AND IsInteger(rt) AND
               (IsUnsignedInteger(lt) <> IsUnsignedInteger(rt)) AND
               NOT ConstantAdaptsToOperand(left_node, lt, rt) AND
               NOT ConstantAdaptsToOperand(right_node, rt, lt) THEN
@@ -1692,10 +1733,10 @@ BEGIN
           AddError('Mixed INTEGER-family and WORD-family operands need an explicit conversion (e.g. WRD) in *')
         ELSE
           AddError2('Mixed INTEGER-family and WORD-family operands need an explicit conversion (e.g. WRD) in ', op);
-        CheckExpr := TK_UNKNOWN;
+        CheckExprBody := TK_UNKNOWN;
       END
       ELSE BEGIN
-        CheckExpr := IntegerResultType(lt, rt);
+        CheckExprBody := IntegerResultType(lt, rt);
         last_sem_scalar_base := SemanticOrdinalBase(IntegerResultType(lt, rt), 0);
         CheckFoldedOperation(node, IntegerResultType(lt, rt), operands_errors_before);
       END;
@@ -1717,16 +1758,16 @@ BEGIN
     IF op = 'NOT' THEN
     BEGIN
       IF ot = TK_VECTOR THEN
-        CheckExpr := TK_VECTOR
+        CheckExprBody := TK_VECTOR
       ELSE
       BEGIN
         IF (ot <> TK_BOOLEAN) AND (ot <> TK_UNKNOWN) THEN
           AddError('NOT requires a BOOLEAN operand');
-        CheckExpr := TK_BOOLEAN;
+        CheckExprBody := TK_BOOLEAN;
       END;
     END
     ELSE BEGIN
-      CheckExpr := ot;
+      CheckExprBody := ot;
       IF IsOrdinal(ot) AND (ot <> TK_ENUM) THEN
         last_sem_scalar_base := SemanticOrdinalBase(ot, 0);
       { A literal operand was already checked as one constant above. }
@@ -1737,9 +1778,19 @@ BEGIN
     IF op = 'NOT' THEN last_sem_scalar_base := TK_BOOLEAN;
   END
   ELSE
-    CheckExpr := TK_UNKNOWN;
+    CheckExprBody := TK_UNKNOWN;
   END;
   expr_depth := expr_depth - 1;
+END;
+
+FUNCTION CheckExpr(node: ADRMEM): INTEGER;
+{ CheckExprBody with the error position at this node while it is checked. }
+VAR
+  saved_line, saved_col: INTEGER32;
+BEGIN
+  TcEnterLocation(node, saved_line, saved_col);
+  CheckExpr := CheckExprBody(node);
+  TcLeaveLocation(saved_line, saved_col);
 END;
 
 BEGIN

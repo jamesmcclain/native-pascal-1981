@@ -1,3 +1,2 @@
 Type checking failed:
-Invalid address space in [SPACE(...)] attribute
-Error: Failed to parse input AST JSON
+Invalid address space in [SPACE(...)] attribute at line 4 column 3

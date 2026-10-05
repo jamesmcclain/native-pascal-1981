@@ -1,3 +1,2 @@
 Type checking failed:
-CONST intrinsic calls require the extended-const-intrinsics feature
-Error: Failed to parse input AST JSON
+CONST intrinsic calls require the extended-const-intrinsics feature at line 4 column 3

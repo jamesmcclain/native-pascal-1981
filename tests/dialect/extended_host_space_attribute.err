@@ -1,3 +1,2 @@
 Type checking failed:
-Address spaces require DEVICE code
-Error: Failed to parse input AST JSON
+Address spaces require DEVICE code at line 4 column 3

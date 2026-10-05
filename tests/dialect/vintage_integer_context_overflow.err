@@ -1,7 +1,6 @@
 Type checking failed:
-Positive integer constant out of range for INTEGER
-Positive integer constant out of range for INTEGER
-Positive integer constant out of range for INTEGER
-Positive integer constant out of range for INTEGER
-Positive integer constant out of range for INTEGER
-Error: Failed to parse input AST JSON
+Positive integer constant out of range for INTEGER at line 13 column 8
+Positive integer constant out of range for INTEGER at line 14 column 3
+Positive integer constant out of range for INTEGER at line 15 column 15
+Positive integer constant out of range for INTEGER at line 16 column 9
+Positive integer constant out of range for INTEGER at line 17 column 17

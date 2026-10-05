@@ -1,3 +1,2 @@
 Type checking failed:
-VSPLAT type argument is not a VECTOR type
-Error: Failed to parse input AST JSON
+VSPLAT type argument is not a VECTOR type at line 9 column 8

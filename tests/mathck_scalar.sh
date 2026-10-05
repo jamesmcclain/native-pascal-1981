@@ -162,8 +162,10 @@ constants_unit() { # dialect
                -o "$dir/const.ll" > "$dir/stdout" 2> "$dir/stderr"; then
             die "accepted ($dialect MATHCK$flag): $statement"
           fi
-          printf 'Type checking failed:\n%s\nError: Failed to parse input AST JSON\n' \
-            "$expected" | diff -u - "$dir/stderr" ||
+          # Generated statements move; the goldens pin locations, so
+          # compare the message without its ` at line L column C'.
+          printf 'Type checking failed:\n%s\n' \
+            "$expected" | diff -u - <(sed -E 's/ at line [0-9]+ column [0-9]+$//' "$dir/stderr") ||
             die "reject stderr ($dialect MATHCK$flag): $statement"
           [ ! -s "$dir/stdout" ] || die "reject stdout: $statement"
           [ ! -s "$dir/const.ll" ] || die "IR published: $statement"

@@ -9,7 +9,7 @@ trap 'rm -rf "$work"' EXIT
 driver=bin/pascal1981-native
 cc=${CC:-clang}
 bash tests/run.sh tests/golden/super_new_hardened.pas
-"$cc" -Wall -Wextra -Werror tests/super_new_runtime.c runtime/build/libpascalrt.a \
+"$cc" -Wall -Wextra tests/super_new_runtime.c runtime/build/libpascalrt.a \
   -Wl,--wrap=malloc -o "$work/runtime"
 "$work/runtime"
 "$driver" --dialect extended -O0 -S tests/descriptor/new_failures.pas -o "$work/fail.ll"

@@ -1,3 +1,2 @@
 Type checking failed:
-{$UNROLL} count must be a positive integer
-Error: Failed to parse input AST JSON
+{$UNROLL} count must be a positive integer at line 7 column 3

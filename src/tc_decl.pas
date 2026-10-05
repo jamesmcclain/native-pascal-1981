@@ -337,7 +337,7 @@ BEGIN
   END;
 END;
 
-PROCEDURE CheckDecl(decl: ADRMEM);
+PROCEDURE CheckDeclBody(decl: ADRMEM);
 VAR
   nt, dname: Str255;
   names_arr, type_expr, params_arr, body, ret_type_node: ADRMEM;
@@ -600,6 +600,17 @@ BEGIN
       PopScope;
     END;
   END;
+END;
+
+PROCEDURE CheckDecl(decl: ADRMEM);
+{ CheckDeclBody with the error position at this declaration while it is
+  checked. }
+VAR
+  saved_line, saved_col: INTEGER32;
+BEGIN
+  TcEnterLocation(decl, saved_line, saved_col);
+  CheckDeclBody(decl);
+  TcLeaveLocation(saved_line, saved_col);
 END;
 
 PROCEDURE BeginTypeSection(decls_arr: ADRMEM; first: INTEGER32);

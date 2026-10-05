@@ -318,8 +318,7 @@ BEGIN
   ELSE
     AddNullField(node, 'otherwise');
   Expect('END');
-  AddBoolField(node, 'rangeck', CurRangeCk());
-  AddField(node, 'meta_flags', BuildMetaFlagsNode());
+  { ParseStatement supplies the policy captured at CASE, not after END. }
   ParseCaseStmt := node;
 END;
 
@@ -406,7 +405,7 @@ BEGIN
   ParseLabelStmt := node;
 END;
 
-FUNCTION ParseStatement: ADRMEM;
+FUNCTION ParseStatementBody: ADRMEM;
 VAR
   node, location: ADRMEM;
   tok: PToken;
@@ -423,19 +422,19 @@ BEGIN
     exit(1);
   END;
   IF k = 'BEGIN' THEN
-    ParseStatement := ParseCompoundStmt
+    ParseStatementBody := ParseCompoundStmt
   ELSE IF k = 'IF' THEN
-    ParseStatement := ParseIfStmt
+    ParseStatementBody := ParseIfStmt
   ELSE IF k = 'FOR' THEN
-    ParseStatement := ParseForStmt
+    ParseStatementBody := ParseForStmt
   ELSE IF k = 'REPEAT' THEN
-    ParseStatement := ParseRepeatStmt
+    ParseStatementBody := ParseRepeatStmt
   ELSE IF k = 'WHILE' THEN
-    ParseStatement := ParseWhileStmt
+    ParseStatementBody := ParseWhileStmt
   ELSE IF k = 'CASE' THEN
-    ParseStatement := ParseCaseStmt
+    ParseStatementBody := ParseCaseStmt
   ELSE IF k = 'WITH' THEN
-    ParseStatement := ParseWithStmt
+    ParseStatementBody := ParseWithStmt
   ELSE IF k = 'GOTO' THEN
   BEGIN
     BEGIN RelayTokenTrivia; pos := pos + 1; END;
@@ -450,7 +449,7 @@ BEGIN
       AddStringField(node, 'label', CurLex);
       BEGIN RelayTokenTrivia; pos := pos + 1; END;
     END;
-    ParseStatement := node;
+    ParseStatementBody := node;
   END
   ELSE IF k = 'RETURN' THEN
   BEGIN
@@ -464,7 +463,7 @@ BEGIN
     AddIntField(location, 'column', tok^.col);
     AddField(node, 'read_location', location);
     BEGIN RelayTokenTrivia; pos := pos + 1; END;
-    ParseStatement := node;
+    ParseStatementBody := node;
   END
   ELSE IF k = 'BREAK' THEN
   BEGIN
@@ -480,7 +479,7 @@ BEGIN
     END
     ELSE
       AddNullField(node, 'label');
-    ParseStatement := node;
+    ParseStatementBody := node;
   END
   ELSE IF k = 'CYCLE' THEN
   BEGIN
@@ -496,15 +495,15 @@ BEGIN
     END
     ELSE
       AddNullField(node, 'label');
-    ParseStatement := node;
+    ParseStatementBody := node;
   END
   ELSE IF ((k = 'INTEGER_LITERAL') OR (k = 'IDENTIFIER')) AND (NextKind = 'COLON') THEN
-    ParseStatement := ParseLabelStmt
+    ParseStatementBody := ParseLabelStmt
   ELSE IF k = 'IDENTIFIER' THEN
-    ParseStatement := ParseAssignOrCallStmt
+    ParseStatementBody := ParseAssignOrCallStmt
   ELSE IF (k = 'SEMICOLON') OR (k = 'END') OR (k = 'UNTIL') OR
           (k = 'ELSE') OR (k = 'OTHERWISE') THEN
-    ParseStatement := CreateTriviaNode('EmptyStmt')
+    ParseStatementBody := CreateTriviaNode('EmptyStmt')
   ELSE
   BEGIN
     { An empty statement is legal only at a statement boundary.  Returning
@@ -512,9 +511,35 @@ BEGIN
       such as ParseCompoundStmt loop forever on malformed source. }
     EPrint('Parser Error: expected statement');
     exit(1);
-    ParseStatement := NIL;
+    ParseStatementBody := NIL;
   END;
   LeaveStmtLevel;
+END;
+
+FUNCTION ParseStatement: ADRMEM;
+{ ParseStatementBody, with the statement's first token as its `location'
+  for typechecker diagnostics. }
+VAR
+  node, location, flags: ADRMEM;
+  saved_rangeck: BOOLEAN;
+BEGIN
+  location := CurLocation;
+  saved_rangeck := CurRangeCk();
+  flags := BuildMetaFlagsNode();
+  node := ParseStatementBody;
+  IF node <> NIL THEN
+  BEGIN
+    AddField(node, 'location', location);
+    IF NOT HasKey(node, 'rangeck') THEN AddBoolField(node, 'rangeck', saved_rangeck);
+    IF NOT HasKey(node, 'meta_flags') THEN AddField(node, 'meta_flags', flags)
+    ELSE cJSON_Delete(flags);
+  END
+  ELSE
+  BEGIN
+    cJSON_Delete(location);
+    cJSON_Delete(flags);
+  END;
+  ParseStatement := node;
 END;
 
 BEGIN

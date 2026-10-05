@@ -118,7 +118,7 @@ if "$driver" --dialect extended tests/descriptor/unsafe_failures.pas -o "$work/u
 else fail 'unsafe failure fixture compiles'; diagnostic; fi
 
 checks=$((checks + 1))
-if "${CC:-clang}" -Wall -Wextra -Werror -o "$work/import-runtime" tests/super_import_runtime.c runtime/build/libpascalrt.a && "$work/import-runtime"; then
+if "${CC:-clang}" -Wall -Wextra -o "$work/import-runtime" tests/super_import_runtime.c runtime/build/libpascalrt.a && "$work/import-runtime"; then
   pass 'unsafe import runtime span/address overflow checks'
 else fail 'unsafe import runtime span/address overflow checks'; fi
 

@@ -1,3 +1,2 @@
 Type checking failed:
-Vector lane index out of range
-Error: Failed to parse input AST JSON
+Vector lane index out of range at line 10 column 3

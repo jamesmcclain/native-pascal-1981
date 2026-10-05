@@ -879,12 +879,97 @@ BEGIN
   CodegenCheckedVReduce := acc;
 END;
 
+FUNCTION ConstantAdaptsToOperand(const_node, other_node: ADRMEM;
+  const_tk, other_tk: INTEGER): BOOLEAN;
+{ Codegen's copy of the typechecker's ConstantAdaptsToOperand
+  (src/tc_expr.pas) for a constant beside a nonconstant operand: the
+  constant takes an unsigned operand's type (IBM's WORD constant rule), and
+  a signed operand's type when it fits. Only an operand at least as wide:
+  the typechecker's result type is the wider one, so a wider constant
+  (WORD32 + an INTEGER64 CONST) instead widens the operand below. Nested
+  IFs, because AND evaluates both sides and IntLiteralValue aborts on a
+  nonconstant. }
+VAR
+  v: INTEGER64;
+BEGIN
+  ConstantAdaptsToOperand := FALSE;
+  IF IsIntLiteralLike(const_node) AND (IntFamilyWidth(const_tk) <= IntFamilyWidth(other_tk)) THEN
+    IF NOT IsIntLiteralLike(other_node) THEN
+    BEGIN
+      v := IntLiteralValue(const_node);
+      IF IsUnsignedWordTk(other_tk) THEN ConstantAdaptsToOperand := TRUE
+      ELSE IF other_tk = TK_INTEGER8 THEN ConstantAdaptsToOperand := (v >= -128) AND (v <= 127)
+      ELSE IF other_tk = TK_INTEGER THEN ConstantAdaptsToOperand := (v >= -32768) AND (v <= 32767)
+      ELSE IF other_tk = TK_INTEGER32 THEN
+        ConstantAdaptsToOperand := (v >= -2147483647 - 1) AND (v <= 2147483647)
+      ELSE ConstantAdaptsToOperand := other_tk = TK_INTEGER64;
+    END;
+END;
+
+FUNCTION CodegenMixedSignCompare(op: Str255; lval, rval: ADRMEM;
+  left_unsigned: BOOLEAN; common_tk: INTEGER): ADRMEM;
+{ Exact relational between one INTEGER-family and one WORD-family operand,
+  already extended to a common width (the signed side sign-extended, the
+  unsigned side zero-extended; common_tk is either operand kind of that
+  width). IBM leaves the mixture's signedness
+  arbitrary (a warning); here the mathematical values are compared: a
+  negative signed operand is below every unsigned value, otherwise the two
+  bit patterns compare unsigned. No wider type is needed, so 64-bit pairs
+  and DEVICE code take the same path. }
+VAR
+  s, u, neg, nonneg, cmp: ADRMEM;
+  sop: Str255;
+BEGIN
+  { Normalize to `s sop u` with the signed operand on the left. }
+  sop := op;
+  IF left_unsigned THEN
+  BEGIN
+    s := rval; u := lval;
+    IF op = 'LT' THEN sop := 'GT'
+    ELSE IF op = 'LE' THEN sop := 'GE'
+    ELSE IF op = 'GT' THEN sop := 'LT'
+    ELSE IF op = 'GE' THEN sop := 'LE';
+  END
+  ELSE
+  BEGIN
+    s := lval; u := rval;
+  END;
+  neg := LLVMBuildICmp(builder, LLVMIntSLT, s, LLVMConstNull(LLVMTypeForTk(common_tk)), MakeCStr(''));
+  nonneg := LLVMBuildNot(builder, neg, MakeCStr(''));
+  IF sop = 'EQ' THEN cmp := LLVMBuildICmp(builder, LLVMIntEQ, s, u, MakeCStr(''))
+  ELSE IF sop = 'NEQ' THEN cmp := LLVMBuildICmp(builder, LLVMIntNE, s, u, MakeCStr(''))
+  ELSE IF sop = 'LT' THEN cmp := LLVMBuildICmp(builder, LLVMIntULT, s, u, MakeCStr(''))
+  ELSE IF sop = 'LE' THEN cmp := LLVMBuildICmp(builder, LLVMIntULE, s, u, MakeCStr(''))
+  ELSE IF sop = 'GT' THEN cmp := LLVMBuildICmp(builder, LLVMIntUGT, s, u, MakeCStr(''))
+  ELSE cmp := LLVMBuildICmp(builder, LLVMIntUGE, s, u, MakeCStr(''));
+  IF (sop = 'NEQ') OR (sop = 'LT') OR (sop = 'LE') THEN
+    CodegenMixedSignCompare := LLVMBuildOr(builder, neg, cmp, MakeCStr(''))
+  ELSE
+    CodegenMixedSignCompare := LLVMBuildAnd(builder, nonneg, cmp, MakeCStr(''));
+END;
+
+FUNCTION NegativeConstBesideUnsigned(op: Str255; const_node: ADRMEM;
+  other_tk: INTEGER): BOOLEAN;
+{ A negative constant in a relational beside a WORD-family operand must not
+  adapt to that operand's type: as WORD, -1 would be 0xFFFF and `w > -1`
+  would be FALSE. Leaving it signed sends the comparison to the exact
+  signed/unsigned path (CodegenMixedSignCompare), so a constant and a
+  variable holding the same value compare alike. Nested IFs, because AND
+  evaluates both sides and IntLiteralValue aborts on a nonconstant. }
+BEGIN
+  NegativeConstBesideUnsigned := FALSE;
+  IF (op = 'EQ') OR (op = 'NEQ') OR (op = 'LT') OR (op = 'LE') OR (op = 'GT') OR (op = 'GE') THEN
+    IF IsUnsignedWordTk(other_tk) AND IsIntLiteralLike(const_node) THEN
+      NegativeConstBesideUnsigned := IntLiteralValue(const_node) < 0;
+END;
+
 FUNCTION CodegenBinOp(op: Str255; left_node, right_node, site: ADRMEM): ADRMEM;
 { site is the BinOp node itself: per-operation metadata is read from it. }
 VAR
   lval, rval, res: ADRMEM;
   ltk, rtk, folded_tk: INTEGER;
   gep_idx, ptr_elem_ty: ADRMEM;
+  mixed_sign_cmp, left_neg_const, right_neg_const: BOOLEAN;
 BEGIN
   IF (op = 'AND_THEN') OR (op = 'OR_ELSE') THEN
     res := CodegenShortCircuitBinOp(op, left_node, right_node)
@@ -918,15 +1003,74 @@ BEGIN
     builds an IntLiteral as plain 16-bit INTEGER with no knowledge of
     context, so rebuild it at the sibling operand's own width here instead
     of letting the ltk<>rtk check below reject it as "mixed-type". }
-  IF (ltk = TK_INTEGER) AND IsIntLiteralLike(left_node) AND IsWideIntTk(rtk) THEN
+  mixed_sign_cmp := FALSE;
+  left_neg_const := NegativeConstBesideUnsigned(op, left_node, rtk);
+  right_neg_const := NegativeConstBesideUnsigned(op, right_node, ltk);
+  IF (op = 'SLASH') AND IsIntegerFamilyTk(ltk) AND IsIntegerFamilyTk(rtk) THEN
+  BEGIN
+    { SLASH is always real division in Pascal (7/2 = 3.5), forcing a
+      floating result even for two INTEGER operands -- matches the
+      reference's is_real rule, which treats a bare SLASH as an implicit
+      REAL/REAL context even with no floating operand in sight. Promote
+      both operands to REAL here; the REAL-arithmetic dispatch branch below
+      then does the actual FDiv. This MUST live in the promotion chain, not
+      the operator-dispatch chain below -- putting a promotion-only branch
+      (one that doesn't itself set `res`) as a terminal arm of that single
+      ELSE IF chain would short-circuit past the actual FDiv/FAdd/etc. dispatch
+      entirely, leaving `res` unassigned/garbage (found via a real bug this
+      way: `int_part * 10.0 + (...)` silently emitted no FAdd at all). It
+      must also come first in this chain, before the integer-literal and
+      width-promotion arms, or those claim the operands and SLASH reaches
+      the integer dispatch unpromoted. }
+    lval := IntToFloat(lval, ltk, dblty);
+    rval := IntToFloat(rval, rtk, dblty);
+    ltk := TK_REAL;
+    rtk := TK_REAL;
+  END
+  ELSE IF (ltk = TK_INTEGER) AND IsIntLiteralLike(left_node) AND IsWideIntTk(rtk) AND
+          NOT left_neg_const THEN
   BEGIN
     lval := LLVMConstInt(LLVMTypeForTk(rtk), IntLiteralValue(left_node), 1);
     ltk := rtk;
   END
-  ELSE IF (rtk = TK_INTEGER) AND IsIntLiteralLike(right_node) AND IsWideIntTk(ltk) THEN
+  ELSE IF (rtk = TK_INTEGER) AND IsIntLiteralLike(right_node) AND IsWideIntTk(ltk) AND
+          NOT right_neg_const THEN
   BEGIN
     rval := LLVMConstInt(LLVMTypeForTk(ltk), IntLiteralValue(right_node), 1);
     rtk := ltk;
+  END
+  ELSE IF IsIntegerFamilyTk(ltk) AND IsIntegerFamilyTk(rtk) AND (ltk <> rtk) AND
+          NOT left_neg_const AND ConstantAdaptsToOperand(left_node, right_node, ltk, rtk) THEN
+  BEGIN
+    { Any other integer constant (MAXINT64, a wide CONST) adapts the same
+      way, by the typechecker's ConstantAdaptsToOperand rule. }
+    lval := LLVMConstInt(LLVMTypeForTk(rtk), IntLiteralValue(left_node), 1);
+    ltk := rtk;
+  END
+  ELSE IF IsIntegerFamilyTk(ltk) AND IsIntegerFamilyTk(rtk) AND (ltk <> rtk) AND
+          NOT right_neg_const AND ConstantAdaptsToOperand(right_node, left_node, rtk, ltk) THEN
+  BEGIN
+    rval := LLVMConstInt(LLVMTypeForTk(ltk), IntLiteralValue(right_node), 1);
+    rtk := ltk;
+  END
+  ELSE IF ((op = 'EQ') OR (op = 'NEQ') OR (op = 'LT') OR (op = 'LE') OR (op = 'GT') OR (op = 'GE')) AND
+          IsIntegerFamilyTk(ltk) AND IsIntegerFamilyTk(rtk) AND
+          (IsUnsignedWordTk(ltk) <> IsUnsignedWordTk(rtk)) THEN
+  BEGIN
+    { A signed/unsigned relational compares exact values
+      (CodegenMixedSignCompare). Extend the narrower operand by its own
+      signedness and keep both kinds; the dispatch below reads them. }
+    IF IntFamilyWidth(ltk) < IntFamilyWidth(rtk) THEN
+    BEGIN
+      IF IsUnsignedWordTk(ltk) THEN lval := LLVMBuildZExt(builder, lval, LLVMTypeForTk(rtk), MakeCStr(''))
+      ELSE lval := LLVMBuildSExt(builder, lval, LLVMTypeForTk(rtk), MakeCStr(''));
+    END
+    ELSE IF IntFamilyWidth(rtk) < IntFamilyWidth(ltk) THEN
+    BEGIN
+      IF IsUnsignedWordTk(rtk) THEN rval := LLVMBuildZExt(builder, rval, LLVMTypeForTk(ltk), MakeCStr(''))
+      ELSE rval := LLVMBuildSExt(builder, rval, LLVMTypeForTk(ltk), MakeCStr(''));
+    END;
+    mixed_sign_cmp := TRUE;
   END
   ELSE IF IsIntegerFamilyTk(ltk) AND IsIntegerFamilyTk(rtk) AND (ltk <> rtk) AND (IntFamilyWidth(ltk) <> IntFamilyWidth(rtk)) THEN
   BEGIN
@@ -971,24 +1115,6 @@ BEGIN
     ltk := rtk
   ELSE IF (rtk = TK_ADRMEM) AND (TypeKind(ltk) = TK_POINTER) THEN
     rtk := ltk
-  ELSE IF (op = 'SLASH') AND IsIntegerFamilyTk(ltk) AND IsIntegerFamilyTk(rtk) THEN
-  BEGIN
-    { SLASH is always real division in Pascal (7/2 = 3.5), forcing a
-      floating result even for two INTEGER operands -- matches the
-      reference's is_real rule, which treats a bare SLASH as an implicit
-      REAL/REAL context even with no floating operand in sight. Promote
-      both operands to REAL here; the REAL-arithmetic dispatch branch below
-      then does the actual FDiv. This MUST live in the promotion chain, not
-      the operator-dispatch chain below -- putting a promotion-only branch
-      (one that doesn't itself set `res`) as a terminal arm of that single
-      ELSE IF chain would short-circuit past the actual FDiv/FAdd/etc. dispatch
-      entirely, leaving `res` unassigned/garbage (found via a real bug this
-      way: `int_part * 10.0 + (...)` silently emitted no FAdd at all). }
-    lval := IntToFloat(lval, ltk, dblty);
-    rval := IntToFloat(rval, rtk, dblty);
-    ltk := TK_REAL;
-    rtk := TK_REAL;
-  END
   ELSE IF IsIntegerFamilyTk(ltk) AND ((rtk = TK_REAL) OR (rtk = TK_REAL32)) THEN
   BEGIN
     { Mixed INTEGER-family/REAL operand: the integer side implicitly
@@ -1128,6 +1254,14 @@ BEGIN
       SetPtrArrayElem(gep_idx, 0, MathReportOperand(lval, ltk));
     res := LLVMBuildGEP2(builder, ptr_elem_ty, rval, gep_idx, 1, MakeCStr(''));
     last_val_tk := rtk;
+  END
+  ELSE IF mixed_sign_cmp THEN
+  BEGIN
+    IF IntFamilyWidth(ltk) >= IntFamilyWidth(rtk) THEN
+      res := CodegenMixedSignCompare(op, lval, rval, IsUnsignedWordTk(ltk), ltk)
+    ELSE
+      res := CodegenMixedSignCompare(op, lval, rval, IsUnsignedWordTk(ltk), rtk);
+    last_val_tk := TK_BOOLEAN;
   END
   ELSE IF ltk <> rtk THEN
   BEGIN
@@ -2173,7 +2307,19 @@ BEGIN
         AND (last_val_tk <> TK_INTEGER64) AND (last_val_tk <> TK_WORD64) THEN
         AbortWith('codegen: an array index must be an ordinal type')
       ELSE
-        offset := LLVMBuildSub(builder, idx_val, LLVMConstInt(LLVMTypeForTk(last_val_tk), types[cur_tid].lo, 1), MakeCStr(''));
+      BEGIN
+        { Guard enablement must not change legal addresses. Widen before
+          subtraction: narrow GEP indexes are signed, and even a signed
+          index can have a nonnegative offset larger than its own range. }
+        IF (last_val_tk = TK_INTEGER) AND IsIntLiteralLike(idx_expr) AND FoldConstInt(idx_expr, folded) THEN
+          idx_val := LLVMConstInt(i64ty, folded, 1)
+        ELSE IF (last_val_tk <> TK_INTEGER64) AND (last_val_tk <> TK_WORD64) THEN
+          IF IsUnsignedWordTk(last_val_tk) THEN
+            idx_val := LLVMBuildZExt(builder, idx_val, i64ty, MakeCStr(''))
+          ELSE
+            idx_val := LLVMBuildSExt(builder, idx_val, i64ty, MakeCStr(''));
+        offset := LLVMBuildSub(builder, idx_val, LLVMConstInt(i64ty, types[cur_tid].lo, 1), MakeCStr(''));
+      END;
       IF types[cur_tid].is_super THEN
       BEGIN
         gep_idx := AllocPtrArray(1);
@@ -2859,16 +3005,28 @@ VAR
   vld_idx, vld_arr: ADRMEM;
   vld_idx_tk, vld_arr_tid: INTEGER;
   vld_hdr: ADRMEM;
-  bound_is_subrange: BOOLEAN;
+  bound_is_subrange, saved_rangeck: BOOLEAN;
+  range_flags: ADRMEM;
   value_shadow: ADRMEM; { committed to last_value_shadow at the end }
 BEGIN
   EnterExprLevel;
+  saved_rangeck := cur_rangeck;
+  range_flags := GetObjOrNil(node, 'read_flags');
+  IF range_flags <> NIL THEN
+    IF HasKey(range_flags, 'RANGECK') THEN
+      cur_rangeck := GetBool(range_flags, 'RANGECK');
   value_shadow := NIL;
   nt := NodeType(node);
   IF nt = 'IntLiteral' THEN
   BEGIN
-    res := LLVMConstInt(i16ty, GetInt(node, 'value'), 1);
-    last_val_tk := TK_INTEGER;
+    { The typechecker's tag is the literal's own type (WORD for
+      32768..65535, INTEGER32 above, and so on) or its assignment target's;
+      building every literal at i16 wrapped those. A literal tagged INTEGER,
+      or untagged legacy input, stays plain INTEGER and still adapts to a
+      sibling operand in CodegenBinOp. }
+    last_val_tk := FoldedOperationTk(node);
+    IF last_val_tk = TK_UNKNOWN THEN last_val_tk := TK_INTEGER;
+    res := LLVMConstInt(LLVMTypeForTk(last_val_tk), IntLiteralValue(node), 1);
   END
   ELSE IF nt = 'RealLiteral' THEN
   BEGIN
@@ -3405,6 +3563,7 @@ BEGIN
     AbortWith2('codegen: unhandled expression kind: ', nt);
     res := NIL;
   END;
+  cur_rangeck := saved_rangeck;
   LeaveExprLevel;
   last_val_tk := SubrangeBaseTid(last_val_tk);
   last_value_shadow := value_shadow;
@@ -3627,11 +3786,9 @@ BEGIN
 END;
 
 FUNCTION CodegenScan(stop_on_equal: INTEGER; args: ADRMEM): ADRMEM;
-{ SCANEQ(L, P, S, I) / SCANNE(L, P, S, I): INTEGER -- scans up to L
-  characters of S starting at 1-based position I, stopping at the first
-  character equal to (SCANEQ) or not equal to (SCANNE) P; returns the
-  1-based position of the stopping character, entirely libpascalrt's
-  runtime `scaneq`/`scanne` (scaneq.c). }
+{ SCANEQ(L, P, S, I) / SCANNE(L, P, S, I): INTEGER -- returns the
+  signed number of characters skipped, or L if no stopping character is
+  found. Negative L scans backward; I is a 1-based position. }
 VAR
   l_val, p_val, s_chars, s_len, i_val: ADRMEM;
   call_args, res32: ADRMEM;
@@ -3639,16 +3796,19 @@ BEGIN
   IF ArrSize(args) <> 4 THEN
     AbortWith('codegen: SCANEQ/SCANNE expects exactly 4 arguments');
   l_val := CodegenExpr(ArrItem(args, 0));
-  IF last_val_tk <> TK_INTEGER THEN
-    AbortWith('codegen: SCANEQ/SCANNE''s L argument must be INTEGER');
+  l_val := CoerceForAssign(l_val, last_val_tk, TK_INTEGER, ArrItem(args, 0), 'SCANEQ/SCANNE');
   l_val := LLVMBuildSExt(builder, l_val, i32ty, MakeCStr(''));
   p_val := CodegenExpr(ArrItem(args, 1));
   IF last_val_tk <> TK_CHAR THEN
     AbortWith('codegen: SCANEQ/SCANNE''s P argument must be CHAR');
+  { Strings have no INITCK shadow representation yet. Do not expose a
+    newly reachable unchecked length/data read at an enabled read site. }
+  IF NodeType(ArrItem(args, 2)) <> 'StringLiteral' THEN
+    IF GetBool(GetObjOrNil(ArrItem(args, 2), 'read_flags'), 'INITCK') THEN
+      InitckBoundaryAt('STRING/LSTRING scan source', ArrItem(args, 2));
   ResolveStringExprCharsLen(ArrItem(args, 2), s_chars, s_len);
   i_val := CodegenExpr(ArrItem(args, 3));
-  IF last_val_tk <> TK_INTEGER THEN
-    AbortWith('codegen: SCANEQ/SCANNE''s I argument must be INTEGER');
+  i_val := CoerceForAssign(i_val, last_val_tk, TK_INTEGER, ArrItem(args, 3), 'SCANEQ/SCANNE');
   i_val := LLVMBuildSExt(builder, i_val, i32ty, MakeCStr(''));
 
   call_args := AllocPtrArray(6);

@@ -211,6 +211,15 @@ BEGIN
   p_in := p_in_base + len;
   p_in^ := CHR(0);
 
+  { The driver runs every stage concurrently, so a stage after a failed one
+    reads empty input. The failed stage has already reported; fail without
+    adding a second, misleading diagnostic (as jsonutil's ReadAllStdin). }
+  IF len = 0 THEN
+  BEGIN
+    free(raw_input);
+    exit(1);
+  END;
+
   json_root := cJSON_Parse(raw_input);
   free(raw_input);
 
@@ -278,8 +287,10 @@ BEGIN
         integer literal above 32767 was lost here -- the lexer read 40000
         and the parser stored -25536, and every later stage saw only the
         wrapped value. That, not any property of the dialect, is why large
-        literals did not work. }
-      p_tok^.value_int := RETYPE(INTEGER64, pas_cjson_int64(field));
+        literals did not work. GetInt64, not the number alone: a JSON
+        number travels as 15 significant digits, so beyond that only the
+        lexer's exact decimal companion field still holds the literal. }
+      p_tok^.value_int := GetInt64(item, 'value');
       p_tok^.value_str := empty_s;
       p_tok^.value_type := 1;
     END
@@ -702,6 +713,19 @@ BEGIN
   END
   ELSE
     Match := FALSE;
+END;
+
+FUNCTION CurLocation: ADRMEM;
+{ The current token's line and column, for a node's `location' field. }
+VAR
+  tok: PToken;
+  location: ADRMEM;
+BEGIN
+  tok := GetTok(0);
+  location := cJSON_CreateObject;
+  AddIntField(location, 'line', tok^.line);
+  AddIntField(location, 'column', tok^.col);
+  CurLocation := location;
 END;
 
 FUNCTION CreateTriviaNode(type_name: Str255): ADRMEM;

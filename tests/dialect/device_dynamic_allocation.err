@@ -1,4 +1,3 @@
 Type checking failed:
-Dynamic memory allocation is not supported in DEVICE code: NEW
-Dynamic memory allocation is not supported in DEVICE code: DISPOSE
-Error: Failed to parse input AST JSON
+Dynamic memory allocation is not supported in DEVICE code: NEW at line 7 column 3
+Dynamic memory allocation is not supported in DEVICE code: DISPOSE at line 8 column 3

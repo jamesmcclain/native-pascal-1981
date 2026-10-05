@@ -1,7 +1,6 @@
 Type checking failed:
-Unknown field
-Dereference of non-pointer value
-UPPER/LOWER requires a dereferenced pointer
-UPPER/LOWER requires an array, set, enum or subrange expression
-UPPER/LOWER requires an array, set, enum or subrange expression
-Error: Failed to parse input AST JSON
+Unknown field: missing at line 8 column 17
+Dereference of non-pointer value at line 8 column 17
+UPPER/LOWER requires a dereferenced pointer at line 9 column 11
+UPPER/LOWER requires an array, set, enum or subrange expression at line 10 column 11
+UPPER/LOWER requires an array, set, enum or subrange expression at line 11 column 11

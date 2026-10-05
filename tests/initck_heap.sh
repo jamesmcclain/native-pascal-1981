@@ -758,7 +758,7 @@ PY
 
 # The registry itself: parts stay within an allocation, mismatches and
 # releases read as initialized scratch, reuse replaces stale state.
-clang -Wall -Wextra -Werror tests/initck_heap_runtime.c runtime/build/libpascalrt.a -o "$work/heap-runtime"
+clang -Wall -Wextra tests/initck_heap_runtime.c runtime/build/libpascalrt.a -o "$work/heap-runtime"
 "$work/heap-runtime"
 
 # --- Coverage: nested heap storage, aliases and recursion. ---

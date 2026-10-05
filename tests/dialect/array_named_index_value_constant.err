@@ -1,3 +1,2 @@
 Type checking failed:
-Array index requires a type name, not a value: V
-Error: Failed to parse input AST JSON
+Array index requires a type name, not a value: V at line 7 column 3

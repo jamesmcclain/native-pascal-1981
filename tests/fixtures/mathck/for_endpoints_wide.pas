@@ -8,8 +8,8 @@ BEGIN
   { The WORD64 maximum is not writable as a literal; build it without
     overflow from the largest signed literal. }
   wmax := 9223372036854775807; wmax := wmax + wmax; wmax := wmax + 1;
-  { INTEGER64 literals two below the extremes currently lose precision
-    (an unrelated literal defect), so derive the bounds arithmetically. }
+  { Bounds derived arithmetically: written when INTEGER64 literals of over
+    15 digits lost precision (fixed; tests/golden/literal_int64_exact.pas). }
   imax := 9223372036854775807; imin := -imax - 1;
   n := 0; FOR i8 := 125 TO 127 DO n := n + 1; WRITELN('int8 to max ', n);
   n := 0; FOR i8 := -126 DOWNTO -128 DO n := n + 1; WRITELN('int8 downto min ', n);

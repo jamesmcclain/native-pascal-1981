@@ -27,6 +27,24 @@ bin/pascal1981 --dialect extended -S tests/golden/indexck_word64_bad.pas -o "$wo
 grep -Eq 'zext i64 .* to i128' "$work/word64.ll"
 bin/pascal1981 --dialect extended -S tests/golden/indexck_int64_bad.pas -o "$work/int64.ll"
 grep -Eq 'sext i64 .* to i128' "$work/int64.ll"
+# Legal endpoints must use widened offsets even with guards disabled.
+# Inspect IR before executing twins: the old narrow GEP corrupts memory.
+for flag in + -; do
+  { printf '{$INDEXCK%s}\n' "$flag"; awk '{ print }' tests/fixtures/indexck_valid_offsets.pas; } > "$work/valid.pas"
+  bin/pascal1981 --dialect extended -S "$work/valid.pas" -o "$work/valid.ll"
+  grep -Eq 'zext i8 .* to i64' "$work/valid.ll" || [ "$flag" = + ]
+  grep -Eq 'zext i16 .* to i64' "$work/valid.ll" || [ "$flag" = + ]
+  grep -Eq 'sext i16 .* to i64' "$work/valid.ll" || [ "$flag" = + ]
+  ! grep -Eq 'sub i(8|16) ' "$work/valid.ll"
+  grep -Eq 'sub i64 .* -32768' "$work/valid.ll"
+  if [ "$flag" = - ]; then
+    ! grep -q 'call void @pas_array_index_error(' "$work/valid.ll"
+  fi
+  for opt in 0 1 2 3; do
+    bin/pascal1981 --dialect extended -O"$opt" "$work/valid.pas" -o "$work/valid"
+    [ "$("$work/valid")" = '11 22 33' ]
+  done
+done
 # Compile-only exclusion probes: STRING/LSTRING indexes and VECTOR lanes
 # (plus variable VLOAD/VSTORE) do not gain fixed-array host diagnostic calls.
 # SUPER ARRAY subscripts are now descriptor-guarded (probe below).

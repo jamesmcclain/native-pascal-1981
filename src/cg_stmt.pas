@@ -1838,8 +1838,10 @@ END;
 PROCEDURE CodegenStmt(stmt: ADRMEM);
 VAR
   nt, msg: Str255;
+  saved_rangeck: BOOLEAN;
 BEGIN
   EnterStmtLevel;
+  saved_rangeck := cur_rangeck;
   nt := NodeType(stmt);
   IF GetObjOrNil(stmt, 'rangeck') <> NIL THEN
     cur_rangeck := GetBool(stmt, 'rangeck');
@@ -1864,6 +1866,7 @@ BEGIN
     CONCAT(msg, nt);
     AbortWith(msg);
   END;
+  cur_rangeck := saved_rangeck;
   LeaveStmtLevel;
 END;
 

@@ -139,6 +139,9 @@ VAR
 PROCEDURE TcInit(VAR requested_features: FeatureSet);
 PROCEDURE AddError(msg: Str255);
 PROCEDURE AddError2(msg: Str255; name: Str255);
+PROCEDURE AddUndefinedIdentifier(node: ADRMEM);
+PROCEDURE TcEnterLocation(node: ADRMEM; VAR saved_line, saved_col: INTEGER32);
+PROCEDURE TcLeaveLocation(saved_line, saved_col: INTEGER32);
 FUNCTION UpperStr(s: Str255): Str255;
 PROCEDURE PushScope;
 PROCEDURE PopScope;

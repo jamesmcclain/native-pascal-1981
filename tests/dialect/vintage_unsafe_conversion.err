@@ -1,3 +1,2 @@
 Type checking failed:
-Unsafe super-array conversions require the extended dialect
-Error: Failed to parse input AST JSON
+Unsafe super-array conversions require the extended dialect at line 4 column 24

@@ -58,7 +58,7 @@ GEN4_BINS := $(addprefix $(BUILD_DIR)/gen4/,$(STAGES))
 BOOTSTRAP_BINS := $(addprefix $(BIN_DIR)/,$(STAGES))
 FIXED_POINT := $(BUILD_DIR)/.fixed-point-verified
 
-.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-driver test-native test-descriptor-contract test-super-new test-parser-named-index test-typecheck-named-index test-sysutil test-proxy test-gpu test-reference-parity test-elisp test-bootstrap test-pasboot check-bootstrap-subset
+.PHONY: all runtime driver bootstrap beautify clean cleaner cleanest tidy test test-routine test-precommit-hook test-driver test-native test-descriptor-contract test-super-new test-parser-named-index test-typecheck-named-index test-sysutil test-proxy test-gpu test-reference-parity test-elisp test-bootstrap test-pasboot check-bootstrap-subset
 
 all: runtime driver bootstrap $(PROXY_BIN) $(PRETTY81_BIN)
 
@@ -123,6 +123,10 @@ $(BUILD_DIR)/gen4/%: src/%.pas $(STAGE_SRCS) $(GEN3_BINS) $(RUNTIME_LIB) | $(BUI
 $(BUILD_DIR)/gen1/codegen $(BUILD_DIR)/gen2/codegen $(BUILD_DIR)/gen3/codegen $(BUILD_DIR)/gen4/codegen: $(CODEGEN_SRCS)
 $(BUILD_DIR)/gen1/typechecker $(BUILD_DIR)/gen2/typechecker $(BUILD_DIR)/gen3/typechecker $(BUILD_DIR)/gen4/typechecker: $(TYPECHECKER_SRCS)
 $(BUILD_DIR)/gen1/parser $(BUILD_DIR)/gen2/parser $(BUILD_DIR)/gen3/parser $(BUILD_DIR)/gen4/parser: $(PARSER_SRCS)
+# Name every generation's stages as targets. GNU make 4.3 otherwise treats a
+# stage reached only through the pattern rules (each lexer) as intermediate
+# and deletes it after the build; mathck_bootstrap_audit runs them.
+$(GEN1_BINS) $(GEN2_BINS) $(GEN3_BINS) $(GEN4_BINS):
 
 $(BUILD_DIR) $(BUILD_DIR)/gen1 $(BUILD_DIR)/gen2 $(BUILD_DIR)/gen3 $(BUILD_DIR)/gen4:
 	mkdir -p $@
@@ -154,7 +158,15 @@ cleaner: clean
 cleanest: cleaner
 	rm -rf .pytest_cache
 
-test: check-bootstrap-subset test-pasboot test-native test-proxy
+# make test runs every routine group even after one fails (make -k) and ends
+# with a summary of failed targets and checks; see scripts/test-report.sh.
+# make test-routine runs the same groups without the summary.
+test:
+	+@MAKE="$(MAKE)" TEST_REPORT_LABEL="make test" ./scripts/test-report.sh $(BUILD_DIR)/test-report.log test-routine
+
+test-routine: check-bootstrap-subset test-pasboot test-native test-proxy test-precommit-hook
+
+test-precommit-hook:
 	$(TEST_ENV) ./tests/test_precommit_hook.sh
 
 # Every gen1 compiland must stay inside the subset pasboot translates
@@ -209,7 +221,7 @@ NATIVE_SUITES := mathck_mixed_width initck_heap mathck_twins initck_aggregates \
   mathck_device stage_cli indexck_metadata mathck_boundary_values \
   mathck_diagnostics mathck_address_arith mathck_optimization initck_state \
   mathck_overflow astcompare indexck_guard_ir codegen_set_base_guard \
-  set_enum_typecheck
+  set_enum_typecheck scan_contract rangeck_scope
 NATIVE_SUITE_TARGETS := $(addprefix native-suite-,$(NATIVE_SUITES))
 
 # Build every tool with BUILD_JOBS parallel jobs (the runtime objects,
@@ -223,14 +235,18 @@ test-native:
 	$(MAKE) -j$(BUILD_JOBS) $(NATIVE_TEST_TOOLS)
 	$(MAKE) -j$(TEST_SUITE_JOBS) --output-sync=target native-suites
 
-.PHONY: native-suites native-golden native-read-wide native-no-core native-temp-hygiene $(NATIVE_SUITE_TARGETS)
+.PHONY: native-suites native-golden native-scan-runtime native-read-wide native-no-core native-temp-hygiene $(NATIVE_SUITE_TARGETS)
 native-suites: native-golden $(word 1,$(NATIVE_SUITE_TARGETS)) $(word 2,$(NATIVE_SUITE_TARGETS)) \
   $(word 3,$(NATIVE_SUITE_TARGETS)) test-descriptor-contract test-sysutil test-driver test-parser-named-index \
   test-typecheck-named-index test-super-new native-read-wide \
-  $(NATIVE_SUITE_TARGETS) native-no-core native-temp-hygiene
+  $(NATIVE_SUITE_TARGETS) native-scan-runtime native-no-core native-temp-hygiene
 
 native-golden: $(DRIVER_BIN) bootstrap
 	$(TEST_ENV) ./tests/run.sh -j $(TEST_JOBS)
+
+native-scan-runtime: $(RUNTIME_LIB)
+	$(CC) -o $(BUILD_DIR)/scan_runtime tests/scan_runtime.c $(RUNTIME_LIB)
+	$(TEST_ENV) $(BUILD_DIR)/scan_runtime
 
 native-read-wide: $(RUNTIME_LIB)
 	$(CC) -o $(BUILD_DIR)/read_wide_runtime tests/read_wide_runtime.c $(RUNTIME_LIB)

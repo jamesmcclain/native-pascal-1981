@@ -1,3 +1,2 @@
 Type checking failed:
-Incompatible set base types
-Error: Failed to parse input AST JSON
+Incompatible set base types at line 8 column 3

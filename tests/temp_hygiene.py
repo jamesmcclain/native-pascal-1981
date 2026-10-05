@@ -301,9 +301,10 @@ sys.exit(7)
         ]
         if preload:
             env['LD_PRELOAD'] = ':'.join(preload)
-        if subprocess.run(['bwrap', '--ro-bind', '/', '/', 'true'],
-                          env=env,
-                          capture_output=True).returncode != 0:
+        if shutil.which('bwrap') is None or subprocess.run(
+            ['bwrap', '--ro-bind', '/', '/', 'true'],
+                env=env,
+                capture_output=True).returncode != 0:
             self.skipTest('bwrap sandbox unavailable')
         source = self.script(
             'root.c', r'''

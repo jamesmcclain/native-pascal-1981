@@ -1,3 +1,2 @@
 Type checking failed:
 Pointer arithmetic supports only pointer + integer offset
-Error: Failed to parse input AST JSON

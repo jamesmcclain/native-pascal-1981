@@ -22,6 +22,8 @@ FUNCTION cJSON_GetArrayItem(arr: ADRMEM; index: CINT): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_GetStringValue(item: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_GetNumberValue(item: ADRMEM): REAL [C]; EXTERN;
 FUNCTION pas_cjson_int32(item: ADRMEM): CINT [C]; EXTERN;
+PROCEDURE pas_cjson_add_int64(obj: ADRMEM; key: ADRMEM; val: INTEGER64) [C]; EXTERN;
+FUNCTION pas_cjson_get_int64(obj: ADRMEM; key: ADRMEM): INTEGER64 [C]; EXTERN;
 FUNCTION cJSON_IsTrue(item: ADRMEM): CINT [C]; EXTERN;
 FUNCTION getchar: CINT [C]; EXTERN;
 PROCEDURE free(ptr: ADRMEM) [C]; EXTERN;
@@ -87,8 +89,11 @@ BEGIN
     read 40000 correctly and the parser stored -25536, so codegen never saw
     anything else. A narrower parameter here would have to be RETYPEd at
     every call site, which is exactly what the parser used to do. The JSON
-    number it becomes is a double, so values are exact up to 2^53. }
-  AddField(obj, key_str, cJSON_CreateNumber(pas_int64_to_double(val_int)));
+    number it becomes is printed with 15 significant digits, so a longer value
+    also gets an exact decimal companion field (runtime/json_helpers.c);
+    read it back with GetInt64, not GetReal. }
+  IF obj <> NIL THEN
+    pas_cjson_add_int64(obj, MakeCStr(key_str), val_int);
 END;
 
 PROCEDURE AddRealField(obj: ADRMEM; key_str: Str255; val_real: REAL);
@@ -181,6 +186,18 @@ BEGIN
     GetInt := RETYPE(INTEGER32, pas_cjson_int32(item));
 END;
 
+FUNCTION GetInt64(obj: ADRMEM; key: Str255): INTEGER64;
+{ The exact value of an integer field written by AddIntField (or the
+  lexer's integer token value). Through GetReal, a literal of over 15 digits
+  rounded to the nearest double, e.g. 9223372036854775805 became
+  9223372036854775807. }
+BEGIN
+  IF obj = NIL THEN
+    GetInt64 := 0
+  ELSE
+    GetInt64 := pas_cjson_get_int64(obj, MakeCStr(key));
+END;
+
 FUNCTION GetReal(obj: ADRMEM; key: Str255): REAL;
 VAR
   item: ADRMEM;
@@ -264,6 +281,14 @@ BEGIN
   p_in := p_in_base + len;
   p_in^ := CHR(0);
 
+  { The driver runs every stage concurrently, so a stage after a failed one
+    reads empty input. The failed stage has already reported; fail without
+    adding a second, misleading diagnostic. }
+  IF len = 0 THEN
+  BEGIN
+    free(raw_input);
+    exit(1);
+  END;
   json_root := cJSON_Parse(raw_input);
   free(raw_input);
   IF json_root = NIL THEN

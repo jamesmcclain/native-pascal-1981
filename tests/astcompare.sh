@@ -54,6 +54,16 @@ write_pair '{"resolved_type":"INTEGER","child":{"resolved_type":"REAL","x":1}}' 
 expect_match 'ignored keys are skipped recursively' --ignore-key resolved_type \
   "$work_dir/expected.json" "$work_dir/actual.json"
 
+# Historically every option after the eighth was silently discarded.
+write_pair '{"ninth":1,"child":{"tenth":1},"kept":7}' '{"ninth":2,"child":{"tenth":2},"kept":7}'
+ignore_many=()
+for key in a b c d e f g h ninth tenth; do ignore_many+=(--ignore-key "$key"); done
+expect_match 'all ignore-key options are honored beyond eight' "${ignore_many[@]}" \
+  "$work_dir/expected.json" "$work_dir/actual.json"
+write_pair '{"ninth":1,"kept":7}' '{"ninth":2,"kept":8}'
+expect_mismatch 'many ignored keys do not suppress unrelated differences' 'Mismatch at $.kept' \
+  "${ignore_many[@]}" "$work_dir/expected.json" "$work_dir/actual.json"
+
 write_pair '{"items":[1,2]}' '{"items":[2,1]}'
 expect_mismatch 'array order remains significant' 'Mismatch at $.items[0]' \
   "$work_dir/expected.json" "$work_dir/actual.json"
@@ -94,7 +104,7 @@ check_frozen_ast() {
   # those are checked separately by indexck_metadata.sh/mathck_metadata.sh,
   # not treated as reference parity.
   if bin/lexer < "$reference.pas" | bin/parser > "$actual_ast" &&
-     bin/astcompare --ignore-key indexck --ignore-key read_flags --ignore-key read_location --ignore-key mathck --ignore-key op_location --ignore-key leading_comments --ignore-key trailing_comment \
+     bin/astcompare --ignore-key indexck --ignore-key rangeck --ignore-key meta_flags --ignore-key read_flags --ignore-key read_location --ignore-key location --ignore-key mathck --ignore-key op_location --ignore-key leading_comments --ignore-key trailing_comment \
        "$reference.ast.json" "$actual_ast"; then
     pass "native parser matches the frozen $label AST"
   else
@@ -102,7 +112,7 @@ check_frozen_ast() {
   fi
 
   if bin/typechecker < "$actual_ast" > "$actual_typed" &&
-     bin/astcompare --ignore-key resolved_type --ignore-key indexck --ignore-key read_flags --ignore-key read_location --ignore-key mathck --ignore-key op_location \
+     bin/astcompare --ignore-key resolved_type --ignore-key indexck --ignore-key rangeck --ignore-key meta_flags --ignore-key read_flags --ignore-key read_location --ignore-key location --ignore-key mathck --ignore-key op_location \
        --ignore-key leading_comments --ignore-key trailing_comment \
        "$reference.typed.json" "$actual_typed"; then
     pass "native typechecker matches the frozen $label AST"

@@ -1,10 +1,9 @@
 Type checking failed:
-Negative integer constant out of range for INTEGER8
-Positive integer constant out of range for INTEGER8
-Negative integer constant out of range for WORD8
-Positive integer constant out of range for WORD8
-Negative integer constant out of range for INTEGER32
-Positive integer constant out of range for INTEGER32
-Negative integer constant out of range for WORD32
-Positive integer constant out of range for WORD32
-Error: Failed to parse input AST JSON
+Negative integer constant out of range for INTEGER8 at line 9 column 9
+Positive integer constant out of range for INTEGER8 at line 10 column 9
+Negative integer constant out of range for WORD8 at line 11 column 9
+Positive integer constant out of range for WORD8 at line 12 column 9
+Negative integer constant out of range for INTEGER32 at line 13 column 10
+Positive integer constant out of range for INTEGER32 at line 14 column 10
+Negative integer constant out of range for WORD32 at line 15 column 10
+Positive integer constant out of range for WORD32 at line 16 column 10

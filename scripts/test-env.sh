@@ -7,6 +7,14 @@ if [ "$#" -eq 0 ]; then
   echo "usage: $0 <test-command> [args...]" >&2
   exit 2
 fi
+# Compile through scripts/test-cc.sh, which drops the host clang's own
+# driver warnings so suites asserting an empty compiler stderr do not
+# depend on how the host's toolchain is installed. A suite that sets
+# PASCAL1981_CC itself (a fake clang) still overrides this.
+if [ -z "${PASCAL1981_TEST_CC:-}" ]; then
+  export PASCAL1981_TEST_CC="${PASCAL1981_CC:-${CC:-clang}}"
+  export PASCAL1981_CC="$(cd "$(dirname "$0")" && pwd)/test-cc.sh"
+fi
 if [ "${PASCAL_TEST_CORES:-0}" = 1 ]; then
   exec "$@"
 fi

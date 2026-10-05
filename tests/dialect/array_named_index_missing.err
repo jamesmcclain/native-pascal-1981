@@ -1,3 +1,2 @@
 Type checking failed:
-Unknown type name
-Error: Failed to parse input AST JSON
+Unknown type name: missing at line 5 column 3

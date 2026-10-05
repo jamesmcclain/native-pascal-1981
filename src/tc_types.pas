@@ -590,7 +590,7 @@ BEGIN
       ti := LookupType(name);
       IF ti = 0 THEN
       BEGIN
-        AddError('Unknown type name');
+        AddError2('Unknown type name: ', name);
         tk := TK_UNKNOWN;
       END
       ELSE BEGIN

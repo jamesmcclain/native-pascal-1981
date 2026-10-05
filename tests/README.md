@@ -45,7 +45,8 @@ scope/ownership decisions; none is retired by this infrastructure decision.
 
 The regression needs built native driver/stages, a C compiler (`CC`, default
 clang), GNU/Linux process/filesystem tools and Python 3. Its unsafe-root case
-uses the `bwrap` executable and skips when the sandbox probe cannot run;
+uses bubblewrap (`bwrap`; install the `bubblewrap` package, which is
+recommended) and skips when `bwrap` is not installed or cannot run;
 Emacs allocator coverage is conditional on Emacs being installed. Report these
 coverage limitations rather than treating a sandbox skip as security validation.
 
@@ -247,6 +248,29 @@ lifecycle guarantees. Existing temporary-infrastructure regression gaps remain o
 may be bounded separately without removing support, reducing matrices or
 rerunning unchanged optional parity during every documentation slice.
 
+## RANGECK context isolation regressions
+
+`tests/rangeck_scope.sh` (native suite `rangeck_scope`) checks first-token
+FOR/CASE and expression-call snapshots in parsed and typed ASTs using the
+native `rangeck_metadata_check.pas` probe. Independent O0 IR guard counts
+cover opposite inner/outer settings, branch/sibling independence and checked
+value actuals. All four prior-assignment/FOR policy combinations execute
+only valid bounds in both dialects at O0–O3; invalid checked endpoints must
+abort before body output. Frozen legacy typed ASTs remain accepted. No invalid
+unchecked loops are executed, and CASE no-match enforcement is not added.
+
+## Scan builtin and small-string ABI regressions
+
+`tests/scan_contract.sh` (native suite `scan_contract`) tests SCANEQ/SCANNE
+in both dialects at O0–O3 against independent expected outputs, including
+signed skip counts, no-match boundary returns, empty/zero/out-of-range inputs,
+selected strings, once-only ordered argument evaluation and user shadowing.
+It also checks arity/type errors and explicit INITCK/DEVICE boundaries with
+no published IR. `native-scan-runtime` runs `tests/scan_runtime.c` directly
+against the runtime, including the negative count endpoint.
+`tests/golden/small_string_abi.pas` covers small STRING/LSTRING native
+arguments/results, record wrapping and exhausted argument registers.
+
 ## Validation cost and concurrency
 
 `make -jN` parallelizes Make targets, not shell loops. `make test-native`
@@ -290,6 +314,22 @@ Set `PASCAL_TEST_CORES=1` to opt out for crash debugging (subject to your
 shell/system core limits). The Linux shim is built/cached independently at
 `build/test-no-core.so`; this never requires a compiler bootstrap. Existing
 `LD_PRELOAD` entries are preserved. No system-wide crash-report setting changes.
+
+### Host compiler warnings
+
+`scripts/test-env.sh` also sets `PASCAL1981_CC` to `scripts/test-cc.sh`,
+which runs the real compiler (`PASCAL1981_TEST_CC`, defaulting to the
+caller's `PASCAL1981_CC`, then `CC`, then `clang`). Compilers print
+harmless text that varies by version and host, so the wrapper drops clang's
+warning lines: `clang: warning: ...` from its driver, warnings tagged
+`[-W...]`, and `N warnings generated.`. Suites that require an empty
+compiler stderr then check only what the Pascal stages print. Errors and
+the exit status pass through unchanged. A suite
+that sets `PASCAL1981_CC` itself (`tests/driver.sh`'s fake clang) bypasses
+the wrapper. The C helper programs that suites build directly use the
+Makefile's `-Wall -Wextra` without `-Werror`, so a new compiler's new
+warning is reported without failing the suite. See
+[test portability](../docs/test_portability.md) for the rules behind this.
 
 During iteration, build tools incrementally and run affected fixtures/scripts.
 Reserve the full bootstrap/native suite for the final integration gate, after

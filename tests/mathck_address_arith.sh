@@ -93,7 +93,9 @@ reject_unit() {
     rm -f "$dir/rej.ll"
     ! bin/pascal1981 --dialect extended -O0 -S "$dir/rej.pas" -o "$dir/rej.ll" \
       2> "$dir/stderr" || die "$statement: accepted"
-    diff -u "$fixtures/address_reject.err" "$dir/stderr" || die "$statement: stderr"
+    # Locations are pinned by the goldens; compare the message only.
+    sed -E 's/ at line [0-9]+ column [0-9]+$//' "$dir/stderr" | diff -u "$fixtures/address_reject.err" - ||
+      die "$statement: stderr"
     [ ! -s "$dir/rej.ll" ] || die "$statement: IR written"
     count reject
   done
