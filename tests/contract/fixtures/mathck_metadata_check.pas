@@ -2,7 +2,7 @@
   reference-parser trivia. Prints one line per arithmetic operation or
   SUCC/PRED/ABS/SQR/VSUM/VPROD call in source tree order (parent before
   operands) and rejects a snapshot on any operation outside the MATHCK token
-  scope. TRUNC/ROUND carry only an op_location for their always-on range
+  scope. TRUNC/ROUND and RANGECK CHR carry an op_location for their range
   check, never a MATHCK flag. }
 (*$INCLUDE:'jsonutil.inc'*)
 PROGRAM MathckMetadataCheck(input, output);
@@ -37,7 +37,7 @@ END;
 FUNCTION IsConversion(node: ADRMEM): BOOLEAN;
 BEGIN
   IsConversion := (NodeType(node) = 'FuncCall') AND
-    ((OpName(node) = 'TRUNC') OR (OpName(node) = 'ROUND'));
+    ((OpName(node) = 'TRUNC') OR (OpName(node) = 'ROUND') OR (OpName(node) = 'CHR'));
 END;
 FUNCTION InScope(node: ADRMEM): BOOLEAN;
 VAR nt, op: Str255;
@@ -82,7 +82,7 @@ BEGIN
     ELSE IF IsConversion(node) AND
             (HasKey(node, 'mathck') OR NOT HasKey(node, 'op_location')) THEN
     BEGIN
-      EPrint('TRUNC/ROUND must carry an op_location and no MATHCK snapshot');
+      EPrint('TRUNC/ROUND/CHR must carry an op_location and no MATHCK snapshot');
       exit(1);
     END
     ELSE IF IsOperation(node) AND NOT IsConversion(node) AND

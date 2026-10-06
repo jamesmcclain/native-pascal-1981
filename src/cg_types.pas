@@ -401,6 +401,7 @@ VAR
   left, right: INTEGER64;
   ci: INTEGER32;
   args: ADRMEM;
+  chr_checked: BOOLEAN;
 BEGIN
   nt := NodeType(expr_node);
   FoldConstInt := FALSE;
@@ -501,7 +502,19 @@ BEGIN
         (nm = 'ABS') OR (nm = 'SQR')) AND (ArrSize(args) = 1) AND
        FoldConstInt(ArrItem(args, 0), folded) THEN
     BEGIN
-      IF nm = 'SUCC' THEN FoldConstInt := FoldArith('PLUS', folded, 1, folded)
+      IF nm = 'CHR' THEN
+      BEGIN
+        chr_checked := cur_rangeck;
+        IF HasKey(expr_node, 'rangeck') THEN chr_checked := GetBool(expr_node, 'rangeck');
+        IF chr_checked AND NOT is_nvptx_device THEN
+          IF (folded < 0) OR (folded > 255) THEN
+            AbortWith('codegen: RANGECK constant CHR argument outside 0..255');
+        { Preserve the converted ordinal only after checking the original. }
+        folded := folded MOD 256;
+        IF folded < 0 THEN folded := folded + 256;
+        FoldConstInt := TRUE;
+      END
+      ELSE IF nm = 'SUCC' THEN FoldConstInt := FoldArith('PLUS', folded, 1, folded)
       ELSE IF nm = 'PRED' THEN FoldConstInt := FoldArith('MINUS', folded, 1, folded)
       ELSE IF nm = 'SQR' THEN FoldConstInt := FoldArith('MUL', folded, folded, folded)
       ELSE IF (nm = 'ABS') AND (folded < 0) THEN FoldConstInt := FoldArith('MINUS', 0, folded, folded)

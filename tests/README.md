@@ -94,6 +94,7 @@ is its entry here.
 | corpus | [`depth`](corpus/depth.sh) | Native parser depth and resource-limit tests. |
 | corpus | [`fixtures`](corpus/fixtures.sh) | Every run and check fixture in the corpus, each against what it declares. |
 | contract | [`array_named_index_parser`](contract/array_named_index_parser.sh) | Named ordinal array index types parse, and pretty81 round-trips them. |
+| contract | [`chr_constant_folding`](contract/chr_constant_folding.sh) | Unchecked CHR folding has the same low-eight-bit value as runtime conversion. |
 | contract | [`descriptor_contract`](contract/descriptor_contract.sh) | Host descriptor transport ABI and unsupported-boundary contracts. |
 | contract | [`driver`](contract/driver.sh) | The driver: option parsing, stage dispatch, outputs and failure cleanup. |
 | contract | [`indexck_guard_ir`](contract/indexck_guard_ir.sh) | INDEXCK guard IR: only enabled host selectors are guarded, at full ordinal width. |
@@ -127,6 +128,9 @@ is its entry here.
 | contract | [`mathck_twins`](contract/mathck_twins.sh) | Programs that never overflow behave identically under MATHCK+ and MATHCK-. |
 | contract | [`mathck_vector`](contract/mathck_vector.sh) | MATHCK on integer VECTOR lanes and the VSUM/VPROD reductions. |
 | contract | [`mathck_word_scalar`](contract/mathck_word_scalar.sh) | Scalar WORD arithmetic against native arithmetic oracles. |
+| contract | [`pretty81_integers`](contract/pretty81_integers.sh) | pretty81 preserves exact signed INTEGER64 literals through parsed and typed ASTs. |
+| contract | [`rangeck_case`](contract/rangeck_case.sh) | RANGECK CASE misses fail once, preserving snapshots, OTHERWISE and target boundaries. |
+| contract | [`rangeck_chr`](contract/rangeck_chr.sh) | CHR checks original integer values at its name token, before narrowing. |
 | contract | [`rangeck_scope`](contract/rangeck_scope.sh) | RANGECK settings reach the AST and IR of FOR, CASE and SUCC where they apply. |
 | contract | [`stage_cli`](contract/stage_cli.sh) | Standalone compiler-stage command-line contract tests. |
 | contract | [`super_new_contract`](contract/super_new_contract.sh) | Hardened NEW failures, inspected through a test-only C harness. |

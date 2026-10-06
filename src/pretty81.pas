@@ -108,15 +108,16 @@ BEGIN
   IsPresent := (item <> NIL) AND (cJSON_IsNull(item) = 0);
 END;
 
-FUNCTION IntToStr(number: INTEGER32): Str255;
+FUNCTION IntToStr(number: INTEGER64): Str255;
+{ Extract digits in the negative domain: MIN64 has no positive magnitude. }
 VAR
   result, reversed: Str255;
   digit, count, i: INTEGER;
-  work: INTEGER32;
+  work: INTEGER64;
   neg: BOOLEAN;
 BEGIN
   neg := number < 0;
-  IF neg THEN work := -number ELSE work := number;
+  IF number > 0 THEN work := -number ELSE work := number;
   IF work = 0 THEN
   BEGIN
     result[0] := CHR(1);
@@ -125,10 +126,10 @@ BEGIN
   ELSE
   BEGIN
     count := 0;
-    WHILE work > 0 DO
+    WHILE work <> 0 DO
     BEGIN
       count := count + 1;
-      digit := RETYPE(INTEGER, work - (work DIV 10) * 10);
+      digit := RETYPE(INTEGER, -(work MOD 10));
       reversed[count] := CHR(ORD('0') + digit);
       work := work DIV 10;
     END;
@@ -296,7 +297,7 @@ BEGIN
   IF nt = 'Identifier' THEN
     Out(GetStr(node, 'name'))
   ELSE IF nt = 'IntLiteral' THEN
-    Out(IntToStr(GetInt(node, 'value')))
+    Out(IntToStr(GetInt64(node, 'value')))
   ELSE IF nt = 'RealLiteral' THEN
     Out(RealToStr(GetReal(node, 'value')))
   ELSE IF nt = 'StringLiteral' THEN

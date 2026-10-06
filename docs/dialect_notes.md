@@ -1605,11 +1605,35 @@ Math Overflow); this mapping does not adopt IBM's INTEGER sentinel or range
 rules. Compile-time constant errors and unsupported-boundary diagnostics are
 separate from this runtime format.
 
+CHR takes `$RANGECK` and diagnostic coordinates from the function-name token,
+not a directive inside its argument. Its argument is evaluated once. On a host
+failure, `pas_chr_error` prints
+`runtime error: RANGECK CHR argument V is outside 0..255 at line L column C`,
+flushes stdout/stderr and aborts before publishing the character. This separate
+entry preserves the subrange-error ABI. Constant consumers such as CONST
+reject an enabled out-of-domain CHR while codegen folds it; ordinary constant
+calls use the same runtime guard as variable calls. Legacy calls lacking the
+snapshot inherit scoped RANGECK and report coordinates 0/0. CPU DEVICE shares
+the host failure path; NVPTX retains its existing unchecked RANGECK conversion.
+User routines named CHR are not the builtin. `tests/contract/rangeck_chr.sh`
+checks these boundaries at O0–O3. This does not implement BYWORD checking.
+
+Constant CHR values use the same low-eight-bit representation as runtime CHR:
+under RANGECK-, `ORD(CHR(300)) + 1` is 45, not 301, and
+`ORD(CHR(-1)) + 1` is 256, not 0. Both native constant folders normalize the
+converted ordinal, including negative and MIN64 arguments, without negating
+their magnitude; the backend checks the original domain before normalizing.
+This applies to CONST
+transport, admitted CASE labels and array-bound consumers as well as arithmetic;
+it does not erase an enabled bad-argument check or broaden constant syntax.
+`tests/contract/chr_constant_folding.sh` pins constant/runtime twins in both
+dialects at O0–O3 and the CONST/label/bound consumers.
+
 The other checks keep their own texts and never use the MATHCK stem: RANGECK
 prints `value V is outside subrange LO..HI`, INDEXCK `array index V is outside
 bounds LO..HI`, INITCK `INITCK uninitialized ...`, and TRUNC/ROUND their
 [conversion error](#trunc-and-round-return-integer-so-they-narrow-to-16-bits-both).
-RANGECK and INDEXCK messages stay unlocated, and SUCC/PRED domain failures say
+Existing subrange RANGECK and INDEXCK messages stay unlocated, and SUCC/PRED domain failures say
 "subrange" even for CHAR, BOOLEAN and enumeration domains. Adding coordinates
 or domain-specific wording would change the `pas_subrange_error` runtime
 interface and every store-check caller; that is RANGECK's own diagnostics
@@ -1633,7 +1657,7 @@ is an ordinary call, outside this classification.
 | MATHCK | `VSUM`, `VPROD` (integer lanes) | Checked left-to-right fold of `+`/`*`. `VMIN`/`VMAX` cannot overflow. |
 | Never trapping | `SADDOK`, `SMULOK`, `UADDOK`, `UMULOK` | Return the 16-bit "fits" flag and store the wrapped result (IBM 11-21); described below. |
 | RANGECK | `SUCC`, `PRED` on CHAR, BOOLEAN, enumerations, subranges | Domain checks under RANGECK+ ([above](#mathck-and-rangeck)). |
-| RANGECK gap | `CHR` | IBM: "error if ORD (X) > 255 or ORD (X) < 0 (if $RANGECK on)" (11-8). **Not checked:** `CHR(300)` is `CHR(44)` and `CHR(-1)` is `CHR(255)`, also for a constant `CHR(300)`. Part of the range-checks-beyond-subranges gap, not MATHCK. |
+| RANGECK | `CHR` | IBM: "error if ORD (X) > 255 or ORD (X) < 0 (if $RANGECK on)" (11-8). Checked before truncating the original signed/unsigned integer to CHAR; disabled checking retains the low eight bits. |
 | Separate contract | `TRUNC`, `ROUND` | Always-on range check, independent of MATHCK and RANGECK (G26, [TRUNC section](#trunc-and-round-return-integer-so-they-narrow-to-16-bits-both)). |
 | Separate contract | `CONCAT` (LSTRING length byte) | Compiler-generated length update under the capacity contract. **No capacity check:** with `t: LSTRING(3) := 'ab'`, `CONCAT(t, 'xyzw')` stores length 6 and overwrites the next variable. |
 | Separate contract | `INSERT`, `DELETE`, `COPYLST`, `COPYSTR`, `POSITN`, `ENCODE`, `DECODE` | **Unreachable:** codegen lowers them, but the typechecker rejects every call as an undefined procedure or function. When enabled, their internal length and position arithmetic (`pos - 1`, `len - pos`) needs capacity and position checks, not MATHCK; DECODE is a text-to-number conversion. |
@@ -1857,6 +1881,19 @@ with an unsigned one merely because WORD data can reach it:
 | VECTOR lanes | WORD DIV/MOD and ordering are unsigned; division guards/MATHCK scope are separate contracts. |
 | FOR | WORD controls use unsigned ordering and loops exit at the final value, before an endpoint step could wrap. G18/G19 are correct-output requirements, independent of MATHCK; post-loop control value is undefined, not an oracle. |
 | Other internal comparisons | String lengths/strcmp, signed counters/status, pointer/NIL and initialization equality are not WORD scalar ordering. WORD ABS is identity, including high-bit arguments; signed ABS overflow is a separate MATHCK operation. |
+
+Under `$RANGECK+` (the setting at the CASE token), a selector with no matching
+label and no `OTHERWISE` fails, including an empty CASE. The selector is evaluated
+once. `$RANGECK-` retains fall-through; `OTHERWISE` handles a miss normally.
+The separate `pas_case_error` runtime entry prints
+`runtime error: RANGECK CASE selector V has no matching label at line L column C`,
+flushes stdout/stderr and aborts before subsequent statements run. The value keeps
+its original width and signedness; legacy ASTs without a statement location report
+0/0. CPU DEVICE uses this host failure path; NVPTX retains its existing unchecked
+RANGECK boundary, without a host runtime call. This does not alter the existing
+subrange-error ABI or add file/include identity. `tests/contract/rangeck_case.sh`
+checks misses, empty cases, selector-once behavior, OTHERWISE, scoped settings,
+wide diagnostics and DEVICE target boundaries.
 
 ### WORD to REAL conversion
 

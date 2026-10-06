@@ -181,7 +181,16 @@ BEGIN
        (cJSON_GetArraySize(args) = 1) AND
        FoldConstInt(cJSON_GetArrayItem(args, 0), folded_value) THEN
     BEGIN
-      IF name = 'SUCC' THEN FoldConstInt := FoldArith('PLUS', folded_value, 1, folded_value)
+      IF name = 'CHR' THEN
+      BEGIN
+        { CHR's value is its low eight bits, not its original argument.
+          MOD is dividend-signed; normalize without negating MIN64. The
+          backend independently enforces enabled CHR's original domain. }
+        folded_value := folded_value MOD 256;
+        IF folded_value < 0 THEN folded_value := folded_value + 256;
+        FoldConstInt := TRUE;
+      END
+      ELSE IF name = 'SUCC' THEN FoldConstInt := FoldArith('PLUS', folded_value, 1, folded_value)
       ELSE IF name = 'PRED' THEN FoldConstInt := FoldArith('MINUS', folded_value, 1, folded_value)
       ELSE IF name = 'SQR' THEN FoldConstInt := FoldArith('MUL', folded_value, folded_value, folded_value)
       ELSE IF (name = 'ABS') AND (folded_value < 0) THEN
