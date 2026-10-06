@@ -2635,6 +2635,49 @@ BEGIN
   CodegenCheckedRealToInt := LLVMBuildFPToSI(builder, t, i16ty, MakeCStr(''));
 END;
 
+PROCEDURE EmitChrCheck(v: ADRMEM; argtk: INTEGER; site: ADRMEM);
+{ Check the original integer before truncation. Unlike an i64 signed upper
+  bound alone, unsigned ULE also rejects WORD64's high-bit values. }
+VAR
+  enabled, unsigned_value: BOOLEAN;
+  bits, ok, bad_bb, ok_bb, ps, fnty, fn, args, discard: ADRMEM;
+  line, column: INTEGER32;
+BEGIN
+  enabled := cur_rangeck;
+  IF HasKey(site, 'rangeck') THEN enabled := GetBool(site, 'rangeck');
+  IF NOT enabled OR is_nvptx_device THEN RETURN;
+  unsigned_value := IsUnsignedWordTk(argtk);
+  bits := v;
+  IF LLVMTypeForTk(argtk) <> i64ty THEN
+  BEGIN
+    IF unsigned_value THEN bits := LLVMBuildZExt(builder, bits, i64ty, MakeCStr(''))
+    ELSE bits := LLVMBuildSExt(builder, bits, i64ty, MakeCStr(''));
+  END;
+  ok := LLVMBuildICmp(builder, LLVMIntULE, bits, LLVMConstInt(i64ty, 255, 0), MakeCStr('chr.in'));
+  bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('chr.bad'));
+  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('chr.ok'));
+  LLVMBuildCondBr(builder, ok, ok_bb, bad_bb);
+  LLVMPositionBuilderAtEnd(builder, bad_bb);
+  ps := AllocPtrArray(4);
+  SetPtrArrayElem(ps, 0, i64ty);
+  SetPtrArrayElem(ps, 1, i32ty);
+  SetPtrArrayElem(ps, 2, i32ty);
+  SetPtrArrayElem(ps, 3, i32ty);
+  fnty := LLVMFunctionType(voidty, ps, 4, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_chr_error'));
+  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr('pas_chr_error'), fnty);
+  OperationLocation(site, line, column);
+  args := AllocPtrArray(4);
+  SetPtrArrayElem(args, 0, bits);
+  IF unsigned_value THEN SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 1, 0))
+  ELSE SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 0, 0));
+  SetPtrArrayElem(args, 2, LLVMConstInt(i32ty, line, 0));
+  SetPtrArrayElem(args, 3, LLVMConstInt(i32ty, column, 0));
+  discard := LLVMBuildCall2(builder, fnty, fn, args, 4, MakeCStr(''));
+  discard := LLVMBuildUnreachable(builder);
+  LLVMPositionBuilderAtEnd(builder, ok_bb);
+END;
+
 FUNCTION CodegenSimpleBuiltin(nm: Str255; site: ADRMEM): ADRMEM;
 { The math/ordinal builtins that need no libpascalrt support: pure inline
   LLVM IR (CHR/ORD/ODD/SUCC/PRED/ABS/SQR), or a single libm call
@@ -2658,7 +2701,9 @@ BEGIN
   argtk := last_val_tk;
   IF nm = 'CHR' THEN
   BEGIN
-    res := LLVMBuildTrunc(builder, v, i8ty, MakeCStr(''));
+    EmitChrCheck(v, argtk, site);
+    IF LLVMTypeForTk(argtk) = i8ty THEN res := v
+    ELSE res := LLVMBuildTrunc(builder, v, i8ty, MakeCStr(''));
     last_val_tk := TK_CHAR;
   END
   ELSE IF nm = 'ORD' THEN

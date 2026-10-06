@@ -224,10 +224,15 @@ reasons for blanket MATHCK-:
   line/column counters and aggregate layout/shadow products can outgrow their
   representable widths or allocations. Table guards do not prove all sizes
   safe; impose limits/guards, never modular allocation sizes.
-- `pretty81:IntToStr`, `cg_util:IntToStr255` and `cg_symbols:InitckIntText`
-  negate INTEGER32 without widening; its minimum has no positive INTEGER32
-  magnitude. Ordinary bootstrap inputs avoid it. Widen the magnitude as
-  `bytebuf:BufAppendInt` does if that domain is needed; do not disable checks.
+- `cg_util:IntToStr255` and `cg_symbols:InitckIntText` negate INTEGER32
+  without widening; its minimum has no positive INTEGER32 magnitude. Ordinary
+  bootstrap inputs avoid it. Widen the magnitude as `bytebuf:BufAppendInt`
+  does if that domain is needed; do not disable checks. `pretty81:IntToStr`
+  instead formats the full signed INTEGER64 domain using negative-domain
+  digit extraction (including MIN64), and IntLiteral reads `GetInt64` so
+  exact JSON companions survive formatting. `tests/contract/pretty81_integers.sh`
+  pins parsed/typed round-trips, idempotence and O0–O3 runtime values. This does
+  not repair REAL precision/spelling or admit new WORD64 literal syntax.
 
 ## How the C is organized
 

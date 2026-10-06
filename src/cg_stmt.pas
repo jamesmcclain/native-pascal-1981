@@ -323,6 +323,40 @@ BEGIN
   LLVMPositionBuilderAtEnd(builder, end_bb);
 END;
 
+PROCEDURE EmitCaseFailure(stmt, selector_value: ADRMEM; tid: INTEGER);
+{ Report the already evaluated selector without narrowing or re-evaluating it.
+  Keep the existing subrange diagnostic ABI unchanged. }
+VAR
+  ps, args, fnty, fn, discard, location, bits: ADRMEM;
+  unsigned_value: BOOLEAN;
+BEGIN
+  unsigned_value := IsUnsignedWordTk(tid) OR (TypeKind(tid) = TK_CHAR)
+    OR (TypeKind(tid) = TK_BOOLEAN);
+  bits := selector_value;
+  IF LLVMTypeForTk(tid) <> i64ty THEN
+  BEGIN
+    IF unsigned_value THEN bits := LLVMBuildZExt(builder, bits, i64ty, MakeCStr(''))
+    ELSE bits := LLVMBuildSExt(builder, bits, i64ty, MakeCStr(''));
+  END;
+  ps := AllocPtrArray(4);
+  SetPtrArrayElem(ps, 0, i64ty);
+  SetPtrArrayElem(ps, 1, i32ty);
+  SetPtrArrayElem(ps, 2, i32ty);
+  SetPtrArrayElem(ps, 3, i32ty);
+  fnty := LLVMFunctionType(voidty, ps, 4, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_case_error'));
+  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr('pas_case_error'), fnty);
+  args := AllocPtrArray(4);
+  SetPtrArrayElem(args, 0, bits);
+  IF unsigned_value THEN SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 1, 0))
+  ELSE SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 0, 0));
+  location := GetObj(stmt, 'location');
+  SetPtrArrayElem(args, 2, LLVMConstInt(i32ty, GetInt(location, 'line'), 0));
+  SetPtrArrayElem(args, 3, LLVMConstInt(i32ty, GetInt(location, 'column'), 0));
+  discard := LLVMBuildCall2(builder, fnty, fn, args, 4, MakeCStr(''));
+  discard := LLVMBuildUnreachable(builder);
+END;
+
 PROCEDURE CodegenCaseStmt(stmt: ADRMEM);
 { Lowered as a sequential chain of test/body block pairs (like a chain of
   IFs), not a jump table -- simplicity over the optimization the Python
@@ -342,8 +376,9 @@ VAR
   case_tk: INTEGER;
   elements, el, constants, c: ADRMEM;
   n, i, nc, ci: INTEGER32;
-  end_bb, cur_test_bb, next_test_bb, body_bb: ADRMEM;
+  end_bb, cur_test_bb, next_test_bb, body_bb, miss_bb: ADRMEM;
   otherwise_stmt: ADRMEM;
+  check_miss: BOOLEAN;
   cond_val, one_cond, cval: ADRMEM;
 BEGIN
   case_val := CodegenExpr(GetObj(stmt, 'expr'));
@@ -355,7 +390,11 @@ BEGIN
   elements := GetObj(stmt, 'elements');
   n := ArrSize(elements);
   otherwise_stmt := GetObjOrNil(stmt, 'otherwise');
+  check_miss := cur_rangeck AND NOT is_nvptx_device AND (otherwise_stmt = NIL);
   end_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('case_end'));
+  miss_bb := end_bb;
+  IF check_miss THEN
+    miss_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('case_miss'));
 
   cur_test_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('case_test'));
   LLVMBuildBr(builder, cur_test_bb);
@@ -396,7 +435,7 @@ BEGIN
       IF otherwise_stmt <> NIL THEN
         next_test_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('case_otherwise'))
       ELSE
-        next_test_bb := end_bb;
+        next_test_bb := miss_bb;
     END
     ELSE
       next_test_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('case_test'));
@@ -413,17 +452,18 @@ BEGIN
 
   IF (n = 0) OR (otherwise_stmt <> NIL) THEN
   BEGIN
-    { n = 0: cur_test_bb is still the never-entered initial block (an empty
-      CASE with only OTHERWISE, or entirely empty). n > 0: cur_test_bb is
-      the dedicated case_otherwise block the last iteration created above,
-      still needing its body emitted. Either way it must end in a branch to
-      end_bb, or it is left as an unterminated block. }
+    { An empty CASE reaches this initial test block too. }
     LLVMPositionBuilderAtEnd(builder, cur_test_bb);
     IF otherwise_stmt <> NIL THEN CodegenStmt(otherwise_stmt);
     IF LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(builder)) = NIL THEN
-      LLVMBuildBr(builder, end_bb);
+      LLVMBuildBr(builder, miss_bb);
   END;
 
+  IF check_miss THEN
+  BEGIN
+    LLVMPositionBuilderAtEnd(builder, miss_bb);
+    EmitCaseFailure(stmt, case_val, case_tk);
+  END;
   LLVMPositionBuilderAtEnd(builder, end_bb);
 END;
 

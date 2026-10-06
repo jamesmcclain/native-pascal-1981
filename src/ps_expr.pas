@@ -224,6 +224,12 @@ BEGIN
   AddField(node, 'op_location', location);
 END;
 
+PROCEDURE AddChrSnapshot(node: ADRMEM; tok: PToken);
+BEGIN
+  AddBoolField(node, 'rangeck', tok^.f_rangeck);
+  AddOpLocation(node, tok);
+END;
+
 PROCEDURE AddMathckSnapshot(node: ADRMEM; tok: PToken);
 { The operator or function-name token's effective MATHCK and coordinates.
   Callers capture tok before advancing past it, so directives inside the
@@ -343,6 +349,7 @@ BEGIN
       node := CreateTriviaNode('FuncCall');
       AddStringField(node, 'name', val_str);
       IF IsMathckBuiltin(val_str) THEN AddMathckSnapshot(node, name_tok)
+      ELSE IF StringEqual(UpperStr(val_str), 'CHR') THEN AddChrSnapshot(node, name_tok)
       ELSE IF IsConversionBuiltin(val_str) THEN AddOpLocation(node, name_tok);
       args_arr_const := cJSON_CreateArray;
       cJSON_AddItemToArray(args_arr_const, ParseConstant());
@@ -532,6 +539,7 @@ BEGIN
       node := CreateTriviaNode('FuncCall');
       AddStringField(node, 'name', name);
       IF IsMathckBuiltin(name) THEN AddMathckSnapshot(node, name_tok)
+      ELSE IF StringEqual(UpperStr(name), 'CHR') THEN AddChrSnapshot(node, name_tok)
       ELSE IF IsConversionBuiltin(name) THEN AddOpLocation(node, name_tok);
       AddField(node, 'args', args_arr);
       IF (bound_expr_depth > 0) AND
