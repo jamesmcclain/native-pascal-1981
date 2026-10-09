@@ -12,10 +12,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib/harness.sh"
 # naming an existing path under the repository is passed as its absolute
 # path), and each run gets its own empty working directory. Compile status
 # and diagnostics (with the temporary source path replaced by <src>), exit
-# status, stdout and stderr must match byte for byte. A link failure compares
-# only its status: object names and code offsets differ between the settings
-# (the driver does not link -lm, so the fixtures that call libm fail to link;
-# see docs/testing/mathck.md#mathck-onoff-twins). A fixture whose MATHCK+ run
+# status, stdout and stderr must match byte for byte. A link failure fails
+# the suite even if both settings fail: matching broken links are not a
+# success oracle. A fixture whose MATHCK+ run
 # reports a MATHCK error is an overflowing program; its disabled twin is not
 # an oracle here (the dedicated MATHCK suites pin the wrap), so it is
 # counted, not compared. Compiles and runs are bounded at 60 s; a timeout on
@@ -46,7 +45,6 @@ build_and_run() { # src flag opt cell: outcome files in cell/
   printf '%s' "${err//"$cell/src.pas"/<src>}" > "$cell/compile"
   if grep -qF 'linker command failed' "$cell/compile"; then
     printf 'link\n%s\n' "$status" > "$cell/outcome"
-    : > "$cell/compile" # only the outcome is compared
     return
   fi
   if [ "$status" -ne 0 ]; then
@@ -74,7 +72,10 @@ twin_job() { # index src opt: result is the outcome kind, or a FAIL line
   build_and_run "$src" + "$opt" "$base/on"
   build_and_run "$src" - "$opt" "$base/off"
   kind=$(head -n 1 "$base/on/outcome")
-  if [ "$kind" = run ] && grep -qF MATHCK "$base/on/stderr"; then
+  if [ "$kind" = link ] || [ "$(head -n 1 "$base/off/outcome")" = link ]; then
+    echo "FAIL $src O$opt: link failure under MATHCK+/-" > "$work/results/$index"
+    cat "$base/on/compile" "$base/off/compile" > "$work/results/$index.diff"
+  elif [ "$kind" = run ] && grep -qF MATHCK "$base/on/stderr"; then
     echo overflowing > "$work/results/$index"
   elif [ "$kind" = timeout ] || [ "$(head -n 1 "$base/off/outcome")" = timeout ]; then
     echo "FAIL $src O$opt: timed out" > "$work/results/$index"

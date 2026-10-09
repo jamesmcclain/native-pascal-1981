@@ -1,1 +1,1 @@
-runtime error: array index 0 is outside bounds 1..2
+runtime error: array index 0 is outside bounds 1..2 at line 7 column 11

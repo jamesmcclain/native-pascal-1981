@@ -1184,13 +1184,39 @@ bodies and earlier siblings cannot toggle an enclosing operation's checks.
 A directive inside FOR bounds or call actuals therefore does not
 retroactively alter the FOR/call policy. Legacy AST nodes without the
 snapshot inherit the enclosing scoped context; the root defaults to on.
-This isolates existing checks only: CASE's no-match trap remains unimplemented,
-and FOR's existing nonempty-loop endpoint/publication policy is unchanged.
+CASE's enabled no-match trap is implemented;
+FOR's existing nonempty-loop endpoint/publication policy is unchanged.
 Regression: `tests/contract/rangeck_scope.sh`. Array
-indexes are not checked by `$RANGECK` (see `$INDEXCK` below); string
-capacities are still unchecked. NVPTX `DEVICE` code has no host-runtime
-subrange check; a `DEVICE` compiland targeting the CPU follows the host
-`$RANGECK` path.
+indexes are not checked by `$RANGECK` (see `$INDEXCK` below). Host `CONCAT`
+capacity checking is described below; other string-capacity paths remain
+unchecked. NVPTX `DEVICE` code has no host-runtime subrange or CONCAT check;
+a `DEVICE` compiland targeting the CPU follows the host `$RANGECK` path.
+
+#### CONCAT capacity checks **[native]**
+
+Under `$RANGECK+` (on by default), `CONCAT(t, s)` evaluates its source once,
+then checks the combined length in widened arithmetic before copying any
+characters or updating `t`'s length byte. The maximum accepted length is
+`min(declared capacity, 255)`: even bare `LSTRING` (capacity 256) cannot
+represent length 256 in its byte. Overflow flushes stdout, reports
+
+    runtime error: RANGECK CONCAT length V exceeds capacity CAP at line L column COL
+
+on stderr, flushes stderr and aborts (normally status 134 on Linux). Here
+`capacity` is the effective maximum above; the final column value is the
+source coordinate. Compiler-generated destination bytes stay unchanged on
+failure; source-expression side effects are not rolled back. Exact-capacity,
+empty-source and self-append calls work normally.
+
+The CONCAT statement's first-token snapshot owns the check, not directives
+inside its source expression. Legacy statements inherit scoped RANGECK and
+report 0/0 if location is absent. `$RANGECK-` emits no capacity guard: invalid
+unchecked appends may corrupt memory or wrap the length byte. This is not
+unconditional memory safety, does not affect MATHCK, and does not add checks
+to assignment, value parameters, COPYLST/COPYSTR/INSERT or raw length-byte
+writes. CPU DEVICE uses the host check; NVPTX retains its existing unchecked
+boundary without calling host diagnostics. Regression:
+`tests/contract/rangeck_concat.sh`.
 
 ### Fixed-array index checks (`$INDEXCK`) **[native]**
 
@@ -1215,11 +1241,20 @@ checked out-of-range index,
 including a constant, fails **when the access runs**, not at compile time: the
 runtime flushes stdout, prints
 
-    runtime error: array index V is outside bounds LO..HI
+    runtime error: array index V is outside bounds LO..HI at line L column C
 
 to stderr using the original signed or unsigned index value (including 64-bit
 values) and the declared bounds, flushes stderr, then aborts (normally status
-134 on Linux). An unchecked constant or variable index emits no fixed-array
+134 on Linux). Coordinates identify the first token of the index expression,
+including each comma-separated dimension. The selector's `op_location` is
+preserved through typechecking; missing legacy coordinates report `0:0`,
+without changing the default-on legacy guard. File/include identity is not
+part of this diagnostic ABI. `pas_array_index_error` now takes trailing
+line/column arguments; rebuild old compiled callers with the updated runtime.
+`tests/contract/indexck_diagnostics.sh` checks
+fixed/SUPER loads and stores, nested indexes, exact once-only evaluation,
+legacy/mixed metadata and disabled IR in both dialects at O0–O3.
+An unchecked constant or variable index emits no fixed-array
 guard; this does not make an out-of-bounds access safe. `$RANGECK` does not
 control array indexes. Integer-family indexes are widened with their own
 signedness before lower-bound subtraction even when checking is disabled;
@@ -1227,8 +1262,9 @@ legal high-bit unsigned indexes and full-span signed offsets therefore retain
 correct addresses without guards. This also applies to DEVICE address arithmetic,
 without adding host diagnostics there.
 
-This slice does **not** add checks to `STRING`/`LSTRING` subscripts,
-or the capacities of `CONCAT`, `COPYLST`, `COPYSTR` and `INSERT`. Nor does it
+This INDEXCK slice does **not** add checks to `STRING`/`LSTRING` subscripts,
+or the capacities of `COPYLST`, `COPYSTR` and `INSERT`. `CONCAT` has the
+separate RANGECK capacity contract above. Nor does INDEXCK
 change `VECTOR` lane indexing or the super-array guard's interaction with
 `VLOAD`/`VSTORE`: constant out-of-range vector
 lanes and fixed-array vector transfers retain their compile-time diagnostics;
@@ -1631,9 +1667,9 @@ dialects at O0–O3 and the CONST/label/bound consumers.
 
 The other checks keep their own texts and never use the MATHCK stem: RANGECK
 prints `value V is outside subrange LO..HI`, INDEXCK `array index V is outside
-bounds LO..HI`, INITCK `INITCK uninitialized ...`, and TRUNC/ROUND their
+bounds LO..HI at line L column C`, INITCK `INITCK uninitialized ...`, and TRUNC/ROUND their
 [conversion error](#trunc-and-round-return-integer-so-they-narrow-to-16-bits-both).
-Existing subrange RANGECK and INDEXCK messages stay unlocated, and SUCC/PRED domain failures say
+Existing subrange RANGECK messages stay unlocated, and SUCC/PRED domain failures say
 "subrange" even for CHAR, BOOLEAN and enumeration domains. Adding coordinates
 or domain-specific wording would change the `pas_subrange_error` runtime
 interface and every store-check caller; that is RANGECK's own diagnostics
@@ -1659,7 +1695,7 @@ is an ordinary call, outside this classification.
 | RANGECK | `SUCC`, `PRED` on CHAR, BOOLEAN, enumerations, subranges | Domain checks under RANGECK+ ([above](#mathck-and-rangeck)). |
 | RANGECK | `CHR` | IBM: "error if ORD (X) > 255 or ORD (X) < 0 (if $RANGECK on)" (11-8). Checked before truncating the original signed/unsigned integer to CHAR; disabled checking retains the low eight bits. |
 | Separate contract | `TRUNC`, `ROUND` | Always-on range check, independent of MATHCK and RANGECK (G26, [TRUNC section](#trunc-and-round-return-integer-so-they-narrow-to-16-bits-both)). |
-| Separate contract | `CONCAT` (LSTRING length byte) | Compiler-generated length update under the capacity contract. **No capacity check:** with `t: LSTRING(3) := 'ab'`, `CONCAT(t, 'xyzw')` stores length 6 and overwrites the next variable. |
+| RANGECK | `CONCAT` (LSTRING length byte) | Host RANGECK+ checks combined length against `min(capacity, 255)` before copying or publishing; failure leaves compiler-written destination bytes unchanged. RANGECK- and NVPTX remain unchecked; this is not MATHCK arithmetic. |
 | Separate contract | `INSERT`, `DELETE`, `COPYLST`, `COPYSTR`, `POSITN`, `ENCODE`, `DECODE` | **Unreachable:** codegen lowers them, but the typechecker rejects every call as an undefined procedure or function. When enabled, their internal length and position arithmetic (`pos - 1`, `len - pos`) needs capacity and position checks, not MATHCK; DECODE is a text-to-number conversion. |
 | Separate contract | `NEW` bounds, `DEVALLOC`, `SIZEOF`, `LOWER`, `UPPER` | Descriptor and layout arithmetic; layouts above 2147483647 bytes are rejected (`TypeSizeBytes`). |
 | Separate contract | `READ`/`READLN` of integers | Text conversion, checked independently of MATHCK (G29). |
@@ -2168,6 +2204,12 @@ least once:
   'x')` fails to typecheck with "Argument type mismatch" against an `LSTRING`
   parameter while `JxGet(node, 'xy')` is fine. The error says nothing about the
   literal.
+- **Quoted literal spellings are limited to 255 bytes**, including both
+  delimiters and doubled embedded quotes. Unescaped payloads therefore max
+  out at 253 characters. Oversized tokens are rejected with `Lexer Error:
+  quoted literal exceeds 255-byte token limit`, not silently truncated;
+  unterminated literals are rejected too. Build longer LSTRING values from
+  shorter pieces. Regression: `tests/contract/quoted_literal_limits.sh`.
 - **Comments do not nest.** A `{ }` comment containing a brace — including in
   prose, or in an example — ends early, and the failure is reported as "Lexer
   Error: unrecognized character" somewhere further down.

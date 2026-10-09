@@ -990,21 +990,60 @@ BEGIN
   END;
 END;
 
-PROCEDURE CodegenConcat(args: ADRMEM);
-{ CONCAT(VAR D: LSTRING; CONST S: STRING): appends S's characters to D and
-  grows D's length byte by length(S) -- manual 11-20. No RANGECK-style
-  capacity guard yet (matches codegen.pas's documented RANGECK
-  simplification: a capacity overflow here just corrupts memory, same as
-  an unchecked array index; MATHCK does not cover string capacity). }
+PROCEDURE EmitConcatCapacityCheck(new_len: ADRMEM; capacity: INTEGER32; site: ADRMEM);
+{ RANGECK owns this semantic capacity check, not MATHCK. As with other
+  RANGECK guards, unchecked and NVPTX paths retain their existing behavior.
+  Check before any destination byte or length publication. }
 VAR
-  d_arg: ADRMEM;
+  ok, bad_bb, ok_bb, ps, fnty, fn, args, discard, location: ADRMEM;
+  line, column: INTEGER32;
+BEGIN
+  IF NOT cur_rangeck OR is_nvptx_device THEN RETURN;
+  ok := LLVMBuildICmp(builder, LLVMIntULE, new_len,
+    LLVMConstInt(i64ty, capacity, 0), MakeCStr('concat.in'));
+  bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('concat.bad'));
+  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('concat.ok'));
+  LLVMBuildCondBr(builder, ok, ok_bb, bad_bb);
+  LLVMPositionBuilderAtEnd(builder, bad_bb);
+  ps := AllocPtrArray(4);
+  SetPtrArrayElem(ps, 0, i64ty);
+  SetPtrArrayElem(ps, 1, i32ty);
+  SetPtrArrayElem(ps, 2, i32ty);
+  SetPtrArrayElem(ps, 3, i32ty);
+  fnty := LLVMFunctionType(voidty, ps, 4, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_concat_error'));
+  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr('pas_concat_error'), fnty);
+  line := 0; column := 0;
+  location := GetObjOrNil(site, 'location');
+  IF location <> NIL THEN
+  BEGIN
+    line := GetInt(location, 'line'); column := GetInt(location, 'column');
+  END;
+  args := AllocPtrArray(4);
+  SetPtrArrayElem(args, 0, new_len);
+  SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, capacity, 0));
+  SetPtrArrayElem(args, 2, LLVMConstInt(i32ty, line, 0));
+  SetPtrArrayElem(args, 3, LLVMConstInt(i32ty, column, 0));
+  discard := LLVMBuildCall2(builder, fnty, fn, args, 4, MakeCStr(''));
+  discard := LLVMBuildUnreachable(builder);
+  LLVMPositionBuilderAtEnd(builder, ok_bb);
+END;
+
+PROCEDURE CodegenConcat(stmt: ADRMEM);
+{ CONCAT(VAR D: LSTRING; CONST S: STRING): append S and update D's length
+  byte (manual 11-20). RANGECK+ checks both storage capacity and the byte's
+  representable length; argument side effects occur once before the check. }
+VAR
+  args, d_arg: ADRMEM;
   d_symi: INTEGER32;
   d_tid: INTEGER;
+  capacity: INTEGER32;
   d_addr, len_ptr, dest_len_byte, dest_len, new_len, new_len_byte: ADRMEM;
   dest_chars, append_ptr: ADRMEM;
-  src_chars, src_len: ADRMEM;
+  src_chars, src_len, src_len64, dest_len64: ADRMEM;
   gep_idx: ADRMEM;
 BEGIN
+  args := GetObj(stmt, 'args');
   IF ArrSize(args) <> 2 THEN
     AbortWith('codegen: CONCAT expects exactly 2 arguments');
   d_arg := ArrItem(args, 0);
@@ -1026,7 +1065,14 @@ BEGIN
   len_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(d_tid), d_addr, gep_idx, 2, MakeCStr(''));
   dest_len_byte := LLVMBuildLoad2(builder, i8ty, len_ptr, MakeCStr(''));
   dest_len := LLVMBuildZExt(builder, dest_len_byte, i32ty, MakeCStr(''));
-  new_len := LLVMBuildAdd(builder, dest_len, src_len, MakeCStr(''));
+  { Widen before adding: neither i32 addition nor the length-byte truncation
+    may wrap an overflowing length back into the accepted range. }
+  dest_len64 := LLVMBuildZExt(builder, dest_len, i64ty, MakeCStr(''));
+  src_len64 := LLVMBuildZExt(builder, src_len, i64ty, MakeCStr(''));
+  new_len := LLVMBuildAdd(builder, dest_len64, src_len64, MakeCStr('concat.length'));
+  capacity := types[d_tid].hi;
+  IF capacity > 255 THEN capacity := 255;
+  EmitConcatCapacityCheck(new_len, capacity, stmt);
 
   gep_idx := AllocPtrArray(2);
   SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
@@ -1523,7 +1569,7 @@ BEGIN
     discard := LLVMBuildCall2(builder, file_assign_fnty, file_assign_fn, call_args, 3, MakeCStr(''));
   END
   ELSE IF name = 'CONCAT' THEN
-    CodegenConcat(GetObj(stmt, 'args'))
+    CodegenConcat(stmt)
   ELSE IF name = 'COPYLST' THEN
     CodegenCopylst(GetObj(stmt, 'args'))
   ELSE IF name = 'COPYSTR' THEN

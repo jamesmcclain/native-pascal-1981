@@ -1,1 +1,1 @@
-runtime error: array index 9 is outside bounds 2..4
+runtime error: array index 9 is outside bounds 2..4 at line 9 column 5

@@ -1478,17 +1478,29 @@ END;
 PROCEDURE ScanString;
 VAR
   start_line, start_col, str_len, lex_len, i: INTEGER;
+  start_pos: INTEGER32;
+  closed: BOOLEAN;
   ch: CHAR;
   str_val, lexeme: Str255;
   kind_str: Str255;
 BEGIN
   start_line := cur_line;
   start_col := cur_col;
+  start_pos := src_pos;
   AdvancePos(1); { Skip opening quote }
   str_len := 0;
+  closed := FALSE;
 
   WHILE src_pos < src_len DO
   BEGIN
+    { Token spellings travel through Str255 in the parser. Reject before
+      either decoded storage or the quoted spelling can be truncated; do
+      not silently compile a different value (or read past str_val). }
+    IF src_pos - start_pos >= 255 THEN
+    BEGIN
+      EPrint('Lexer Error: quoted literal exceeds 255-byte token limit');
+      exit(1);
+    END;
     ch := ReadBufChar(src_pos);
     IF ch = '''' THEN
     BEGIN
@@ -1501,6 +1513,7 @@ BEGIN
       ELSE
       BEGIN
         AdvancePos(1);
+        closed := TRUE;
         BREAK;
       END;
     END
@@ -1512,6 +1525,16 @@ BEGIN
     END;
   END;
 
+  IF NOT closed THEN
+  BEGIN
+    EPrint('Lexer Error: unterminated quoted literal');
+    exit(1);
+  END;
+  IF src_pos - start_pos > 255 THEN
+  BEGIN
+    EPrint('Lexer Error: quoted literal exceeds 255-byte token limit');
+    exit(1);
+  END;
   str_val[0] := CHR(str_len);
 
   { lexeme must be the raw source text (opening quote, each embedded quote

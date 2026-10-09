@@ -271,10 +271,13 @@ unsigned char *pas_initck_heap_part_at(const void *data, int64_t n, int64_t offs
 void pas_initck_heap_release(const void *data);
 void pas_initck_heap_dispose(const void *data);
 
-/* ---- $INDEXCK fixed-array indexes (array_index.c) ---- */
+/* ---- $INDEXCK fixed/SUPER ARRAY bounds failures (array_index.c) ----
+ * Flush stdout, report the original ordinal and actual bounds at the first
+ * index-expression token, flush stderr and abort. Legacy coordinates: 0:0. */
 
 void  pas_array_index_error(int64_t value, int32_t value_unsigned,
-                            int64_t lo, int64_t hi) __attribute__((noreturn));
+                            int64_t lo, int64_t hi, int32_t line,
+                            int32_t column) __attribute__((noreturn));
 
 /* ---- MATHCK runtime failures (mathck.c) ----
  * Both flush stdout, print one located "runtime error: MATHCK ..." line,
@@ -305,7 +308,10 @@ _Bool SMULOK(uint32_t a, uint32_t b, int16_t *c);
 _Bool UADDOK(uint32_t a, uint32_t b, uint16_t *c);
 _Bool UMULOK(uint32_t a, uint32_t b, uint16_t *c);
 
-/* ---- $RANGECK subrange stores, CHR and unmatched CASE (subrange.c) ---- */
+/* ---- $RANGECK subrange stores, CONCAT, CHR and unmatched CASE (subrange.c) ---- */
+
+void  pas_concat_error(uint64_t length, int32_t capacity,
+                       int32_t line, int32_t column) __attribute__((noreturn));
 
 void  pas_chr_error(int64_t value, int32_t value_unsigned,
                     int32_t line, int32_t column) __attribute__((noreturn));

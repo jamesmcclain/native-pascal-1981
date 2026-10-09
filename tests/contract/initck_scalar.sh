@@ -128,7 +128,7 @@ cat > "$work/classes.c" <<'C'
 int main(int argc, char **argv) {
     if (argv[1][0] == 'i') pas_initck_error("slot", 23, 9);
     if (argv[1][0] == 'n') pas_super_index_nil_error();
-    pas_array_index_error(3, 0, 1, 2);
+    pas_array_index_error(3, 0, 1, 2, 23, 9);
 }
 C
 clang -I runtime "$work/classes.c" runtime/build/libpascalrt.a -lm -o "$work/classes"
@@ -140,7 +140,7 @@ for mode in initck nil bounds; do
   case "$mode" in
     initck) printf 'runtime error: INITCK uninitialized local slot at line 23 column 9\n' ;;
     nil) printf 'runtime error: index through NIL super-array pointer\n' ;;
-    bounds) printf 'runtime error: array index 3 is outside bounds 1..2\n' ;;
+    bounds) printf 'runtime error: array index 3 is outside bounds 1..2 at line 23 column 9\n' ;;
   esac > "$work/expected-err"
   diff -u "$work/expected-err" "$work/err"
 done

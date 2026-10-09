@@ -2008,6 +2008,39 @@ BEGIN
   CodegenCallCommon := res;
 END;
 
+PROCEDURE EmitArrayIndexFailure(index_value, lo, hi, site: ADRMEM; unsigned_value: BOOLEAN);
+{ Called only in a failed host bounds block, before any GEP or access.
+  The selector owns its coordinates; legacy selectors report 0:0. }
+VAR
+  params, args, fnty, fn, discard: ADRMEM;
+  line, column: INTEGER32;
+BEGIN
+  OperationLocation(site, line, column);
+  params := AllocPtrArray(6);
+  SetPtrArrayElem(params, 0, i64ty);
+  SetPtrArrayElem(params, 1, i32ty);
+  SetPtrArrayElem(params, 2, i64ty);
+  SetPtrArrayElem(params, 3, i64ty);
+  SetPtrArrayElem(params, 4, i32ty);
+  SetPtrArrayElem(params, 5, i32ty);
+  fnty := LLVMFunctionType(voidty, params, 6, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_array_index_error'));
+  IF fn = NIL THEN
+    fn := LLVMAddFunction(modl, MakeCStr('pas_array_index_error'), fnty);
+  args := AllocPtrArray(6);
+  SetPtrArrayElem(args, 0, index_value);
+  IF unsigned_value THEN
+    SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 1, 0))
+  ELSE
+    SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 0, 0));
+  SetPtrArrayElem(args, 2, lo);
+  SetPtrArrayElem(args, 3, hi);
+  SetPtrArrayElem(args, 4, LLVMConstInt(i32ty, line, 0));
+  SetPtrArrayElem(args, 5, LLVMConstInt(i32ty, column, 0));
+  discard := LLVMBuildCall2(builder, fnty, fn, args, 6, MakeCStr(''));
+  discard := LLVMBuildUnreachable(builder);
+END;
+
 FUNCTION ComputeDesignatorAddress(node: ADRMEM): ADRMEM;
 { Shared by a Designator read (CodegenExpr) and a Designator write
   (CodegenAssignStmt): walk `name` plus zero or more INDEX/FIELD selectors,
@@ -2030,7 +2063,7 @@ VAR
   indexck, unsigned_idx, super_checked: BOOLEAN;
   idx128, i128ty, in_bounds, upper_ok, bad_bb, ok_bb: ADRMEM;
   nil_bad, nil_ok, nil_fnty, nil_fn, is_nil: ADRMEM;
-  error_fn, error_fnty, error_params, error_args, discard_call: ADRMEM;
+  discard_call: ADRMEM;
   selected_upper, descriptor: ADRMEM;
   deref_ptr_tid: INTEGER; { committed to last_desig_deref_ptr_tid only at
     the end, since index expressions below recurse through here }
@@ -2158,25 +2191,9 @@ BEGIN
           Pass its low 64 bits and signedness separately so WORD64 prints
           as unsigned, just as the i128 guard compares it. DEVICE
           compilands never enter this host-only path. }
-        error_params := AllocPtrArray(4);
-        SetPtrArrayElem(error_params, 0, i64ty);
-        SetPtrArrayElem(error_params, 1, i32ty);
-        SetPtrArrayElem(error_params, 2, i64ty);
-        SetPtrArrayElem(error_params, 3, i64ty);
-        error_fnty := LLVMFunctionType(voidty, error_params, 4, 0);
-        error_fn := LLVMGetNamedFunction(modl, MakeCStr('pas_array_index_error'));
-        IF error_fn = NIL THEN
-          error_fn := LLVMAddFunction(modl, MakeCStr('pas_array_index_error'), error_fnty);
-        error_args := AllocPtrArray(4);
-        SetPtrArrayElem(error_args, 0, LLVMBuildTrunc(builder, idx128, i64ty, MakeCStr('')));
-        IF unsigned_idx THEN
-          SetPtrArrayElem(error_args, 1, LLVMConstInt(i32ty, 1, 0))
-        ELSE
-          SetPtrArrayElem(error_args, 1, LLVMConstInt(i32ty, 0, 0));
-        SetPtrArrayElem(error_args, 2, LLVMConstInt(i64ty, types[cur_tid].lo, 1));
-        SetPtrArrayElem(error_args, 3, LLVMConstInt(i64ty, types[cur_tid].hi, 1));
-        discard_call := LLVMBuildCall2(builder, error_fnty, error_fn, error_args, 4, MakeCStr(''));
-        discard_call := LLVMBuildUnreachable(builder);
+        EmitArrayIndexFailure(LLVMBuildTrunc(builder, idx128, i64ty, MakeCStr('')),
+          LLVMConstInt(i64ty, types[cur_tid].lo, 1),
+          LLVMConstInt(i64ty, types[cur_tid].hi, 1), sel, unsigned_idx);
         LLVMPositionBuilderAtEnd(builder, ok_bb);
       END;
       { A descriptor-backed SUPER ARRAY selector checks against the actual
@@ -2236,25 +2253,8 @@ BEGIN
         { Same diagnostic as a fixed-array failure, but hi is the selected
           descriptor's actual upper. No data address is touched before the
           comparison; the GEP below only runs in the ok block. }
-        error_params := AllocPtrArray(4);
-        SetPtrArrayElem(error_params, 0, i64ty);
-        SetPtrArrayElem(error_params, 1, i32ty);
-        SetPtrArrayElem(error_params, 2, i64ty);
-        SetPtrArrayElem(error_params, 3, i64ty);
-        error_fnty := LLVMFunctionType(voidty, error_params, 4, 0);
-        error_fn := LLVMGetNamedFunction(modl, MakeCStr('pas_array_index_error'));
-        IF error_fn = NIL THEN
-          error_fn := LLVMAddFunction(modl, MakeCStr('pas_array_index_error'), error_fnty);
-        error_args := AllocPtrArray(4);
-        SetPtrArrayElem(error_args, 0, LLVMBuildTrunc(builder, idx128, i64ty, MakeCStr('')));
-        IF unsigned_idx THEN
-          SetPtrArrayElem(error_args, 1, LLVMConstInt(i32ty, 1, 0))
-        ELSE
-          SetPtrArrayElem(error_args, 1, LLVMConstInt(i32ty, 0, 0));
-        SetPtrArrayElem(error_args, 2, LLVMConstInt(i64ty, types[cur_tid].lo, 1));
-        SetPtrArrayElem(error_args, 3, selected_upper);
-        discard_call := LLVMBuildCall2(builder, error_fnty, error_fn, error_args, 4, MakeCStr(''));
-        discard_call := LLVMBuildUnreachable(builder);
+        EmitArrayIndexFailure(LLVMBuildTrunc(builder, idx128, i64ty, MakeCStr('')),
+          LLVMConstInt(i64ty, types[cur_tid].lo, 1), selected_upper, sel, unsigned_idx);
         LLVMPositionBuilderAtEnd(builder, ok_bb);
         idx_val := LLVMBuildTrunc(builder, idx128, i64ty, MakeCStr(''));
         super_checked := TRUE;

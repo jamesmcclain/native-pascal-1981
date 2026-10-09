@@ -18,6 +18,7 @@ FUNCTION ParseType: ADRMEM; FORWARD;
 FUNCTION ParseConstant: ADRMEM; FORWARD;
 FUNCTION ParseCaseConstant: ADRMEM; FORWARD;
 FUNCTION ParseCaseConstantList: ADRMEM; FORWARD;
+PROCEDURE AddOpLocation(node: ADRMEM; tok: PToken); FORWARD;
 
 FUNCTION ParseIdentifier: ADRMEM;
 VAR
@@ -40,6 +41,7 @@ BEGIN
   { Snapshot before parsing: nested indexes and later directives must not
     overwrite the setting at this index expression's first token. }
   AddBoolField(node, 'indexck', CurIndexCk());
+  AddOpLocation(node, GetTok(0));
   AddField(node, 'read_flags', BuildMetaFlagsNode());
   AddField(node, 'index_or_field', ParseExpression);
   ParseIndexSelector := node;

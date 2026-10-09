@@ -117,7 +117,7 @@ done
 
 # --- Ordering: bounds before INITCK; guard before the native load. ---
 cp tests/contract/fixtures/initck_aggregates/order-bad.pas "$work/order-bad.pas"
-expect_fail order-bad 'prefix\n' 'runtime error: array index 4 is outside bounds 1..3'
+expect_fail order-bad 'prefix\n' 'runtime error: array index 4 is outside bounds 1..3 at line 6 column 24'
 
 cp tests/contract/fixtures/initck_aggregates/order-ir.pas "$work/order-ir.pas"
 bin/pascal1981 -O0 -S "$work/order-ir.pas" -o "$work/order-ir.ll"
@@ -399,7 +399,7 @@ expect_ok once-ok '1 1 7 4\n8\n' '7\n'
 cp tests/contract/fixtures/initck_aggregates/once-bad.pas "$work/once-bad.pas"
 expect_fail once-bad 'next\n1\nnext\n' "runtime error: INITCK uninitialized component a[...] at $(at once-bad 8 'a[')"
 sed -i 's/probe(1); probe(2)/probe(4)/' "$work/once-bad.pas"
-expect_fail once-bad 'next\n' 'runtime error: array index 4 is outside bounds 1..3'
+expect_fail once-bad 'next\n' 'runtime error: array index 4 is outside bounds 1..3 at line 8 column 24'
 
 # With INDEXCK disabled there is no bounds check; the element shadow still
 # reuses the data GEP's own offset value.

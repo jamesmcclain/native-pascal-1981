@@ -26,7 +26,7 @@ PROCEDURE CodegenCopylst(args: ADRMEM);
 PROCEDURE CodegenCopystr(args: ADRMEM);
 PROCEDURE CodegenInsert(args: ADRMEM);
 PROCEDURE CodegenDelete(args: ADRMEM);
-PROCEDURE CodegenConcat(args: ADRMEM);
+PROCEDURE CodegenConcat(stmt: ADRMEM);
 FUNCTION EmitLaunchThunk(ridx: INTEGER32): ADRMEM;
 FUNCTION LaunchRegistryPtr: ADRMEM;
 FUNCTION DevicePtxPtr: ADRMEM;
