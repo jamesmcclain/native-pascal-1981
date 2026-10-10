@@ -193,32 +193,6 @@ BEGIN
   InitckTransferShadow(shadow, src_shadow, tid, EndInitckValue(saved_taint));
 END;
 
-PROCEDURE EmitLStringLengthCheck(v, is_length: ADRMEM; capacity: INTEGER32);
-{ A selected .LEN (also exposed by index zero) remains CHAR for expression/
-  ABI purposes, but its stored value must fit the containing LSTRING.
-  The assignment's RANGECK snapshot owns this check. The address and RHS have already been evaluated once;
-  neither the length byte nor INITCK state is published until it succeeds.
-  Reuse the ordinary store diagnostic and existing NVPTX exclusion. }
-VAR
-  length, ok, bad_bb, ok_bb: ADRMEM;
-BEGIN
-  IF capacity < 0 THEN RETURN;
-  IF NOT cur_rangeck OR is_nvptx_device THEN RETURN;
-  length := LLVMBuildZExt(builder, v, i64ty, MakeCStr('lstring.length'));
-  ok := LLVMBuildICmp(builder, LLVMIntULE, length,
-    LLVMConstInt(i64ty, capacity, 0), MakeCStr(''));
-  { A dynamic string index may select payload instead. Only index zero
-    publishes a length; ordinary character stores have no capacity limit. }
-  ok := LLVMBuildOr(builder, LLVMBuildNot(builder, is_length, MakeCStr('')),
-    ok, MakeCStr(''));
-  bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('length.bad'));
-  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('length.ok'));
-  LLVMBuildCondBr(builder, ok, ok_bb, bad_bb);
-  LLVMPositionBuilderAtEnd(builder, bad_bb);
-  EmitSubrangeFailure(length, TRUE, 0, capacity);
-  LLVMPositionBuilderAtEnd(builder, ok_bb);
-END;
-
 PROCEDURE CodegenAssignStmt(stmt: ADRMEM);
 VAR
   target, sel: ADRMEM;
@@ -308,7 +282,7 @@ BEGIN
       IF shadow <> NIL THEN saved_taint := BeginInitckValue(GetObj(stmt, 'expr'));
       v := CodegenExpr(GetObj(stmt, 'expr'));
       v := CoerceCheckedForAssign(v, last_val_tk, target_tid, GetObj(stmt, 'expr'), nm);
-      EmitLStringLengthCheck(v, lstring_is_length, lstring_capacity);
+      EmitLStringLengthCheck(v, lstring_is_length, lstring_capacity, target);
       LLVMBuildStore(builder, v, addr);
       { A selected leaf is a producer for that leaf only; its siblings,
         including overlapping variant alternatives, keep their own state. }

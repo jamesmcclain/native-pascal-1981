@@ -137,7 +137,7 @@ is its entry here.
 | contract | [`rangeck_case`](contract/rangeck_case.sh) | RANGECK CASE misses fail once, preserving snapshots, OTHERWISE and target boundaries. |
 | contract | [`rangeck_chr`](contract/rangeck_chr.sh) | CHR checks original integer values at its name token, before narrowing. |
 | contract | [`rangeck_concat`](contract/rangeck_concat.sh) | CONCAT checks the wide combined length before copying or publishing it. |
-| contract | [`rangeck_lstring_len`](contract/rangeck_lstring_len.sh) | Direct LSTRING.LEN stores check capacity before publishing the byte. |
+| contract | [`rangeck_lstring_len`](contract/rangeck_lstring_len.sh) | LSTRING length-byte stores (assignment, READ, VAR CHAR actuals) check capacity. |
 | contract | [`rangeck_scope`](contract/rangeck_scope.sh) | RANGECK settings reach the AST and IR of FOR, CASE and SUCC where they apply. |
 | contract | [`rangeck_succpred`](contract/rangeck_succpred.sh) | SUCC/PRED preserve subrange domains through function results without replaying calls. |
 | contract | [`stage_cli`](contract/stage_cli.sh) | Standalone compiler-stage command-line contract tests. |

@@ -453,6 +453,28 @@ BEGIN
   BoolNameTable := LLVMBuildBitCast(builder, tbl, LLVMPointerType(i8ptrty, 0), MakeCStr(''));
 END;
 
+PROCEDURE SetOrdinalBoundArgs(call_args: ADRMEM; at, tid: INTEGER);
+{ Store the lo, hi ordinal bounds an enum or BOOLEAN reader accepts into
+  call_args[at] and call_args[at + 1]: a subrange's declared bounds, else
+  the whole type. Names tables always span the host type, so a subrange
+  that starts above zero still indexes them by ordinal. }
+VAR
+  lo, hi: INTEGER32;
+BEGIN
+  IF tid >= 14 THEN
+  BEGIN
+    lo := types[tid].lo;
+    hi := types[tid].hi;
+  END
+  ELSE
+  BEGIN
+    lo := 0;
+    hi := 1;
+  END;
+  SetPtrArrayElem(call_args, at, LLVMConstInt(i32ty, lo, 0));
+  SetPtrArrayElem(call_args, at + 1, LLVMConstInt(i32ty, hi, 0));
+END;
+
 PROCEDURE CodegenReadStdinVar(addr: ADRMEM; tid: INTEGER);
 { Reads one value from stdin into `addr`, dispatching on `tid` -- the
   non-file subset of CodegenReadArgs's per-argument logic, factored out for
@@ -511,21 +533,21 @@ BEGIN
     { An enum is stored as the readers' i32: read straight into it. }
     IF active_features.symbolic_enum_io THEN
     BEGIN
-      call_args := AllocPtrArray(3);
+      call_args := AllocPtrArray(4);
       SetPtrArrayElem(call_args, 0, addr);
       SetPtrArrayElem(call_args, 1, EnumNameTable(tid));
-      SetPtrArrayElem(call_args, 2, LLVMConstInt(i32ty, types[tid].hi + 1, 0));
+      SetOrdinalBoundArgs(call_args, 2, tid);
       loaded := LLVMBuildCall2(builder, read_enum_name_fnty,
-                               read_enum_name_fn, call_args, 3, MakeCStr(''));
+                               read_enum_name_fn, call_args, 4, MakeCStr(''));
     END
     ELSE
     BEGIN
       { Vintage enumerated values read as numeric ordinals. }
-      call_args := AllocPtrArray(2);
+      call_args := AllocPtrArray(3);
       SetPtrArrayElem(call_args, 0, addr);
-      SetPtrArrayElem(call_args, 1, LLVMConstInt(i32ty, types[tid].hi + 1, 0));
+      SetOrdinalBoundArgs(call_args, 1, tid);
       loaded := LLVMBuildCall2(builder, read_enum_ord_fnty, read_enum_ord_fn,
-                               call_args, 2, MakeCStr(''));
+                               call_args, 3, MakeCStr(''));
     END;
   END
   ELSE IF TypeKind(tid) = TK_BOOLEAN THEN
@@ -534,11 +556,11 @@ BEGIN
       (13610-13618); pas_read_enum_name against the FALSE/TRUE table
       accepts exactly that union. }
     tmp32 := EntryAlloca(i32ty, '');
-    call_args := AllocPtrArray(3);
+    call_args := AllocPtrArray(4);
     SetPtrArrayElem(call_args, 0, tmp32);
     SetPtrArrayElem(call_args, 1, BoolNameTable);
-    SetPtrArrayElem(call_args, 2, LLVMConstInt(i32ty, 2, 0));
-    loaded := LLVMBuildCall2(builder, read_enum_name_fnty, read_enum_name_fn, call_args, 3, MakeCStr(''));
+    SetOrdinalBoundArgs(call_args, 2, tid);
+    loaded := LLVMBuildCall2(builder, read_enum_name_fnty, read_enum_name_fn, call_args, 4, MakeCStr(''));
     loaded := LLVMBuildLoad2(builder, i32ty, tmp32, MakeCStr(''));
     loaded := LLVMBuildTrunc(builder, loaded, i1ty, MakeCStr(''));
     LLVMBuildStore(builder, loaded, addr);
@@ -709,6 +731,9 @@ VAR
   tid: INTEGER;
   using_file, sub_chk: BOOLEAN;
   rd_status, rd_ok, chk_bb, cont_bb, cur_v: ADRMEM;
+  lstring_capacity: INTEGER32; { the destination's LSTRING capacity when it
+    is a selected .LEN or index-zero byte, else -1 }
+  lstring_is_length: ADRMEM;
 BEGIN
   nargs := ArrSize(args);
   start_idx := 0;
@@ -738,6 +763,8 @@ BEGIN
     rd_ok := NIL;
     dest_symi := 0;
     dest_state := NIL;
+    lstring_capacity := -1;
+    lstring_is_length := NIL;
     IF NodeType(argnode) = 'Identifier' THEN
       dest_symi := LookupSym(GetStr(argnode, 'name'))
     ELSE IF NodeType(argnode) = 'Designator' THEN
@@ -754,6 +781,8 @@ BEGIN
     BEGIN
       addr := ComputeDesignatorAddress(argnode);
       tid := last_val_tk;
+      lstring_capacity := last_desig_lstring_capacity;
+      lstring_is_length := last_desig_lstring_is_length;
       { A selected tracked leaf is a producer like a direct destination. }
       IF (dest_symi = 0) AND (last_desig_shadow <> NIL) AND InitckTrackedTk(tid) THEN
         dest_state := last_desig_shadow;
@@ -914,41 +943,41 @@ BEGIN
       BEGIN
         IF using_file THEN
         BEGIN
-          call_args := AllocPtrArray(4);
+          call_args := AllocPtrArray(5);
           SetPtrArrayElem(call_args, 0, fcb_ptr);
           SetPtrArrayElem(call_args, 1, addr);
           SetPtrArrayElem(call_args, 2, EnumNameTable(tid));
-          SetPtrArrayElem(call_args, 3, LLVMConstInt(i32ty, types[tid].hi + 1, 0));
+          SetOrdinalBoundArgs(call_args, 3, tid);
           loaded := LLVMBuildCall2(builder, fread_enum_name_fnty,
-                                   fread_enum_name_fn, call_args, 4, MakeCStr(''));
+                                   fread_enum_name_fn, call_args, 5, MakeCStr(''));
         END
         ELSE
         BEGIN
-          call_args := AllocPtrArray(3);
+          call_args := AllocPtrArray(4);
           SetPtrArrayElem(call_args, 0, addr);
           SetPtrArrayElem(call_args, 1, EnumNameTable(tid));
-          SetPtrArrayElem(call_args, 2, LLVMConstInt(i32ty, types[tid].hi + 1, 0));
+          SetOrdinalBoundArgs(call_args, 2, tid);
           loaded := LLVMBuildCall2(builder, read_enum_name_fnty,
-                                   read_enum_name_fn, call_args, 3, MakeCStr(''));
+                                   read_enum_name_fn, call_args, 4, MakeCStr(''));
         END;
       END
       ELSE IF using_file THEN
       BEGIN
         { Vintage enumerated values read as numeric ordinals. }
-        call_args := AllocPtrArray(3);
+        call_args := AllocPtrArray(4);
         SetPtrArrayElem(call_args, 0, fcb_ptr);
         SetPtrArrayElem(call_args, 1, addr);
-        SetPtrArrayElem(call_args, 2, LLVMConstInt(i32ty, types[tid].hi + 1, 0));
+        SetOrdinalBoundArgs(call_args, 2, tid);
         loaded := LLVMBuildCall2(builder, fread_enum_ord_fnty,
-                                 fread_enum_ord_fn, call_args, 3, MakeCStr(''));
+                                 fread_enum_ord_fn, call_args, 4, MakeCStr(''));
       END
       ELSE
       BEGIN
-        call_args := AllocPtrArray(2);
+        call_args := AllocPtrArray(3);
         SetPtrArrayElem(call_args, 0, addr);
-        SetPtrArrayElem(call_args, 1, LLVMConstInt(i32ty, types[tid].hi + 1, 0));
+        SetOrdinalBoundArgs(call_args, 1, tid);
         loaded := LLVMBuildCall2(builder, read_enum_ord_fnty,
-                                 read_enum_ord_fn, call_args, 2, MakeCStr(''));
+                                 read_enum_ord_fn, call_args, 3, MakeCStr(''));
       END;
       rd_status := loaded;
     END
@@ -959,20 +988,20 @@ BEGIN
       tmp32 := EntryAlloca(i32ty, '');
       IF using_file THEN
       BEGIN
-        call_args := AllocPtrArray(4);
+        call_args := AllocPtrArray(5);
         SetPtrArrayElem(call_args, 0, fcb_ptr);
         SetPtrArrayElem(call_args, 1, tmp32);
         SetPtrArrayElem(call_args, 2, BoolNameTable);
-        SetPtrArrayElem(call_args, 3, LLVMConstInt(i32ty, 2, 0));
-        loaded := LLVMBuildCall2(builder, fread_enum_name_fnty, fread_enum_name_fn, call_args, 4, MakeCStr(''));
+        SetOrdinalBoundArgs(call_args, 3, tid);
+        loaded := LLVMBuildCall2(builder, fread_enum_name_fnty, fread_enum_name_fn, call_args, 5, MakeCStr(''));
       END
       ELSE
       BEGIN
-        call_args := AllocPtrArray(3);
+        call_args := AllocPtrArray(4);
         SetPtrArrayElem(call_args, 0, tmp32);
         SetPtrArrayElem(call_args, 1, BoolNameTable);
-        SetPtrArrayElem(call_args, 2, LLVMConstInt(i32ty, 2, 0));
-        loaded := LLVMBuildCall2(builder, read_enum_name_fnty, read_enum_name_fn, call_args, 3, MakeCStr(''));
+        SetOrdinalBoundArgs(call_args, 2, tid);
+        loaded := LLVMBuildCall2(builder, read_enum_name_fnty, read_enum_name_fn, call_args, 4, MakeCStr(''));
       END;
       rd_status := loaded;
       EmitReadScratchStore(ReadOk(rd_status, rd_ok), tmp32, i32ty, i1ty, addr);
@@ -1018,6 +1047,19 @@ BEGIN
       LLVMPositionBuilderAtEnd(builder, chk_bb);
       cur_v := LLVMBuildLoad2(builder, LLVMTypeForTk(SubrangeBaseTid(tid)), addr, MakeCStr(''));
       EmitSubrangeCheck(cur_v, SubrangeBaseTid(tid), tid);
+      LLVMBuildBr(builder, cont_bb);
+      LLVMPositionBuilderAtEnd(builder, cont_bb);
+    END;
+    { $RANGECK: a CHAR read into an LSTRING's .LEN (or index zero) must fit
+      its capacity, checked like a subrange after a successful read. }
+    IF (lstring_capacity >= 0) AND cur_rangeck AND (NOT is_nvptx_device) AND
+       (rd_status <> NIL) THEN
+    BEGIN
+      chk_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('read_length'));
+      cont_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('read_lengthed'));
+      LLVMBuildCondBr(builder, ReadOk(rd_status, rd_ok), chk_bb, cont_bb);
+      LLVMPositionBuilderAtEnd(builder, chk_bb);
+      EmitLStringLengthRecheck(addr, lstring_is_length, lstring_capacity, argnode);
       LLVMBuildBr(builder, cont_bb);
       LLVMPositionBuilderAtEnd(builder, cont_bb);
     END;

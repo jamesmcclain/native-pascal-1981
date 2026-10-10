@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/harness.sh"
-# Direct LSTRING.LEN stores check capacity before publishing the byte.
+# LSTRING length-byte stores (assignment, READ, VAR CHAR actuals) check capacity.
 require bin/pascal1981 bin/parser bin/codegen runtime/build/libpascalrt.a
 cc=${CC:-clang}
+# len_err LENGTH CAP [LINE COLUMN]: the run's stderr is exactly the LSTRING
+# length diagnostic (any location unless one is given).
+len_err() {
+  grep -qxE "runtime error: RANGECK LSTRING length $1 exceeds capacity $2 at line ${3:-[0-9]+} column ${4:-[0-9]+}" "$work/error"
+}
 for dialect in vintage extended; do
   for flag in + -; do
     opposite=+; [[ $flag != + ]] || opposite=-
@@ -62,7 +67,7 @@ END.
 BAD
       bin/pascal1981 --dialect "$dialect" -O0 -S "$work/bad.pas" -o "$work/bad.ll"
       expected=0; [[ $flag != + ]] || expected=1
-      [[ $(grep -c 'call void @pas_subrange_error' "$work/bad.ll" || true) == "$expected" ]] || die "$dialect capacity $cap LEN$flag IR guards"
+      [[ $(grep -c 'call void @pas_lstring_length_error' "$work/bad.ll" || true) == "$expected" ]] || die "$dialect capacity $cap LEN$flag IR guards"
       if [[ $flag == - ]]; then
         pass "$dialect capacity $cap disabled guard-free IR (not executed)"
         continue
@@ -73,7 +78,7 @@ BAD
         { "$work/bad" > "$work/output" 2> "$work/error"; } 2>/dev/null || rc=$?
         [[ $rc == 134 ]] || die "$dialect capacity $cap LEN O$opt exit $rc"
         printf 'before\n' > "$work/expected.out"
-        printf 'runtime error: value %s is outside subrange 0..%s\n' "$length" "$cap" > "$work/expected.err"
+        printf 'runtime error: RANGECK LSTRING length %s exceeds capacity %s at line 7 column 3\n' "$length" "$cap" > "$work/expected.err"
         diff -u "$work/expected.out" "$work/output"
         diff -u "$work/expected.err" "$work/error"
         pass "$dialect capacity $cap checked LEN $length O$opt"
@@ -114,11 +119,71 @@ INDIRECT
         [[ $rc == 134 ]] || die "$dialect indirect LEN $target MATHCK$math O$opt exit $rc"
         printf 'before\nsource\n' > "$work/expected.out"
         diff -u "$work/expected.out" "$work/output"
-        grep -qxF 'runtime error: value 200 is outside subrange 0..3' "$work/error"
+        len_err 200 3
         pass "$dialect indirect LEN $target MATHCK$math O$opt"
       done
     done
   done
+done
+# Writers other than assignment: READ into the length byte and a VAR CHAR
+# formal bound to it are checked as soon as the byte is stored (READ) or
+# the call returns (VAR). Payload bytes stay unrestricted.
+for dialect in vintage extended; do
+  for spec in 'READ(t.LEN)|8|120' 'READ(t[0])|8|120' 'READ(t[zero])|8|120' \
+              'READ(f, t.LEN)|11|120' 'setc(t.LEN)|8|200' 'setc(t[zero])|8|200' \
+              'setc(p^.LEN)|8|200'; do
+    IFS='|' read -r writer column length <<< "$spec"
+    cat > "$work/writer.pas" <<WRITER
+{\$RANGECK+}
+PROGRAM writer(INPUT, OUTPUT);
+VAR t: LSTRING(3); p: ^LSTRING(3); zero: INTEGER; f: TEXT;
+PROCEDURE setc(VAR c: CHAR);
+BEGIN c := CHR(200) END;
+BEGIN
+  t := 'abc'; p := ADR t; zero := 0;
+  ASSIGN(f, 'in.txt'); RESET(f);
+  WRITELN('before');
+  $writer;
+  WRITELN('wrong ', ORD(t.LEN))
+END.
+WRITER
+    for opt in 0 2; do
+      bin/pascal1981 --dialect "$dialect" -O"$opt" "$work/writer.pas" -o "$work/writer"
+      printf 'x\n' > "$work/in.txt"
+      rc=0
+      { (cd "$work" && exec ./writer < in.txt > output 2> error); } 2>/dev/null || rc=$?
+      [[ $rc == 134 ]] || die "$dialect $writer O$opt exit $rc"
+      printf 'before\n' > "$work/expected.out"
+      diff -u "$work/expected.out" "$work/output"
+      len_err "$length" 3 10 "$column" || die "$dialect $writer O$opt diagnostic: $(cat "$work/error")"
+      pass "$dialect checked LEN writer $writer O$opt"
+    done
+  done
+  cat > "$work/writers_ok.pas" <<'WRITERS'
+{$RANGECK+}
+PROGRAM writers_ok(INPUT, OUTPUT);
+VAR t: LSTRING(3); zero: INTEGER; c: CHAR;
+PROCEDURE setc(VAR c: CHAR; v: INTEGER);
+BEGIN c := CHR(v) END;
+BEGIN
+  t := 'abc'; zero := 0;
+  setc(t[1], 200);
+  setc(t.LEN, 2);
+  setc(t[zero], 3);
+  READ(c);
+  READ(t[2]);
+  WRITELN(ORD(t.LEN), ' ', ORD(t[1]), ' ', t[2]);
+  {$RANGECK-}
+  setc(t.LEN, 200);
+  WRITELN(ORD(t.LEN))
+END.
+WRITERS
+  bin/pascal1981 --dialect "$dialect" -O1 "$work/writers_ok.pas" -o "$work/writers_ok"
+  printf 'xy\n' | "$work/writers_ok" > "$work/output" 2> "$work/error"
+  printf '3 200 y\n200\n' > "$work/expected.out"
+  diff -u "$work/expected.out" "$work/output"
+  [[ ! -s $work/error ]] || die "$dialect LEN writers stderr"
+  pass "$dialect unchecked payload writers, in-capacity LEN writers, RANGECK- call site"
 done
 # Observe all bytes of the selected and neighboring slots before abort.
 # This also pins selection/RHS once-only evaluation and source side effects.
@@ -133,12 +198,12 @@ main = ir[ir.index('define i32 @main('):].split('\n}', 1)[0]
 assert main.count('call i16 @idx(') == 1
 assert main.count('call i8 @source(') == 1
 assert main.index('call i16 @idx(') < main.index('call i8 @source(')
-assert 'call void @pas_subrange_error' in main[main.index('call i8 @source('):]
+assert 'call void @pas_lstring_length_error' in main[main.index('call i8 @source('):]
 blocks = re.split(r'(?m)^([\w.]+):[^\n]*\n', main)
 checked = 0
 for label, block in zip(blocks[1::2], blocks[2::2]):
     if label.startswith('length.bad'):
-        assert 'call void @pas_subrange_error' in block
+        assert 'call void @pas_lstring_length_error' in block
         assert 'unreachable' in block and not re.search(r'\bstore\b', block)
         checked += 1
     if label.startswith('length.ok'):
@@ -154,7 +219,7 @@ for opt in 0 1 2 3; do
   [[ $rc == 134 ]] || die "LEN publication O$opt exit $rc"
   printf 'PASS: LEN destination unchanged; target and source evaluated once\n' > "$work/expected.out"
   diff -u "$work/expected.out" "$work/output"
-  grep -qxF 'runtime error: value 200 is outside subrange 0..3' "$work/error"
+  len_err 200 3
   pass "LEN failed publication and once-only target/source O$opt"
 done
 # Repeat observation with a dynamically selected index-zero alias.
@@ -175,7 +240,7 @@ for opt in 0 1 2 3; do
   "$work/indexed" > "$work/output" 2> "$work/error" || rc=$?
   [[ $rc == 134 ]] || die "index-zero LEN publication O$opt exit $rc"
   diff -u "$work/expected.out" "$work/output"
-  grep -qxF 'runtime error: value 200 is outside subrange 0..3' "$work/error"
+  len_err 200 3
   pass "index-zero LEN failed publication and once-only indexes/source O$opt"
 done
 # First-token assignment snapshots own the guard, not RHS directives.
@@ -190,12 +255,12 @@ BEGIN t := 'abc';
 END.
 SNAPSHOTS
 bin/pascal1981 -O0 -S "$work/snapshots.pas" -o "$work/snapshots.ll"
-[[ $(grep -c 'call void @pas_subrange_error' "$work/snapshots.ll") == 1 ]] || die 'LEN nested/sibling snapshots'
+[[ $(grep -c 'call void @pas_lstring_length_error' "$work/snapshots.ll") == 1 ]] || die 'LEN nested/sibling snapshots'
 pass 'LEN nested/sibling assignment snapshots (invalid unchecked stores not executed)'
 printf '%s\n' 'PROGRAM unchecked; VAR t: LSTRING(3); zero: INTEGER;' \
   "BEGIN zero := 0; {\$RANGECK-} t[zero] := {\$RANGECK+} CHR(200) END." > "$work/unchecked.pas"
 bin/pascal1981 -O0 -S "$work/unchecked.pas" -o "$work/unchecked.ll"
-if grep -q 'pas_subrange_error' "$work/unchecked.ll"; then die 'disabled index-zero LEN guard'; fi
+if grep -q 'pas_lstring_length_error' "$work/unchecked.ll"; then die 'disabled index-zero LEN guard'; fi
 pass 'index-zero RANGECK- guard-free IR (not executed)'
 # Legacy assignments inherit the enclosing/root RANGECK policy.
 cat > "$work/legacy.pas" <<'LEGACY'
@@ -218,14 +283,14 @@ def strip(node):
 Path(sys.argv[2]).write_text(json.dumps(strip(json.loads(Path(sys.argv[1]).read_text()))))
 PY
 bin/codegen < "$work/legacy.json" > "$work/legacy.ll"
-grep -q 'call void @pas_subrange_error' "$work/legacy.ll" || die 'legacy LEN enabled inheritance'
+grep -q 'call void @pas_lstring_length_error' "$work/legacy.ll" || die 'legacy LEN enabled inheritance'
 pass 'legacy LEN enabled inheritance'
 # CPU DEVICE checks; NVPTX retains the explicit host-runtime exclusion.
 printf '%s\n' 'DEVICE INTERFACE;' 'UNIT LENU (check);' 'PROCEDURE check;' 'END;' > "$work/len.inc"
 printf '%s\n' "(*\$INCLUDE:'len.inc'*)" 'DEVICE IMPLEMENTATION OF LENU;' \
   'PROCEDURE check;' 'VAR t: LSTRING(3);' "BEGIN t := ''; t.LEN := CHR(200) END;" '.' > "$work/len.impl"
 (cd "$work"; "$ROOT/bin/pascal1981" --dialect extended -O0 -S len.impl -o cpu.ll)
-grep -q 'call void @pas_subrange_error' "$work/cpu.ll" || die 'CPU DEVICE LEN guard missing'
+grep -q 'call void @pas_lstring_length_error' "$work/cpu.ll" || die 'CPU DEVICE LEN guard missing'
 pass 'CPU DEVICE LEN guard'
 printf '%s\n' "(*\$INCLUDE:'len.inc'*)" 'PROGRAM cpu;' 'USES LENU (check);' \
   "BEGIN LAUNCH(check, 1, 1); WRITELN('wrong') END." > "$work/cpu.pas"
@@ -233,9 +298,9 @@ printf '%s\n' "(*\$INCLUDE:'len.inc'*)" 'PROGRAM cpu;' 'USES LENU (check);' \
 rc=0
 { "$work/cpu" > "$work/output" 2> "$work/error"; } 2>/dev/null || rc=$?
 [[ $rc == 134 && ! -s $work/output ]] || die "CPU DEVICE LEN exit/output $rc"
-grep -qxF 'runtime error: value 200 is outside subrange 0..3' "$work/error"
+len_err 200 3
 pass 'CPU DEVICE LEN runtime failure'
 (cd "$work"; "$ROOT/bin/pascal1981" --dialect extended --device-triple nvptx64-nvidia-cuda -S len.impl -o gpu.ll)
-if grep -q 'pas_subrange_error' "$work/gpu.ll"; then die 'NVPTX emitted host LEN failure'; fi
+if grep -q 'pas_lstring_length_error' "$work/gpu.ll"; then die 'NVPTX emitted host LEN failure'; fi
 pass 'NVPTX existing unchecked LEN boundary'
 finish 'RANGECK LSTRING LEN'

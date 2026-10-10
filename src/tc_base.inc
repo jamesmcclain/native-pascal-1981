@@ -64,7 +64,9 @@ TYPE
     is_super, ret_is_super: BOOLEAN;
     is_vararg: BOOLEAN;
     is_extern: BOOLEAN;
-    has_const_int: BOOLEAN;
+    has_const_int: BOOLEAN; { a CONST whose ordinal value FoldConstInt
+                           knows, of any ordinal type (CHAR and BOOLEAN
+                           too); a consumer that needs an integer checks tk }
     const_int: INTEGER64;
   END;
 

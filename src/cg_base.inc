@@ -151,6 +151,7 @@ PROCEDURE LLVMDisposeMemoryBuffer(buffer: ADRMEM) [C];
 PROCEDURE LLVMDisposeTargetMachine(tm: ADRMEM) [C];
 FUNCTION LLVMVerifyModule(m: ADRMEM; action: CINT; outmsg: ADRMEM): CINT [C];
 FUNCTION malloc(size: CINT): ADRMEM [C];
+FUNCTION realloc(p: ADRMEM; size: CINT): ADRMEM [C];
 PROCEDURE free(p: ADRMEM) [C];
 FUNCTION puts(str: ADRMEM): CINT [C];
 PROCEDURE exit(code: CINT) [C];

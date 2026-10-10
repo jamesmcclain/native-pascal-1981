@@ -55,7 +55,7 @@ assert dest_enum, "missing enum destination alloca in probe_enum"
 assert len(re.findall(r'= alloca i32\b', body_enum)) == 1, \
     "enum READ must not allocate a scratch i32 in probe_enum"
 assert re.search(r'= call i32 @pas_fread_enum_ord\(ptr %[\w.]+, ptr ' +
-                 re.escape(dest_enum.group(1)) + r', i32 3\)', body_enum), \
+                 re.escape(dest_enum.group(1)) + r', i32 0, i32 2\)', body_enum), \
     "pas_fread_enum_ord must read straight into the destination in probe_enum"
 assert not re.search(
     r'store i32 [^\n]*, ptr ' + re.escape(dest_enum.group(1)) + r'\b',

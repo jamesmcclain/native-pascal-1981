@@ -1519,6 +1519,11 @@ VAR
     passed by value or bound by VAR/CONST), whose referents C may write }
   call_base: INTEGER32; { initck_npending before this call's actuals }
   outer_taint: ADRMEM;
+  length_addr: ARRAY [1..MAX_PARAMS] OF ADRMEM; { a VAR actual that is an
+    LSTRING's .LEN or index-zero byte, rechecked after the call, or NIL }
+  length_is_length: ARRAY [1..MAX_PARAMS] OF ADRMEM;
+  length_capacity: ARRAY [1..MAX_PARAMS] OF INTEGER32;
+  length_site: ARRAY [1..MAX_PARAMS] OF ADRMEM;
 BEGIN
   ri := LookupRoutine(name);
   IF ri = 0 THEN
@@ -1553,6 +1558,7 @@ BEGIN
     transports := InitckTransports(ri);
     FOR i := 1 TO MAX_PARAMS DO arg_state[i] := NIL;
     FOR i := 1 TO MAX_PARAMS DO ptr_actual[i] := NIL;
+    FOR i := 1 TO MAX_PARAMS DO length_addr[i] := NIL;
     llvm_ai := 0;
     IF ret_class = SYSV_CLASS_MEMORY THEN
     BEGIN
@@ -1630,6 +1636,13 @@ BEGIN
         BEGIN
           v := ComputeDesignatorAddress(arg_node);
           var_shadow := last_desig_shadow;
+          IF last_desig_lstring_capacity >= 0 THEN
+          BEGIN
+            length_addr[i + 1] := v;
+            length_is_length[i + 1] := last_desig_lstring_is_length;
+            length_capacity[i + 1] := last_desig_lstring_capacity;
+            length_site[i + 1] := arg_node;
+          END;
           { See AggStringTypesInterchangeable -- equal-capacity string types. }
           IF (last_val_tk <> routines[ri].param_tk[i + 1])
              AND NOT AggStringTypesInterchangeable(last_val_tk,
@@ -1926,6 +1939,12 @@ BEGIN
             LLVMBuildBitCast(builder, ptr_actual[i], i8ptrty, MakeCStr('')), MakeCStr('')));
       END;
     END;
+    { A VAR CHAR formal bound to an LSTRING length byte may have stored any
+      CHAR: under the call site's RANGECK the length must still fit. }
+    FOR i := 1 TO routines[ri].nparams DO
+      IF length_addr[i] <> NIL THEN
+        EmitLStringLengthRecheck(length_addr[i], length_is_length[i], length_capacity[i],
+                                 length_site[i]);
     IF track_ret AND (initck_taint <> NIL) THEN
     BEGIN
       returned := LLVMBuildLoad2(builder, i1ty, InitckRetFlag, MakeCStr('initck.returned'));
@@ -2728,6 +2747,16 @@ BEGIN
   LLVMPositionBuilderAtEnd(builder, ok_bb);
 END;
 
+FUNCTION NarrowToI16(v: ADRMEM; tk: INTEGER): ADRMEM;
+{ An admitted ordinal of type tk at i16: widened from i1/i8, truncated
+  from i32/i64 (ZExt to a narrower type is invalid IR). }
+BEGIN
+  IF LLVMTypeForTk(tk) = i16ty THEN NarrowToI16 := v
+  ELSE IF (LLVMTypeForTk(tk) = i1ty) OR (LLVMTypeForTk(tk) = i8ty) THEN
+    NarrowToI16 := LLVMBuildZExt(builder, v, i16ty, MakeCStr(''))
+  ELSE NarrowToI16 := LLVMBuildTrunc(builder, v, i16ty, MakeCStr(''));
+END;
+
 FUNCTION CodegenSimpleBuiltin(nm: Str255; site: ADRMEM): ADRMEM;
 { The math/ordinal builtins that need no libpascalrt support: pure inline
   LLVM IR (CHR/ORD/ODD/SUCC/PRED/ABS/SQR), or a single libm call
@@ -2885,16 +2914,8 @@ BEGIN
     argtk2 := last_val_tk;
     EmitByteDomainCheck(v, argtk, site, nm);
     EmitByteDomainCheck(v2, argtk2, site, nm);
-    IF LLVMTypeForTk(argtk) = i16ty THEN hi16 := v
-    ELSE IF (LLVMTypeForTk(argtk) = i1ty) OR (LLVMTypeForTk(argtk) = i8ty) THEN
-      hi16 := LLVMBuildZExt(builder, v, i16ty, MakeCStr(''))
-    ELSE hi16 := LLVMBuildTrunc(builder, v, i16ty, MakeCStr(''));
-    IF LLVMTypeForTk(argtk2) = i16ty THEN lo16 := v2
-    ELSE IF (LLVMTypeForTk(argtk2) = i1ty) OR (LLVMTypeForTk(argtk2) = i8ty) THEN
-      lo16 := LLVMBuildZExt(builder, v2, i16ty, MakeCStr(''))
-    ELSE lo16 := LLVMBuildTrunc(builder, v2, i16ty, MakeCStr(''));
-    hi16 := LLVMBuildAnd(builder, hi16, LLVMConstInt(i16ty, 255, 0), MakeCStr(''));
-    lo16 := LLVMBuildAnd(builder, lo16, LLVMConstInt(i16ty, 255, 0), MakeCStr(''));
+    hi16 := LLVMBuildAnd(builder, NarrowToI16(v, argtk), LLVMConstInt(i16ty, 255, 0), MakeCStr(''));
+    lo16 := LLVMBuildAnd(builder, NarrowToI16(v2, argtk2), LLVMConstInt(i16ty, 255, 0), MakeCStr(''));
     res := LLVMBuildOr(builder, LLVMBuildShl(builder, hi16, LLVMConstInt(i16ty, 8, 0), MakeCStr('')), lo16, MakeCStr(''));
     last_val_tk := TK_WORD;
   END

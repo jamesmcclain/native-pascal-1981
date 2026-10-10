@@ -1,4 +1,4 @@
-# Direct LSTRING length-byte assignment checks
+# LSTRING length-byte publication checks
 
 Run after `make`:
 
@@ -6,8 +6,8 @@ Run after `make`:
 tests/contract/rangeck_lstring_len.sh
 ```
 
-The suite covers the direct-assignment portion of the LSTRING RANGECK
-contract, not all string producers or unconditional memory safety.
+The suite covers the length-byte portion of the LSTRING RANGECK contract
+(assignment, READ and VAR CHAR actuals), not all string producers or unconditional memory safety.
 
 - Both dialects, O0–O3: zero and exact capacity, zero-capacity storage,
   capacity 256 with byte value 255, legal truncation/extension, and ordinary
@@ -19,6 +19,12 @@ contract, not all string producers or unconditional memory safety.
 - Index-zero aliases: constant/dynamic INTEGER, WORD, CHAR, BOOLEAN and enum
   zero indexes. Nested array/pointer selection is covered; nonzero indexes
   must not receive a length-value restriction.
+- Other length-byte writers: stdin and file `READ` into `.LEN`, constant
+  and dynamic index zero, and a VAR CHAR formal bound to `.LEN` or a
+  dynamic index zero, directly or through a pointer. A READ is checked
+  after a successful conversion, like a subrange READ; a VAR actual is
+  checked when the call returns, under the call site's RANGECK. Payload
+  bytes written the same ways, and in-capacity lengths, pass.
 - RANGECK- invalid lengths are inspected as guard-free IR only. They are
   never passed to later string operations or executed as unchecked tests.
 - Assignment first-token snapshots, opposite RHS directives, nested/sibling
@@ -32,14 +38,17 @@ contract, not all string producers or unconditional memory safety.
 - CPU DEVICE guard and runtime failure; NVPTX compile-only confirmation of
   its existing host-runtime exclusion.
 
-Failures reuse `runtime/subrange.c`: stdout/stderr are flushed, the error is
-`runtime error: value V is outside subrange 0..CAP`, and the process aborts.
+Failures call `pas_lstring_length_error` in `runtime/subrange.c`: stdout and
+stderr are flushed, the error is `runtime error: RANGECK LSTRING length V
+exceeds capacity CAP at line L column C`, located at the target designator,
+and the process aborts.
 The effective capacity is `min(declared capacity, 255)`. `.LEN` stays CHAR;
 its containing capacity is an address-selection fact, not a new ABI type.
 Compiler-generated destination bytes are not published on failure; user
 side effects during target/RHS evaluation are not rolled back.
 
-Known boundaries remain outside this direct-assignment slice: general
-STRING/LSTRING index bounds, arbitrary CHAR aliases, READ/foreign/raw writes,
+Known boundaries remain outside this slice: general STRING/LSTRING index
+bounds, CHAR aliases made through ADR or other raw addresses, foreign/raw
+writes,
 whole-string copies/value parameters and other mutating builtins. The
 broader R5 audit must not be checked off on the strength of these tests.

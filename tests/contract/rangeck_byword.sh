@@ -93,7 +93,7 @@ for dialect in vintage extended; do
       "CONST C = BYWORD({\$RANGECK$opposite} 300,-1);" 'BEGIN WRITELN(C) END.' > "$work/const.pas"
     if [[ $flag == + ]]; then
       if bin/pascal1981 --dialect "$dialect" "$work/const.pas" -o "$work/const" > "$work/output" 2> "$work/error"; then die 'bad enabled CONST admitted'; fi
-      grep -qF 'RANGECK constant BYWORD argument outside 0..255' "$work/error" || die 'CONST BYWORD diagnostic'
+      grep -qxF 'RANGECK constant BYWORD argument outside 0..255 at line 3 column 11' "$work/error" || die 'CONST BYWORD diagnostic'
     else
       bin/pascal1981 --dialect "$dialect" "$work/const.pas" -o "$work/const"
       "$work/const" > "$work/output"
@@ -128,8 +128,17 @@ for opt in 0 1 2 3; do
 done
 printf '%s\n' 'PROGRAM bad; BEGIN WRITELN(BYWORD(300,0) + 1) END.' > "$work/fold-bad.pas"
 if bin/pascal1981 "$work/fold-bad.pas" -o "$work/fold-bad" > "$work/output" 2> "$work/error"; then die 'enabled bad folded BYWORD admitted'; fi
-grep -qF 'RANGECK constant BYWORD argument outside 0..255' "$work/error"
+grep -qxF 'RANGECK constant BYWORD argument outside 0..255 at line 1 column 28' "$work/error"
 pass 'enabled folded BYWORD domain preserved'
+# Elsewhere an enabled out-of-domain call is not folded: it runs with its
+# runtime guard, never a codegen abort.
+printf '%s\n' 'PROGRAM bad;' 'VAR a: ARRAY [0..65535] OF INTEGER;' \
+  "BEGIN WRITELN('before'); WRITELN(a[ORD(BYWORD(1,300))]) END." > "$work/index-bad.pas"
+bin/pascal1981 "$work/index-bad.pas" -o "$work/index-bad"
+if { "$work/index-bad" > "$work/output" 2> "$work/error"; } 2>/dev/null; then die 'unfolded BYWORD index did not fail'; fi
+printf 'before\n' | diff -u - "$work/output"
+grep -qxF 'runtime error: RANGECK BYWORD argument 300 is outside 0..255 at line 3 column 40' "$work/error"
+pass 'enabled out-of-domain BYWORD index lowered with its runtime guard'
 # Parser/typechecker preserve function-name snapshots and coordinates; legacy
 # calls without them inherit scoped read_flags and emit the same guard count.
 (cd src; "$ROOT/bin/pascal1981" --dialect extended ../tests/contract/fixtures/byword_metadata_check.pas jsonutil.pas -o "$work/check")

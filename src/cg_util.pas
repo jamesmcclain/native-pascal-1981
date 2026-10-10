@@ -399,24 +399,14 @@ PROCEDURE InitckQueueRelease(p: ADRMEM; tid: INTEGER);
   grows instead of applying an effect early: an early release would let a
   later actual read the storage as initialized. }
 VAR
-  old: ADRMEM;
-  i: INTEGER32;
-  dst, src, e: PInitckPending;
+  e: PInitckPending;
 BEGIN
   IF initck_npending = initck_pending_cap THEN
   BEGIN
-    old := initck_pending;
     IF initck_pending_cap = 0 THEN initck_pending_cap := 64
     ELSE initck_pending_cap := initck_pending_cap * 2;
-    initck_pending := malloc(initck_pending_cap * SIZEOF(InitckPending));
+    initck_pending := realloc(initck_pending, initck_pending_cap * SIZEOF(InitckPending));
     IF initck_pending = NIL THEN AbortWith('codegen: out of memory for INITCK call effects');
-    FOR i := 1 TO initck_npending DO
-    BEGIN
-      dst := InitckPendingAt(i);
-      src := old + ((i - 1) * SIZEOF(InitckPending));
-      dst^ := src^;
-    END;
-    IF old <> NIL THEN free(old);
   END;
   initck_npending := initck_npending + 1;
   e := InitckPendingAt(initck_npending);

@@ -87,7 +87,7 @@ for flag in + -; do
     "CONST C = CHR({\$RANGECK$opposite} 300);" 'BEGIN WRITELN(ORD(C)) END.' > "$work/const.pas"
   if [[ $flag == + ]]; then
     if bin/pascal1981 --dialect extended "$work/const.pas" -o "$work/const" > "$work/output" 2> "$work/error"; then die 'enabled CONST CHR admitted'; fi
-    grep -qF 'RANGECK constant CHR argument outside 0..255' "$work/error" || die 'CONST CHR diagnostic'
+    grep -qxF 'RANGECK constant CHR argument outside 0..255 at line 3 column 11' "$work/error" || die 'CONST CHR diagnostic'
   else
     bin/pascal1981 --dialect extended "$work/const.pas" -o "$work/const"
     "$work/const" > "$work/output"
