@@ -1,0 +1,45 @@
+# Direct LSTRING length-byte assignment checks
+
+Run after `make`:
+
+```sh
+tests/contract/rangeck_lstring_len.sh
+```
+
+The suite covers the direct-assignment portion of the LSTRING RANGECK
+contract, not all string producers or unconditional memory safety.
+
+- Both dialects, O0–O3: zero and exact capacity, zero-capacity storage,
+  capacity 256 with byte value 255, legal truncation/extension, and ordinary
+  payload bytes whose character values exceed the declared capacity.
+- Enabled failures: capacity+1 and byte value 200, including array, pointer,
+  record, WITH-field and VAR-LSTRING-formal targets. RHS reads of another
+  LSTRING's length must not replace the saved target capacity. Indirect
+  failures run with both MATHCK settings.
+- Index-zero aliases: constant/dynamic INTEGER, WORD, CHAR, BOOLEAN and enum
+  zero indexes. Nested array/pointer selection is covered; nonzero indexes
+  must not receive a length-value restriction.
+- RANGECK- invalid lengths are inspected as guard-free IR only. They are
+  never passed to later string operations or executed as unchecked tests.
+- Assignment first-token snapshots, opposite RHS directives, nested/sibling
+  restoration, and enabled legacy inheritance without assignment snapshots.
+- O0 IR: one target/source call each, target before source, capacity check
+  before store, and failure blocks with no stores.
+- Test-only abort wrapping checks all eight bytes of two adjacent LSTRING
+  slots, once-only target indexes/RHS, and retained side effects. Both `.LEN`
+  and dynamic index-zero variants run through clang O0–O3. No test hook is
+  linked into production runtime code.
+- CPU DEVICE guard and runtime failure; NVPTX compile-only confirmation of
+  its existing host-runtime exclusion.
+
+Failures reuse `runtime/subrange.c`: stdout/stderr are flushed, the error is
+`runtime error: value V is outside subrange 0..CAP`, and the process aborts.
+The effective capacity is `min(declared capacity, 255)`. `.LEN` stays CHAR;
+its containing capacity is an address-selection fact, not a new ABI type.
+Compiler-generated destination bytes are not published on failure; user
+side effects during target/RHS evaluation are not rolled back.
+
+Known boundaries remain outside this direct-assignment slice: general
+STRING/LSTRING index bounds, arbitrary CHAR aliases, READ/foreign/raw writes,
+whole-string copies/value parameters and other mutating builtins. The
+broader R5 audit must not be checked off on the strength of these tests.

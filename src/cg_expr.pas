@@ -524,9 +524,10 @@ BEGIN
 END;
 
 FUNCTION SuccPredDomainTid(node: ADRMEM): INTEGER;
-{ The declared type of a SUCC/PRED argument when it is evident before
-  lowering: a variable or designator, or a nested SUCC/PRED, whose result
-  has its argument's type. 0 otherwise. }
+{ Recover the declared argument type without evaluating it again: storage,
+  user function results (including bare niladic names),
+  or nested builtin SUCC/PRED, whose result has its argument's type.
+  0 when no declared domain can be recovered. }
 VAR
   nt, nm: Str255;
   symi: INTEGER32;
@@ -542,13 +543,24 @@ BEGIN
     BEGIN
       tid := symbols[symi].tk;
       IF nt = 'Designator' THEN tid := StaticDesigTid(tid, GetObj(node, 'selectors'));
+    END
+    ELSE IF (LookupConst(GetStr(node, 'name')) = 0) AND
+            (ArrSize(GetObj(node, 'selectors')) = 0) THEN
+    BEGIN
+      symi := LookupRoutine(GetStr(node, 'name'));
+      IF RoutineIsFunc(symi) THEN tid := routines[symi].ret_tk;
     END;
   END
   ELSE IF nt = 'FuncCall' THEN
   BEGIN
     nm := UpperStr(GetStr(node, 'name'));
     args := GetObj(node, 'args');
-    IF ((nm = 'SUCC') OR (nm = 'PRED')) AND NOT UserRoutineShadows(nm) THEN
+    IF UserRoutineShadows(nm) THEN
+    BEGIN
+      symi := LookupRoutine(nm);
+      IF RoutineIsFunc(symi) THEN tid := routines[symi].ret_tk;
+    END
+    ELSE IF (nm = 'SUCC') OR (nm = 'PRED') THEN
       IF ArrSize(args) = 1 THEN tid := SuccPredDomainTid(ArrItem(args, 0));
   END;
   SuccPredDomainTid := tid;
@@ -562,10 +574,11 @@ FUNCTION CodegenSuccPred(is_succ: BOOLEAN; v: ADRMEM; argtk: INTEGER; site: ADRM
   statement like store checks. The result has the argument's type (IBM
   11-8), so a subrange argument whose type is evident (SuccPredDomainTid)
   is checked against its declared bounds after the step under RANGECK;
-  any other subrange value arrives as its host type and is checked where
-  it is stored. Base overflow is checked first. A fully constant call was
-  range-checked by the typechecker and is materialized at its resolved
-  type. }
+  user function results retain their declared domains even though expression
+  lowering normalizes their value types to the host type. Domain recovery
+  emits no IR and never replays the call. Base overflow is checked first.
+  A fully constant call was range-checked by the typechecker and is
+  materialized at its resolved type. }
 VAR
   folded_tk, op_code, dom_tid: INTEGER;
   one, res: ADRMEM;
@@ -2061,7 +2074,7 @@ VAR
   selectors, sel, idx_expr, gep_idx: ADRMEM;
   nsel, si: INTEGER32;
   kind, fname: Str255;
-  idx_val, offset: ADRMEM;
+  idx_val, offset, offset_ty: ADRMEM;
   fi: INTEGER;
   file_handle, file_fcb, file_call_args, file_raw_buf, discard: ADRMEM;
   folded: INTEGER64;
@@ -2080,7 +2093,12 @@ VAR
   file_state: ADRMEM; { the whole tracked file buffer state the last DEREF
     reached, or NIL }
   file_state_tid: INTEGER;
+  lstring_capacity: INTEGER32; { local until the full address is selected;
+    recursive index expressions must not overwrite the target's capacity }
+  lstring_is_length: ADRMEM;
 BEGIN
+  lstring_capacity := -1;
+  lstring_is_length := NIL;
   deref_ptr_tid := 0;
   heap_data := NIL;
   file_state := NIL;
@@ -2325,6 +2343,18 @@ BEGIN
             idx_val := LLVMBuildSExt(builder, idx_val, i64ty, MakeCStr(''));
         offset := LLVMBuildSub(builder, idx_val, LLVMConstInt(i64ty, types[cur_tid].lo, 1), MakeCStr(''));
       END;
+      IF TypeKind(cur_tid) = TK_LSTRING THEN
+      BEGIN
+        { Index zero aliases .LEN, including a dynamically selected zero.
+          Reuse the evaluated offset; never replay the index expression. }
+        lstring_capacity := types[cur_tid].hi;
+        IF lstring_capacity > 255 THEN lstring_capacity := 255;
+        IF (last_val_tk = TK_CHAR) OR (last_val_tk = TK_BOOLEAN) OR
+           (TypeKind(last_val_tk) = TK_ENUM) THEN offset_ty := i32ty
+        ELSE offset_ty := i64ty;
+        lstring_is_length := LLVMBuildICmp(builder, LLVMIntEQ, offset,
+          LLVMConstInt(offset_ty, 0, 0), MakeCStr('lstring.islength'));
+      END;
       IF types[cur_tid].is_super THEN
       BEGIN
         gep_idx := AllocPtrArray(1);
@@ -2440,6 +2470,9 @@ BEGIN
           SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
           base_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(cur_tid), base_ptr, gep_idx, 2, MakeCStr(''));
         END;
+        lstring_capacity := types[cur_tid].hi;
+        IF lstring_capacity > 255 THEN lstring_capacity := 255;
+        lstring_is_length := LLVMConstInt(i1ty, 1, 0);
         cur_tid := types[cur_tid].elem_tid;
       END
       ELSE BEGIN
@@ -2484,6 +2517,8 @@ BEGIN
   last_val_tk := cur_tid;
   last_desig_deref_ptr_tid := deref_ptr_tid;
   last_desig_super_upper := selected_upper;
+  last_desig_lstring_capacity := lstring_capacity;
+  last_desig_lstring_is_length := lstring_is_length;
   last_desig_shadow := shadow;
   ComputeDesignatorAddress := base_ptr;
 END;

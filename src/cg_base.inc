@@ -794,6 +794,11 @@ VAR
                           recently codegen'd expression is communicated back
                           through this global rather than threaded as a var
                           parameter through every call site. }
+  last_desig_lstring_capacity: INTEGER32; { capacity of a selected LSTRING
+                          byte, capped at 255, or -1 for other storage;
+                          committed after recursive address traversal }
+  last_desig_lstring_is_length: ADRMEM; { i1: the selected byte is .LEN or
+                          index zero; NIL for non-LSTRING-byte storage }
   last_desig_super_upper: ADRMEM; { selected host descriptor upper, or NIL;
                           committed with the address after recursive traversal }
   last_value_shadow: ADRMEM; { side-channel result of CodegenExpr: the INITCK

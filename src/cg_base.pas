@@ -295,6 +295,8 @@ VAR
                           through this global rather than threaded as a var
                           parameter through every call site. }
   last_desig_deref_ptr_tid: INTEGER;
+  last_desig_lstring_capacity: INTEGER32;
+  last_desig_lstring_is_length: ADRMEM;
   last_desig_super_upper: ADRMEM;
   last_desig_shadow: ADRMEM;
   last_value_shadow: ADRMEM;

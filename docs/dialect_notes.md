@@ -1205,8 +1205,9 @@ CASE's enabled no-match trap is implemented;
 FOR's existing nonempty-loop endpoint/publication policy is unchanged.
 Regression: `tests/contract/rangeck_scope.sh`. Array
 indexes are not checked by `$RANGECK` (see `$INDEXCK` below). Host `CONCAT`
-capacity checking is described below; other string-capacity paths remain
-unchecked. NVPTX `DEVICE` code has no host-runtime subrange or CONCAT check;
+capacity and direct LSTRING length-byte assignment checking are described
+below; other string-capacity paths remain outside these slices. NVPTX
+`DEVICE` code has no host-runtime subrange, CONCAT or length-byte check;
 a `DEVICE` compiland targeting the CPU follows the host `$RANGECK` path.
 
 #### CONCAT capacity checks **[native]**
@@ -1230,10 +1231,39 @@ inside its source expression. Legacy statements inherit scoped RANGECK and
 report 0/0 if location is absent. `$RANGECK-` emits no capacity guard: invalid
 unchecked appends may corrupt memory or wrap the length byte. This is not
 unconditional memory safety, does not affect MATHCK, and does not add checks
-to assignment, value parameters, COPYLST/COPYSTR/INSERT or raw length-byte
-writes. CPU DEVICE uses the host check; NVPTX retains its existing unchecked
-boundary without calling host diagnostics. Regression:
-`tests/contract/rangeck_concat.sh`.
+to whole-string assignment, value parameters or COPYLST/COPYSTR/INSERT.
+Direct length-byte assignment has a separate check below. CPU DEVICE uses
+the host check; NVPTX retains its existing unchecked boundary without
+calling host diagnostics. Regression: `tests/contract/rangeck_concat.sh`.
+
+#### Direct LSTRING length-byte assignments **[native]**
+
+Under `$RANGECK+`, assigning to `t.LEN` checks the new unsigned byte against
+`0..min(declared capacity, 255)` before storing it. Index zero exposes the
+same byte, so `t[0]` and a dynamically selected `t[i]` when `i = 0` receive
+the same check. Nonzero indexes still select payload characters and do not
+limit their character values to the string capacity. This is not a string
+subscript bounds check; the existing INDEXCK string exclusion is unchanged.
+
+The containing LSTRING type is retained through array, record, pointer,
+WITH-field and VAR-LSTRING-formal selection. The target is selected once
+before the RHS runs; RHS evaluation cannot overwrite its saved capacity or
+index-zero predicate. The assignment's first-token RANGECK snapshot owns the
+check, not directives inside the RHS. Legacy assignments inherit the scoped
+policy. `.LEN` remains CHAR for expression and ABI purposes. MATHCK does not
+control this check. Failure uses the existing store diagnostic:
+
+    runtime error: value V is outside subrange 0..CAP
+
+Output is flushed and the program aborts. Compiler-generated length and
+payload bytes remain unchanged on failure; target/RHS side effects are not
+rolled back. `$RANGECK-` emits no length-capacity guard, and invalid lengths
+can make later operations access beyond storage. CPU DEVICE uses the host
+check; NVPTX retains its unchecked boundary. This slice covers direct
+assignments, not arbitrary CHAR aliases, READ destinations, foreign/raw
+memory writes, whole-string copies or other mutating builtins. Regressions:
+`tests/contract/rangeck_lstring_len.sh`; details in
+[the focused test guide](testing/rangeck_lstring_len.md).
 
 ### Fixed-array index checks (`$INDEXCK`) **[native]**
 
@@ -1608,11 +1638,15 @@ numeric subrange and its base type, the enabled base overflow check wins.
 Under RANGECK+ (the statement's setting, as for store checks), stepping a
 CHAR, BOOLEAN or enumeration value past its first or last ordinal fails before
 the step. A result outside the declared bounds of a subrange argument whose
-type is evident at the call (a variable, designator or nested SUCC/PRED)
-fails after it. Both use the existing `runtime error: value V is outside
-subrange LO..HI` text. A subrange value that reaches SUCC/PRED any other way
-(for example, a function result) is stepped in its host type and checked
-where it is stored.
+type is recoverable at the call (a variable, designator, user function result
+or nested builtin SUCC/PRED) fails after it, before the result is used.
+User function results retain their declared domain with actual arguments or
+as bare/parenthesized niladic calls; recovery does not evaluate the call again.
+WITH-bound fields use their declared storage types, and user routines named
+SUCC/PRED remain ordinary calls. Both domain checks use the existing
+`runtime error: value V is outside subrange LO..HI` text. This does not expand
+expression syntax or NVPTX checking: function-call postfix selectors remain
+limited to bound operands, and NVPTX retains its existing RANGECK exclusion.
 
 ### MATHCK runtime diagnostics
 
