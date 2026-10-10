@@ -87,7 +87,9 @@ TYPE
                            [C]): its body lives in another compiland, so --
                            unlike a FORWARD -- a later body for the same name
                            in this same scope is an error, not a completion. }
-    has_const_int: BOOLEAN;
+    has_const_int: BOOLEAN; { a CONST whose ordinal value FoldConstInt
+                           knows, of any ordinal type (CHAR and BOOLEAN
+                           too); a consumer that needs an integer checks tk }
     const_int: INTEGER64;
   END;
 

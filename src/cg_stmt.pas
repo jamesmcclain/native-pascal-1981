@@ -200,6 +200,8 @@ VAR
   symi: INTEGER32;
   v, addr, saved_taint, shadow: ADRMEM;
   target_tid: INTEGER;
+  lstring_capacity: INTEGER32;
+  lstring_is_length: ADRMEM;
   tracked: BOOLEAN;
 BEGIN
   target := GetObj(stmt, 'target');
@@ -262,6 +264,8 @@ BEGIN
   BEGIN
     addr := ComputeDesignatorAddress(target);
     target_tid := last_val_tk;
+    lstring_capacity := last_desig_lstring_capacity;
+    lstring_is_length := last_desig_lstring_is_length;
     { The destination (and its shadow) is selected before the RHS runs,
       exactly as the data address is. }
     shadow := last_desig_shadow;
@@ -278,6 +282,7 @@ BEGIN
       IF shadow <> NIL THEN saved_taint := BeginInitckValue(GetObj(stmt, 'expr'));
       v := CodegenExpr(GetObj(stmt, 'expr'));
       v := CoerceCheckedForAssign(v, last_val_tk, target_tid, GetObj(stmt, 'expr'), nm);
+      EmitLStringLengthCheck(v, lstring_is_length, lstring_capacity, target);
       LLVMBuildStore(builder, v, addr);
       { A selected leaf is a producer for that leaf only; its siblings,
         including overlapping variant alternatives, keep their own state. }

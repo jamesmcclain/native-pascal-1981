@@ -384,6 +384,7 @@ BEGIN
       AddError('CONST intrinsic calls require the extended-const-intrinsics feature');
     tk := CheckExpr(GetObj(decl, 'value'));
     CheckConstOrdinalBounds(GetObj(decl, 'value'));
+    CheckConstByteDomain(GetObj(decl, 'value'));
     si := DefineSymbol(dname, 'CONST', tk, 0, 0, 0, 0);
     IF tk = TK_SET THEN symbols[si].set_sem_base := last_sem_set_base;
     IF IsOrdinal(tk) THEN symbols[si].scalar_sem_base := last_sem_scalar_base;

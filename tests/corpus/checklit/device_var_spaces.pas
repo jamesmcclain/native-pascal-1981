@@ -2,7 +2,10 @@
 { CHECK-FLAGS: --emit-ptx --device-triple nvptx64-nvidia-cuda }
 { CHECK: .visible .shared .align 4 .b8 block_scratch[256]; }
 { CHECK: .visible .global .align 4 .b8 output_data[256]; }
-{ CHECK: .visible .shared .align 4 .b8 touch.local_scratch[128]; }
+{ Routine-local symbol spelling is an LLVM NVPTX AsmPrinter detail:
+  LLVM 20 preserves the dot, while LLVM 23 mangles it to _$_ in PTX.
+  Require the same shared residence, alignment and extent in either case. }
+{ CHECK-ANY: .visible .shared .align 4 .b8 touch.local_scratch[128]; || .visible .shared .align 4 .b8 touch_$_local_scratch[128]; }
 { Type-suffix spelling for a plain scalar store/load (u32 vs. b32) is an
   LLVM NVPTX AsmPrinter detail that changed across LLVM releases; only the
   memory space prefix reflects this test's SPACE(SHARED)/SPACE(GLOBAL)

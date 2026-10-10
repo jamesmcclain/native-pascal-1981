@@ -68,6 +68,16 @@ printf '%s\n' 'PROGRAM bad;' 'BEGIN WRITELN(ORD(CHR(300)) + 1) END.' > "$work/ba
 if bin/pascal1981 "$work/bad.pas" -o "$work/bad" > "$work/output" 2> "$work/error"; then
   die 'enabled bad folded CHR admitted'
 fi
-grep -qF 'RANGECK constant CHR argument outside 0..255' "$work/error" || die 'enabled CHR diagnostic changed'
+grep -qxF 'RANGECK constant CHR argument outside 0..255 at line 2 column 19' "$work/error" || die 'enabled CHR diagnostic changed'
 pass 'enabled CHR domain failure preserved'
+# Elsewhere an enabled out-of-domain CHR is not folded: it runs with its
+# runtime guard, never a codegen abort.
+printf '%s\n' 'PROGRAM bad;' 'VAR a: ARRAY [0..255] OF INTEGER;' \
+  "BEGIN WRITELN('before'); WRITELN(a[ORD(CHR(300))]) END." > "$work/index.pas"
+bin/pascal1981 "$work/index.pas" -o "$work/index"
+if { "$work/index" > "$work/output" 2> "$work/error"; } 2>/dev/null; then die 'unfolded CHR index did not fail'; fi
+printf 'before\n' | diff -u - "$work/output" || die 'unfolded CHR index output'
+grep -qxF 'runtime error: RANGECK CHR argument 300 is outside 0..255 at line 3 column 40' "$work/error" ||
+  die 'unfolded CHR index diagnostic'
+pass 'enabled out-of-domain CHR index lowered with its runtime guard'
 finish 'CHR constant folding'

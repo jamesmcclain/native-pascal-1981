@@ -44,7 +44,9 @@ BEGIN
     si := LookupSymbol(nm);
     IF si <> 0 THEN
     BEGIN
-      IF symbols[si].has_const_int THEN
+      { has_const_int also covers CHAR and BOOLEAN CONSTs; a lane count
+        is an integer. }
+      IF symbols[si].has_const_int AND IsInteger(symbols[si].tk) THEN
         FoldVectorLanes := RETYPE(INTEGER, symbols[si].const_int)
       ELSE
         FoldVectorLanes := -1;

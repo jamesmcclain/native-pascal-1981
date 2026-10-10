@@ -390,6 +390,17 @@ BEGIN
   FoldArith := fits;
 END;
 
+FUNCTION LowByte(x: INTEGER64): INTEGER64;
+{ The low eight bits of x, 0..255, as CHR and BYWORD convert an ordinal.
+  MOD is dividend-signed; never negate MIN64 to get its low byte. }
+VAR
+  b: INTEGER64;
+BEGIN
+  b := x MOD 256;
+  IF b < 0 THEN b := b + 256;
+  LowByte := b;
+END;
+
 FUNCTION FoldConstInt(expr_node: ADRMEM; VAR folded: INTEGER64): BOOLEAN;
 { Fold the integer-only constant-expression subset used by the reference
   typechecker's _fold_const_int: literals, unary +/-, arithmetic, earlier
@@ -507,17 +518,15 @@ BEGIN
        FoldConstInt(ArrItem(args, 0), left) AND
        FoldConstInt(ArrItem(args, 1), right) THEN
     BEGIN
+      { An enabled out-of-domain call does not fold: the typechecker
+        rejects it where a constant is required (CheckConstByteDomain),
+        and anywhere else it is lowered with its runtime guard. }
       chr_checked := cur_rangeck;
       IF HasKey(expr_node, 'rangeck') THEN chr_checked := GetBool(expr_node, 'rangeck');
-      IF chr_checked AND NOT is_nvptx_device THEN
-        IF (left < 0) OR (left > 255) OR (right < 0) OR (right > 255) THEN
-          AbortWith('codegen: RANGECK constant BYWORD argument outside 0..255');
-      { MOD is dividend-signed; never negate MIN64 to get its low byte. }
-      left := left MOD 256;
-      IF left < 0 THEN left := left + 256;
-      right := right MOD 256;
-      IF right < 0 THEN right := right + 256;
-      folded := left * 256 + right;
+      IF chr_checked AND NOT is_nvptx_device AND
+         ((left < 0) OR (left > 255) OR (right < 0) OR (right > 255)) THEN
+        RETURN;
+      folded := LowByte(left) * 256 + LowByte(right);
       FoldConstInt := TRUE;
     END
     ELSE IF ((nm = 'ORD') OR (nm = 'CHR') OR (nm = 'SUCC') OR (nm = 'PRED') OR
@@ -526,14 +535,13 @@ BEGIN
     BEGIN
       IF nm = 'CHR' THEN
       BEGIN
+        { As for BYWORD, an enabled out-of-domain CHR does not fold. }
         chr_checked := cur_rangeck;
         IF HasKey(expr_node, 'rangeck') THEN chr_checked := GetBool(expr_node, 'rangeck');
-        IF chr_checked AND NOT is_nvptx_device THEN
-          IF (folded < 0) OR (folded > 255) THEN
-            AbortWith('codegen: RANGECK constant CHR argument outside 0..255');
+        IF chr_checked AND NOT is_nvptx_device AND ((folded < 0) OR (folded > 255)) THEN
+          RETURN;
         { Preserve the converted ordinal only after checking the original. }
-        folded := folded MOD 256;
-        IF folded < 0 THEN folded := folded + 256;
+        folded := LowByte(folded);
         FoldConstInt := TRUE;
       END
       ELSE IF nm = 'SUCC' THEN FoldConstInt := FoldArith('PLUS', folded, 1, folded)
@@ -818,6 +826,73 @@ BEGIN
   SetPtrArrayElem(args, 3, LLVMConstInt(i64ty, hi, 1));
   discard := LLVMBuildCall2(builder, fnty, fn, args, 4, MakeCStr(''));
   discard := LLVMBuildUnreachable(builder);
+END;
+
+PROCEDURE EmitLStringLengthCheck(v, is_length: ADRMEM; capacity: INTEGER32; site: ADRMEM);
+{ A selected .LEN (also exposed by index zero) remains CHAR for expression/
+  ABI purposes, but its stored value must fit the containing LSTRING.
+  capacity and is_length come from ComputeDesignatorAddress
+  (last_desig_lstring_*); capacity < 0 means the storage is no LSTRING
+  byte. An assignment checks v before its store, under its own RANGECK
+  snapshot, so neither the length byte nor INITCK state is published
+  until the check succeeds. Writers that store through the address
+  themselves recheck it afterwards (EmitLStringLengthRecheck). Failure
+  reports pas_lstring_length_error at site, the target designator; NVPTX
+  keeps its existing exclusion. }
+VAR
+  length, ok, bad_bb, ok_bb, ps, fnty, fn, args, discard, location: ADRMEM;
+  line, column: INTEGER32;
+BEGIN
+  IF capacity < 0 THEN RETURN;
+  IF NOT cur_rangeck OR is_nvptx_device THEN RETURN;
+  length := LLVMBuildZExt(builder, v, i64ty, MakeCStr('lstring.length'));
+  ok := LLVMBuildICmp(builder, LLVMIntULE, length,
+    LLVMConstInt(i64ty, capacity, 0), MakeCStr(''));
+  { A dynamic string index may select payload instead. Only index zero
+    publishes a length; ordinary character stores have no capacity limit. }
+  ok := LLVMBuildOr(builder, LLVMBuildNot(builder, is_length, MakeCStr('')),
+    ok, MakeCStr(''));
+  bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('length.bad'));
+  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('length.ok'));
+  LLVMBuildCondBr(builder, ok, ok_bb, bad_bb);
+  LLVMPositionBuilderAtEnd(builder, bad_bb);
+  ps := AllocPtrArray(4);
+  SetPtrArrayElem(ps, 0, i64ty);
+  SetPtrArrayElem(ps, 1, i32ty);
+  SetPtrArrayElem(ps, 2, i32ty);
+  SetPtrArrayElem(ps, 3, i32ty);
+  fnty := LLVMFunctionType(voidty, ps, 4, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_lstring_length_error'));
+  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr('pas_lstring_length_error'), fnty);
+  { An assignment target carries its statement location; a READ or call
+    actual only the location of its read. }
+  line := 0; column := 0;
+  location := GetObjOrNil(site, 'location');
+  IF location = NIL THEN location := GetObjOrNil(site, 'read_location');
+  IF location <> NIL THEN
+  BEGIN
+    line := GetInt(location, 'line'); column := GetInt(location, 'column');
+  END;
+  args := AllocPtrArray(4);
+  SetPtrArrayElem(args, 0, length);
+  SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, capacity, 0));
+  SetPtrArrayElem(args, 2, LLVMConstInt(i32ty, line, 0));
+  SetPtrArrayElem(args, 3, LLVMConstInt(i32ty, column, 0));
+  discard := LLVMBuildCall2(builder, fnty, fn, args, 4, MakeCStr(''));
+  discard := LLVMBuildUnreachable(builder);
+  LLVMPositionBuilderAtEnd(builder, ok_bb);
+END;
+
+PROCEDURE EmitLStringLengthRecheck(addr, is_length: ADRMEM; capacity: INTEGER32; site: ADRMEM);
+{ EmitLStringLengthCheck for a byte some other writer has already stored
+  through addr: READ into .LEN or index zero, or a VAR CHAR formal bound
+  to one, checked as soon as control returns to the caller. The program
+  stops before any later operation can use the oversized length. }
+BEGIN
+  IF capacity < 0 THEN RETURN;
+  IF NOT cur_rangeck OR is_nvptx_device THEN RETURN;
+  EmitLStringLengthCheck(LLVMBuildLoad2(builder, i8ty, addr, MakeCStr('')),
+                         is_length, capacity, site);
 END;
 
 PROCEDURE EmitSubrangeCheck(v: ADRMEM; from_tid, to_tid: INTEGER);

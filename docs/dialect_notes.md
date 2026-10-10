@@ -1205,8 +1205,9 @@ CASE's enabled no-match trap is implemented;
 FOR's existing nonempty-loop endpoint/publication policy is unchanged.
 Regression: `tests/contract/rangeck_scope.sh`. Array
 indexes are not checked by `$RANGECK` (see `$INDEXCK` below). Host `CONCAT`
-capacity checking is described below; other string-capacity paths remain
-unchecked. NVPTX `DEVICE` code has no host-runtime subrange or CONCAT check;
+capacity and direct LSTRING length-byte assignment checking are described
+below; other string-capacity paths remain outside these slices. NVPTX
+`DEVICE` code has no host-runtime subrange, CONCAT or length-byte check;
 a `DEVICE` compiland targeting the CPU follows the host `$RANGECK` path.
 
 #### CONCAT capacity checks **[native]**
@@ -1230,10 +1231,47 @@ inside its source expression. Legacy statements inherit scoped RANGECK and
 report 0/0 if location is absent. `$RANGECK-` emits no capacity guard: invalid
 unchecked appends may corrupt memory or wrap the length byte. This is not
 unconditional memory safety, does not affect MATHCK, and does not add checks
-to assignment, value parameters, COPYLST/COPYSTR/INSERT or raw length-byte
-writes. CPU DEVICE uses the host check; NVPTX retains its existing unchecked
-boundary without calling host diagnostics. Regression:
-`tests/contract/rangeck_concat.sh`.
+to whole-string assignment, value parameters or COPYLST/COPYSTR/INSERT.
+Direct length-byte assignment has a separate check below. CPU DEVICE uses
+the host check; NVPTX retains its existing unchecked boundary without
+calling host diagnostics. Regression: `tests/contract/rangeck_concat.sh`.
+
+#### LSTRING length-byte stores **[native]**
+
+Under `$RANGECK+`, assigning to `t.LEN` checks the new unsigned byte against
+`0..min(declared capacity, 255)` before storing it. Index zero exposes the
+same byte, so `t[0]` and a dynamically selected `t[i]` when `i = 0` receive
+the same check. Nonzero indexes still select payload characters and do not
+limit their character values to the string capacity. This is not a string
+subscript bounds check; the existing INDEXCK string exclusion is unchanged.
+
+The containing LSTRING type is retained through array, record, pointer,
+WITH-field and VAR-LSTRING-formal selection. The target is selected once
+before the RHS runs; RHS evaluation cannot overwrite its saved capacity or
+index-zero predicate. The assignment's first-token RANGECK snapshot owns the
+check, not directives inside the RHS. Legacy assignments inherit the scoped
+policy. `.LEN` remains CHAR for expression and ABI purposes. MATHCK does not
+control this check. Failure names the length and the target designator's
+location:
+
+    runtime error: RANGECK LSTRING length V exceeds capacity CAP at line L column C
+
+Output is flushed and the program aborts. Compiler-generated length and
+payload bytes remain unchanged on failure; target/RHS side effects are not
+rolled back. `$RANGECK-` emits no length-capacity guard, and invalid lengths
+can make later operations access beyond storage. CPU DEVICE uses the host
+check; NVPTX retains its unchecked boundary.
+
+Two other writers store the byte themselves. A `READ` into `.LEN` or index
+zero, from a file or stdin, is checked after a successful conversion, as a
+subrange READ is. A `.LEN` or index-zero actual bound to a VAR CHAR formal is
+checked as soon as the call returns, under the call site's RANGECK. In both
+cases the byte is already stored when the check fails, but the program stops
+before anything can use it. This does not cover CHAR aliases made through
+`ADR` or other raw addresses, foreign/raw memory writes, whole-string copies
+or other mutating builtins. Regressions:
+`tests/contract/rangeck_lstring_len.sh`; details in
+[the focused test guide](testing/rangeck_lstring_len.md).
 
 ### Fixed-array index checks (`$INDEXCK`) **[native]**
 
@@ -1608,11 +1646,15 @@ numeric subrange and its base type, the enabled base overflow check wins.
 Under RANGECK+ (the statement's setting, as for store checks), stepping a
 CHAR, BOOLEAN or enumeration value past its first or last ordinal fails before
 the step. A result outside the declared bounds of a subrange argument whose
-type is evident at the call (a variable, designator or nested SUCC/PRED)
-fails after it. Both use the existing `runtime error: value V is outside
-subrange LO..HI` text. A subrange value that reaches SUCC/PRED any other way
-(for example, a function result) is stepped in its host type and checked
-where it is stored.
+type is recoverable at the call (a variable, designator, user function result
+or nested builtin SUCC/PRED) fails after it, before the result is used.
+User function results retain their declared domain with actual arguments or
+as bare/parenthesized niladic calls; recovery does not evaluate the call again.
+WITH-bound fields use their declared storage types, and user routines named
+SUCC/PRED remain ordinary calls. Both domain checks use the existing
+`runtime error: value V is outside subrange LO..HI` text. This does not expand
+expression syntax or NVPTX checking: function-call postfix selectors remain
+limited to bound operands, and NVPTX retains its existing RANGECK exclusion.
 
 ### MATHCK runtime diagnostics
 
@@ -1663,9 +1705,13 @@ not a directive inside its argument. Its argument is evaluated once. On a host
 failure, `pas_chr_error` prints
 `runtime error: RANGECK CHR argument V is outside 0..255 at line L column C`,
 flushes stdout/stderr and aborts before publishing the character. This separate
-entry preserves the subrange-error ABI. Constant consumers such as CONST
-reject an enabled out-of-domain CHR while codegen folds it; ordinary constant
-calls use the same runtime guard as variable calls. Legacy calls lacking the
+entry preserves the subrange-error ABI. Constant consumers, a CONST
+declaration or folded constant arithmetic such as `ORD(CHR(300)) + 1`, reject
+an enabled out-of-domain CHR at type checking with
+`RANGECK constant CHR argument outside 0..255 at line L column C`, located at
+the CHR name. Codegen never folds such a call, so every other constant call,
+for example a standalone `CHR(300)` or an array index, uses the same runtime
+guard as a variable call. Legacy calls lacking the
 snapshot inherit scoped RANGECK and report coordinates 0/0. CPU DEVICE shares
 the host failure path; NVPTX retains its existing unchecked RANGECK conversion.
 User routines named CHR are not the builtin. `tests/contract/rangeck_chr.sh`
@@ -1688,9 +1734,10 @@ are ordinary calls.
 Already-admitted `CONST BYWORD(...)` now folds to a WORD, including aliases and
 ordinal-preserving ORD/SUCC/PRED wrappers; Boolean constant operands fold to
 0/1. Both native folders normalize negative low bytes without negating MIN64.
-Constant consumers (including folded arithmetic, as with CHR) reject an
-enabled out-of-domain BYWORD during codegen folding; standalone constant calls
-use the runtime guard. These rules neither broaden constant syntax nor
+Constant consumers (a CONST declaration or folded arithmetic, as with CHR)
+reject an enabled out-of-domain BYWORD at type checking with a located
+`RANGECK constant BYWORD argument outside 0..255` error; codegen never folds
+such a call, so every other constant call uses the runtime guard. These rules neither broaden constant syntax nor
 change existing INITCK consumer boundaries or MATHCK ownership.
 `tests/contract/rangeck_byword.sh` pins these contracts in both dialects at
 O0–O3, including original-width guard-before-narrowing IR, call snapshots,

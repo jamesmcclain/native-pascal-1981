@@ -6,6 +6,7 @@ USES jsonutil, features, tc_base, tc_types;
 
 FUNCTION CanAssign(target_tk, expr_tk: INTEGER): BOOLEAN;
 FUNCTION FoldConstInt(node: ADRMEM; VAR folded_value: INTEGER64): BOOLEAN;
+PROCEDURE CheckConstByteDomain(node: ADRMEM);
 VAR
   { Read immediately after CheckExpr/CheckExprForSetTarget. Recursive checks
     overwrite these channels: callers must snapshot before the next sibling. }

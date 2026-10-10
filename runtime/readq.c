@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "pascalrt.h"
 
@@ -82,31 +83,31 @@ static int read_identifier_token(char *buf, int cap)
 
 static int64_t read_wide_decimal(int bits);
 
-/* An enum READ by number: an ordinal of the type, 0..count-1, so BOOLEAN 2
- * is no TRUE. */
-int pas_read_enum_ord(int32_t *out, int count)
+/* An enum READ by number: an ordinal of the type, lo..hi, so BOOLEAN 2 is
+ * no TRUE and an enum subrange keeps its lower bound. */
+int pas_read_enum_ord(int32_t *out, int lo, int hi)
 {
     int64_t v = read_wide_decimal(64);
-    if (v < 0 || v >= count)
+    if (v < lo || v > hi)
         die("enum value out of range");
     *out = (int32_t) v;
     return 0;
 }
 
-int pas_read_enum_name(int32_t *out, const char **names, int count)
+int pas_read_enum_name(int32_t *out, const char **names, int lo, int hi)
 {
     int ch = skip_ws_except_nl();
     if (ch == EOF)
         die("unexpected EOF while reading enum");
     if (isdigit((unsigned char) ch) || ch == '-' || ch == '+') {
         unread(ch);
-        return pas_read_enum_ord(out, count);
+        return pas_read_enum_ord(out, lo, hi);
     }
     unread(ch);
     char tok[256];
     read_identifier_token(tok, (int) sizeof(tok));
-    for (int i = 0; i < count; i++) {
-        if (names && names[i] && strcmp(tok, names[i]) == 0) {
+    for (int i = lo; i <= hi; i++) {
+        if (names && names[i] && strcasecmp(tok, names[i]) == 0) {
             *out = i;
             return 0;
         }
@@ -190,22 +191,39 @@ int pas_read_word(uint16_t *out)
     return 0;
 }
 
+static int stdin_next(void *src)
+{
+    (void) src;
+    return getchar();
+}
+
+static void stdin_unget(void *src, int ch)
+{
+    (void) src;
+    unread(ch);
+}
+
 /* Read a pointer value as a number -- the manual's READFN allows pointer
  * program parameters and reads them "as a WORD" in an implementation-defined
  * way such that writing then reading preserves the value (13620-13623).
  * Pointers here are 64-bit, so our implementation-defined format is a plain
  * integer constant with strtoll's base conventions (decimal, 0x hex, 0
- * octal), matching what WRITE emits for a pointer (unsigned decimal). */
+ * octal) and an unsigned magnitude, matching what WRITE emits for a pointer
+ * (unsigned decimal). pas_fread_ptr shares the tokenizer, so stdin and file
+ * READs accept the same text and reject the same overflow. */
 int pas_read_ptr(uint64_t *out)
 {
-    int ch = skip_ws_except_nl();
-    if (ch == EOF)
+    switch (pas_scan_ptr_token(stdin_next, stdin_unget, NULL, out)) {
+    case PAS_PTR_SCAN_EOF:
         die("unexpected EOF while reading pointer");
-    unread(ch);
-    long long v;
-    if (scanf("%lli", &v) != 1)
+        break;
+    case PAS_PTR_SCAN_MALFORMED:
         die("malformed pointer input");
-    *out = (uint64_t) v;
+        break;
+    case PAS_PTR_SCAN_RANGE:
+        die("pointer out of range");
+        break;
+    }
     return 0;
 }
 

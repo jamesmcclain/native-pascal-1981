@@ -100,13 +100,22 @@ int   pas_fread_int32(struct pas_file_fcb *f, int32_t *out);
 int   pas_fread_int64(struct pas_file_fcb *f, int64_t *out);
 int   pas_fread_word(struct pas_file_fcb *f, uint16_t *out);
 int   pas_fread_ptr(struct pas_file_fcb *f, uint64_t *out);
+
+/* Pointer READ token scanner shared by pas_read_ptr and pas_fread_ptr: it
+ * skips whitespace, reads one token from next(), pushes the stopping
+ * character back with unget(), and returns a PAS_PTR_SCAN_* code. */
+typedef int (*pas_char_next_fn)(void *src);
+typedef void (*pas_char_unget_fn)(void *src, int ch);
+enum { PAS_PTR_SCAN_OK, PAS_PTR_SCAN_EOF, PAS_PTR_SCAN_MALFORMED, PAS_PTR_SCAN_RANGE };
+int   pas_scan_ptr_token(pas_char_next_fn next, pas_char_unget_fn unget, void *src,
+                         uint64_t *out);
 int   pas_fread_real(struct pas_file_fcb *f, double *out);
 int   pas_fread_char(struct pas_file_fcb *f, uint8_t *out);
 int   pas_fread_lstring(struct pas_file_fcb *f, uint8_t *buf, int cap);
 int   pas_fread_string(struct pas_file_fcb *f, uint8_t *buf, int cap);
 int   pas_fread_enum_name(struct pas_file_fcb *f, int32_t *out,
-                          const char **names, int count);
-int   pas_fread_enum_ord(struct pas_file_fcb *f, int32_t *out, int count);
+                          const char **names, int lo, int hi);
+int   pas_fread_enum_ord(struct pas_file_fcb *f, int32_t *out, int lo, int hi);
 void  pas_freadln_skip(struct pas_file_fcb *f);
 
 /* READSET / READFN */
@@ -187,8 +196,8 @@ int   pas_read_real(double *out);
 int   pas_read_char(uint8_t *out);
 int   pas_read_lstring(uint8_t *buf, int cap);
 int   pas_read_string(uint8_t *buf, int cap);
-int   pas_read_enum_name(int32_t *out, const char **names, int count);
-int   pas_read_enum_ord(int32_t *out, int count);
+int   pas_read_enum_name(int32_t *out, const char **names, int lo, int hi);
+int   pas_read_enum_ord(int32_t *out, int lo, int hi);
 void  pas_readln_skip(void);
 
 /* ---- ENCODE / DECODE (encode_decode.c) ---- */
@@ -308,10 +317,13 @@ _Bool SMULOK(uint32_t a, uint32_t b, int16_t *c);
 _Bool UADDOK(uint32_t a, uint32_t b, uint16_t *c);
 _Bool UMULOK(uint32_t a, uint32_t b, uint16_t *c);
 
-/* ---- $RANGECK subrange stores, CONCAT, CHR/BYWORD and CASE (subrange.c) ---- */
+/* ---- $RANGECK subrange stores, CONCAT, LSTRING length, CHR/BYWORD and CASE (subrange.c) ---- */
 
 void  pas_concat_error(uint64_t length, int32_t capacity,
                        int32_t line, int32_t column) __attribute__((noreturn));
+
+void  pas_lstring_length_error(uint64_t length, int32_t capacity,
+                               int32_t line, int32_t column) __attribute__((noreturn));
 
 void  pas_chr_error(int64_t value, int32_t value_unsigned,
                     int32_t line, int32_t column) __attribute__((noreturn));

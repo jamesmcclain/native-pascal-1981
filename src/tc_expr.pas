@@ -94,6 +94,17 @@ BEGIN
   FoldArith := fits;
 END;
 
+FUNCTION LowByte(x: INTEGER64): INTEGER64;
+{ The low eight bits of x, 0..255, as CHR and BYWORD convert an ordinal.
+  MOD is dividend-signed; never negate MIN64 to get its low byte. }
+VAR
+  b: INTEGER64;
+BEGIN
+  b := x MOD 256;
+  IF b < 0 THEN b := b + 256;
+  LowByte := b;
+END;
+
 FUNCTION FoldConstInt(node: ADRMEM; VAR folded_value: INTEGER64): BOOLEAN;
 VAR
   nt, op, name, ch: Str255;
@@ -187,11 +198,7 @@ BEGIN
     BEGIN
       { The backend checks the original enabled domain; this folder keeps
         the converted WORD ordinal, as with CHR's low-byte normalization. }
-      left := left MOD 256;
-      IF left < 0 THEN left := left + 256;
-      right := right MOD 256;
-      IF right < 0 THEN right := right + 256;
-      folded_value := left * 256 + right;
+      folded_value := LowByte(left) * 256 + LowByte(right);
       FoldConstInt := TRUE;
     END
     ELSE IF NOT UserDeclarationShadows(name) AND
@@ -203,10 +210,8 @@ BEGIN
       IF name = 'CHR' THEN
       BEGIN
         { CHR's value is its low eight bits, not its original argument.
-          MOD is dividend-signed; normalize without negating MIN64. The
-          backend independently enforces enabled CHR's original domain. }
-        folded_value := folded_value MOD 256;
-        IF folded_value < 0 THEN folded_value := folded_value + 256;
+          The backend independently enforces enabled CHR's original domain. }
+        folded_value := LowByte(folded_value);
         FoldConstInt := TRUE;
       END
       ELSE IF name = 'SUCC' THEN FoldConstInt := FoldArith('PLUS', folded_value, 1, folded_value)
@@ -1259,6 +1264,57 @@ BEGIN
     SetBoundsBaseAfterCheck := last_set_base_tk;
 END;
 
+PROCEDURE CheckConstByteDomain(node: ADRMEM);
+{ A folded constant expression is never lowered to a call, so the runtime
+  RANGECK guard of a BYWORD or CHR inside it never runs. Report, at the
+  call's name token, an operand outside 0..255 when the call's own RANGECK
+  snapshot is on. Codegen declines to fold such a call, so a fold this
+  check does not cover becomes a guarded runtime call. Only the shapes a
+  constant expression can take are walked; a CONST name was checked at
+  its own declaration. }
+VAR
+  nm: Str255;
+  args: ADRMEM;
+  i: INTEGER32;
+  hi, lo: INTEGER64;
+  saved_line, saved_col: INTEGER32;
+  bad: BOOLEAN;
+BEGIN
+  IF NodeType(node) = 'UnaryOp' THEN
+    CheckConstByteDomain(GetObj(node, 'operand'))
+  ELSE IF NodeType(node) = 'BinOp' THEN
+  BEGIN
+    CheckConstByteDomain(GetObj(node, 'left'));
+    CheckConstByteDomain(GetObj(node, 'right'));
+  END
+  ELSE IF NodeType(node) = 'FuncCall' THEN
+  BEGIN
+    nm := UpperStr(GetStr(node, 'name'));
+    IF UserDeclarationShadows(nm) THEN RETURN;
+    args := GetObj(node, 'args');
+    FOR i := 0 TO cJSON_GetArraySize(args) - 1 DO
+      CheckConstByteDomain(cJSON_GetArrayItem(args, i));
+    IF NOT GetBool(node, 'rangeck') THEN RETURN;
+    bad := FALSE;
+    IF (nm = 'BYWORD') AND (cJSON_GetArraySize(args) = 2) THEN
+    BEGIN
+      IF FoldConstInt(cJSON_GetArrayItem(args, 0), hi) AND
+         FoldConstInt(cJSON_GetArrayItem(args, 1), lo) THEN
+        bad := (hi < 0) OR (hi > 255) OR (lo < 0) OR (lo > 255);
+    END
+    ELSE IF (nm = 'CHR') AND (cJSON_GetArraySize(args) = 1) THEN
+      IF FoldConstInt(cJSON_GetArrayItem(args, 0), lo) THEN
+        bad := (lo < 0) OR (lo > 255);
+    IF bad THEN
+    BEGIN
+      TcEnterLocation(node, saved_line, saved_col);
+      IF nm = 'BYWORD' THEN AddError('RANGECK constant BYWORD argument outside 0..255')
+      ELSE AddError('RANGECK constant CHR argument outside 0..255');
+      TcLeaveLocation(saved_line, saved_col);
+    END;
+  END;
+END;
+
 PROCEDURE CheckFoldedOperation(node: ADRMEM; result_tk: INTEGER;
   errors_before: INTEGER32);
 { An integer + - * DIV MOD, negation, SUCC/PRED or ABS/SQR whose value is fully
@@ -1282,7 +1338,10 @@ BEGIN
      ((op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') OR (op = 'DIV') OR (op = 'MOD') OR
       (op = 'SUCC') OR (op = 'PRED') OR (op = 'ABS') OR (op = 'SQR')) THEN
   BEGIN
+    { A byte-domain error already decides this constant. }
+    CheckConstByteDomain(node);
     fold_overflowed := FALSE;
+    IF nerrors <> errors_before THEN RETURN;
     IF FoldConstInt(node, folded_value) THEN
     BEGIN
       IF NOT IntegerConstantFits(result_tk, folded_value) THEN
