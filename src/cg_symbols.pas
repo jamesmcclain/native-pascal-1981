@@ -1822,12 +1822,18 @@ PROCEDURE InitckGuardPending(base: INTEGER32; skip_bb, ran_bb: ADRMEM);
 { At the merge block of AND THEN/OR ELSE, whose right operand queued the
   effects above base: each now applies only when that operand ran (FALSE
   from skip_bb, its own guard from ran_bb, the operand's last block). The
-  guard is a phi, so it dominates the call that applies it. }
+  guard is a phi, so it dominates the call that applies it. So is the
+  effect's address: one the operand computed (a data address, a selected
+  state) is not defined on the skipped edge, which passes NULL instead;
+  the guard is FALSE there, so the NULL is never used. }
 VAR
   i: INTEGER32;
   e: PInitckPending;
   vals, blocks, phi: ADRMEM;
 BEGIN
+  blocks := AllocPtrArray(2);
+  SetPtrArrayElem(blocks, 0, skip_bb);
+  SetPtrArrayElem(blocks, 1, ran_bb);
   FOR i := base + 1 TO initck_npending DO
   BEGIN
     e := InitckPendingAt(i);
@@ -1836,19 +1842,22 @@ BEGIN
     SetPtrArrayElem(vals, 0, LLVMConstInt(i1ty, 0, 0));
     IF e^.guard = NIL THEN SetPtrArrayElem(vals, 1, LLVMConstInt(i1ty, 1, 0))
     ELSE SetPtrArrayElem(vals, 1, e^.guard);
-    blocks := AllocPtrArray(2);
-    SetPtrArrayElem(blocks, 0, skip_bb);
-    SetPtrArrayElem(blocks, 1, ran_bb);
     LLVMAddIncoming(phi, vals, blocks, 2);
     e^.guard := phi;
+    phi := LLVMBuildPhi(builder, i8ptrty, MakeCStr('initck.at'));
+    vals := AllocPtrArray(2);
+    SetPtrArrayElem(vals, 0, LLVMConstNull(i8ptrty));
+    SetPtrArrayElem(vals, 1, e^.p);
+    LLVMAddIncoming(phi, vals, blocks, 2);
+    e^.p := phi;
   END;
 END;
 
 PROCEDURE InitckFlushReleases(base: INTEGER32);
 { Just before a call: apply the effects its actuals queued above base, a
-  guarded one only on the path where its operand ran. A state address is an
-  entry alloca and a data address the value of an actual, so both dominate
-  the call. }
+  guarded one only on the path where its operand ran. An unguarded address
+  (an entry alloca, or the value of an actual) dominates the call; a
+  guarded one is InitckGuardPending's phi, which does too. }
 VAR
   e: PInitckPending;
   then_bb, after_bb: ADRMEM;

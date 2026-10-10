@@ -524,9 +524,10 @@ BEGIN
 END;
 
 FUNCTION SuccPredDomainTid(node: ADRMEM): INTEGER;
-{ The declared type of a SUCC/PRED argument when it is evident before
-  lowering: a variable or designator, or a nested SUCC/PRED, whose result
-  has its argument's type. 0 otherwise. }
+{ Recover the declared argument type without evaluating it again: storage,
+  user function results (including bare niladic names),
+  or nested builtin SUCC/PRED, whose result has its argument's type.
+  0 when no declared domain can be recovered. }
 VAR
   nt, nm: Str255;
   symi: INTEGER32;
@@ -542,13 +543,24 @@ BEGIN
     BEGIN
       tid := symbols[symi].tk;
       IF nt = 'Designator' THEN tid := StaticDesigTid(tid, GetObj(node, 'selectors'));
+    END
+    ELSE IF (LookupConst(GetStr(node, 'name')) = 0) AND
+            (ArrSize(GetObj(node, 'selectors')) = 0) THEN
+    BEGIN
+      symi := LookupRoutine(GetStr(node, 'name'));
+      IF RoutineIsFunc(symi) THEN tid := routines[symi].ret_tk;
     END;
   END
   ELSE IF nt = 'FuncCall' THEN
   BEGIN
     nm := UpperStr(GetStr(node, 'name'));
     args := GetObj(node, 'args');
-    IF ((nm = 'SUCC') OR (nm = 'PRED')) AND NOT UserRoutineShadows(nm) THEN
+    IF UserRoutineShadows(nm) THEN
+    BEGIN
+      symi := LookupRoutine(nm);
+      IF RoutineIsFunc(symi) THEN tid := routines[symi].ret_tk;
+    END
+    ELSE IF (nm = 'SUCC') OR (nm = 'PRED') THEN
       IF ArrSize(args) = 1 THEN tid := SuccPredDomainTid(ArrItem(args, 0));
   END;
   SuccPredDomainTid := tid;
@@ -562,10 +574,11 @@ FUNCTION CodegenSuccPred(is_succ: BOOLEAN; v: ADRMEM; argtk: INTEGER; site: ADRM
   statement like store checks. The result has the argument's type (IBM
   11-8), so a subrange argument whose type is evident (SuccPredDomainTid)
   is checked against its declared bounds after the step under RANGECK;
-  any other subrange value arrives as its host type and is checked where
-  it is stored. Base overflow is checked first. A fully constant call was
-  range-checked by the typechecker and is materialized at its resolved
-  type. }
+  user function results retain their declared domains even though expression
+  lowering normalizes their value types to the host type. Domain recovery
+  emits no IR and never replays the call. Base overflow is checked first.
+  A fully constant call was range-checked by the typechecker and is
+  materialized at its resolved type. }
 VAR
   folded_tk, op_code, dom_tid: INTEGER;
   one, res: ADRMEM;
@@ -1506,6 +1519,11 @@ VAR
     passed by value or bound by VAR/CONST), whose referents C may write }
   call_base: INTEGER32; { initck_npending before this call's actuals }
   outer_taint: ADRMEM;
+  length_addr: ARRAY [1..MAX_PARAMS] OF ADRMEM; { a VAR actual that is an
+    LSTRING's .LEN or index-zero byte, rechecked after the call, or NIL }
+  length_is_length: ARRAY [1..MAX_PARAMS] OF ADRMEM;
+  length_capacity: ARRAY [1..MAX_PARAMS] OF INTEGER32;
+  length_site: ARRAY [1..MAX_PARAMS] OF ADRMEM;
 BEGIN
   ri := LookupRoutine(name);
   IF ri = 0 THEN
@@ -1540,6 +1558,7 @@ BEGIN
     transports := InitckTransports(ri);
     FOR i := 1 TO MAX_PARAMS DO arg_state[i] := NIL;
     FOR i := 1 TO MAX_PARAMS DO ptr_actual[i] := NIL;
+    FOR i := 1 TO MAX_PARAMS DO length_addr[i] := NIL;
     llvm_ai := 0;
     IF ret_class = SYSV_CLASS_MEMORY THEN
     BEGIN
@@ -1617,6 +1636,13 @@ BEGIN
         BEGIN
           v := ComputeDesignatorAddress(arg_node);
           var_shadow := last_desig_shadow;
+          IF last_desig_lstring_capacity >= 0 THEN
+          BEGIN
+            length_addr[i + 1] := v;
+            length_is_length[i + 1] := last_desig_lstring_is_length;
+            length_capacity[i + 1] := last_desig_lstring_capacity;
+            length_site[i + 1] := arg_node;
+          END;
           { See AggStringTypesInterchangeable -- equal-capacity string types. }
           IF (last_val_tk <> routines[ri].param_tk[i + 1])
              AND NOT AggStringTypesInterchangeable(last_val_tk,
@@ -1913,6 +1939,12 @@ BEGIN
             LLVMBuildBitCast(builder, ptr_actual[i], i8ptrty, MakeCStr('')), MakeCStr('')));
       END;
     END;
+    { A VAR CHAR formal bound to an LSTRING length byte may have stored any
+      CHAR: under the call site's RANGECK the length must still fit. }
+    FOR i := 1 TO routines[ri].nparams DO
+      IF length_addr[i] <> NIL THEN
+        EmitLStringLengthRecheck(length_addr[i], length_is_length[i], length_capacity[i],
+                                 length_site[i]);
     IF track_ret AND (initck_taint <> NIL) THEN
     BEGIN
       returned := LLVMBuildLoad2(builder, i1ty, InitckRetFlag, MakeCStr('initck.returned'));
@@ -2061,7 +2093,7 @@ VAR
   selectors, sel, idx_expr, gep_idx: ADRMEM;
   nsel, si: INTEGER32;
   kind, fname: Str255;
-  idx_val, offset: ADRMEM;
+  idx_val, offset, offset_ty: ADRMEM;
   fi: INTEGER;
   file_handle, file_fcb, file_call_args, file_raw_buf, discard: ADRMEM;
   folded: INTEGER64;
@@ -2080,7 +2112,12 @@ VAR
   file_state: ADRMEM; { the whole tracked file buffer state the last DEREF
     reached, or NIL }
   file_state_tid: INTEGER;
+  lstring_capacity: INTEGER32; { local until the full address is selected;
+    recursive index expressions must not overwrite the target's capacity }
+  lstring_is_length: ADRMEM;
 BEGIN
+  lstring_capacity := -1;
+  lstring_is_length := NIL;
   deref_ptr_tid := 0;
   heap_data := NIL;
   file_state := NIL;
@@ -2325,6 +2362,18 @@ BEGIN
             idx_val := LLVMBuildSExt(builder, idx_val, i64ty, MakeCStr(''));
         offset := LLVMBuildSub(builder, idx_val, LLVMConstInt(i64ty, types[cur_tid].lo, 1), MakeCStr(''));
       END;
+      IF TypeKind(cur_tid) = TK_LSTRING THEN
+      BEGIN
+        { Index zero aliases .LEN, including a dynamically selected zero.
+          Reuse the evaluated offset; never replay the index expression. }
+        lstring_capacity := types[cur_tid].hi;
+        IF lstring_capacity > 255 THEN lstring_capacity := 255;
+        IF (last_val_tk = TK_CHAR) OR (last_val_tk = TK_BOOLEAN) OR
+           (TypeKind(last_val_tk) = TK_ENUM) THEN offset_ty := i32ty
+        ELSE offset_ty := i64ty;
+        lstring_is_length := LLVMBuildICmp(builder, LLVMIntEQ, offset,
+          LLVMConstInt(offset_ty, 0, 0), MakeCStr('lstring.islength'));
+      END;
       IF types[cur_tid].is_super THEN
       BEGIN
         gep_idx := AllocPtrArray(1);
@@ -2440,6 +2489,9 @@ BEGIN
           SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
           base_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(cur_tid), base_ptr, gep_idx, 2, MakeCStr(''));
         END;
+        lstring_capacity := types[cur_tid].hi;
+        IF lstring_capacity > 255 THEN lstring_capacity := 255;
+        lstring_is_length := LLVMConstInt(i1ty, 1, 0);
         cur_tid := types[cur_tid].elem_tid;
       END
       ELSE BEGIN
@@ -2484,6 +2536,8 @@ BEGIN
   last_val_tk := cur_tid;
   last_desig_deref_ptr_tid := deref_ptr_tid;
   last_desig_super_upper := selected_upper;
+  last_desig_lstring_capacity := lstring_capacity;
+  last_desig_lstring_is_length := lstring_is_length;
   last_desig_shadow := shadow;
   ComputeDesignatorAddress := base_ptr;
 END;
@@ -2693,6 +2747,16 @@ BEGIN
   LLVMPositionBuilderAtEnd(builder, ok_bb);
 END;
 
+FUNCTION NarrowToI16(v: ADRMEM; tk: INTEGER): ADRMEM;
+{ An admitted ordinal of type tk at i16: widened from i1/i8, truncated
+  from i32/i64 (ZExt to a narrower type is invalid IR). }
+BEGIN
+  IF LLVMTypeForTk(tk) = i16ty THEN NarrowToI16 := v
+  ELSE IF (LLVMTypeForTk(tk) = i1ty) OR (LLVMTypeForTk(tk) = i8ty) THEN
+    NarrowToI16 := LLVMBuildZExt(builder, v, i16ty, MakeCStr(''))
+  ELSE NarrowToI16 := LLVMBuildTrunc(builder, v, i16ty, MakeCStr(''));
+END;
+
 FUNCTION CodegenSimpleBuiltin(nm: Str255; site: ADRMEM): ADRMEM;
 { The math/ordinal builtins that need no libpascalrt support: pure inline
   LLVM IR (CHR/ORD/ODD/SUCC/PRED/ABS/SQR), or a single libm call
@@ -2850,16 +2914,8 @@ BEGIN
     argtk2 := last_val_tk;
     EmitByteDomainCheck(v, argtk, site, nm);
     EmitByteDomainCheck(v2, argtk2, site, nm);
-    IF LLVMTypeForTk(argtk) = i16ty THEN hi16 := v
-    ELSE IF (LLVMTypeForTk(argtk) = i1ty) OR (LLVMTypeForTk(argtk) = i8ty) THEN
-      hi16 := LLVMBuildZExt(builder, v, i16ty, MakeCStr(''))
-    ELSE hi16 := LLVMBuildTrunc(builder, v, i16ty, MakeCStr(''));
-    IF LLVMTypeForTk(argtk2) = i16ty THEN lo16 := v2
-    ELSE IF (LLVMTypeForTk(argtk2) = i1ty) OR (LLVMTypeForTk(argtk2) = i8ty) THEN
-      lo16 := LLVMBuildZExt(builder, v2, i16ty, MakeCStr(''))
-    ELSE lo16 := LLVMBuildTrunc(builder, v2, i16ty, MakeCStr(''));
-    hi16 := LLVMBuildAnd(builder, hi16, LLVMConstInt(i16ty, 255, 0), MakeCStr(''));
-    lo16 := LLVMBuildAnd(builder, lo16, LLVMConstInt(i16ty, 255, 0), MakeCStr(''));
+    hi16 := LLVMBuildAnd(builder, NarrowToI16(v, argtk), LLVMConstInt(i16ty, 255, 0), MakeCStr(''));
+    lo16 := LLVMBuildAnd(builder, NarrowToI16(v2, argtk2), LLVMConstInt(i16ty, 255, 0), MakeCStr(''));
     res := LLVMBuildOr(builder, LLVMBuildShl(builder, hi16, LLVMConstInt(i16ty, 8, 0), MakeCStr('')), lo16, MakeCStr(''));
     last_val_tk := TK_WORD;
   END

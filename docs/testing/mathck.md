@@ -324,10 +324,15 @@ snapshots stripped (a legacy AST) wraps when linked. CHAR, BOOLEAN and
 enumeration SUCC/PRED are RANGECK's under either MATHCK setting: stepping
 past the type's last or first value fails with the subrange diagnostic
 (`value 3 is outside subrange 0..2`). The result has the argument's type,
-so a subrange variable or designator argument (or a nested SUCC/PRED of one)
-is checked against its declared bounds at the call under RANGECK+, before
-any store; a subrange at its host's extreme fails MATHCK's base overflow
-first. A user routine named
+so a subrange variable, designator or user-function result argument (or a
+nested builtin SUCC/PRED of one) is checked against its declared bounds at
+the call under RANGECK+, before result use; a subrange at its host's extreme
+fails MATHCK's base overflow first. `tests/contract/rangeck_succpred.sh`
+covers actual-argument and bare/parenthesized niladic results, negative and
+positive endpoints, CHAR/BOOLEAN/enum subranges, nested steps, WITH fields,
+variable/constant and builtin-name shadowing, once-only calls, on/off twins,
+base-overflow precedence and O0 call/step/domain-guard order. Runtime cells
+use both dialects at O0–O3, with both MATHCK settings. A user routine named
 SUCC/PRED/SQR is an ordinary call. Fully constant SUCC/PRED/ABS/SQR must
 fit its type (`WRITELN(SUCC(M))` with `M = 32767`, `WRITELN(ABS(N))` and
 `WRITELN(SQR(200))` are rejected, as is `SQR(3037000500)` beyond INTEGER64;

@@ -472,19 +472,21 @@ BEGIN
   fread_ptr_fnty := LLVMFunctionType(i32ty, param_arr, 2, 0);
   fread_ptr_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_ptr'), fread_ptr_fnty);
 
-  param_arr := AllocPtrArray(4);
+  param_arr := AllocPtrArray(5);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
   SetPtrArrayElem(param_arr, 1, LLVMPointerType(i32ty, 0));
   SetPtrArrayElem(param_arr, 2, LLVMPointerType(i8ptrty, 0));
   SetPtrArrayElem(param_arr, 3, i32ty);
-  fread_enum_name_fnty := LLVMFunctionType(i32ty, param_arr, 4, 0);
+  SetPtrArrayElem(param_arr, 4, i32ty);
+  fread_enum_name_fnty := LLVMFunctionType(i32ty, param_arr, 5, 0);
   fread_enum_name_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_enum_name'), fread_enum_name_fnty);
 
-  param_arr := AllocPtrArray(3);
+  param_arr := AllocPtrArray(4);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
   SetPtrArrayElem(param_arr, 1, LLVMPointerType(i32ty, 0));
   SetPtrArrayElem(param_arr, 2, i32ty);
-  fread_enum_ord_fnty := LLVMFunctionType(i32ty, param_arr, 3, 0);
+  SetPtrArrayElem(param_arr, 3, i32ty);
+  fread_enum_ord_fnty := LLVMFunctionType(i32ty, param_arr, 4, 0);
   fread_enum_ord_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_enum_ord'), fread_enum_ord_fnty);
 
   param_arr := AllocPtrArray(2);
@@ -552,17 +554,19 @@ BEGIN
   read_ptr_fnty := LLVMFunctionType(i32ty, param_arr, 1, 0);
   read_ptr_fn := LLVMAddFunction(modl, MakeCStr('pas_read_ptr'), read_ptr_fnty);
 
-  param_arr := AllocPtrArray(3);
+  param_arr := AllocPtrArray(4);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(i32ty, 0));
   SetPtrArrayElem(param_arr, 1, LLVMPointerType(i8ptrty, 0));
   SetPtrArrayElem(param_arr, 2, i32ty);
-  read_enum_name_fnty := LLVMFunctionType(i32ty, param_arr, 3, 0);
+  SetPtrArrayElem(param_arr, 3, i32ty);
+  read_enum_name_fnty := LLVMFunctionType(i32ty, param_arr, 4, 0);
   read_enum_name_fn := LLVMAddFunction(modl, MakeCStr('pas_read_enum_name'), read_enum_name_fnty);
 
-  param_arr := AllocPtrArray(2);
+  param_arr := AllocPtrArray(3);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(i32ty, 0));
   SetPtrArrayElem(param_arr, 1, i32ty);
-  read_enum_ord_fnty := LLVMFunctionType(i32ty, param_arr, 2, 0);
+  SetPtrArrayElem(param_arr, 2, i32ty);
+  read_enum_ord_fnty := LLVMFunctionType(i32ty, param_arr, 3, 0);
   read_enum_ord_fn := LLVMAddFunction(modl, MakeCStr('pas_read_enum_ord'), read_enum_ord_fnty);
 
   param_arr := AllocPtrArray(1);

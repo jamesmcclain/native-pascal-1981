@@ -376,6 +376,10 @@ for case in 'and 0 skip' 'and 1 ran' 'or 1 skip' 'or 0 ran' 'nested 1 skip' 'nes
   grep -q '_THEN\|_ELSE' "$work/sc-short.json"
   for opt in 0 2; do
     bin/codegen < "$work/sc-short.json" > "$work/sc.ll"
+    # The release applies through an address phi'd at the merge (NULL on
+    # the skipped edge), never a value only the operand defines.
+    grep -Eq '%initck\.at[0-9]* = phi ptr \[ null, ' "$work/sc.ll"
+    grep -Eq 'store i1 true, ptr %initck\.at[0-9]*,' "$work/sc.ll"
     clang -O"$opt" -w "$work/sc.ll" runtime/build/libpascalrt.a -lm -o "$work/sc"
     status=0
     { "$work/sc" > "$work/actual" 2> "$work/err"; } 2>/dev/null || status=$?

@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "pascalrt.h"
 
@@ -640,16 +641,16 @@ int pas_fread_int64(struct pas_file_fcb *f, int64_t *out)
     return fread_wide_decimal(f, 64, out);
 }
 
-/* An enum READ by number: an ordinal of the type, 0..count-1, so BOOLEAN 2
- * is no TRUE. Like the readers above, it parses through the FCB character
- * source, so a trapped failure leaves F^ on the character that stopped the
- * token. */
-int pas_fread_enum_ord(struct pas_file_fcb *f, int32_t *out, int count)
+/* An enum READ by number: an ordinal of the type, lo..hi, so BOOLEAN 2 is
+ * no TRUE and an enum subrange keeps its lower bound. Like the readers
+ * above, it parses through the FCB character source, so a trapped failure
+ * leaves F^ on the character that stopped the token. */
+int pas_fread_enum_ord(struct pas_file_fcb *f, int32_t *out, int lo, int hi)
 {
     int64_t v;
     if (fread_wide_decimal(f, 64, &v) != 0)
         return -1;
-    if (v < 0 || v >= count)
+    if (v < lo || v > hi)
         return io_error(f, 14, "runtime error: enum value out of range") ? -1 : 0;
     *out = (int32_t) v;
     return 0;
@@ -667,7 +668,6 @@ int pas_fread_word(struct pas_file_fcb *f, uint16_t *out)
     return 0;
 }
 
-/* File counterpart of pas_read_ptr (see readq.c for the format). */
 static int is_base_digit(int ch, int base)
 {
     if (ch == EOF)
@@ -679,54 +679,93 @@ static int is_base_digit(int ch, int base)
     return isdigit((unsigned char) ch);
 }
 
-int pas_fread_ptr(struct pas_file_fcb *f, uint64_t *out)
+/* The pointer token scanner shared by pas_read_ptr and pas_fread_ptr (see
+ * pascalrt.h). The syntax is strtoll's (decimal, 0x hex, 0 octal, optional
+ * sign), but leading zeros carry no magnitude and the magnitude is
+ * unsigned, so every value WRITE can emit for a 64-bit pointer (unsigned
+ * decimal) reads back, however it is padded. */
+int pas_scan_ptr_token(pas_char_next_fn next, pas_char_unget_fn unget, void *src, uint64_t *out)
 {
-    /* The %lli syntax of pas_read_ptr (decimal, 0x hex, 0 octal), parsed
-     * through the FCB character source like fread_wide_decimal. */
-    FILE *h = stream_for(f, 0);
     int ch;
     do
-        ch = fcb_next_char(f, h);
+        ch = next(src);
     while (ch != EOF && isspace((unsigned char) ch));
     if (ch == EOF)
-        die("runtime error: unexpected EOF while reading pointer");
+        return PAS_PTR_SCAN_EOF;
     char token[32];
-    int n = 0, overflow = 0, base = 10;
+    int n = 0, overflow = 0, base = 10, negative = 0, seen = 0;
     if (ch == '+' || ch == '-') {
-        token[n++] = (char) ch;
-        ch = fcb_next_char(f, h);
+        negative = ch == '-';
+        ch = next(src);
     }
-    int digits = n;
     if (ch == '0') {
-        token[n++] = '0';
-        ch = fcb_next_char(f, h);
+        seen = 1;
+        ch = next(src);
         base = 8;
         if (ch == 'x' || ch == 'X') {
-            token[n++] = (char) ch;
-            ch = fcb_next_char(f, h);
+            ch = next(src);
             base = 16;
         }
     }
+    while (ch == '0') {
+        seen = 1;
+        ch = next(src);
+    }
     while (is_base_digit(ch, base)) {
+        seen = 1;
         if (n < (int) sizeof(token) - 1)
             token[n++] = (char) ch;
         else
             overflow = 1;
-        ch = fcb_next_char(f, h);
+        ch = next(src);
     }
-    fcb_unget_char(f, h, ch);
-    if (n == digits)
-        return io_error(f, 14, "runtime error: malformed pointer input") ? -1 : 0;
+    unget(src, ch);
+    if (!seen)
+        return PAS_PTR_SCAN_MALFORMED;
     token[n] = '\0';
     errno = 0;
-    long long v = strtoll(token, NULL, 0);
+    unsigned long long v = n ? strtoull(token, NULL, base) : 0;
     if (overflow || errno == ERANGE)
+        return PAS_PTR_SCAN_RANGE;
+    *out = negative ? -(uint64_t) v : (uint64_t) v;
+    return PAS_PTR_SCAN_OK;
+}
+
+struct fcb_source {
+    struct pas_file_fcb *f;
+    FILE *h;
+};
+
+static int fcb_source_next(void *src)
+{
+    struct fcb_source *s = src;
+    return fcb_next_char(s->f, s->h);
+}
+
+static void fcb_source_unget(void *src, int ch)
+{
+    struct fcb_source *s = src;
+    fcb_unget_char(s->f, s->h, ch);
+}
+
+/* File counterpart of pas_read_ptr (see readq.c for the format), parsed
+ * through the FCB character source like fread_wide_decimal. */
+int pas_fread_ptr(struct pas_file_fcb *f, uint64_t *out)
+{
+    struct fcb_source src = { f, stream_for(f, 0) };
+    switch (pas_scan_ptr_token(fcb_source_next, fcb_source_unget, &src, out)) {
+    case PAS_PTR_SCAN_EOF:
+        die("runtime error: unexpected EOF while reading pointer");
+        break;
+    case PAS_PTR_SCAN_MALFORMED:
+        return io_error(f, 14, "runtime error: malformed pointer input") ? -1 : 0;
+    case PAS_PTR_SCAN_RANGE:
         return io_error(f, 14, "runtime error: pointer out of range") ? -1 : 0;
-    *out = (uint64_t) v;
+    }
     return 0;
 }
 
-int pas_fread_enum_name(struct pas_file_fcb *f, int32_t *out, const char **names, int count)
+int pas_fread_enum_name(struct pas_file_fcb *f, int32_t *out, const char **names, int lo, int hi)
 {
     FILE *h = stream_for(f, 0);
     int ch = fcb_skip_ws_except_nl(f, h);
@@ -734,7 +773,7 @@ int pas_fread_enum_name(struct pas_file_fcb *f, int32_t *out, const char **names
         die("runtime error: unexpected EOF while reading enum");
     if (isdigit((unsigned char) ch) || ch == '-' || ch == '+') {
         fcb_unget_char(f, h, ch);
-        return pas_fread_enum_ord(f, out, count);
+        return pas_fread_enum_ord(f, out, lo, hi);
     }
     if (!isalpha((unsigned char) ch)) {
         fcb_unget_char(f, h, ch);
@@ -750,8 +789,8 @@ int pas_fread_enum_name(struct pas_file_fcb *f, int32_t *out, const char **names
     } while (ch != EOF && (isalpha((unsigned char) ch) || isdigit((unsigned char) ch)));
     fcb_unget_char(f, h, ch);
     tok[n] = '\0';
-    for (int i = 0; i < count; i++) {
-        if (names && names[i] && strcmp(tok, names[i]) == 0) {
+    for (int i = lo; i <= hi; i++) {
+        if (names && names[i] && strcasecmp(tok, names[i]) == 0) {
             *out = i;
             return 0;
         }
