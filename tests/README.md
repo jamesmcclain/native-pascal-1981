@@ -382,6 +382,28 @@ only valid bounds in both dialects at O0–O3; invalid checked endpoints must
 abort before body output. Frozen legacy typed ASTs remain accepted. No invalid
 unchecked loops are executed, and CASE no-match enforcement is not added.
 
+### POSITN builtin regressions
+
+`tests/corpus/golden/positn_builtins.pas` tests the pattern-first, three-argument
+signature in both dialects at O0–O3: absolute positions, start and string
+boundaries, empty patterns/sources, single-character and escaped literals,
+selected/WITH/pointer strings, value/CONST/VAR formals, function results,
+and once-only ordered actual evaluation (including the empty-pattern case).
+`positn_reference_reads.pas` pins reference semantics under shrinking/growing
+source mutations and pattern mutations by later actuals, VAR/WITH storage,
+once-only side-effecting selectors, pointer rebinding and private function
+result values. `positn_capacity_boundary.pas` pins position 32767, unrestricted
+pattern capacity and byte-length LSTRINGs with large declared capacity.
+The other `positn_*.pas` goldens pin user shadowing, INITCK-enabled literal
+calls and uninitialized position rejection before result use with flushed
+output. `tests/corpus/checklit/positn/` pins bad arity/types/range, the host
+runtime IR call, deferred length loads after the position call, rejection
+of oversized fixed sources (bare/selected/function-result), and explicit
+per-operand INITCK/DEVICE boundaries without published IR. The `runtime`
+unit suite runs `tests/unit/runtime_positn.c`,
+including nonterminated and binary strings, extreme starts, the retained
+four-argument ABI and exhaustive short binary source/pattern comparisons.
+
 ### Scan builtin and small-string ABI regressions
 
 `tests/corpus/golden/scan_builtins.pas` (a fixture with a dialect and O0–O3

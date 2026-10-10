@@ -559,7 +559,7 @@ BEGIN
       storage). }
     IF (nm <> 'WRITE') AND (nm <> 'WRITELN') AND (nm <> 'ORD') AND
        (nm <> 'CHR') AND (nm <> 'ODD') AND (nm <> 'ABS') AND
-       (nm <> 'READ') AND (nm <> 'READLN') AND (nm <> 'NEW') AND
+       (nm <> 'POSITN') AND (nm <> 'READ') AND (nm <> 'READLN') AND (nm <> 'NEW') AND
        (nm <> 'DISPOSE') AND (nm <> 'UNSAFERAW') AND (nm <> 'UNSAFESUPER') AND
        NOT InitckDeviceValueBuiltin(nm) THEN
       unsafe := TRUE;
@@ -950,7 +950,8 @@ BEGIN
       IF LookupRoutine(nm) = 0 THEN
         IF (nm <> 'ORD') AND (nm <> 'CHR') AND (nm <> 'ODD') AND
            (nm <> 'ABS') AND (nm <> 'UNSAFERAW') AND (nm <> 'UNSAFESUPER') AND
-           (nm <> 'EOF') AND (nm <> 'EOLN') AND NOT InitckDeviceValueBuiltin(nm) THEN
+           (nm <> 'EOF') AND (nm <> 'EOLN') AND (nm <> 'POSITN') AND
+           NOT InitckDeviceValueBuiltin(nm) THEN
           InitckBoundaryAt('call consumer', node);
     END
     ELSE IF (nt <> '') AND (nt <> 'IntLiteral') AND

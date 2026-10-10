@@ -630,6 +630,7 @@ VAR
   eff_call_argpos: ARRAY [1..MAX_CALL_EDGES] OF INTEGER32;
   memcmp_fnty, memcmp_fn: ADRMEM; { for whole-string EQ/NEQ/LT/LE/GT/GE comparisons. }
   positn_fnty, positn_fn: ADRMEM;
+  positn_from_fnty, positn_from_fn: ADRMEM;
   scaneq_fnty, scaneq_fn: ADRMEM;
   scanne_fnty, scanne_fn: ADRMEM;
   encode_fnty, encode_fn: ADRMEM;

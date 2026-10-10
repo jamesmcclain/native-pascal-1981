@@ -1790,7 +1790,8 @@ is an ordinary call, outside this classification.
 | RANGECK | `CHR` | IBM: "error if ORD (X) > 255 or ORD (X) < 0 (if $RANGECK on)" (11-8). Checked before truncating the original signed/unsigned integer to CHAR; disabled checking retains the low eight bits. |
 | Separate contract | `TRUNC`, `ROUND` | Always-on range check, independent of MATHCK and RANGECK (G26, [TRUNC section](#trunc-and-round-return-integer-so-they-narrow-to-16-bits-both)). |
 | RANGECK | `CONCAT` (LSTRING length byte) | Host RANGECK+ checks combined length against `min(capacity, 255)` before copying or publishing; failure leaves compiler-written destination bytes unchanged. RANGECK- and NVPTX remain unchecked; this is not MATHCK arithmetic. |
-| Separate contract | `INSERT`, `DELETE`, `COPYLST`, `COPYSTR`, `POSITN`, `ENCODE`, `DECODE` | **Unreachable:** codegen lowers them, but the typechecker rejects every call as an undefined procedure or function. When enabled, their internal length and position arithmetic (`pos - 1`, `len - pos`) needs capacity and position checks, not MATHCK; DECODE is a text-to-number conversion. |
+| Separate contract | `POSITN` | Host pattern search with an explicit starting position ([below](#positn-both)); no MATHCK arithmetic or string writes. |
+| Separate contract | `INSERT`, `DELETE`, `COPYLST`, `COPYSTR`, `ENCODE`, `DECODE` | **Unreachable:** codegen lowers them, but the typechecker rejects every call as an undefined procedure or function. When enabled, their internal length and position arithmetic (`pos - 1`, `len - pos`) needs capacity and position checks, not MATHCK; DECODE is a text-to-number conversion. |
 | Separate contract | `NEW` bounds, `DEVALLOC`, `SIZEOF`, `LOWER`, `UPPER` | Descriptor and layout arithmetic; layouts above 2147483647 bytes are rejected (`TypeSizeBytes`). |
 | Separate contract | `READ`/`READLN` of integers | Text conversion, checked independently of MATHCK (G29). |
 | No check | `ORD` | Same value and width; an enumeration gives its ordinal as INTEGER, so `ORD(e) * 20000` is checked 16-bit arithmetic. [`ORD(WORD)`](#deferred-ordword-conversion-gap-g25) stays WORD (G25). |
@@ -1817,6 +1818,46 @@ does not link). Any user declaration of the name takes precedence. There are
 no wide variants: extended mode has the same 16-bit functions. Under INITCK+,
 like the other builtins outside INITCK's model, a call stops at the
 `call consumer` boundary.
+
+### POSITN **[both]**
+
+`POSITN(P, S, I): INTEGER` searches for pattern `P` in source `S`, starting
+at 1-based position `I`, and returns the first matching absolute position,
+not an offset relative to `I`. A nonempty pattern returns zero if absent
+or if `I` is outside `1..length(S)`; positions at or below zero return zero
+without reading string bytes. An empty pattern returns **1**, even for an
+empty source or an out-of-range `I` (the manual's explicit null-pattern
+rule takes precedence). These results do not depend on MATHCK, RANGECK or
+INDEXCK. The search never reads beyond either supplied string length.
+Fixed STRING source capacities above **32767** are an explicit compile-time
+unsupported boundary: an absolute match would not fit the INTEGER result.
+The boundary also applies to selected strings and function results, regardless
+of pattern contents. It does not restrict pattern capacity or LSTRING capacity
+(the latter's effective length is still a byte).
+
+`P` and `S` accept STRING/LSTRING literals, variables, selected storage and
+native string-valued function calls. A one-character quoted literal adapts
+to a length-one string; arbitrary CHAR expressions do not. `I` must be
+assignment-compatible with the signed 16-bit INTEGER type; wider variables
+and out-of-range constants are rejected. All three actuals evaluate once,
+left to right, including when `P` is empty. As with CONST reference formals,
+string-storage addresses are bound at their actual's evaluation, but bytes
+and LSTRING lengths are read after all actuals have run. Later actuals may
+change the referenced contents; addresses/selectors are not re-evaluated.
+String function results remain private value temporaries. User declarations
+shadow the builtin. DEVICE code rejects it as host-only.
+
+INITCK checks still apply to the position expression. Literal strings need
+no initialization state and are usable under INITCK+. Enabled reads of
+STRING/LSTRING storage or function operands remain explicit unsupported
+boundaries: string shadow state is not implemented. Each operand's own
+read snapshot controls that boundary, not the call's or a later operand's
+setting. No string writes or new range-checking domains are introduced.
+
+The builtin calls `positn_from` in the host runtime. The old four-argument
+C `positn(haystack, haylen, needle, needlelen)` ABI remains available and
+searches from position 1. Tests: `tests/corpus/golden/positn_*.pas`,
+`tests/corpus/checklit/positn/` and `tests/unit/runtime_positn.c`.
 
 ### SCANEQ and SCANNE **[both]**
 

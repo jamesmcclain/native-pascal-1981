@@ -688,6 +688,15 @@ BEGIN
   positn_fnty := LLVMFunctionType(i32ty, param_arr, 4, 0);
   positn_fn := LLVMAddFunction(modl, MakeCStr('positn'), positn_fnty);
 
+  param_arr := AllocPtrArray(5);
+  SetPtrArrayElem(param_arr, 0, i8ptrty);
+  SetPtrArrayElem(param_arr, 1, i32ty);
+  SetPtrArrayElem(param_arr, 2, i8ptrty);
+  SetPtrArrayElem(param_arr, 3, i32ty);
+  SetPtrArrayElem(param_arr, 4, i32ty);
+  positn_from_fnty := LLVMFunctionType(i32ty, param_arr, 5, 0);
+  positn_from_fn := LLVMAddFunction(modl, MakeCStr('positn_from'), positn_from_fnty);
+
   param_arr := AllocPtrArray(6);
   SetPtrArrayElem(param_arr, 0, i32ty);
   SetPtrArrayElem(param_arr, 1, i8ty);
