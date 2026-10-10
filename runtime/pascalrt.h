@@ -95,7 +95,6 @@ int   pas_write_fmt(struct pas_file_fcb *f, const char *fmt, ...);
 const char *pas_enum_write_token(int32_t value, const char **names, int count);
 
 /* File-based formatted READ */
-int   pas_fread_int(struct pas_file_fcb *f, int32_t *out);
 int   pas_fread_int16(struct pas_file_fcb *f, int16_t *out);
 int   pas_fread_int32(struct pas_file_fcb *f, int32_t *out);
 int   pas_fread_int64(struct pas_file_fcb *f, int64_t *out);
@@ -107,6 +106,7 @@ int   pas_fread_lstring(struct pas_file_fcb *f, uint8_t *buf, int cap);
 int   pas_fread_string(struct pas_file_fcb *f, uint8_t *buf, int cap);
 int   pas_fread_enum_name(struct pas_file_fcb *f, int32_t *out,
                           const char **names, int count);
+int   pas_fread_enum_ord(struct pas_file_fcb *f, int32_t *out, int count);
 void  pas_freadln_skip(struct pas_file_fcb *f);
 
 /* READSET / READFN */
@@ -178,7 +178,6 @@ int   pas_sys_exec(const char *executable, const char *packed_args,
 
 /* ---- stdin READ / READLN (readq.c) ---- */
 
-int   pas_read_int(int32_t *out);
 int   pas_read_int16(int16_t *out);
 int   pas_read_int32(int32_t *out);
 int   pas_read_int64(int64_t *out);
@@ -189,6 +188,7 @@ int   pas_read_char(uint8_t *out);
 int   pas_read_lstring(uint8_t *buf, int cap);
 int   pas_read_string(uint8_t *buf, int cap);
 int   pas_read_enum_name(int32_t *out, const char **names, int count);
+int   pas_read_enum_ord(int32_t *out, int count);
 void  pas_readln_skip(void);
 
 /* ---- ENCODE / DECODE (encode_decode.c) ---- */

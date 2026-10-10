@@ -508,11 +508,11 @@ BEGIN
   END
   ELSE IF TypeKind(tid) = TK_ENUM THEN
   BEGIN
-    tmp32 := EntryAlloca(i32ty, '');
+    { An enum is stored as the readers' i32: read straight into it. }
     IF active_features.symbolic_enum_io THEN
     BEGIN
       call_args := AllocPtrArray(3);
-      SetPtrArrayElem(call_args, 0, tmp32);
+      SetPtrArrayElem(call_args, 0, addr);
       SetPtrArrayElem(call_args, 1, EnumNameTable(tid));
       SetPtrArrayElem(call_args, 2, LLVMConstInt(i32ty, types[tid].hi + 1, 0));
       loaded := LLVMBuildCall2(builder, read_enum_name_fnty,
@@ -521,13 +521,12 @@ BEGIN
     ELSE
     BEGIN
       { Vintage enumerated values read as numeric ordinals. }
-      call_args := AllocPtrArray(1);
-      SetPtrArrayElem(call_args, 0, tmp32);
-      loaded := LLVMBuildCall2(builder, read_int_fnty, read_int_fn,
-                               call_args, 1, MakeCStr(''));
+      call_args := AllocPtrArray(2);
+      SetPtrArrayElem(call_args, 0, addr);
+      SetPtrArrayElem(call_args, 1, LLVMConstInt(i32ty, types[tid].hi + 1, 0));
+      loaded := LLVMBuildCall2(builder, read_enum_ord_fnty, read_enum_ord_fn,
+                               call_args, 2, MakeCStr(''));
     END;
-    loaded := LLVMBuildLoad2(builder, i32ty, tmp32, MakeCStr(''));
-    LLVMBuildStore(builder, loaded, addr);
   END
   ELSE IF TypeKind(tid) = TK_BOOLEAN THEN
   BEGIN
@@ -661,6 +660,38 @@ BEGIN
   END;
 END;
 
+FUNCTION ReadOk(rd_status: ADRMEM; VAR rd_ok: ADRMEM): ADRMEM;
+{ The i1 "this READ succeeded" test of a reader's status (0), built at its
+  first use and shared by the store gate, $RANGECK and INITCK. }
+BEGIN
+  IF rd_ok = NIL THEN
+    rd_ok := LLVMBuildICmp(builder, LLVMIntEQ, rd_status, LLVMConstInt(i32ty, 0, 0), MakeCStr(''));
+  ReadOk := rd_ok;
+END;
+
+PROCEDURE EmitReadScratchStore(rd_ok, scratch, scratch_ty, dest_ty, addr: ADRMEM);
+{ Moves a reader's scratch value into a READ destination of another type --
+  truncated to a BOOLEAN's i1, or made a pointer -- only once the read
+  succeeded (rd_ok): a trapped file failure leaves the scratch unset and
+  the destination as it was. A stdin reader stops the program on failure,
+  so its status is always 0 and the same gate serves both. }
+VAR
+  ok_bb, cont_bb, v: ADRMEM;
+BEGIN
+  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('read_ok'));
+  cont_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('read_cont'));
+  LLVMBuildCondBr(builder, rd_ok, ok_bb, cont_bb);
+  LLVMPositionBuilderAtEnd(builder, ok_bb);
+  v := LLVMBuildLoad2(builder, scratch_ty, scratch, MakeCStr(''));
+  IF dest_ty = i1ty THEN
+    v := LLVMBuildTrunc(builder, v, i1ty, MakeCStr(''))
+  ELSE
+    v := LLVMBuildIntToPtr(builder, v, dest_ty, MakeCStr(''));
+  LLVMBuildStore(builder, v, addr);
+  LLVMBuildBr(builder, cont_bb);
+  LLVMPositionBuilderAtEnd(builder, cont_bb);
+END;
+
 PROCEDURE CodegenReadArgs(args: ADRMEM; is_readln: BOOLEAN);
 { READ/READLN, both the bare-stdin form and the leading-TEXT-file-argument
   form (READ(F, ...)). Mirrors the reference's read-family codegen: each
@@ -677,7 +708,7 @@ VAR
   arg0, argnode, addr, fcb_ptr, tmp32, loaded, call_args, buf_i8, cap, tmp64: ADRMEM;
   tid: INTEGER;
   using_file, sub_chk: BOOLEAN;
-  rd_status, chk_bb, cont_bb, cur_v: ADRMEM;
+  rd_status, rd_ok, chk_bb, cont_bb, cur_v: ADRMEM;
 BEGIN
   nargs := ArrSize(args);
   start_idx := 0;
@@ -704,6 +735,7 @@ BEGIN
   BEGIN
     argnode := ArrItem(args, i);
     rd_status := NIL;
+    rd_ok := NIL;
     dest_symi := 0;
     dest_state := NIL;
     IF NodeType(argnode) = 'Identifier' THEN
@@ -876,14 +908,15 @@ BEGIN
     END
     ELSE IF TypeKind(tid) = TK_ENUM THEN
     BEGIN
-      tmp32 := EntryAlloca(i32ty, '');
+      { An enum is stored as the readers' i32, and a reader leaves it alone
+        on a trapped failure: read straight into it. }
       IF active_features.symbolic_enum_io THEN
       BEGIN
         IF using_file THEN
         BEGIN
           call_args := AllocPtrArray(4);
           SetPtrArrayElem(call_args, 0, fcb_ptr);
-          SetPtrArrayElem(call_args, 1, tmp32);
+          SetPtrArrayElem(call_args, 1, addr);
           SetPtrArrayElem(call_args, 2, EnumNameTable(tid));
           SetPtrArrayElem(call_args, 3, LLVMConstInt(i32ty, types[tid].hi + 1, 0));
           loaded := LLVMBuildCall2(builder, fread_enum_name_fnty,
@@ -892,7 +925,7 @@ BEGIN
         ELSE
         BEGIN
           call_args := AllocPtrArray(3);
-          SetPtrArrayElem(call_args, 0, tmp32);
+          SetPtrArrayElem(call_args, 0, addr);
           SetPtrArrayElem(call_args, 1, EnumNameTable(tid));
           SetPtrArrayElem(call_args, 2, LLVMConstInt(i32ty, types[tid].hi + 1, 0));
           loaded := LLVMBuildCall2(builder, read_enum_name_fnty,
@@ -902,22 +935,22 @@ BEGIN
       ELSE IF using_file THEN
       BEGIN
         { Vintage enumerated values read as numeric ordinals. }
-        call_args := AllocPtrArray(2);
+        call_args := AllocPtrArray(3);
         SetPtrArrayElem(call_args, 0, fcb_ptr);
-        SetPtrArrayElem(call_args, 1, tmp32);
-        loaded := LLVMBuildCall2(builder, fread_int_fnty,
-                                 fread_int_fn, call_args, 2, MakeCStr(''));
+        SetPtrArrayElem(call_args, 1, addr);
+        SetPtrArrayElem(call_args, 2, LLVMConstInt(i32ty, types[tid].hi + 1, 0));
+        loaded := LLVMBuildCall2(builder, fread_enum_ord_fnty,
+                                 fread_enum_ord_fn, call_args, 3, MakeCStr(''));
       END
       ELSE
       BEGIN
-        call_args := AllocPtrArray(1);
-        SetPtrArrayElem(call_args, 0, tmp32);
-        loaded := LLVMBuildCall2(builder, read_int_fnty,
-                                 read_int_fn, call_args, 1, MakeCStr(''));
+        call_args := AllocPtrArray(2);
+        SetPtrArrayElem(call_args, 0, addr);
+        SetPtrArrayElem(call_args, 1, LLVMConstInt(i32ty, types[tid].hi + 1, 0));
+        loaded := LLVMBuildCall2(builder, read_enum_ord_fnty,
+                                 read_enum_ord_fn, call_args, 2, MakeCStr(''));
       END;
       rd_status := loaded;
-      loaded := LLVMBuildLoad2(builder, i32ty, tmp32, MakeCStr(''));
-      LLVMBuildStore(builder, loaded, addr);
     END
     ELSE IF TypeKind(tid) = TK_BOOLEAN THEN
     BEGIN
@@ -942,9 +975,7 @@ BEGIN
         loaded := LLVMBuildCall2(builder, read_enum_name_fnty, read_enum_name_fn, call_args, 3, MakeCStr(''));
       END;
       rd_status := loaded;
-      loaded := LLVMBuildLoad2(builder, i32ty, tmp32, MakeCStr(''));
-      loaded := LLVMBuildTrunc(builder, loaded, i1ty, MakeCStr(''));
-      LLVMBuildStore(builder, loaded, addr);
+      EmitReadScratchStore(ReadOk(rd_status, rd_ok), tmp32, i32ty, i1ty, addr);
     END
     ELSE IF TypeKind(tid) = TK_POINTER THEN
     BEGIN
@@ -966,9 +997,8 @@ BEGIN
         SetPtrArrayElem(call_args, 0, tmp64);
         loaded := LLVMBuildCall2(builder, read_ptr_fnty, read_ptr_fn, call_args, 1, MakeCStr(''));
       END;
-      loaded := LLVMBuildLoad2(builder, i64ty, tmp64, MakeCStr(''));
-      loaded := LLVMBuildIntToPtr(builder, loaded, i8ptrty, MakeCStr(''));
-      LLVMBuildStore(builder, loaded, addr);
+      rd_status := loaded;
+      EmitReadScratchStore(ReadOk(rd_status, rd_ok), tmp64, i64ty, i8ptrty, addr);
     END
     ELSE
       AbortWith('codegen: unsupported READ argument type');
@@ -984,9 +1014,7 @@ BEGIN
     BEGIN
       chk_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('read_range'));
       cont_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('read_ranged'));
-      LLVMBuildCondBr(builder,
-        LLVMBuildICmp(builder, LLVMIntEQ, rd_status, LLVMConstInt(i32ty, 0, 0), MakeCStr('')),
-        chk_bb, cont_bb);
+      LLVMBuildCondBr(builder, ReadOk(rd_status, rd_ok), chk_bb, cont_bb);
       LLVMPositionBuilderAtEnd(builder, chk_bb);
       cur_v := LLVMBuildLoad2(builder, LLVMTypeForTk(SubrangeBaseTid(tid)), addr, MakeCStr(''));
       EmitSubrangeCheck(cur_v, SubrangeBaseTid(tid), tid);
@@ -1004,8 +1032,7 @@ BEGIN
       IF rd_status = NIL THEN
         AbortWith('codegen: internal error: tracked READ destination without status');
       cur_v := LLVMBuildLoad2(builder, i1ty, dest_state, MakeCStr(''));
-      cur_v := LLVMBuildSelect(builder,
-        LLVMBuildICmp(builder, LLVMIntEQ, rd_status, LLVMConstInt(i32ty, 0, 0), MakeCStr('')),
+      cur_v := LLVMBuildSelect(builder, ReadOk(rd_status, rd_ok),
         LLVMConstInt(i1ty, 1, 0), cur_v, MakeCStr('initck.read'));
       LLVMBuildStore(builder, cur_v, dest_state);
     END;
