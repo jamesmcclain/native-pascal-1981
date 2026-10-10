@@ -131,6 +131,7 @@ is its entry here.
 | contract | [`mathck_vector`](contract/mathck_vector.sh) | MATHCK on integer VECTOR lanes and the VSUM/VPROD reductions. |
 | contract | [`mathck_word_scalar`](contract/mathck_word_scalar.sh) | Scalar WORD arithmetic against native arithmetic oracles. |
 | contract | [`pretty81_integers`](contract/pretty81_integers.sh) | pretty81 preserves exact signed INTEGER64 literals through parsed and typed ASTs. |
+| contract | [`pretty81_sequential`](contract/pretty81_sequential.sh) | pretty81 prints AND THEN/OR ELSE chains without parentheses, which the 1981 manual forbids around them: its output parses again, prints the same text, and the program behaves the same. |
 | contract | [`quoted_literal_limits`](contract/quoted_literal_limits.sh) | Quoted token spellings include both delimiters and doubled quotes. |
 | contract | [`rangeck_case`](contract/rangeck_case.sh) | RANGECK CASE misses fail once, preserving snapshots, OTHERWISE and target boundaries. |
 | contract | [`rangeck_chr`](contract/rangeck_chr.sh) | CHR checks original integer values at its name token, before narrowing. |

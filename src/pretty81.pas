@@ -313,6 +313,15 @@ BEGIN
   END
   ELSE IF nt = 'NilLiteral' THEN
     Out('NIL')
+  ELSE IF (nt = 'BinOp') AND
+          ((GetStr(node, 'op') = 'AND_THEN') OR (GetStr(node, 'op') = 'OR_ELSE')) THEN
+  BEGIN
+    { AND THEN/OR ELSE cannot occur in parentheses; they bind loosest and
+      group left to right, so a chain prints flat. }
+    PrintExpr(GetObj(node, 'left'));
+    Out(Ch(' ')); Out(OpSymbol(GetStr(node, 'op'))); Out(Ch(' '));
+    PrintExpr(GetObj(node, 'right'));
+  END
   ELSE IF nt = 'BinOp' THEN
   BEGIN
     Out(Ch('('));

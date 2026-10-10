@@ -38,6 +38,7 @@ its [unsafe raw boundary](#descriptor-unsafe-raw-boundary) and ownership limits.
 - [Set base compatibility](#set-base-compatibility-native)
 - [Set constructor element range](#set-constructor-element-range-native)
 - [BOOLEAN membership](#boolean-membership-native)
+- [AND THEN and OR ELSE](#and-then-and-or-else-both)
 - [Host SUPER ARRAY descriptor ABI](#host-super-array-descriptor-abi-native)
 - [Bound expressions](#bound-expressions-native)
 - [Subrange range checks](#subrange-range-checks-native)
@@ -919,6 +920,20 @@ remain unsupported.
 As the 1981 manual allows, the left operand can be outside the range of the
 set's base type. Then the result is FALSE. This includes a value outside
 0..255, such as -1 or 300, which cannot be in any set.
+
+## AND THEN and OR ELSE **[both]**
+
+As the 1981 manual says (Sequential Control Operators), `AND THEN` and
+`OR ELSE` can join only the operands of an `IF`, `WHILE` or `UNTIL`
+condition. They cannot occur in parentheses or in any other expression,
+such as an assignment, an actual parameter or `NOT (...)`. They bind more
+loosely than every other operator and are evaluated from left to right, so
+`IF W AND THEN X OR ELSE Y AND THEN Z` means `((W AND THEN X) OR ELSE Y)
+AND THEN Z`. A right operand that the left one decides is not evaluated.
+The parser rejects any other use with `Parser Error: AND THEN/OR ELSE can
+only join the operands of an IF, WHILE or UNTIL condition, not in
+parentheses or another expression`. `pretty81` prints a chain without
+parentheses, so its output parses again.
 
 ## Host SUPER ARRAY descriptor ABI **[native]**
 
