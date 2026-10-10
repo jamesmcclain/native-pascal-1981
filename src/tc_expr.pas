@@ -843,6 +843,30 @@ BEGIN
     CheckFuncCall := TK_BOOLEAN;
     RETURN;
   END;
+  IF name = 'POSITN' THEN
+  BEGIN
+    IF is_device_compiland THEN
+      AddError('POSITN is host-only and cannot appear in DEVICE code');
+    IF nargs <> 3 THEN
+      AddError('POSITN expects exactly three arguments (P, S, I)')
+    ELSE
+    BEGIN
+      FOR i := 0 TO 1 DO
+      BEGIN
+        warg := ArrItem(args_arr, i);
+        atk := CheckExpr(warg);
+        { A one-character quoted string is parsed as a CharLiteral. Only
+          that literal form adapts here, not arbitrary CHAR expressions. }
+        IF (atk <> TK_STRING) AND (NodeType(warg) <> 'CharLiteral') THEN
+          AddError('POSITN pattern and source must be STRING or LSTRING');
+      END;
+      atk := CheckExprForTarget(ArrItem(args_arr, 2), TK_INTEGER);
+      IF NOT CanAssign(TK_INTEGER, atk) THEN
+        AddError('POSITN position must be INTEGER');
+    END;
+    CheckFuncCall := TK_INTEGER;
+    RETURN;
+  END;
   IF (name = 'SCANEQ') OR (name = 'SCANNE') THEN
   BEGIN
     IF is_device_compiland THEN

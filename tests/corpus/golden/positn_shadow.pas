@@ -1,0 +1,6 @@
+{ DIALECT: vintage extended }
+{ OPT: 0 1 2 3 }
+PROGRAM positn_shadow;
+FUNCTION POSITN(x: INTEGER): INTEGER;
+BEGIN POSITN := x + 1 END;
+BEGIN WRITELN(POSITN(6)) END.

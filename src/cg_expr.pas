@@ -3692,36 +3692,36 @@ END;
 
 { ---- string/builtin helpers shared with statement lowering ---- }
 
-PROCEDURE ResolveStringExprCharsLen(expr: ADRMEM; VAR chars_ptr: ADRMEM; VAR len_val: ADRMEM);
-{ The counterpart of the Python reference's get_string_chars_and_len: given
-  a CONST STRING-typed actual argument (a string literal, or an Identifier
-  naming an LSTRING/STRING variable), returns a pointer to its first
-  character plus its length as an i32 -- LSTRING's is the dynamic runtime
-  length byte, STRING's is its fixed declared capacity. Scoped to what
-  CONCAT/COPYLST/COPYSTR need; a designator (indexed/field string
-  sub-expression) is not yet supported here. }
+PROCEDURE ResolveStringExprStorage(expr: ADRMEM; VAR chars_ptr, len_ptr: ADRMEM;
+  VAR fixed_len: INTEGER32);
+{ Evaluate a CONST string actual once, but do not read its dynamic length.
+  LSTRING returns its length-byte address; STRING/literals return NIL plus
+  their fixed length. A function result lives in a private temporary.
+  Separating address evaluation from length reads lets POSITN preserve
+  source order while observing reference operands after later actuals run. }
 VAR
   strval: Str255;
   symi: INTEGER32;
   tid: INTEGER;
-  addr, gep_idx, len_ptr: ADRMEM;
+  addr, gep_idx: ADRMEM;
 BEGIN
-  IF NodeType(expr) = 'StringLiteral' THEN
+  len_ptr := NIL;
+  fixed_len := 0;
+  IF (NodeType(expr) = 'StringLiteral') OR (NodeType(expr) = 'CharLiteral') THEN
   BEGIN
-    strval := DecodeStringLiteral(GetStr(expr, 'value'));
+    IF NodeType(expr) = 'CharLiteral' THEN strval := GetStr(expr, 'value')
+    ELSE strval := DecodeStringLiteral(GetStr(expr, 'value'));
     chars_ptr := LLVMBuildGlobalStringPtr(builder, MakeCStr(strval), MakeCStr('str'));
-    len_val := LLVMConstInt(i32ty, ORD(strval[0]), 0);
+    fixed_len := ORD(strval[0]);
+    RETURN;
   END
   ELSE IF NodeType(expr) = 'Identifier' THEN
   BEGIN
     symi := LookupSym(GetStr(expr, 'name'));
     IF (symi = 0) AND RoutineIsFunc(LookupRoutine(GetStr(expr, 'name'))) THEN
     BEGIN
-      { A bare niladic-call Identifier (e.g. `CurKind = 'LBRACKET'`, an
-        aggregate Str255-returning FUNCTION called without parens) has no
-        symbol-table entry of its own -- materialize the call's result
-        into a fresh temporary, same as ComputeDesignatorAddress and
-        CodegenCallCommon's VAR-argument marshaling do for the same shape. }
+      { Bare niladic function: materialize its value, not a reference to
+        any storage it used to produce that value. }
       tid := routines[LookupRoutine(GetStr(expr, 'name'))].ret_tk;
       addr := EntryAlloca(LLVMTypeForTk(tid), '');
       LLVMBuildStore(builder, CodegenCallCommon(GetStr(expr, 'name'), NIL), addr);
@@ -3733,109 +3733,68 @@ BEGIN
       tid := symbols[symi].tk;
       addr := symbols[symi].llvm_val;
     END;
-    IF TypeKind(tid) = TK_LSTRING THEN
-    BEGIN
-      gep_idx := AllocPtrArray(2);
-      SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-      SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
-      len_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(tid), addr, gep_idx, 2, MakeCStr(''));
-      len_val := LLVMBuildLoad2(builder, i8ty, len_ptr, MakeCStr(''));
-      len_val := LLVMBuildZExt(builder, len_val, i32ty, MakeCStr(''));
-      gep_idx := AllocPtrArray(2);
-      SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-      SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 1, 0));
-      chars_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(tid), addr, gep_idx, 2, MakeCStr(''));
-    END
-    ELSE IF TypeKind(tid) = TK_STRING THEN
-    BEGIN
-      len_val := LLVMConstInt(i32ty, types[tid].hi, 0);
-      gep_idx := AllocPtrArray(2);
-      SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-      SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
-      chars_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(tid), addr, gep_idx, 2, MakeCStr(''));
-    END
-    ELSE
-    BEGIN
-      AbortWith2('codegen: not a string-typed variable: ', GetStr(expr, 'name'));
-      chars_ptr := NIL;
-      len_val := NIL;
-    END;
   END
   ELSE IF NodeType(expr) = 'FuncCall' THEN
   BEGIN
-    { An aggregate Str255-returning FUNCTION called with explicit args (e.g.
-      `NodeType(expr) = 'Identifier'`, pervasive throughout this file and
-      typechecker.pas) -- materialize the call's result into a fresh
-      temporary, same idiom as the bare-niladic-Identifier branch above. }
     tid := routines[LookupRoutine(GetStr(expr, 'name'))].ret_tk;
     addr := EntryAlloca(LLVMTypeForTk(tid), '');
     LLVMBuildStore(builder, CodegenCallCommon(GetStr(expr, 'name'), GetObj(expr, 'args')), addr);
-    IF TypeKind(tid) = TK_LSTRING THEN
-    BEGIN
-      gep_idx := AllocPtrArray(2);
-      SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-      SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
-      len_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(tid), addr, gep_idx, 2, MakeCStr(''));
-      len_val := LLVMBuildLoad2(builder, i8ty, len_ptr, MakeCStr(''));
-      len_val := LLVMBuildZExt(builder, len_val, i32ty, MakeCStr(''));
-      gep_idx := AllocPtrArray(2);
-      SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-      SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 1, 0));
-      chars_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(tid), addr, gep_idx, 2, MakeCStr(''));
-    END
-    ELSE IF TypeKind(tid) = TK_STRING THEN
-    BEGIN
-      len_val := LLVMConstInt(i32ty, types[tid].hi, 0);
-      gep_idx := AllocPtrArray(2);
-      SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-      SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
-      chars_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(tid), addr, gep_idx, 2, MakeCStr(''));
-    END
-    ELSE
-    BEGIN
-      AbortWith2('codegen: not a string-returning function call: ', GetStr(expr, 'name'));
-      chars_ptr := NIL;
-      len_val := NIL;
-    END;
   END
   ELSE IF NodeType(expr) = 'Designator' THEN
   BEGIN
     addr := ComputeDesignatorAddress(expr);
     tid := last_val_tk;
-    IF TypeKind(tid) = TK_LSTRING THEN
-    BEGIN
-      gep_idx := AllocPtrArray(2);
-      SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-      SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
-      len_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(tid), addr, gep_idx, 2, MakeCStr(''));
-      len_val := LLVMBuildLoad2(builder, i8ty, len_ptr, MakeCStr(''));
-      len_val := LLVMBuildZExt(builder, len_val, i32ty, MakeCStr(''));
-      gep_idx := AllocPtrArray(2);
-      SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-      SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 1, 0));
-      chars_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(tid), addr, gep_idx, 2, MakeCStr(''));
-    END
-    ELSE IF TypeKind(tid) = TK_STRING THEN
-    BEGIN
-      len_val := LLVMConstInt(i32ty, types[tid].hi, 0);
-      gep_idx := AllocPtrArray(2);
-      SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-      SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
-      chars_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(tid), addr, gep_idx, 2, MakeCStr(''));
-    END
-    ELSE
-    BEGIN
-      AbortWith('codegen: not a string-typed designator expression');
-      chars_ptr := NIL;
-      len_val := NIL;
-    END;
   END
   ELSE
   BEGIN
     AbortWith('codegen: unsupported string expression (only literals and bare variables are supported)');
     chars_ptr := NIL;
-    len_val := NIL;
+    RETURN;
   END;
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+  IF TypeKind(tid) = TK_LSTRING THEN
+  BEGIN
+    SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
+    len_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(tid), addr, gep_idx, 2, MakeCStr(''));
+    SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 1, 0));
+  END
+  ELSE IF TypeKind(tid) = TK_STRING THEN
+  BEGIN
+    fixed_len := types[tid].hi;
+    SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
+  END
+  ELSE
+  BEGIN
+    AbortWith('codegen: not a string-typed expression');
+    chars_ptr := NIL;
+    RETURN;
+  END;
+  chars_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(tid), addr, gep_idx, 2, MakeCStr(''));
+END;
+
+FUNCTION ResolvedStringLength(len_ptr: ADRMEM; fixed_len: INTEGER32): ADRMEM;
+VAR
+  len_val: ADRMEM;
+BEGIN
+  IF len_ptr = NIL THEN
+    ResolvedStringLength := LLVMConstInt(i32ty, fixed_len, 0)
+  ELSE
+  BEGIN
+    len_val := LLVMBuildLoad2(builder, i8ty, len_ptr, MakeCStr(''));
+    ResolvedStringLength := LLVMBuildZExt(builder, len_val, i32ty, MakeCStr(''));
+  END;
+END;
+
+PROCEDURE ResolveStringExprCharsLen(expr: ADRMEM; VAR chars_ptr: ADRMEM; VAR len_val: ADRMEM);
+{ Existing consumers keep their immediate length-read semantics. POSITN
+  instead resolves both operands' storage, evaluates I, then reads lengths. }
+VAR
+  len_ptr: ADRMEM;
+  fixed_len: INTEGER32;
+BEGIN
+  ResolveStringExprStorage(expr, chars_ptr, len_ptr, fixed_len);
+  len_val := ResolvedStringLength(len_ptr, fixed_len);
 END;
 
 PROCEDURE ResolveStringDestVar(expr: ADRMEM; VAR d_symi: INTEGER32; VAR d_tid: INTEGER;
@@ -3885,23 +3844,51 @@ BEGIN
 END;
 
 FUNCTION CodegenPositn(args: ADRMEM): ADRMEM;
-{ POSITN(hay, needle): INTEGER -- 1-based index of the first occurrence of
-  `needle` within `hay`, or 0 if absent; the search itself is entirely
-  libpascalrt's runtime `positn` (positn.c), called exactly like printf. }
+{ POSITN(P, S, I): INTEGER -- pattern first, search source from 1-based I.
+  Preserve the old four-argument C positn ABI; the builtin uses positn_from.
+  Evaluate P, S and I once, left-to-right, even for an empty pattern.
+  Read reference operands' lengths after all actuals have run. }
 VAR
-  hay_chars, hay_len, needle_chars, needle_len: ADRMEM;
-  call_args, res32: ADRMEM;
+  hay_chars, hay_len, needle_chars, needle_len, i_val: ADRMEM;
+  hay_len_ptr, needle_len_ptr: ADRMEM;
+  hay_fixed_len, needle_fixed_len: INTEGER32;
+  call_args, res32, arg: ADRMEM;
+  i: INTEGER;
 BEGIN
-  IF ArrSize(args) <> 2 THEN
-    AbortWith('codegen: POSITN expects exactly 2 arguments');
-  ResolveStringExprCharsLen(ArrItem(args, 0), hay_chars, hay_len);
-  ResolveStringExprCharsLen(ArrItem(args, 1), needle_chars, needle_len);
-  call_args := AllocPtrArray(4);
+  IF is_device_compiland THEN
+    AbortWith('codegen: POSITN is host-only');
+  IF ArrSize(args) <> 3 THEN
+    AbortWith('codegen: POSITN expects exactly 3 arguments');
+  FOR i := 0 TO 1 DO
+  BEGIN
+    arg := ArrItem(args, i);
+    { Match scan admission's explicit unsupported string-read boundary.
+      Literal bytes need no shadow; mutable string storage does. }
+    IF (NodeType(arg) <> 'StringLiteral') AND (NodeType(arg) <> 'CharLiteral') THEN
+      IF GetBool(GetObjOrNil(arg, 'read_flags'), 'INITCK') THEN
+        InitckBoundaryAt('STRING/LSTRING POSITN operand', arg);
+    IF i = 0 THEN
+      ResolveStringExprStorage(arg, needle_chars, needle_len_ptr, needle_fixed_len)
+    ELSE
+      ResolveStringExprStorage(arg, hay_chars, hay_len_ptr, hay_fixed_len);
+  END;
+  { INTEGER cannot represent an absolute position above 32767. Reject the
+    unsupported fixed source domain rather than silently wrapping results.
+    LSTRING's dynamic length is a byte, irrespective of its capacity. }
+  IF (hay_len_ptr = NIL) AND (hay_fixed_len > 32767) THEN
+    AbortWith('codegen: POSITN fixed STRING source capacity exceeds INTEGER maximum 32767');
+  i_val := CodegenExpr(ArrItem(args, 2));
+  i_val := CoerceForAssign(i_val, last_val_tk, TK_INTEGER, ArrItem(args, 2), 'POSITN');
+  i_val := LLVMBuildSExt(builder, i_val, i32ty, MakeCStr(''));
+  needle_len := ResolvedStringLength(needle_len_ptr, needle_fixed_len);
+  hay_len := ResolvedStringLength(hay_len_ptr, hay_fixed_len);
+  call_args := AllocPtrArray(5);
   SetPtrArrayElem(call_args, 0, hay_chars);
   SetPtrArrayElem(call_args, 1, hay_len);
   SetPtrArrayElem(call_args, 2, needle_chars);
   SetPtrArrayElem(call_args, 3, needle_len);
-  res32 := LLVMBuildCall2(builder, positn_fnty, positn_fn, call_args, 4, MakeCStr(''));
+  SetPtrArrayElem(call_args, 4, i_val);
+  res32 := LLVMBuildCall2(builder, positn_from_fnty, positn_from_fn, call_args, 5, MakeCStr(''));
   CodegenPositn := LLVMBuildTrunc(builder, res32, i16ty, MakeCStr(''));
 END;
 

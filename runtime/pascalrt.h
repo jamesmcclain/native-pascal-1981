@@ -220,8 +220,13 @@ int32_t scanne(int32_t L, char P, const char *chars, int32_t length,
 
 /* ---- POSITN (positn.c) ---- */
 
+/* Legacy start-at-one ABI, retained for previously generated/imported code. */
 int32_t positn(const char *haystack, int32_t haylen,
                const char *needle, int32_t needlelen);
+/* POSITN(P, S, I) lowering: explicit lengths and a signed 1-based start.
+ * Empty pattern returns 1; invalid nonempty start or no match returns 0. */
+int32_t positn_from(const char *haystack, int32_t haylen,
+                    const char *needle, int32_t needlelen, int32_t start);
 
 /* ---- ABORT (pabort.c) ---- */
 

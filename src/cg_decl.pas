@@ -1532,6 +1532,7 @@ BEGIN
     ELSE IF name = 'memmove' THEN BEGIN fn := memmove_fn; fnty := memmove_fnty; END
     ELSE IF name = 'memcmp' THEN BEGIN fn := memcmp_fn; fnty := memcmp_fnty; END
     ELSE IF name = 'positn' THEN BEGIN fn := positn_fn; fnty := positn_fnty; END
+    ELSE IF name = 'positn_from' THEN BEGIN fn := positn_from_fn; fnty := positn_from_fnty; END
     ELSE IF name = 'scaneq' THEN BEGIN fn := scaneq_fn; fnty := scaneq_fnty; END
     ELSE IF name = 'scanne' THEN BEGIN fn := scanne_fn; fnty := scanne_fnty; END
     ELSE IF name = 'encode_value' THEN BEGIN fn := encode_fn; fnty := encode_fnty; END
