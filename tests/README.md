@@ -96,7 +96,9 @@ is its entry here.
 | contract | [`array_named_index_parser`](contract/array_named_index_parser.sh) | Named ordinal array index types parse, and pretty81 round-trips them. |
 | contract | [`chr_constant_folding`](contract/chr_constant_folding.sh) | Unchecked CHR folding has the same low-eight-bit value as runtime conversion. |
 | contract | [`descriptor_contract`](contract/descriptor_contract.sh) | Host descriptor transport ABI and unsupported-boundary contracts. |
+| contract | [`driver_math`](contract/driver_math.sh) | The driver links REAL math builtins at every optimization level without user -lm. |
 | contract | [`driver`](contract/driver.sh) | The driver: option parsing, stage dispatch, outputs and failure cleanup. |
+| contract | [`indexck_diagnostics`](contract/indexck_diagnostics.sh) | INDEXCK failures report the first index token, preserving bounds and side effects. |
 | contract | [`indexck_guard_ir`](contract/indexck_guard_ir.sh) | INDEXCK guard IR: only enabled host selectors are guarded, at full ordinal width. |
 | contract | [`indexck_metadata`](contract/indexck_metadata.sh) | Verify native per-index metadata without Python or unchecked bad accesses. |
 | contract | [`initck_abi`](contract/initck_abi.sh) | INITCK on/off twins agree on output, Pascal ABI and descriptor layout. |
@@ -129,8 +131,10 @@ is its entry here.
 | contract | [`mathck_vector`](contract/mathck_vector.sh) | MATHCK on integer VECTOR lanes and the VSUM/VPROD reductions. |
 | contract | [`mathck_word_scalar`](contract/mathck_word_scalar.sh) | Scalar WORD arithmetic against native arithmetic oracles. |
 | contract | [`pretty81_integers`](contract/pretty81_integers.sh) | pretty81 preserves exact signed INTEGER64 literals through parsed and typed ASTs. |
+| contract | [`quoted_literal_limits`](contract/quoted_literal_limits.sh) | Quoted token spellings include both delimiters and doubled quotes. |
 | contract | [`rangeck_case`](contract/rangeck_case.sh) | RANGECK CASE misses fail once, preserving snapshots, OTHERWISE and target boundaries. |
 | contract | [`rangeck_chr`](contract/rangeck_chr.sh) | CHR checks original integer values at its name token, before narrowing. |
+| contract | [`rangeck_concat`](contract/rangeck_concat.sh) | CONCAT checks the wide combined length before copying or publishing it. |
 | contract | [`rangeck_scope`](contract/rangeck_scope.sh) | RANGECK settings reach the AST and IR of FOR, CASE and SUCC where they apply. |
 | contract | [`stage_cli`](contract/stage_cli.sh) | Standalone compiler-stage command-line contract tests. |
 | contract | [`super_new_contract`](contract/super_new_contract.sh) | Hardened NEW failures, inspected through a test-only C harness. |

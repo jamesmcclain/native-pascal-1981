@@ -13,6 +13,14 @@
 
 #include "pascalrt.h"
 
+void pas_concat_error(uint64_t length, int32_t capacity, int32_t line, int32_t column)
+{
+    fflush(stdout);
+    fprintf(stderr, "runtime error: RANGECK CONCAT length %" PRIu64 " exceeds capacity %" PRId32 " at line %" PRId32 " column %" PRId32 "\n", length, capacity, line, column);
+    fflush(stderr);
+    abort();
+}
+
 void pas_chr_error(int64_t value, int32_t value_unsigned, int32_t line, int32_t column)
 {
     fflush(stdout);

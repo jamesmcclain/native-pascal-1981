@@ -326,6 +326,10 @@ BEGIN
     arg_count := arg_count + 1;
     args[arg_count] := MakeCStr('-lcjson');
     arg_count := arg_count + 1;
+    { REAL math builtins emit libm calls. Keep the library after the objects
+      and runtime archive even when optimization happens to fold a call. }
+    args[arg_count] := MakeCStr('-lm');
+    arg_count := arg_count + 1;
   END;
   FOR i := 0 TO extra_clang_argc - 1 DO
   BEGIN

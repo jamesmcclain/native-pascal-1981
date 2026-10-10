@@ -65,7 +65,10 @@ checks:
 `tests/corpus/golden/indexck_super_*` plus descriptor-upper probes in
 `tests/contract/indexck_guard_ir.sh` cover endpoints, below/above, wide unsigned/negative
 indexes, executed/dead constant bad indexes, once-only evaluation and per-slot
-actual uppers. `indexck_super_nil_*` covers NIL load/store/selected record fields;
+actual uppers. `tests/contract/indexck_diagnostics.sh` pins the first index-token
+line/column for fixed/SUPER loads and stores in both dialects at O0–O3,
+including legacy `0:0` coordinates and nested-index snapshots.
+`indexck_super_nil_*` covers NIL load/store/selected record fields;
 IR probes pin snapshots and guard-free disabled super subscripts. Index side-effect
 ordering before NIL failure is deliberately not pinned down. Borrowed views and
 temporal safety remain unsupported; the suite never executes invalid unchecked

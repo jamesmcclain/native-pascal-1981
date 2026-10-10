@@ -115,10 +115,11 @@
   involved) are still rejected, same as the file's existing no-implicit-
   promotion rule for plain INTEGER/REAL. Not yet covered: files,
   multi-dimension arrays, CHAR-keyed CASE, CASE label ranges,
-  RANGECK beyond subrange stores (which EmitSubrangeCheck does check) --
-  CONCAT/COPYLST/COPYSTR/INSERT's own capacity overflow, for one, is
-  unchecked, the same simplification as an unchecked array index elsewhere
-  in this file -- C-ABI externs, units, and DEVICE MODULE/PTX generation. (MATHCK is enforced: integer operators and builtins trap
+  some RANGECK capacity paths -- COPYLST/COPYSTR/INSERT remain unchecked;
+  CONCAT now checks host capacity under RANGECK+ before copying, including
+  the length byte's 255 limit. C-ABI externs, units, and DEVICE MODULE/PTX
+  generation have their own implemented/deferred boundaries in dialect_notes.
+  (MATHCK is enforced: integer operators and builtins trap
   or wrap per docs/dialect_notes.md, see SiteMathCk in cg_expr.pas.)
   Anything not yet covered is
   rejected loudly via AbortWith rather than silently mishandled

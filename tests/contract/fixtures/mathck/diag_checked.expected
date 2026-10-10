@@ -57,7 +57,7 @@ status: nonzero
 stdout:
 prefix
 stderr:
-runtime error: array index 4 is outside bounds 1..3
+runtime error: array index 4 is outside bounds 1..3 at line 32 column 24
 case 10
 status: nonzero
 stdout:

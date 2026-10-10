@@ -299,6 +299,24 @@ if [ "$(grep -cF -- '--- clang invocation ---' "$clang_log")" -ne 2 ]; then
   cat "$clang_log" >&2
 fi
 
+# Only the final link gets implicit libraries, after all input objects.
+# The first invocation above compiled the secondary compiland with -c.
+awk '/^--- clang invocation ---$/ { n++; next } { print > (base n) }' \
+  base="$work/invocation-" "$clang_log"
+if grep -qxF -- '-lm' "$work/invocation-1"; then
+  fail 'compile-only invocation acquired implicit -lm'
+fi
+printf '%s\n' '-lcjson' '-lm' > "$work/expected-libraries"
+grep -E '(^-l|libpascalrt[.]a$|[.]o$)' "$work/invocation-2" > "$work/link-inputs"
+if ! tail -n 2 "$work/link-inputs" | cmp -s "$work/expected-libraries" -; then
+  fail 'final link libraries missing or not ordered after objects/runtime'
+  cat "$clang_log" >&2
+fi
+if [ "$(grep -cxF -- '-lm' "$work/invocation-2")" -ne 1 ]; then
+  fail 'final link must include exactly one implicit -lm'
+fi
+pass 'implicit libm only on final link, after objects/runtime'
+
 # -O0..-O3 arrive as the glued short form of the -O integer option, and
 # -I/-L/-l are pass-through prefixes forwarded to clang verbatim, in order,
 # including repeated occurrences.

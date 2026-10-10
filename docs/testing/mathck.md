@@ -488,9 +488,9 @@ division by zero. Each prints the `prefix` line, then exactly one
 operator or function-name token. Zero divisors fail under MATHCK- too, and the
 overflow cases run to completion there. RANGECK store and SUCC/PRED domain
 failures, INDEXCK bounds, INITCK reads and TRUNC failures are run beside them
-and must keep their own texts, never the MATHCK stem. RANGECK and INDEXCK
-messages are still unlocated; that is RANGECK/INDEXCK work
-([contract](../dialect_notes.md#mathck-runtime-diagnostics)).
+and must keep their own texts, never the MATHCK stem. INDEXCK bounds failures
+report the first index-expression token; existing subrange RANGECK messages
+remain unlocated ([contract](../dialect_notes.md#mathck-runtime-diagnostics)).
 
 The fixtures are in `tests/contract/fixtures/mathck`. `diag.pas` holds one failing statement
 per stdin case (cases 0–6 MATHCK, 7–10 the other checks), and the suite
@@ -511,10 +511,12 @@ with `{$MATHCK+}` and with `{$MATHCK-}` written in front of its first line
 exit code, stdout and stderr must be identical. A fixture whose MATHCK+ run
 reports a MATHCK error would be counted as overflowing and not compared (its
 disabled twin wraps as the contract defines; the suites above pin that);
-currently there are none. Link failures are compared by outcome only (the
-driver does not link `-lm`, so three fixtures that call libm fail to link at
-O0 under either setting). `tests/contract/fixtures/mathck/twin_extended.pas` adds what the
-corpus lacks: every extended width, the scoped builtins, the SADDOK family,
+currently there are none. Link failures fail the suite, even if both
+settings fail. The driver links `-lm` automatically after objects and the
+runtime archive; `tests/contract/driver_math.sh` independently requires all
+six REAL math builtins and the previously affected corpus fixtures to link
+and produce exact output at O0–O3 (both dialects; REAL32 extended-only).
+`tests/contract/fixtures/mathck/twin_extended.pas` adds what the corpus lacks: every extended width, the scoped builtins, the SADDOK family,
 VECTOR lanes and reductions and FOR loops ending at each type's maximum, with
 results on each type's minimum and maximum; it must print
 `twin_extended.out` under both settings at O0-O3. The 16-bit twin
