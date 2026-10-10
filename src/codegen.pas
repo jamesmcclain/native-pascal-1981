@@ -92,7 +92,8 @@
   (INTEGER/WORD argument only, returns CHAR, matching the reference's
   "faithful dialect pair" restriction), WRD (any INTEGER/WORD/CHAR/
   BOOLEAN/INTEGER8 argument widens/passes-through to WORD), and BYWORD
-  (packs two INTEGER/WORD/CHAR/BOOLEAN byte-ish values into one WORD).
+  (packs two ordinal bytes into WORD, checking original 0..255 domains
+  under host/CPU RANGECK+; disabled/NVPTX paths keep low-byte masking).
   Also covers the rest of the wide-integer/REAL32 extension family: WORD8
   (8-bit unsigned, tid TK_WORD8, LLVM i8, prints %u) and WRD8 (any
   non-REAL argument narrows/passes-through to WORD8, mirroring WRD);

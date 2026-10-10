@@ -1669,7 +1669,37 @@ calls use the same runtime guard as variable calls. Legacy calls lacking the
 snapshot inherit scoped RANGECK and report coordinates 0/0. CPU DEVICE shares
 the host failure path; NVPTX retains its existing unchecked RANGECK conversion.
 User routines named CHR are not the builtin. `tests/contract/rangeck_chr.sh`
-checks these boundaries at O0–O3. This does not implement BYWORD checking.
+checks these boundaries at O0–O3.
+
+BYWORD likewise takes RANGECK and diagnostic coordinates from its function-name
+token (not a directive inside either argument). The existing ordinal argument
+admission is retained: INTEGER/WORD families, CHAR, BOOLEAN and enumerations.
+Both original operands must be in `0..255` under host/CPU RANGECK+. Arguments
+run once, left-to-right, before checking high then low; no failed result is
+packed, stored or used. `pas_byword_error` prints
+`runtime error: RANGECK BYWORD argument V is outside 0..255 at line L column C`,
+flushes stdout/stderr and aborts. Unsigned wide values print unsigned; CHAR,
+BOOLEAN and enum ordinals widen unsigned. RANGECK- preserves low-byte packing
+(`BYWORD(300, -1)` is 11519), including wide integer operands; NVPTX keeps its
+existing unchecked RANGECK boundary. Legacy calls lacking snapshots inherit
+scoped RANGECK and missing locations report 0/0. User routines named BYWORD
+are ordinary calls.
+
+Already-admitted `CONST BYWORD(...)` now folds to a WORD, including aliases and
+ordinal-preserving ORD/SUCC/PRED wrappers; Boolean constant operands fold to
+0/1. Both native folders normalize negative low bytes without negating MIN64.
+Constant consumers (including folded arithmetic, as with CHR) reject an
+enabled out-of-domain BYWORD during codegen folding; standalone constant calls
+use the runtime guard. These rules neither broaden constant syntax nor
+change existing INITCK consumer boundaries or MATHCK ownership.
+`tests/contract/rangeck_byword.sh` pins these contracts in both dialects at
+O0–O3, including original-width guard-before-narrowing IR, call snapshots,
+PUSH/POP, legacy ASTs, shadowing and CPU/NVPTX boundaries.
+
+Completed RANGECK conversion punchlist:
+- [x] CHR original-domain checks before truncation.
+- [x] BYWORD original-domain checks for both operands before masking, with
+  constant/runtime regressions and explicit disabled/target boundaries.
 
 Constant CHR values use the same low-eight-bit representation as runtime CHR:
 under RANGECK-, `ORD(CHR(300)) + 1` is 45, not 301, and
@@ -1720,7 +1750,7 @@ is an ordinary call, outside this classification.
 | No check | `WRD`, `WRD8` | Bit-pattern conversion: `WRD(-2)` is 65534 (IBM 11-8). |
 | No check | `ODD` | Low-bit test. |
 | No check | `HIBYTE`, `LOBYTE` | Byte extraction, never above 255. They return CHAR; IBM returns the argument's type, a typing difference, not a MATHCK question. |
-| No check | `BYWORD` | Packs the low byte of each operand: `BYWORD(300, -1)` is 11519. IBM requires one-byte operands; masking wider ones is a typing difference, not overflow. |
+| RANGECK | `BYWORD` | Both original ordinal operands must be in 0..255 before packing under host/CPU RANGECK+. Disabled checking and NVPTX retain low-byte packing. Domain checking is not MATHCK overflow. |
 | No check | `FLOAT` | Exact for every INTEGER-family value up to 2^53; WORD-family values convert unsigned ([WORD to REAL](#word-to-real-conversion)). |
 | No check | `RETYPE`, `ADR`, `ADS`, pointer `+` | Reinterpretation and [address arithmetic](#outside-mathck). |
 

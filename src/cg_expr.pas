@@ -2640,9 +2640,10 @@ BEGIN
   CodegenCheckedRealToInt := LLVMBuildFPToSI(builder, t, i16ty, MakeCStr(''));
 END;
 
-PROCEDURE EmitChrCheck(v: ADRMEM; argtk: INTEGER; site: ADRMEM);
-{ Check the original integer before truncation. Unlike an i64 signed upper
-  bound alone, unsigned ULE also rejects WORD64's high-bit values. }
+PROCEDURE EmitByteDomainCheck(v: ADRMEM; argtk: INTEGER; site: ADRMEM; nm: Str255);
+{ CHR/BYWORD check the original ordinal before truncation. Unsigned ULE
+  rejects negative signed values as well as WORD64's high-bit values.
+  CHAR/BOOLEAN/enum ordinals widen unsigned, unlike signed integer data. }
 VAR
   enabled, unsigned_value: BOOLEAN;
   bits, ok, bad_bb, ok_bb, ps, fnty, fn, args, discard: ADRMEM;
@@ -2651,16 +2652,17 @@ BEGIN
   enabled := cur_rangeck;
   IF HasKey(site, 'rangeck') THEN enabled := GetBool(site, 'rangeck');
   IF NOT enabled OR is_nvptx_device THEN RETURN;
-  unsigned_value := IsUnsignedWordTk(argtk);
+  unsigned_value := IsUnsignedWordTk(argtk) OR (argtk = TK_CHAR) OR
+    (argtk = TK_BOOLEAN) OR (TypeKind(argtk) = TK_ENUM);
   bits := v;
   IF LLVMTypeForTk(argtk) <> i64ty THEN
   BEGIN
     IF unsigned_value THEN bits := LLVMBuildZExt(builder, bits, i64ty, MakeCStr(''))
     ELSE bits := LLVMBuildSExt(builder, bits, i64ty, MakeCStr(''));
   END;
-  ok := LLVMBuildICmp(builder, LLVMIntULE, bits, LLVMConstInt(i64ty, 255, 0), MakeCStr('chr.in'));
-  bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('chr.bad'));
-  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('chr.ok'));
+  ok := LLVMBuildICmp(builder, LLVMIntULE, bits, LLVMConstInt(i64ty, 255, 0), MakeCStr('byte.in'));
+  bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('byte.bad'));
+  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('byte.ok'));
   LLVMBuildCondBr(builder, ok, ok_bb, bad_bb);
   LLVMPositionBuilderAtEnd(builder, bad_bb);
   ps := AllocPtrArray(4);
@@ -2669,8 +2671,16 @@ BEGIN
   SetPtrArrayElem(ps, 2, i32ty);
   SetPtrArrayElem(ps, 3, i32ty);
   fnty := LLVMFunctionType(voidty, ps, 4, 0);
-  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_chr_error'));
-  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr('pas_chr_error'), fnty);
+  IF nm = 'CHR' THEN
+  BEGIN
+    fn := LLVMGetNamedFunction(modl, MakeCStr('pas_chr_error'));
+    IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr('pas_chr_error'), fnty);
+  END
+  ELSE
+  BEGIN
+    fn := LLVMGetNamedFunction(modl, MakeCStr('pas_byword_error'));
+    IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr('pas_byword_error'), fnty);
+  END;
   OperationLocation(site, line, column);
   args := AllocPtrArray(4);
   SetPtrArrayElem(args, 0, bits);
@@ -2706,7 +2716,7 @@ BEGIN
   argtk := last_val_tk;
   IF nm = 'CHR' THEN
   BEGIN
-    EmitChrCheck(v, argtk, site);
+    EmitByteDomainCheck(v, argtk, site, nm);
     IF LLVMTypeForTk(argtk) = i8ty THEN res := v
     ELSE res := LLVMBuildTrunc(builder, v, i8ty, MakeCStr(''));
     last_val_tk := TK_CHAR;
@@ -2833,17 +2843,21 @@ BEGIN
   END
   ELSE IF nm = 'BYWORD' THEN
   BEGIN
-    { Pack two byte-ish values into one WORD: (hi&0xFF)<<8 | (lo&0xFF).
-      The reference's BYWORD argument allowlist is INTEGER/WORD/CHAR/
-      BOOLEAN only (unlike WRD's, it omits INTEGER8) -- not enforced here
-      since this file trusts whatever the typechecker already approved,
-      same discipline as every other builtin in this function. }
+    { Preserve left-to-right, once-only argument evaluation before checking
+      high then low. No failed packed value is published. Narrow every
+      admitted wide ordinal explicitly; ZExt from i32/i64 to i16 is invalid. }
     v2 := CodegenExpr(ArrItem(args, 1));
     argtk2 := last_val_tk;
-    IF (argtk = TK_INTEGER) OR (argtk = TK_WORD) THEN hi16 := v
-    ELSE hi16 := LLVMBuildZExt(builder, v, i16ty, MakeCStr(''));
-    IF (argtk2 = TK_INTEGER) OR (argtk2 = TK_WORD) THEN lo16 := v2
-    ELSE lo16 := LLVMBuildZExt(builder, v2, i16ty, MakeCStr(''));
+    EmitByteDomainCheck(v, argtk, site, nm);
+    EmitByteDomainCheck(v2, argtk2, site, nm);
+    IF LLVMTypeForTk(argtk) = i16ty THEN hi16 := v
+    ELSE IF (LLVMTypeForTk(argtk) = i1ty) OR (LLVMTypeForTk(argtk) = i8ty) THEN
+      hi16 := LLVMBuildZExt(builder, v, i16ty, MakeCStr(''))
+    ELSE hi16 := LLVMBuildTrunc(builder, v, i16ty, MakeCStr(''));
+    IF LLVMTypeForTk(argtk2) = i16ty THEN lo16 := v2
+    ELSE IF (LLVMTypeForTk(argtk2) = i1ty) OR (LLVMTypeForTk(argtk2) = i8ty) THEN
+      lo16 := LLVMBuildZExt(builder, v2, i16ty, MakeCStr(''))
+    ELSE lo16 := LLVMBuildTrunc(builder, v2, i16ty, MakeCStr(''));
     hi16 := LLVMBuildAnd(builder, hi16, LLVMConstInt(i16ty, 255, 0), MakeCStr(''));
     lo16 := LLVMBuildAnd(builder, lo16, LLVMConstInt(i16ty, 255, 0), MakeCStr(''));
     res := LLVMBuildOr(builder, LLVMBuildShl(builder, hi16, LLVMConstInt(i16ty, 8, 0), MakeCStr('')), lo16, MakeCStr(''));

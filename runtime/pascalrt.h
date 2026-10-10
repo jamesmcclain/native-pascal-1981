@@ -308,13 +308,16 @@ _Bool SMULOK(uint32_t a, uint32_t b, int16_t *c);
 _Bool UADDOK(uint32_t a, uint32_t b, uint16_t *c);
 _Bool UMULOK(uint32_t a, uint32_t b, uint16_t *c);
 
-/* ---- $RANGECK subrange stores, CONCAT, CHR and unmatched CASE (subrange.c) ---- */
+/* ---- $RANGECK subrange stores, CONCAT, CHR/BYWORD and CASE (subrange.c) ---- */
 
 void  pas_concat_error(uint64_t length, int32_t capacity,
                        int32_t line, int32_t column) __attribute__((noreturn));
 
 void  pas_chr_error(int64_t value, int32_t value_unsigned,
                     int32_t line, int32_t column) __attribute__((noreturn));
+
+void  pas_byword_error(int64_t value, int32_t value_unsigned,
+                       int32_t line, int32_t column) __attribute__((noreturn));
 
 void  pas_case_error(int64_t value, int32_t value_unsigned,
                      int32_t line, int32_t column) __attribute__((noreturn));
