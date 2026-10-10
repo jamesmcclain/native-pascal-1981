@@ -1812,27 +1812,62 @@ PROCEDURE InitckReleaseAtCall(p: ADRMEM; tid: INTEGER);
 { An unmodeled effect on storage (a [C] write through a VAR binding, a
   referent or ADR address handed over) takes place at the call, after every
   actual is evaluated: a later actual still reads the old state. Outside a
-  call's actuals, or with the queue full (releasing early can only miss a
-  failure, never cause one), it happens now. }
+  call's actuals it happens now. }
 BEGIN
-  IF (initck_call_depth > 0) AND (initck_npending < INITCK_MAX_PENDING) THEN
+  IF initck_call_depth > 0 THEN InitckQueueRelease(p, tid)
+  ELSE InitckApplyRelease(p, tid);
+END;
+
+PROCEDURE InitckGuardPending(base: INTEGER32; skip_bb, ran_bb: ADRMEM);
+{ At the merge block of AND THEN/OR ELSE, whose right operand queued the
+  effects above base: each now applies only when that operand ran (FALSE
+  from skip_bb, its own guard from ran_bb, the operand's last block). The
+  guard is a phi, so it dominates the call that applies it. }
+VAR
+  i: INTEGER32;
+  e: PInitckPending;
+  vals, blocks, phi: ADRMEM;
+BEGIN
+  FOR i := base + 1 TO initck_npending DO
   BEGIN
-    initck_npending := initck_npending + 1;
-    initck_pending[initck_npending] := p;
-    initck_pending_tid[initck_npending] := tid;
-  END
-  ELSE
-    InitckApplyRelease(p, tid);
+    e := InitckPendingAt(i);
+    phi := LLVMBuildPhi(builder, i1ty, MakeCStr('initck.ran'));
+    vals := AllocPtrArray(2);
+    SetPtrArrayElem(vals, 0, LLVMConstInt(i1ty, 0, 0));
+    IF e^.guard = NIL THEN SetPtrArrayElem(vals, 1, LLVMConstInt(i1ty, 1, 0))
+    ELSE SetPtrArrayElem(vals, 1, e^.guard);
+    blocks := AllocPtrArray(2);
+    SetPtrArrayElem(blocks, 0, skip_bb);
+    SetPtrArrayElem(blocks, 1, ran_bb);
+    LLVMAddIncoming(phi, vals, blocks, 2);
+    e^.guard := phi;
+  END;
 END;
 
 PROCEDURE InitckFlushReleases(base: INTEGER32);
-{ Just before a call: apply the effects its actuals queued above base. A
-  state address is an entry alloca and a data address the value of an
-  actual, so both dominate the call. }
+{ Just before a call: apply the effects its actuals queued above base, a
+  guarded one only on the path where its operand ran. A state address is an
+  entry alloca and a data address the value of an actual, so both dominate
+  the call. }
+VAR
+  e: PInitckPending;
+  then_bb, after_bb: ADRMEM;
 BEGIN
   WHILE initck_npending > base DO
   BEGIN
-    InitckApplyRelease(initck_pending[initck_npending], initck_pending_tid[initck_npending]);
+    e := InitckPendingAt(initck_npending);
+    IF e^.guard = NIL THEN
+      InitckApplyRelease(e^.p, e^.tid)
+    ELSE
+    BEGIN
+      then_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('initck.release'));
+      after_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('initck.released'));
+      LLVMBuildCondBr(builder, e^.guard, then_bb, after_bb);
+      LLVMPositionBuilderAtEnd(builder, then_bb);
+      InitckApplyRelease(e^.p, e^.tid);
+      LLVMBuildBr(builder, after_bb);
+      LLVMPositionBuilderAtEnd(builder, after_bb);
+    END;
     initck_npending := initck_npending - 1;
   END;
 END;

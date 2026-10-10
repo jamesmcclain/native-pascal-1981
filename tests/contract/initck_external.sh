@@ -352,6 +352,44 @@ for kind in var ptr adr; do
   printf 'PROGRAM orderbad;\nTYPE PI = ^INTEGER;\n%s\nPROCEDURE probe;\nVAR x: INTEGER; q: PI;\nBEGIN {$INITCK+} %s {$INITCK-} END;\nBEGIN WRITELN(%s); probe END.\n' "$decl" "$body" "'prefix'" > "$work/orderbad.pas"
   expect_fail orderbad 'prefix\n' "runtime error: INITCK uninitialized $what at line 6 column $(col "$work/orderbad.pas" 6 "$needle")"
 done
+# Any number of effects wait for their call: past the queue's first 64
+# entries a later actual still reads x unset, and every queued release,
+# including the first, still happens at the call.
+terms=$(for i in $(seq 1 40); do printf '(ADR x = ADR x) AND '; done)
+printf 'PROGRAM manybad;\nPROCEDURE use(b: BOOLEAN; v: INTEGER); BEGIN END;\nPROCEDURE probe;\nVAR x: INTEGER;\nBEGIN {$INITCK+} use(%s TRUE, x) {$INITCK-} END;\nBEGIN WRITELN(%s); probe END.\n' "$terms" "'prefix'" > "$work/manybad.pas"
+expect_fail manybad 'prefix\n' "runtime error: INITCK uninitialized local x at line 5 column $(col "$work/manybad.pas" 5 'x)')"
+printf 'PROGRAM many;\nPROCEDURE use(b: BOOLEAN; v: INTEGER); BEGIN END;\nPROCEDURE probe;\nVAR x, y: INTEGER;\nBEGIN {$INITCK+} use((ADR y = ADR y) AND %s TRUE, 1); WRITELN(y = y, x = x) {$INITCK-} END;\nBEGIN probe END.\n' "$terms" > "$work/many.pas"
+expect_ok many 'TRUETRUE\n'
+# An ADR effect queued by a skipped AND THEN/OR ELSE operand, alone or nested,
+# never happens; an evaluated one still does. Only a typed AST can put a
+# short-circuit in an actual (short-circuit.py).
+for case in 'and 0 skip' 'and 1 ran' 'or 1 skip' 'or 0 ran' 'nested 1 skip' 'nested 2 ran'; do
+  read -r shape n outcome <<< "$case"
+  case "$shape" in
+    and) cond='(n > 0) AND (ADR x <> NIL)' ;;
+    or) cond='(n > 0) OR (ADR x <> NIL)' ;;
+    nested) cond='(n > 0) AND ((n > 1) AND (ADR x <> NIL))' ;;
+  esac
+  printf 'PROGRAM sc;\nPROCEDURE use(b: BOOLEAN); BEGIN END;\nPROCEDURE probe(n: INTEGER);\nVAR x: INTEGER;\nBEGIN {$INITCK+} use(%s); WRITELN(x = x) {$INITCK-} END;\nBEGIN WRITELN(%s); probe(%s) END.\n' "$cond" "'prefix'" "$n" > "$work/sc.pas"
+  bin/lexer < "$work/sc.pas" | bin/parser | bin/typechecker > "$work/sc.json"
+  python3 tests/contract/fixtures/initck_external/short-circuit.py "$work/sc.json" > "$work/sc-short.json"
+  grep -q '_THEN\|_ELSE' "$work/sc-short.json"
+  for opt in 0 2; do
+    bin/codegen < "$work/sc-short.json" > "$work/sc.ll"
+    clang -O"$opt" -w "$work/sc.ll" runtime/build/libpascalrt.a -lm -o "$work/sc"
+    status=0
+    { "$work/sc" > "$work/actual" 2> "$work/err"; } 2>/dev/null || status=$?
+    if [ "$outcome" = skip ]; then
+      test "$status" -ne 0
+      printf 'prefix\n' | diff -u - "$work/actual"
+      printf 'runtime error: INITCK uninitialized local x at line 5 column %s\n' "$(col "$work/sc.pas" 5 'x =')" | diff -u - "$work/err"
+    else
+      test "$status" -eq 0
+      printf 'prefix\nTRUE\n' | diff -u - "$work/actual"
+      test ! -s "$work/err"
+    fi
+  done
+done
 # An actual's unchecked unset reads stay with what the callee receives: a
 # [C] result, and the result of a Pascal function whose formal is untracked
 # (REAL), are initialized even when the actual consumed an unset local.

@@ -7,7 +7,10 @@ BEGIN
   WRITELN(ODD(i), ' ', ODD(j), ' ', ORD(HIBYTE(i)), ' ', ORD(LOBYTE(j)), ' ',
           ORD(HIBYTE(w)));
   i := 300; j := -1;
+  { BYWORD has a RANGECK domain check, but never a MATHCK overflow check. }
+  {$RANGECK-}
   WRITELN(BYWORD(i, j), ' ', BYWORD(w, w));
+  {$RANGECK+}
   i := -32768;
   WRITELN(FLOAT(i):9:1, ' ', FLOAT(w):8:1);
 END.

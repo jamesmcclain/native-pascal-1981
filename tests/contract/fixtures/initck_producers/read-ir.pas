@@ -1,5 +1,20 @@
 PROGRAM readir;
+TYPE Color = (RED, GREEN, BLUE);
+
 PROCEDURE probe(VAR f: TEXT);
 VAR n: INTEGER;
 BEGIN READ(f, n) END;
+
+PROCEDURE probe_bool(VAR f: TEXT);
+VAR b: BOOLEAN;
+BEGIN READ(f, b) END;
+
+PROCEDURE probe_enum(VAR f: TEXT);
+VAR c: Color;
+BEGIN READ(f, c) END;
+
+PROCEDURE probe_ptr(VAR f: TEXT);
+VAR p: ^INTEGER;
+BEGIN READ(f, p) END;
+
 BEGIN END.

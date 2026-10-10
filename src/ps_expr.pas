@@ -7,6 +7,9 @@ IMPLEMENTATION OF ps_expr;
 USES ps_base;
 
 VAR bound_expr_depth: INTEGER;
+  sequential_depth: INTEGER; { the expr_depth whose ParseExpression may be
+    followed by AND THEN/OR ELSE: an IF, WHILE or UNTIL condition's
+    operand (ParseBooleanExpression); 0 outside a condition }
 
 FUNCTION ParseExpression: ADRMEM; FORWARD;
 FUNCTION ParseBooleanExpression: ADRMEM; FORWARD;
@@ -226,7 +229,7 @@ BEGIN
   AddField(node, 'op_location', location);
 END;
 
-PROCEDURE AddChrSnapshot(node: ADRMEM; tok: PToken);
+PROCEDURE AddByteDomainSnapshot(node: ADRMEM; tok: PToken);
 BEGIN
   AddBoolField(node, 'rangeck', tok^.f_rangeck);
   AddOpLocation(node, tok);
@@ -351,7 +354,8 @@ BEGIN
       node := CreateTriviaNode('FuncCall');
       AddStringField(node, 'name', val_str);
       IF IsMathckBuiltin(val_str) THEN AddMathckSnapshot(node, name_tok)
-      ELSE IF StringEqual(UpperStr(val_str), 'CHR') THEN AddChrSnapshot(node, name_tok)
+      ELSE IF StringEqual(UpperStr(val_str), 'CHR') OR StringEqual(UpperStr(val_str), 'BYWORD') THEN
+        AddByteDomainSnapshot(node, name_tok)
       ELSE IF IsConversionBuiltin(val_str) THEN AddOpLocation(node, name_tok);
       args_arr_const := cJSON_CreateArray;
       cJSON_AddItemToArray(args_arr_const, ParseConstant());
@@ -541,7 +545,8 @@ BEGIN
       node := CreateTriviaNode('FuncCall');
       AddStringField(node, 'name', name);
       IF IsMathckBuiltin(name) THEN AddMathckSnapshot(node, name_tok)
-      ELSE IF StringEqual(UpperStr(name), 'CHR') THEN AddChrSnapshot(node, name_tok)
+      ELSE IF StringEqual(UpperStr(name), 'CHR') OR StringEqual(UpperStr(name), 'BYWORD') THEN
+        AddByteDomainSnapshot(node, name_tok)
       ELSE IF IsConversionBuiltin(name) THEN AddOpLocation(node, name_tok);
       AddField(node, 'args', args_arr);
       IF (bound_expr_depth > 0) AND
@@ -734,6 +739,16 @@ BEGIN
   END
   ELSE
     ParseExpression := left;
+  { The 1981 manual: AND THEN/OR ELSE "can only be used in the Boolean
+    expression of an IF, WHILE, or UNTIL clause, but not in other
+    expressions. They cannot occur in parentheses". Say so, rather than
+    report the RPAREN or statement end that is missing. }
+  IF (expr_depth <> sequential_depth) AND
+     (((CurKind = 'AND') AND (NextKind = 'THEN')) OR ((CurKind = 'OR') AND (NextKind = 'ELSE'))) THEN
+  BEGIN
+    EPrint('Parser Error: AND THEN/OR ELSE can only join the operands of an IF, WHILE or UNTIL condition, not in parentheses or another expression');
+    exit(1);
+  END;
   LeaveExprLevel;
 END;
 
@@ -741,7 +756,10 @@ FUNCTION ParseBooleanExpression: ADRMEM;
 VAR
   left: ADRMEM;
   op_str: Str255;
+  saved_depth: INTEGER;
 BEGIN
+  saved_depth := sequential_depth;
+  sequential_depth := expr_depth + 1;
   left := ParseExpression;
   WHILE ((CurKind = 'AND') AND (NextKind = 'THEN')) OR ((CurKind = 'OR') AND (NextKind = 'ELSE')) DO
   BEGIN
@@ -752,6 +770,7 @@ BEGIN
     pos := pos + 2;
     left := MakeBinOp(op_str, left, ParseExpression);
   END;
+  sequential_depth := saved_depth;
   ParseBooleanExpression := left;
 END;
 

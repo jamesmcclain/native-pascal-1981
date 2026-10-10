@@ -92,7 +92,8 @@
   (INTEGER/WORD argument only, returns CHAR, matching the reference's
   "faithful dialect pair" restriction), WRD (any INTEGER/WORD/CHAR/
   BOOLEAN/INTEGER8 argument widens/passes-through to WORD), and BYWORD
-  (packs two INTEGER/WORD/CHAR/BOOLEAN byte-ish values into one WORD).
+  (packs two ordinal bytes into WORD, checking original 0..255 domains
+  under host/CPU RANGECK+; disabled/NVPTX paths keep low-byte masking).
   Also covers the rest of the wide-integer/REAL32 extension family: WORD8
   (8-bit unsigned, tid TK_WORD8, LLVM i8, prints %u) and WRD8 (any
   non-REAL argument narrows/passes-through to WORD8, mirroring WRD);
@@ -450,9 +451,7 @@ BEGIN
   param_arr := AllocPtrArray(2);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
   SetPtrArrayElem(param_arr, 1, LLVMPointerType(i32ty, 0));
-  fread_int_fnty := LLVMFunctionType(i32ty, param_arr, 2, 0);
-  fread_int_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_int'), fread_int_fnty);
-  fread_int32_fnty := fread_int_fnty;
+  fread_int32_fnty := LLVMFunctionType(i32ty, param_arr, 2, 0);
   fread_int32_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_int32'), fread_int32_fnty);
   param_arr := AllocPtrArray(2);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
@@ -480,6 +479,13 @@ BEGIN
   SetPtrArrayElem(param_arr, 3, i32ty);
   fread_enum_name_fnty := LLVMFunctionType(i32ty, param_arr, 4, 0);
   fread_enum_name_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_enum_name'), fread_enum_name_fnty);
+
+  param_arr := AllocPtrArray(3);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
+  SetPtrArrayElem(param_arr, 1, LLVMPointerType(i32ty, 0));
+  SetPtrArrayElem(param_arr, 2, i32ty);
+  fread_enum_ord_fnty := LLVMFunctionType(i32ty, param_arr, 3, 0);
+  fread_enum_ord_fn := LLVMAddFunction(modl, MakeCStr('pas_fread_enum_ord'), fread_enum_ord_fnty);
 
   param_arr := AllocPtrArray(2);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(filefcbty, 0));
@@ -528,9 +534,7 @@ BEGIN
 
   param_arr := AllocPtrArray(1);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(i32ty, 0));
-  read_int_fnty := LLVMFunctionType(i32ty, param_arr, 1, 0);
-  read_int_fn := LLVMAddFunction(modl, MakeCStr('pas_read_int'), read_int_fnty);
-  read_int32_fnty := read_int_fnty;
+  read_int32_fnty := LLVMFunctionType(i32ty, param_arr, 1, 0);
   read_int32_fn := LLVMAddFunction(modl, MakeCStr('pas_read_int32'), read_int32_fnty);
   param_arr := AllocPtrArray(1);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(i64ty, 0));
@@ -554,6 +558,12 @@ BEGIN
   SetPtrArrayElem(param_arr, 2, i32ty);
   read_enum_name_fnty := LLVMFunctionType(i32ty, param_arr, 3, 0);
   read_enum_name_fn := LLVMAddFunction(modl, MakeCStr('pas_read_enum_name'), read_enum_name_fnty);
+
+  param_arr := AllocPtrArray(2);
+  SetPtrArrayElem(param_arr, 0, LLVMPointerType(i32ty, 0));
+  SetPtrArrayElem(param_arr, 1, i32ty);
+  read_enum_ord_fnty := LLVMFunctionType(i32ty, param_arr, 2, 0);
+  read_enum_ord_fn := LLVMAddFunction(modl, MakeCStr('pas_read_enum_ord'), read_enum_ord_fnty);
 
   param_arr := AllocPtrArray(1);
   SetPtrArrayElem(param_arr, 0, LLVMPointerType(dblty, 0));

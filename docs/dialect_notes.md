@@ -38,6 +38,7 @@ its [unsafe raw boundary](#descriptor-unsafe-raw-boundary) and ownership limits.
 - [Set base compatibility](#set-base-compatibility-native)
 - [Set constructor element range](#set-constructor-element-range-native)
 - [BOOLEAN membership](#boolean-membership-native)
+- [AND THEN and OR ELSE](#and-then-and-or-else-both)
 - [Host SUPER ARRAY descriptor ABI](#host-super-array-descriptor-abi-native)
 - [Bound expressions](#bound-expressions-native)
 - [Subrange range checks](#subrange-range-checks-native)
@@ -473,10 +474,12 @@ follows a raw address to the storage it locates. `ADR x` of a local or formal
 (the grammar takes only a bare name) releases every leaf of `x`, or of the
 caller storage a VAR/CONST formal is bound to, **where the `ADR` is
 evaluated**, or, inside a call's actuals, just before that call, after every
-actual is evaluated (`cadr(ADR x, x)` still checks `x`); `x` stays tracked.
-Such a deferred release happens at the call even when the `ADR` was on a
-skipped `AND THEN`/`OR ELSE` operand, which can only miss an unset value. A read before that point, an `ADR` on an
-untaken path and other variables are still checked, and writes through the
+actual is evaluated (`cadr(ADR x, x)` still checks `x`), however many such
+effects one call's actuals hold; `x` stays tracked. A deferred release of an
+`ADR` on an `AND THEN`/`OR ELSE` operand happens only if that operand was
+evaluated. (Only a condition's top operator can be `AND THEN`/`OR ELSE` in
+source, so this matters only for typed ASTs given to the code generator.) A
+read before that point, an `ADR` on an untaken path and other variables are still checked, and writes through the
 address (`fillc(ADR flags, ...)`, `q := ADR x; q^ := 99`, C) need no state
 because the released leaves are already initialized. A typed pointer
 converted from such an address locates no registered allocation, so reads
@@ -917,6 +920,20 @@ remain unsupported.
 As the 1981 manual allows, the left operand can be outside the range of the
 set's base type. Then the result is FALSE. This includes a value outside
 0..255, such as -1 or 300, which cannot be in any set.
+
+## AND THEN and OR ELSE **[both]**
+
+As the 1981 manual says (Sequential Control Operators), `AND THEN` and
+`OR ELSE` can join only the operands of an `IF`, `WHILE` or `UNTIL`
+condition. They cannot occur in parentheses or in any other expression,
+such as an assignment, an actual parameter or `NOT (...)`. They bind more
+loosely than every other operator and are evaluated from left to right, so
+`IF W AND THEN X OR ELSE Y AND THEN Z` means `((W AND THEN X) OR ELSE Y)
+AND THEN Z`. A right operand that the left one decides is not evaluated.
+The parser rejects any other use with `Parser Error: AND THEN/OR ELSE can
+only join the operands of an IF, WHILE or UNTIL condition, not in
+parentheses or another expression`. `pretty81` prints a chain without
+parentheses, so its output parses again.
 
 ## Host SUPER ARRAY descriptor ABI **[native]**
 
@@ -1652,7 +1669,37 @@ calls use the same runtime guard as variable calls. Legacy calls lacking the
 snapshot inherit scoped RANGECK and report coordinates 0/0. CPU DEVICE shares
 the host failure path; NVPTX retains its existing unchecked RANGECK conversion.
 User routines named CHR are not the builtin. `tests/contract/rangeck_chr.sh`
-checks these boundaries at O0–O3. This does not implement BYWORD checking.
+checks these boundaries at O0–O3.
+
+BYWORD likewise takes RANGECK and diagnostic coordinates from its function-name
+token (not a directive inside either argument). The existing ordinal argument
+admission is retained: INTEGER/WORD families, CHAR, BOOLEAN and enumerations.
+Both original operands must be in `0..255` under host/CPU RANGECK+. Arguments
+run once, left-to-right, before checking high then low; no failed result is
+packed, stored or used. `pas_byword_error` prints
+`runtime error: RANGECK BYWORD argument V is outside 0..255 at line L column C`,
+flushes stdout/stderr and aborts. Unsigned wide values print unsigned; CHAR,
+BOOLEAN and enum ordinals widen unsigned. RANGECK- preserves low-byte packing
+(`BYWORD(300, -1)` is 11519), including wide integer operands; NVPTX keeps its
+existing unchecked RANGECK boundary. Legacy calls lacking snapshots inherit
+scoped RANGECK and missing locations report 0/0. User routines named BYWORD
+are ordinary calls.
+
+Already-admitted `CONST BYWORD(...)` now folds to a WORD, including aliases and
+ordinal-preserving ORD/SUCC/PRED wrappers; Boolean constant operands fold to
+0/1. Both native folders normalize negative low bytes without negating MIN64.
+Constant consumers (including folded arithmetic, as with CHR) reject an
+enabled out-of-domain BYWORD during codegen folding; standalone constant calls
+use the runtime guard. These rules neither broaden constant syntax nor
+change existing INITCK consumer boundaries or MATHCK ownership.
+`tests/contract/rangeck_byword.sh` pins these contracts in both dialects at
+O0–O3, including original-width guard-before-narrowing IR, call snapshots,
+PUSH/POP, legacy ASTs, shadowing and CPU/NVPTX boundaries.
+
+Completed RANGECK conversion punchlist:
+- [x] CHR original-domain checks before truncation.
+- [x] BYWORD original-domain checks for both operands before masking, with
+  constant/runtime regressions and explicit disabled/target boundaries.
 
 Constant CHR values use the same low-eight-bit representation as runtime CHR:
 under RANGECK-, `ORD(CHR(300)) + 1` is 45, not 301, and
@@ -1703,7 +1750,7 @@ is an ordinary call, outside this classification.
 | No check | `WRD`, `WRD8` | Bit-pattern conversion: `WRD(-2)` is 65534 (IBM 11-8). |
 | No check | `ODD` | Low-bit test. |
 | No check | `HIBYTE`, `LOBYTE` | Byte extraction, never above 255. They return CHAR; IBM returns the argument's type, a typing difference, not a MATHCK question. |
-| No check | `BYWORD` | Packs the low byte of each operand: `BYWORD(300, -1)` is 11519. IBM requires one-byte operands; masking wider ones is a typing difference, not overflow. |
+| RANGECK | `BYWORD` | Both original ordinal operands must be in 0..255 before packing under host/CPU RANGECK+. Disabled checking and NVPTX retain low-byte packing. Domain checking is not MATHCK overflow. |
 | No check | `FLOAT` | Exact for every INTEGER-family value up to 2^53; WORD-family values convert unsigned ([WORD to REAL](#word-to-real-conversion)). |
 | No check | `RETYPE`, `ADR`, `ADS`, pointer `+` | Reinterpretation and [address arithmetic](#outside-mathck). |
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/harness.sh"
+require bin/pascal1981 runtime/build/libpascalrt.a
 # INITCK scalar producers beyond literal assignment.
 #
 # Unchecked copies carry
@@ -78,10 +79,93 @@ expect_ok read-ok '-32767x1\n0y\n' '-32768xTRUE\n0y\n'
 cp tests/contract/fixtures/initck_producers/read-bad.pas "$work/read-bad.pas"
 expect_fail read-bad '5\n' 'runtime error: INITCK uninitialized local m at line 7 column 11' '5\n'
 # Status gating: success sets state; a trapped file failure keeps the prior
-# state. TRAP is not reachable from Pascal source today, so assert the IR.
+# state and leaves destinations uncorrupted.
 cp tests/contract/fixtures/initck_producers/read-ir.pas "$work/read-ir.pas"
 bin/pascal1981 -O0 -S "$work/read-ir.pas" -o "$work/read-ir.ll"
 python3 tests/contract/fixtures/initck_producers/read-ir.py "$work/read-ir.ll"
+
+# Trapped file READ destination preservation execution contract. Pascal has
+# no F.TRAP selector yet, so a C helper sets it. A FILE variable holds the
+# FCB pointer (LoadFileFcbPtr), so ADR f is a struct pas_file_fcb **. The
+# helper checks that it reached a TEXT FCB open for reading before it
+# writes, so a layout change fails here with a message instead of
+# corrupting memory.
+command -v "${CC:-clang}" > /dev/null || die "${CC:-clang} is needed to build the trap helper"
+cat > "$work/trap_helper.c" << 'C_EOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include "pascalrt.h"
+void set_file_trap(struct pas_file_fcb **f) {
+  if (!f || !*f || (*f)->structure != STRUCT_TEXT
+      || ((*f)->mode & MODE_BITS) != MODE_READ) {
+    fputs("set_file_trap: ADR f is not a pas_file_fcb ** of a TEXT file open for reading\n", stderr);
+    exit(2);
+  }
+  (*f)->trap = 1;
+}
+C_EOF
+"${CC:-clang}" -c -I runtime "$work/trap_helper.c" -o "$work/trap_helper.o"
+
+cat > "$work/trapped_read.pas" << 'PAS_EOF'
+PROGRAM traptest(OUTPUT);
+TYPE Color = (RED, GREEN, BLUE);
+PROCEDURE set_file_trap(fcb: ADRMEM); EXTERN;
+VAR
+  f: TEXT;
+  c: Color;
+  b: BOOLEAN;
+  p: ^INTEGER;
+  dummy: INTEGER;
+BEGIN
+  ASSIGN(f, 'traptest.tmp');
+  REWRITE(f);
+  WRITELN(f, 'INVALID_INPUT');
+  CLOSE(f);
+
+  RESET(f);
+  set_file_trap(ADR f);
+
+  c := GREEN;
+  b := TRUE;
+  dummy := 123;
+  p := ADR dummy;
+
+  READ(f, c);
+  READ(f, b);
+  READ(f, p);
+
+  IF c <> GREEN THEN WRITELN('FAIL: c')
+  ELSE IF NOT b THEN WRITELN('FAIL: b')
+  ELSE IF p <> ADR dummy THEN WRITELN('FAIL: p')
+  ELSE WRITELN('trapped-preserved');
+  CLOSE(f);
+
+  { Numbers outside the type are malformed too, never stored. }
+  REWRITE(f);
+  WRITELN(f, '7 2 -1');
+  CLOSE(f);
+  RESET(f);
+  set_file_trap(ADR f);
+  READ(f, c);
+  READ(f, b);
+  IF c <> GREEN THEN WRITELN('FAIL: c range')
+  ELSE IF NOT b THEN WRITELN('FAIL: b range')
+  ELSE WRITELN('out-of-range-preserved');
+  CLOSE(f);
+END.
+PAS_EOF
+
+# Both dialects: vintage reads the enum by ordinal (pas_fread_enum_ord),
+# extended by name or number (pas_fread_enum_name).
+for dialect in vintage extended; do
+  for opt in 0 2; do
+    bin/pascal1981 --dialect "$dialect" -O"$opt" -c "$work/trapped_read.pas" -o "$work/trapped_read.o"
+    "${CC:-clang}" "$work/trapped_read.o" "$work/trap_helper.o" runtime/build/libpascalrt.a -lm -o "$work/trapped_read"
+    out=$( (cd "$work" && ./trapped_read) )
+    test "$out" = $'trapped-preserved\nout-of-range-preserved' ||
+      die "trapped read destination preservation failed ($dialect, -O$opt): $out"
+  done
+done
 
 # --- FOR control: producer per iteration; undefined after natural exit. ---
 cp tests/contract/fixtures/initck_producers/for-ok.pas "$work/for-ok.pas"

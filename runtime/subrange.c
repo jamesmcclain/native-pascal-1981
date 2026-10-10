@@ -32,6 +32,17 @@ void pas_chr_error(int64_t value, int32_t value_unsigned, int32_t line, int32_t 
     abort();
 }
 
+void pas_byword_error(int64_t value, int32_t value_unsigned, int32_t line, int32_t column)
+{
+    fflush(stdout);
+    if (value_unsigned)
+        fprintf(stderr, "runtime error: RANGECK BYWORD argument %" PRIu64 " is outside 0..255 at line %" PRId32 " column %" PRId32 "\n", (uint64_t) value, line, column);
+    else
+        fprintf(stderr, "runtime error: RANGECK BYWORD argument %" PRId64 " is outside 0..255 at line %" PRId32 " column %" PRId32 "\n", value, line, column);
+    fflush(stderr);
+    abort();
+}
+
 void pas_case_error(int64_t value, int32_t value_unsigned, int32_t line, int32_t column)
 {
     fflush(stdout);

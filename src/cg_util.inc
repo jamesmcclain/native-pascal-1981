@@ -30,6 +30,8 @@ FUNCTION LookupRoutine(name: Str255): INTEGER32;
 FUNCTION UserRoutineShadows(name: Str255): BOOLEAN;
 FUNCTION AllocPtrArray(n: INTEGER32): ADRMEM;
 PROCEDURE SetPtrArrayElem(arr: ADRMEM; idx: INTEGER32; v: ADRMEM);
+FUNCTION InitckPendingAt(i: INTEGER32): PInitckPending;
+PROCEDURE InitckQueueRelease(p: ADRMEM; tid: INTEGER);
 PROCEDURE EmitBlockCopy(dst: ADRMEM; src: ADRMEM; nbytes: INTEGER32);
 
 END;

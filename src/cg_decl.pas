@@ -122,6 +122,30 @@ BEGIN
   END;
 END;
 
+FUNCTION ConstExprIsWord(node: ADRMEM): BOOLEAN;
+{ BYWORD, its ordinal-preserving wrappers and aliases retain WORD, even
+  for values below MAXINT. Constant magnitude alone loses signedness. }
+VAR
+  nm: Str255;
+  ci: INTEGER32;
+  args: ADRMEM;
+BEGIN
+  ConstExprIsWord := FALSE;
+  IF NodeType(node) = 'Identifier' THEN
+  BEGIN
+    ci := LookupConst(GetStr(node, 'name'));
+    IF ci <> 0 THEN ConstExprIsWord := const_tbl[ci].integer_tid = TK_WORD;
+  END
+  ELSE IF NodeType(node) = 'FuncCall' THEN
+  BEGIN
+    nm := UpperStr(GetStr(node, 'name'));
+    args := GetObj(node, 'args');
+    IF nm = 'BYWORD' THEN ConstExprIsWord := TRUE
+    ELSE IF ((nm = 'ORD') OR (nm = 'SUCC') OR (nm = 'PRED')) AND (ArrSize(args) = 1) THEN
+      ConstExprIsWord := ConstExprIsWord(ArrItem(args, 0));
+  END;
+END;
+
 FUNCTION SameIdentifier(a, b: Str255): BOOLEAN;
 { Case-insensitive identifier comparison. Symbol lookup elsewhere in this file
   is exact-case (the front end hands identifiers through unchanged), but a USES
@@ -2069,6 +2093,7 @@ BEGIN
     ELSE
     BEGIN
       ival := IntLiteralValue(val_node);
+      IF ConstExprIsWord(val_node) THEN integer_tid := TK_WORD;
       IF (NOT is_char) AND (enum_tid = 0) AND (integer_tid = 0) THEN
         integer_tid := ConstIntegerType(ival);
     END;

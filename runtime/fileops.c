@@ -571,25 +571,6 @@ static int fcb_skip_ws_except_nl(struct pas_file_fcb *f, FILE *h)
     return EOF;
 }
 
-int pas_fread_int(struct pas_file_fcb *f, int32_t *out)
-{
-    FILE *h = stream_for(f, 0);
-    int ch = fcb_skip_ws_except_nl(f, h);
-    if (ch == EOF)
-        die("runtime error: unexpected EOF while reading integer");
-    ungetc(ch, h);              /* hand the token's first char back to stdio for fscanf */
-    long v;
-    errno = 0;
-    if (fscanf(h, "%ld", &v) != 1) {
-        if (io_error(f, 14, "runtime error: malformed integer input"))
-            return -1;
-    }
-    if (errno == ERANGE || v < INT32_MIN || v > INT32_MAX)
-        return io_error(f, 14, "runtime error: integer out of range") ? -1 : 0;
-    *out = (int32_t) v;
-    return 0;
-}
-
 /* Parse through the FCB character source, including RESET's buffered first
  * character. Do not touch the destination when a trapped read fails. */
 static int fread_wide_decimal(struct pas_file_fcb *f, int bits, int64_t *out)
@@ -659,6 +640,21 @@ int pas_fread_int64(struct pas_file_fcb *f, int64_t *out)
     return fread_wide_decimal(f, 64, out);
 }
 
+/* An enum READ by number: an ordinal of the type, 0..count-1, so BOOLEAN 2
+ * is no TRUE. Like the readers above, it parses through the FCB character
+ * source, so a trapped failure leaves F^ on the character that stopped the
+ * token. */
+int pas_fread_enum_ord(struct pas_file_fcb *f, int32_t *out, int count)
+{
+    int64_t v;
+    if (fread_wide_decimal(f, 64, &v) != 0)
+        return -1;
+    if (v < 0 || v >= count)
+        return io_error(f, 14, "runtime error: enum value out of range") ? -1 : 0;
+    *out = (int32_t) v;
+    return 0;
+}
+
 int pas_fread_word(struct pas_file_fcb *f, uint16_t *out)
 {
     /* As in pas_read_word, check the full value, not a 32-bit narrowing. */
@@ -672,18 +668,60 @@ int pas_fread_word(struct pas_file_fcb *f, uint16_t *out)
 }
 
 /* File counterpart of pas_read_ptr (see readq.c for the format). */
+static int is_base_digit(int ch, int base)
+{
+    if (ch == EOF)
+        return 0;
+    if (base == 16)
+        return isxdigit((unsigned char) ch);
+    if (base == 8)
+        return ch >= '0' && ch <= '7';
+    return isdigit((unsigned char) ch);
+}
+
 int pas_fread_ptr(struct pas_file_fcb *f, uint64_t *out)
 {
+    /* The %lli syntax of pas_read_ptr (decimal, 0x hex, 0 octal), parsed
+     * through the FCB character source like fread_wide_decimal. */
     FILE *h = stream_for(f, 0);
-    int ch = fcb_skip_ws_except_nl(f, h);
+    int ch;
+    do
+        ch = fcb_next_char(f, h);
+    while (ch != EOF && isspace((unsigned char) ch));
     if (ch == EOF)
         die("runtime error: unexpected EOF while reading pointer");
-    ungetc(ch, h);
-    long long v;
-    if (fscanf(h, "%lli", &v) != 1) {
-        if (io_error(f, 14, "runtime error: malformed pointer input"))
-            return -1;
+    char token[32];
+    int n = 0, overflow = 0, base = 10;
+    if (ch == '+' || ch == '-') {
+        token[n++] = (char) ch;
+        ch = fcb_next_char(f, h);
     }
+    int digits = n;
+    if (ch == '0') {
+        token[n++] = '0';
+        ch = fcb_next_char(f, h);
+        base = 8;
+        if (ch == 'x' || ch == 'X') {
+            token[n++] = (char) ch;
+            ch = fcb_next_char(f, h);
+            base = 16;
+        }
+    }
+    while (is_base_digit(ch, base)) {
+        if (n < (int) sizeof(token) - 1)
+            token[n++] = (char) ch;
+        else
+            overflow = 1;
+        ch = fcb_next_char(f, h);
+    }
+    fcb_unget_char(f, h, ch);
+    if (n == digits)
+        return io_error(f, 14, "runtime error: malformed pointer input") ? -1 : 0;
+    token[n] = '\0';
+    errno = 0;
+    long long v = strtoll(token, NULL, 0);
+    if (overflow || errno == ERANGE)
+        return io_error(f, 14, "runtime error: pointer out of range") ? -1 : 0;
     *out = (uint64_t) v;
     return 0;
 }
@@ -695,14 +733,8 @@ int pas_fread_enum_name(struct pas_file_fcb *f, int32_t *out, const char **names
     if (ch == EOF)
         die("runtime error: unexpected EOF while reading enum");
     if (isdigit((unsigned char) ch) || ch == '-' || ch == '+') {
-        ungetc(ch, h);
-        long v;
-        if (fscanf(h, "%ld", &v) != 1) {
-            if (io_error(f, 14, "runtime error: malformed enum input"))
-                return -1;
-        }
-        *out = (int32_t) v;
-        return 0;
+        fcb_unget_char(f, h, ch);
+        return pas_fread_enum_ord(f, out, count);
     }
     if (!isalpha((unsigned char) ch)) {
         fcb_unget_char(f, h, ch);

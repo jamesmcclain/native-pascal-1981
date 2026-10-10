@@ -10,6 +10,9 @@ printf '%s\n' 'PROGRAM maths; VAR x: REAL; BEGIN' \
   '  WRITELN(ROUND(LN(x + 1.0))); WRITELN(ROUND(EXP(x)));' \
   '  WRITELN(ROUND(ARCTAN(x))) END.' > "$work/maths.pas"
 printf '2\n0\n1\n0\n1\n0\n' > "$work/maths.out"
+# Some fixtures never read stdin. A pipe races their exit against printf and
+# can fail with SIGPIPE under pipefail; a regular input file has no writer.
+printf '0\n' > "$work/input"
 for dialect in vintage extended; do
   for opt in 0 1 2 3; do
     for src in "$work/maths.pas" tests/corpus/integration/builtin_lowercase_call.pas \
@@ -19,7 +22,9 @@ for dialect in vintage extended; do
         > "$work/compile.out" 2> "$work/compile.err" || {
           cat "$work/compile.err" >&2; die "$label failed to link";
         }
-      printf '0\n' | "$work/exe" > "$work/output" 2> "$work/error"
+      "$work/exe" < "$work/input" > "$work/output" 2> "$work/error" || {
+        cat "$work/error" >&2; die "$label execution failed";
+      }
       diff -u "${src%.pas}.out" "$work/output" || die "$label stdout"
       [[ ! -s $work/error ]] || die "$label stderr"
       pass "$label"

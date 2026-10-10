@@ -255,8 +255,6 @@ CONST
   MAX_SYMBOLS = 500;
   MAX_SCOPES = 64;
   MAX_PARAMS = 16;
-  INITCK_MAX_PENDING = 64; { effects of one call nest deferred to its call
-    (InitckReleaseAtCall); beyond this they happen where evaluated }
   MAX_SYSV_LEAVES = 32; { Upper bound on the scalar leaves of an aggregate the
     SysV classifier ever walks: it only runs on types of at most 16 bytes and
     the smallest leaf is 1 byte, so 16 is the true maximum; 32 leaves headroom
@@ -298,6 +296,16 @@ CONST
 
 TYPE
   PAdr = ^ADRMEM;
+
+  InitckPending = RECORD
+    { One effect InitckReleaseAtCall deferred to its call: state at p of
+      type tid or, for tid 0, the heap referent at data address p. guard is
+      NIL, or an i1 that is TRUE when the AND THEN/OR ELSE operands that
+      queued it were evaluated (InitckGuardPending). }
+    p, guard: ADRMEM;
+    tid: INTEGER;
+  END;
+  PInitckPending = ^InitckPending;
 
   { A type id ("tid") is either a bare scalar TK_* constant (1..4) or an
     index into `types` (5..) for an ARRAY/RECORD -- see TypeKind/
@@ -536,7 +544,6 @@ VAR
   write_fmt_fnty, write_fmt_fn: ADRMEM; { pas_write_fmt(fcb*, fmt, ...) --
     the file-targeted counterpart of printf_fn above, same varargs shape. }
   enum_write_token_fnty, enum_write_token_fn: ADRMEM;
-  fread_int_fnty, fread_int_fn: ADRMEM;
   fread_int32_fnty, fread_int32_fn: ADRMEM;
   fread_int64_fnty, fread_int64_fn: ADRMEM;
   fread_word_fnty, fread_word_fn: ADRMEM;
@@ -545,6 +552,8 @@ VAR
     implementation-defined round-trip format (13620-13623). }
   fread_enum_name_fnty, fread_enum_name_fn: ADRMEM; { enum/BOOLEAN
     name-or-number READ from a file. }
+  fread_enum_ord_fnty, fread_enum_ord_fn: ADRMEM; { vintage enum READ by
+    ordinal, checked against the type's count. }
   fread_real_fnty, fread_real_fn: ADRMEM;
   fread_char_fnty, fread_char_fn: ADRMEM;
   fread_lstring_fnty, fread_lstring_fn: ADRMEM;
@@ -554,12 +563,13 @@ VAR
   file_attach_std_fnty, file_attach_std_fn: ADRMEM; { pas_file_attach_std(in_fcb*, out_fcb*) }
   read_int32_fnty, read_int32_fn: ADRMEM;
   read_int64_fnty, read_int64_fn: ADRMEM;
-  read_int_fnty, read_int_fn: ADRMEM; { stdin counterparts (readq.c), used by
-    a bare READ/READLN with no leading file argument. }
+  { The read_* entries are the stdin counterparts (readq.c), used by a bare
+    READ/READLN with no leading file argument. }
   read_word_fnty, read_word_fn: ADRMEM;
   read_int16_fn: ADRMEM; { INTEGER READ; same (i16*) shape as read_word_fnty }
   read_ptr_fnty, read_ptr_fn: ADRMEM; { stdin counterparts of the two above. }
   read_enum_name_fnty, read_enum_name_fn: ADRMEM;
+  read_enum_ord_fnty, read_enum_ord_fn: ADRMEM;
   read_real_fnty, read_real_fn: ADRMEM;
   read_char_fnty, read_char_fn: ADRMEM;
   read_lstring_fnty, read_lstring_fn: ADRMEM;
@@ -737,12 +747,13 @@ VAR
   initck_call_depth: INTEGER32; { > 0 while a call's actuals are lowered }
   initck_defer_conv: BOOLEAN; { a pointer conversion's referent release
                                 belongs to the call whose actual it is }
-  initck_npending: INTEGER32; { InitckReleaseAtCall's queue: state (of type
-                                initck_pending_tid) or, for tid 0, a heap
-                                referent's data address to release at the
-                                enclosing call, after its last actual }
-  initck_pending: ARRAY [1..INITCK_MAX_PENDING] OF ADRMEM;
-  initck_pending_tid: ARRAY [1..INITCK_MAX_PENDING] OF INTEGER;
+  initck_npending: INTEGER32; { entries 1..initck_npending of
+                                InitckReleaseAtCall's queue of effects to
+                                apply at the enclosing call, after its last
+                                actual (InitckPendingAt) }
+  initck_pending: ADRMEM; { heap array of initck_pending_cap InitckPending
+                            records, grown by InitckQueueRelease }
+  initck_pending_cap: INTEGER32;
 
   loop_break_blocks: ARRAY [1..32] OF ADRMEM; { one entry per lexically
                                                 enclosing WHILE/REPEAT/FOR,

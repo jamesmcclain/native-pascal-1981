@@ -412,6 +412,11 @@ BEGIN
     folded := GetInt64(expr_node, 'value');
     FoldConstInt := TRUE;
   END
+  ELSE IF nt = 'BoolLiteral' THEN
+  BEGIN
+    IF GetBool(expr_node, 'value') THEN folded := 1 ELSE folded := 0;
+    FoldConstInt := TRUE;
+  END
   ELSE IF nt = 'CharLiteral' THEN
   BEGIN
     { A character folds to its ordinal, which is what every constant context
@@ -498,7 +503,24 @@ BEGIN
   BEGIN
     nm := UpperStr(GetStr(expr_node, 'name'));
     args := GetObj(expr_node, 'args');
-    IF ((nm = 'ORD') OR (nm = 'CHR') OR (nm = 'SUCC') OR (nm = 'PRED') OR
+    IF (nm = 'BYWORD') AND (ArrSize(args) = 2) AND
+       FoldConstInt(ArrItem(args, 0), left) AND
+       FoldConstInt(ArrItem(args, 1), right) THEN
+    BEGIN
+      chr_checked := cur_rangeck;
+      IF HasKey(expr_node, 'rangeck') THEN chr_checked := GetBool(expr_node, 'rangeck');
+      IF chr_checked AND NOT is_nvptx_device THEN
+        IF (left < 0) OR (left > 255) OR (right < 0) OR (right > 255) THEN
+          AbortWith('codegen: RANGECK constant BYWORD argument outside 0..255');
+      { MOD is dividend-signed; never negate MIN64 to get its low byte. }
+      left := left MOD 256;
+      IF left < 0 THEN left := left + 256;
+      right := right MOD 256;
+      IF right < 0 THEN right := right + 256;
+      folded := left * 256 + right;
+      FoldConstInt := TRUE;
+    END
+    ELSE IF ((nm = 'ORD') OR (nm = 'CHR') OR (nm = 'SUCC') OR (nm = 'PRED') OR
         (nm = 'ABS') OR (nm = 'SQR')) AND (ArrSize(args) = 1) AND
        FoldConstInt(ArrItem(args, 0), folded) THEN
     BEGIN
@@ -526,7 +548,7 @@ END;
 FUNCTION FoldsThroughShadowedName(expr_node: ADRMEM): BOOLEAN;
 { TRUE when FoldConstInt would reach its value through a spelling that a
   visible variable or user routine has taken over.  FoldConstInt itself
-  folds a CONST name and ORD/CHR/SUCC/PRED (and ABS/SQR) by name, deliberately: ps_expr.pas's
+  folds a CONST name and BYWORD/ORD/CHR/SUCC/PRED (and ABS/SQR) by name, deliberately: ps_expr.pas's
   ParseConstant admits exactly those names in a constant expression and
   nothing else can appear there, so a CONST value is the intrinsic whatever
   else is in scope -- which is also what the Python reference's
@@ -648,11 +670,9 @@ BEGIN
   END;
   { A converted actual hands its referent over at the call, after the
     later actuals (InitckReleaseAtCall in cg_symbols). }
-  IF initck_defer_conv AND (initck_npending < INITCK_MAX_PENDING) THEN
+  IF initck_defer_conv THEN
   BEGIN
-    initck_npending := initck_npending + 1;
-    initck_pending[initck_npending] := LLVMBuildBitCast(builder, v, i8ptrty, MakeCStr(''));
-    initck_pending_tid[initck_npending] := 0;
+    InitckQueueRelease(LLVMBuildBitCast(builder, v, i8ptrty, MakeCStr('')), 0);
     RETURN;
   END;
   tys := AllocPtrArray(1);

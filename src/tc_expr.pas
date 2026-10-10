@@ -108,6 +108,11 @@ BEGIN
     folded_value := JsonIntegerValue(node);
     FoldConstInt := TRUE;
   END
+  ELSE IF nt = 'BoolLiteral' THEN
+  BEGIN
+    IF GetBool(node, 'value') THEN folded_value := 1 ELSE folded_value := 0;
+    FoldConstInt := TRUE;
+  END
   ELSE IF nt = 'CharLiteral' THEN
   BEGIN
     ch := GetStr(node, 'value');
@@ -175,7 +180,21 @@ BEGIN
   BEGIN
     name := UpperStr(GetStr(node, 'name'));
     args := GetObj(node, 'args');
-    IF NOT UserDeclarationShadows(name) AND
+    IF (name = 'BYWORD') AND NOT UserDeclarationShadows(name) AND
+       (cJSON_GetArraySize(args) = 2) AND
+       FoldConstInt(cJSON_GetArrayItem(args, 0), left) AND
+       FoldConstInt(cJSON_GetArrayItem(args, 1), right) THEN
+    BEGIN
+      { The backend checks the original enabled domain; this folder keeps
+        the converted WORD ordinal, as with CHR's low-byte normalization. }
+      left := left MOD 256;
+      IF left < 0 THEN left := left + 256;
+      right := right MOD 256;
+      IF right < 0 THEN right := right + 256;
+      folded_value := left * 256 + right;
+      FoldConstInt := TRUE;
+    END
+    ELSE IF NOT UserDeclarationShadows(name) AND
        ((name = 'ORD') OR (name = 'CHR') OR (name = 'SUCC') OR (name = 'PRED') OR
         (name = 'ABS') OR (name = 'SQR')) AND
        (cJSON_GetArraySize(args) = 1) AND

@@ -80,6 +80,19 @@ static int read_identifier_token(char *buf, int cap)
     return 0;
 }
 
+static int64_t read_wide_decimal(int bits);
+
+/* An enum READ by number: an ordinal of the type, 0..count-1, so BOOLEAN 2
+ * is no TRUE. */
+int pas_read_enum_ord(int32_t *out, int count)
+{
+    int64_t v = read_wide_decimal(64);
+    if (v < 0 || v >= count)
+        die("enum value out of range");
+    *out = (int32_t) v;
+    return 0;
+}
+
 int pas_read_enum_name(int32_t *out, const char **names, int count)
 {
     int ch = skip_ws_except_nl();
@@ -87,11 +100,7 @@ int pas_read_enum_name(int32_t *out, const char **names, int count)
         die("unexpected EOF while reading enum");
     if (isdigit((unsigned char) ch) || ch == '-' || ch == '+') {
         unread(ch);
-        long v;
-        if (scanf("%ld", &v) != 1)
-            die("malformed enum input");
-        *out = (int32_t) v;
-        return 0;
+        return pas_read_enum_ord(out, count);
     }
     unread(ch);
     char tok[256];
@@ -104,22 +113,6 @@ int pas_read_enum_name(int32_t *out, const char **names, int count)
     }
     die("malformed enum input");
     return -1;
-}
-
-int pas_read_int(int32_t *out)
-{
-    int ch = skip_ws_except_nl();
-    if (ch == EOF)
-        die("unexpected EOF while reading integer");
-    unread(ch);
-    long v;
-    errno = 0;
-    if (scanf("%ld", &v) != 1)
-        die("malformed integer input");
-    if (errno == ERANGE || v < INT32_MIN || v > INT32_MAX)
-        die("integer out of range");
-    *out = (int32_t) v;
-    return 0;
 }
 
 /* Decimal prefix reader: unlike the vintage int reader, never narrows a
