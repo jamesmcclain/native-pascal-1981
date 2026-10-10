@@ -648,11 +648,9 @@ BEGIN
   END;
   { A converted actual hands its referent over at the call, after the
     later actuals (InitckReleaseAtCall in cg_symbols). }
-  IF initck_defer_conv AND (initck_npending < INITCK_MAX_PENDING) THEN
+  IF initck_defer_conv THEN
   BEGIN
-    initck_npending := initck_npending + 1;
-    initck_pending[initck_npending] := LLVMBuildBitCast(builder, v, i8ptrty, MakeCStr(''));
-    initck_pending_tid[initck_npending] := 0;
+    InitckQueueRelease(LLVMBuildBitCast(builder, v, i8ptrty, MakeCStr('')), 0);
     RETURN;
   END;
   tys := AllocPtrArray(1);

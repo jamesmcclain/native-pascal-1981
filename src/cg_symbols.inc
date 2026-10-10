@@ -22,6 +22,7 @@ FUNCTION InitckHeapShadow(data: ADRMEM; ptr_tid: INTEGER): ADRMEM;
 PROCEDURE InitckHeapNew(data: ADRMEM; ptr_tid: INTEGER);
 PROCEDURE InitckHeapRelease(data: ADRMEM);
 PROCEDURE InitckReleaseAtCall(p: ADRMEM; tid: INTEGER);
+PROCEDURE InitckGuardPending(base: INTEGER32; skip_bb, ran_bb: ADRMEM);
 PROCEDURE InitckFlushReleases(base: INTEGER32);
 PROCEDURE InitckHeapDispose(data: ADRMEM);
 FUNCTION InitckSuperHeapTracked(ptr_tid: INTEGER): BOOLEAN;

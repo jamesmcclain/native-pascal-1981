@@ -250,8 +250,8 @@ VAR
   initck_call_depth: INTEGER32;
   initck_defer_conv: BOOLEAN;
   initck_npending: INTEGER32;
-  initck_pending: ARRAY [1..INITCK_MAX_PENDING] OF ADRMEM;
-  initck_pending_tid: ARRAY [1..INITCK_MAX_PENDING] OF INTEGER;
+  initck_pending: ADRMEM;
+  initck_pending_cap: INTEGER32;
   initck_field_scan: BOOLEAN;
   initck_routine_body: ADRMEM;
 

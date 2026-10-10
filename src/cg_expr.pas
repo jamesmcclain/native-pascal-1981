@@ -239,6 +239,7 @@ VAR
   left_val, right_val, short_val, phi: ADRMEM;
   rhs_bb, merge_bb, left_bb, right_bb: ADRMEM;
   incoming_vals, incoming_blocks: ADRMEM;
+  pending_base: INTEGER32;
 BEGIN
   left_val := CodegenExpr(left_node);
   rhs_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('sc_rhs'));
@@ -256,6 +257,7 @@ BEGIN
   left_bb := LLVMGetInsertBlock(builder);
 
   LLVMPositionBuilderAtEnd(builder, rhs_bb);
+  pending_base := initck_npending;
   right_val := CodegenExpr(right_node);
   right_bb := LLVMGetInsertBlock(builder);
   LLVMBuildBr(builder, merge_bb);
@@ -269,6 +271,9 @@ BEGIN
   SetPtrArrayElem(incoming_blocks, 0, left_bb);
   SetPtrArrayElem(incoming_blocks, 1, right_bb);
   LLVMAddIncoming(phi, incoming_vals, incoming_blocks, 2);
+  { Call effects the skipped operand would have queued (an ADR in an
+    actual) must not happen when it is skipped. }
+  InitckGuardPending(pending_base, left_bb, right_bb);
   last_val_tk := TK_BOOLEAN;
   CodegenShortCircuitBinOp := phi;
 END;

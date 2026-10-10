@@ -473,10 +473,12 @@ follows a raw address to the storage it locates. `ADR x` of a local or formal
 (the grammar takes only a bare name) releases every leaf of `x`, or of the
 caller storage a VAR/CONST formal is bound to, **where the `ADR` is
 evaluated**, or, inside a call's actuals, just before that call, after every
-actual is evaluated (`cadr(ADR x, x)` still checks `x`); `x` stays tracked.
-Such a deferred release happens at the call even when the `ADR` was on a
-skipped `AND THEN`/`OR ELSE` operand, which can only miss an unset value. A read before that point, an `ADR` on an
-untaken path and other variables are still checked, and writes through the
+actual is evaluated (`cadr(ADR x, x)` still checks `x`), however many such
+effects one call's actuals hold; `x` stays tracked. A deferred release of an
+`ADR` on an `AND THEN`/`OR ELSE` operand happens only if that operand was
+evaluated. (Only a condition's top operator can be `AND THEN`/`OR ELSE` in
+source, so this matters only for typed ASTs given to the code generator.) A
+read before that point, an `ADR` on an untaken path and other variables are still checked, and writes through the
 address (`fillc(ADR flags, ...)`, `q := ADR x; q^ := 99`, C) need no state
 because the released leaves are already initialized. A typed pointer
 converted from such an address locates no registered allocation, so reads
