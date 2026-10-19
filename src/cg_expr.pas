@@ -2078,6 +2078,50 @@ BEGIN
   discard := LLVMBuildUnreachable(builder);
 END;
 
+PROCEDURE GuardNilckPointer(p, ptr_ty, site: ADRMEM);
+{ Null-only ordinary host pointer check at the consuming ^ token. Legacy
+  selectors without a true boolean NILCK snapshot are unchecked, like
+  INITCK. Descriptors retain their independent specialized checks. }
+VAR
+  bad_bb, ok_bb, ps, args, fnty, fn, discard, location: ADRMEM;
+  msg: Str255;
+  line, column: INTEGER32;
+BEGIN
+  IF NOT GetBool(GetObjOrNil(site, 'read_flags'), 'NILCK') THEN RETURN;
+  location := GetObjOrNil(site, 'read_location');
+  line := GetInt(location, 'line');
+  column := GetInt(location, 'column');
+  IF is_device_compiland THEN
+  BEGIN
+    msg := 'NILCK unsupported boundary: DEVICE pointer dereference';
+    IF (line > 0) AND (column > 0) THEN
+    BEGIN
+      CONCAT(msg, ' at line ');
+      CONCAT(msg, InitckIntText(line));
+      CONCAT(msg, ' column ');
+      CONCAT(msg, InitckIntText(column));
+    END;
+    AbortWith(msg);
+  END;
+  bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('nilck.bad'));
+  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('nilck.ok'));
+  LLVMBuildCondBr(builder, LLVMBuildICmp(builder, LLVMIntEQ, p,
+    LLVMConstNull(ptr_ty), MakeCStr('nilck.isnil')), bad_bb, ok_bb);
+  LLVMPositionBuilderAtEnd(builder, bad_bb);
+  ps := AllocPtrArray(2);
+  SetPtrArrayElem(ps, 0, i32ty);
+  SetPtrArrayElem(ps, 1, i32ty);
+  fnty := LLVMFunctionType(voidty, ps, 2, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_nilck_error'));
+  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr('pas_nilck_error'), fnty);
+  args := AllocPtrArray(2);
+  SetPtrArrayElem(args, 0, LLVMConstInt(i32ty, line, 0));
+  SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, column, 0));
+  discard := LLVMBuildCall2(builder, fnty, fn, args, 2, MakeCStr(''));
+  discard := LLVMBuildUnreachable(builder);
+  LLVMPositionBuilderAtEnd(builder, ok_bb);
+END;
+
 FUNCTION ComputeDesignatorAddress(node: ADRMEM): ADRMEM;
 { Shared by a Designator read (CodegenExpr) and a Designator write
   (CodegenAssignStmt): walk `name` plus zero or more INDEX/FIELD selectors,
@@ -2440,6 +2484,8 @@ BEGIN
         super_leaves := NIL;
         base_ptr := LLVMBuildLoad2(builder, LLVMTypeForTk(cur_tid), base_ptr, MakeCStr(''));
         selected_upper := NIL;
+        IF NOT IsHostDescriptor(cur_tid) THEN
+          GuardNilckPointer(base_ptr, LLVMTypeForTk(cur_tid), sel);
         IF IsHostDescriptor(cur_tid) THEN
         BEGIN
           descriptor := base_ptr;

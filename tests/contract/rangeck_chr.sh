@@ -108,7 +108,7 @@ pass 'user CHR shadowing'
 printf '%s\n' 'DEVICE INTERFACE;' 'UNIT CHRU (check);' \
   'PROCEDURE check(cell: ADS(GLOBAL) OF INTEGER);' 'END;' > "$work/chr.inc"
 printf '%s\n' '(*$INCLUDE:'\''chr.inc'\''*)' 'DEVICE IMPLEMENTATION OF CHRU;' \
-  'PROCEDURE check(cell: ADS(GLOBAL) OF INTEGER);' 'BEGIN' \
+  'PROCEDURE check(cell: ADS(GLOBAL) OF INTEGER);' 'BEGIN {$NILCK-}' \
   '  cell^ := ORD(CHR(cell^))' 'END;' '.' > "$work/chr.impl"
 printf '%s\n' '(*$INCLUDE:'\''chr.inc'\''*)' 'PROGRAM cpu;' 'USES CHRU (check);' \
   'TYPE P = ^INTEGER; VAR cell: P;' 'BEGIN NEW(cell); cell^ := 300; LAUNCH(check, 1, 1, cell); WRITELN('\''wrong'\'') END.' > "$work/main.pas"

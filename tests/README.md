@@ -14,6 +14,7 @@ Longer accounts live in their own documents:
 
 - [MATHCK tests](../docs/testing/mathck.md): the test map and the G1–G29 gap baseline
 - [INITCK tests](../docs/testing/initck.md): the support boundary and its suites
+- [NILCK tests](../docs/testing/nilck.md): null-only host dereferences and explicit exclusions
 - [Host descriptor contract tests](../docs/testing/descriptors.md)
 - [Opt-in overhead measurements](../docs/testing/overhead.md)
 - [Retained Python test infrastructure](../docs/testing/retained_python.md): what is kept and why
@@ -130,6 +131,7 @@ is its entry here.
 | contract | [`mathck_twins`](contract/mathck_twins.sh) | Programs that never overflow behave identically under MATHCK+ and MATHCK-. |
 | contract | [`mathck_vector`](contract/mathck_vector.sh) | MATHCK on integer VECTOR lanes and the VSUM/VPROD reductions. |
 | contract | [`mathck_word_scalar`](contract/mathck_word_scalar.sh) | Scalar WORD arithmetic against native arithmetic oracles. |
+| contract | [`nilck`](contract/nilck.sh) | NILCK null-only host dereferences: diagnostics, snapshots, aliases and IR ordering. |
 | contract | [`pretty81_integers`](contract/pretty81_integers.sh) | pretty81 preserves exact signed INTEGER64 literals through parsed and typed ASTs. |
 | contract | [`pretty81_sequential`](contract/pretty81_sequential.sh) | pretty81 prints AND THEN/OR ELSE chains without parentheses, which the 1981 manual forbids around them: its output parses again, prints the same text, and the program behaves the same. |
 | contract | [`quoted_literal_limits`](contract/quoted_literal_limits.sh) | Quoted token spellings include both delimiters and doubled quotes. |

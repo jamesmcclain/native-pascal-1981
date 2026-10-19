@@ -189,7 +189,7 @@ pass 'user BYWORD shadowing'
 printf '%s\n' 'DEVICE INTERFACE;' 'UNIT BWU (check);' \
   'PROCEDURE check(cell: ADS(GLOBAL) OF INTEGER);' 'END;' > "$work/bw.inc"
 printf '%s\n' '(*$INCLUDE:'\''bw.inc'\''*)' 'DEVICE IMPLEMENTATION OF BWU;' \
-  'PROCEDURE check(cell: ADS(GLOBAL) OF INTEGER);' 'BEGIN' \
+  'PROCEDURE check(cell: ADS(GLOBAL) OF INTEGER);' 'BEGIN {$NILCK-}' \
   '  cell^ := RETYPE(INTEGER, BYWORD(cell^,0))' 'END;' '.' > "$work/bw.impl"
 printf '%s\n' '(*$INCLUDE:'\''bw.inc'\''*)' 'PROGRAM cpu;' 'USES BWU (check);' \
   'TYPE P = ^INTEGER; VAR cell: P;' 'BEGIN NEW(cell); cell^ := 300; LAUNCH(check, 1, 1, cell); WRITELN('\''wrong'\'') END.' > "$work/main.pas"

@@ -86,7 +86,7 @@ done
 printf '%s\n' 'DEVICE INTERFACE;' 'UNIT CASEU (check);' \
   'PROCEDURE check(cell: ADS(GLOBAL) OF INTEGER);' 'END;' > "$work/case.inc"
 printf '%s\n' '(*$INCLUDE:'\''case.inc'\''*)' 'DEVICE IMPLEMENTATION OF CASEU;' \
-  'PROCEDURE check(cell: ADS(GLOBAL) OF INTEGER);' 'BEGIN' \
+  'PROCEDURE check(cell: ADS(GLOBAL) OF INTEGER);' 'BEGIN {$NILCK-}' \
   '  CASE cell^ OF 1: cell^ := 3 END' 'END;' '.' > "$work/case.impl"
 printf '%s\n' '(*$INCLUDE:'\''case.inc'\''*)' 'PROGRAM cpu;' 'USES CASEU (check);' \
   'TYPE P = ^INTEGER; VAR cell: P;' 'BEGIN NEW(cell); cell^ := 2; LAUNCH(check, 1, 1, cell); WRITELN('\''wrong'\'') END.' > "$work/main.pas"

@@ -7,5 +7,5 @@ PROCEDURE touch(p: PCells);
 END;
 DEVICE IMPLEMENTATION OF DESCRIPTORTHIN;
 PROCEDURE touch(p: PCells);
-BEGIN p^[2] := 7 END;
+BEGIN {$NILCK-} p^[2] := 7 END;
 .

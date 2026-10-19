@@ -154,6 +154,27 @@ limitation of this repository's implementation. A native limitation applies
 to every program compiled by the native pipeline unless the text says
 otherwise.
 
+## Null pointer checking: ordinary host dereferences [native]
+
+`{$NILCK+}` (the default) checks ordinary host typed-pointer `^` uses for
+NIL, including selected writes, WITH and VAR targets. The flag and diagnostic
+coordinates belong to the consuming `^` token. Supported INITCK checks run
+before pointer bits are loaded; NILCK then checks the single loaded pointer
+before pointer-derived address formation or pointee access. Failure flushes
+stdout and stderr, reports `runtime error: NILCK NIL pointer dereference at
+line L column C`, and aborts. Initialized NIL copies/comparisons are legal.
+Legacy/malformed snapshots without boolean enablement are unchecked; enabled
+snapshots without coordinates report 0:0. As with INITCK, include-file identity
+is not available and is not claimed by the diagnostic.
+
+This is null-only, not arbitrary-address, provenance or lifetime validation.
+DISPOSE, host descriptors and file-buffer `^` are not part of this slice;
+existing descriptor/INDEXCK/vector checks remain independent. CPU DEVICE and
+NVPTX ordinary dereferences reject when NILCK is enabled, with a located
+unsupported-boundary diagnostic and no published IR. `{$NILCK-}` explicitly
+retains legacy unchecked lowering, not a promise that invalid accesses are
+safe. See [NILCK tests and completion checklist](testing/nilck.md).
+
 ## Initialization checking: host storage [native]
 
 INITCK is runtime enforcement, not metadata-only. It is default-off and
@@ -199,7 +220,8 @@ diagnostic; missing coordinates never suppress an enabled guard. Tokens do not
 currently carry filenames: include coordinates are local to the included token
 run, so this diagnostic does not claim a source-file identity or include stack.
 INITCK errors are distinct from existing NIL-pointer and array-bounds runtime
-errors; this does not implement the NILCK directive. Zero, FALSE, and `-32768`
+errors; INITCK does not substitute for the separate null-only NILCK checks
+above. Zero, FALSE, and `-32768`
 are ordinary initialized values, not sentinels.
 
 Guard elimination runs even at O0, after unsupported-boundary validation. It

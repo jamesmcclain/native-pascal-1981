@@ -2,6 +2,6 @@
 DEVICE IMPLEMENTATION OF INCREMENTU;
 PROCEDURE INCREMENT(cell: ADS(GLOBAL) OF INTEGER32);
 BEGIN
-  cell^ := cell^ + 1
+  {$NILCK-} cell^ := cell^ + 1
 END;
 .
