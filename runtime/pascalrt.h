@@ -261,6 +261,7 @@ void  pas_vector_range_error(int32_t is_store, int64_t idx, int32_t idx_unsigned
 /* ---- $INITCK host locals, formals, results and aggregates (initck.c) ---- */
 /* Null-only ordinary host pointer dereference failure; never returns. */
 void pas_nilck_error(int32_t line, int32_t column);
+void pas_nilck_dispose_error(int32_t line, int32_t column);
 void pas_initck_error(const char *name, int32_t line, int32_t column);
 /* what is "local", "parameter", "result of", "component" or "part of". */
 void pas_initck_fail(const char *what, const char *name, int32_t line, int32_t column);

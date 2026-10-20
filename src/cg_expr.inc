@@ -14,6 +14,7 @@ FUNCTION CodegenBinOp(op: Str255; left_node, right_node, site: ADRMEM): ADRMEM;
 FUNCTION CodegenUnaryOp(op: Str255; operand_node, site: ADRMEM): ADRMEM;
 FUNCTION CodegenCallCommon(name: Str255; args_arr: ADRMEM): ADRMEM;
 FUNCTION ComputeDesignatorAddress(node: ADRMEM): ADRMEM;
+PROCEDURE GuardNilckDispose(p, stmt: ADRMEM);
 { The array operand of VLOAD/VSTORE: a bare array variable (Identifier) or
   any array-typed Designator (e.g. p^, r.buf). Returns its storage address;
   arr_tid is its type id and super_upper carries the selected bound when the operand is

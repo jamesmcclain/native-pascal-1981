@@ -2078,17 +2078,15 @@ BEGIN
   discard := LLVMBuildUnreachable(builder);
 END;
 
-PROCEDURE GuardNilckPointer(p, ptr_ty, site: ADRMEM);
-{ Null-only ordinary host pointer check at the consuming ^ token. Legacy
-  selectors without a true boolean NILCK snapshot are unchecked, like
-  INITCK. Descriptors retain their independent specialized checks. }
+PROCEDURE GuardNilckValue(p, ptr_ty, flags, location: ADRMEM; disposing: BOOLEAN);
+{ Check an already-loaded pointer without re-evaluating its designator.
+  Missing/malformed boolean snapshots opt out, as for INITCK. }
 VAR
-  bad_bb, ok_bb, ps, args, fnty, fn, discard, location: ADRMEM;
-  msg: Str255;
+  bad_bb, ok_bb, ps, args, fnty, fn, discard: ADRMEM;
+  msg, failure_name: Str255;
   line, column: INTEGER32;
 BEGIN
-  IF NOT GetBool(GetObjOrNil(site, 'read_flags'), 'NILCK') THEN RETURN;
-  location := GetObjOrNil(site, 'read_location');
+  IF NOT GetBool(flags, 'NILCK') THEN RETURN;
   line := GetInt(location, 'line');
   column := GetInt(location, 'column');
   IF is_device_compiland THEN
@@ -2112,14 +2110,33 @@ BEGIN
   SetPtrArrayElem(ps, 0, i32ty);
   SetPtrArrayElem(ps, 1, i32ty);
   fnty := LLVMFunctionType(voidty, ps, 2, 0);
-  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_nilck_error'));
-  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr('pas_nilck_error'), fnty);
+  failure_name := 'pas_nilck_error';
+  IF disposing THEN failure_name := 'pas_nilck_dispose_error';
+  fn := LLVMGetNamedFunction(modl, MakeCStr(failure_name));
+  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr(failure_name), fnty);
   args := AllocPtrArray(2);
   SetPtrArrayElem(args, 0, LLVMConstInt(i32ty, line, 0));
   SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, column, 0));
   discard := LLVMBuildCall2(builder, fnty, fn, args, 2, MakeCStr(''));
   discard := LLVMBuildUnreachable(builder);
   LLVMPositionBuilderAtEnd(builder, ok_bb);
+END;
+
+PROCEDURE GuardNilckPointer(p, ptr_ty, site: ADRMEM);
+{ Ordinary ^ owns its read snapshot. Descriptor dereferences retain their
+  independent specialized checks. }
+BEGIN
+  GuardNilckValue(p, ptr_ty, GetObjOrNil(site, 'read_flags'),
+    GetObjOrNil(site, 'read_location'), FALSE);
+END;
+
+PROCEDURE GuardNilckDispose(p, stmt: ADRMEM);
+{ DISPOSE owns the name-token flags/location, not its actual's flags. Both
+  ordinary pointers and descriptor data pointers reach this after INITCK
+  and the sole pointer load, before metadata retirement or free. }
+BEGIN
+  GuardNilckValue(p, i8ptrty, GetObjOrNil(stmt, 'meta_flags'),
+    GetObjOrNil(stmt, 'location'), TRUE);
 END;
 
 FUNCTION ComputeDesignatorAddress(node: ADRMEM): ADRMEM;

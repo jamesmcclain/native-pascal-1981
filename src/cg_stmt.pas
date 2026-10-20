@@ -1675,6 +1675,7 @@ BEGIN
       IF IsHostDescriptor(ptr_tid) THEN
         raw := LLVMBuildExtractValue(builder, raw, 0, MakeCStr(''));
       casted := LLVMBuildBitCast(builder, raw, i8ptrty, MakeCStr(''));
+      GuardNilckDispose(casted, stmt);
       { Retire the allocation's INITCK state, whatever this pointer's
         type (a reinterpreted pointer may free a tracked referent), so a
         reuse of the address never inherits it. }

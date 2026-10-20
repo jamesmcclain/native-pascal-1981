@@ -167,8 +167,18 @@ Legacy/malformed snapshots without boolean enablement are unchecked; enabled
 snapshots without coordinates report 0:0. As with INITCK, include-file identity
 is not available and is not claimed by the diagnostic.
 
+Builtin DISPOSE uses the NILCK snapshot and location at the procedure name,
+not in its actual. After any supported INITCK check and one pointer/descriptor
+load, it null-checks the ordinary pointer or descriptor data pointer before
+INITCK metadata retirement and `free`. Failure reports `runtime error: NILCK
+NIL pointer passed to DISPOSE at line L column C` and aborts after flushing.
+NILCK- omits the disposal check, consistent with the manual's p. 11-5 wording
+“these are checked if $NILCK is on.” Successful disposal does not clear pointer
+bits or initializedness. DEVICE NEW/DISPOSE retain their unconditional existing
+rejection. Long-form DISPOSE admission is unchanged (one argument only).
+
 This is null-only, not arbitrary-address, provenance or lifetime validation.
-DISPOSE, host descriptors and file-buffer `^` are not part of this slice;
+Descriptor dereferences and file-buffer `^` are not part of this slice;
 existing descriptor/INDEXCK/vector checks remain independent. CPU DEVICE and
 NVPTX ordinary dereferences reject when NILCK is enabled, with a located
 unsupported-boundary diagnostic and no published IR. `{$NILCK-}` explicitly
