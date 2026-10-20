@@ -988,6 +988,10 @@ BEGIN
               arg_ctx := INITCK_CTX_EFFECT;
           END;
       END
+      ELSE IF (nm = 'COPYLST') AND (i = 1) THEN
+        { COPYLST replaces its bare LSTRING destination without reading
+          the old value. Strings remain untracked, not silently initialized. }
+        arg_reads := FALSE
       ELSE IF (nm = 'READ') OR (nm = 'READLN') THEN
       BEGIN
         arg_reads := FALSE;

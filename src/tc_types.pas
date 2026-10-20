@@ -504,9 +504,8 @@ BEGIN
     ELSE IF uname = 'STRING' THEN tk := TK_STRING
     { LSTRING shares TK_STRING with the fixed STRING -- this v1 type-kind
       model does not track a string's capacity or flavor -- but the two are
-      not interchangeable for one construct: .LEN designates an LSTRING's
-      leading length byte and is an error on a STRING. aux2 = 1 is the flag
-      that tells them apart; nothing else reads aux2 for a string. }
+      not interchangeable for .LEN or a COPYLST destination: both require
+      an LSTRING's leading length byte. aux2 = 1 tells them apart. }
     ELSE IF uname = 'LSTRING' THEN
     BEGIN
       tk := TK_STRING;

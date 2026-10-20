@@ -325,8 +325,10 @@ _Bool SMULOK(uint32_t a, uint32_t b, int16_t *c);
 _Bool UADDOK(uint32_t a, uint32_t b, uint16_t *c);
 _Bool UMULOK(uint32_t a, uint32_t b, uint16_t *c);
 
-/* ---- $RANGECK subrange stores, CONCAT, LSTRING length, CHR/BYWORD and CASE (subrange.c) ---- */
+/* ---- $RANGECK subrange stores, CONCAT/COPYLST, LSTRING length, CHR/BYWORD and CASE (subrange.c) ---- */
 
+void  pas_copylst_error(uint64_t length, int32_t capacity,
+                        int32_t line, int32_t column) __attribute__((noreturn));
 void  pas_concat_error(uint64_t length, int32_t capacity,
                        int32_t line, int32_t column) __attribute__((noreturn));
 

@@ -787,20 +787,24 @@ BEGIN
   LLVMPositionBuilderAtEnd(builder, end_bb);
 END;
 
-PROCEDURE CodegenCopylst(args: ADRMEM);
+PROCEDURE EmitStringCapacityCheck(new_len: ADRMEM; capacity: INTEGER32;
+  site: ADRMEM; prefix, error_name: Str255); FORWARD;
+
+PROCEDURE CodegenCopylst(stmt: ADRMEM);
 { COPYLST(CONST S: STRING-or-LSTRING-or-literal; VAR D: LSTRING): copies S's
-  characters into D from scratch (unlike CONCAT, which appends) and sets D's
-  length byte to length(S). No RANGECK-style capacity guard, same documented
-  simplification as CONCAT. }
+  characters into D from scratch and sets D's length byte to length(S).
+  RANGECK+ checks capacity and byte representability before any writes. }
+
 VAR
-  d_arg: ADRMEM;
-  d_symi: INTEGER32;
+  args, d_arg, source: ADRMEM;
+  d_symi, capacity: INTEGER32;
   d_tid: INTEGER;
   d_addr, len_ptr, src_len_byte: ADRMEM;
   dest_chars: ADRMEM;
-  src_chars, src_len: ADRMEM;
+  src_chars, src_len, src_len64: ADRMEM;
   gep_idx: ADRMEM;
 BEGIN
+  args := GetObj(stmt, 'args');
   IF ArrSize(args) <> 2 THEN
     AbortWith('codegen: COPYLST expects exactly 2 arguments');
   d_arg := ArrItem(args, 1);
@@ -814,7 +818,15 @@ BEGIN
     AbortWith('codegen: COPYLST''s destination must be an LSTRING variable');
   d_addr := symbols[d_symi].llvm_val;
 
-  ResolveStringExprCharsLen(ArrItem(args, 0), src_chars, src_len);
+  source := ArrItem(args, 0);
+  IF (NodeType(source) <> 'StringLiteral') AND (NodeType(source) <> 'CharLiteral') THEN
+    IF GetBool(GetObjOrNil(source, 'read_flags'), 'INITCK') THEN
+      InitckBoundaryAt('STRING/LSTRING COPYLST operand', source);
+  ResolveStringExprCharsLen(source, src_chars, src_len);
+  src_len64 := LLVMBuildZExt(builder, src_len, i64ty, MakeCStr('copylst.length'));
+  capacity := types[d_tid].hi;
+  IF capacity > 255 THEN capacity := 255;
+  EmitStringCapacityCheck(src_len64, capacity, stmt, 'copylst', 'pas_copylst_error');
 
   gep_idx := AllocPtrArray(2);
   SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
@@ -995,19 +1007,24 @@ BEGIN
   END;
 END;
 
-PROCEDURE EmitConcatCapacityCheck(new_len: ADRMEM; capacity: INTEGER32; site: ADRMEM);
+PROCEDURE EmitStringCapacityCheck(new_len: ADRMEM; capacity: INTEGER32;
+  site: ADRMEM; prefix, error_name: Str255);
 { RANGECK owns this semantic capacity check, not MATHCK. As with other
   RANGECK guards, unchecked and NVPTX paths retain their existing behavior.
   Check before any destination byte or length publication. }
 VAR
   ok, bad_bb, ok_bb, ps, fnty, fn, args, discard, location: ADRMEM;
   line, column: INTEGER32;
+  in_name, bad_name, ok_name: Str255;
 BEGIN
   IF NOT cur_rangeck OR is_nvptx_device THEN RETURN;
+  in_name := prefix; CONCAT(in_name, '.in');
+  bad_name := prefix; CONCAT(bad_name, '.bad');
+  ok_name := prefix; CONCAT(ok_name, '.ok');
   ok := LLVMBuildICmp(builder, LLVMIntULE, new_len,
-    LLVMConstInt(i64ty, capacity, 0), MakeCStr('concat.in'));
-  bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('concat.bad'));
-  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('concat.ok'));
+    LLVMConstInt(i64ty, capacity, 0), MakeCStr(in_name));
+  bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr(bad_name));
+  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr(ok_name));
   LLVMBuildCondBr(builder, ok, ok_bb, bad_bb);
   LLVMPositionBuilderAtEnd(builder, bad_bb);
   ps := AllocPtrArray(4);
@@ -1016,8 +1033,8 @@ BEGIN
   SetPtrArrayElem(ps, 2, i32ty);
   SetPtrArrayElem(ps, 3, i32ty);
   fnty := LLVMFunctionType(voidty, ps, 4, 0);
-  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_concat_error'));
-  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr('pas_concat_error'), fnty);
+  fn := LLVMGetNamedFunction(modl, MakeCStr(error_name));
+  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr(error_name), fnty);
   line := 0; column := 0;
   location := GetObjOrNil(site, 'location');
   IF location <> NIL THEN
@@ -1077,7 +1094,7 @@ BEGIN
   new_len := LLVMBuildAdd(builder, dest_len64, src_len64, MakeCStr('concat.length'));
   capacity := types[d_tid].hi;
   IF capacity > 255 THEN capacity := 255;
-  EmitConcatCapacityCheck(new_len, capacity, stmt);
+  EmitStringCapacityCheck(new_len, capacity, stmt, 'concat', 'pas_concat_error');
 
   gep_idx := AllocPtrArray(2);
   SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
@@ -1576,7 +1593,7 @@ BEGIN
   ELSE IF name = 'CONCAT' THEN
     CodegenConcat(stmt)
   ELSE IF name = 'COPYLST' THEN
-    CodegenCopylst(GetObj(stmt, 'args'))
+    CodegenCopylst(stmt)
   ELSE IF name = 'COPYSTR' THEN
     CodegenCopystr(GetObj(stmt, 'args'))
   ELSE IF name = 'INSERT' THEN

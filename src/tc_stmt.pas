@@ -305,6 +305,39 @@ BEGIN
   END;
 END;
 
+PROCEDURE CheckCopylst(args_arr: ADRMEM);
+{ Native COPYLST initially supports the backend's bare destination seam.
+  aux2 distinguishes LSTRING from fixed STRING, including type aliases and
+  formals. One-character literals adapt as strings, not arbitrary CHARs. }
+VAR
+  arg: ADRMEM;
+  tk: INTEGER;
+  si: INTEGER32;
+BEGIN
+  IF cJSON_GetArraySize(args_arr) <> 2 THEN
+    AddError('COPYLST expects exactly two arguments (S, D)')
+  ELSE
+  BEGIN
+    arg := cJSON_GetArrayItem(args_arr, 0);
+    tk := CheckExpr(arg);
+    IF (tk <> TK_STRING) AND (tk <> TK_UNKNOWN) AND
+       (NodeType(arg) <> 'CharLiteral') THEN
+      AddError('COPYLST source must be STRING or LSTRING');
+    arg := cJSON_GetArrayItem(args_arr, 1);
+    IF NodeType(arg) <> 'Identifier' THEN
+      AddError('COPYLST destination must be a bare LSTRING variable')
+    ELSE
+    BEGIN
+      si := LookupSymbol(GetStr(arg, 'name'));
+      IF si = 0 THEN
+        AddUndefinedIdentifier(arg)
+      ELSE IF (symbols[si].kind <> 'VAR') OR
+              (symbols[si].tk <> TK_STRING) OR (symbols[si].aux2 <> 1) THEN
+        AddError('COPYLST destination must be a bare LSTRING variable');
+    END;
+  END;
+END;
+
 PROCEDURE CheckStmtBody(node: ADRMEM);
 VAR
   nt, varname: Str255;
@@ -562,6 +595,8 @@ BEGIN
     END
     ELSE IF (pname = 'NEW') OR (pname = 'DISPOSE') THEN
       CheckNewDispose(args_arr, pname)
+    ELSE IF pname = 'COPYLST' THEN
+      CheckCopylst(args_arr)
     ELSE IF pname = 'CONCAT' THEN
     BEGIN
       { CONCAT(VAR d: LSTRING-or-STRING-or-Str255; CONST s: STRING-or-

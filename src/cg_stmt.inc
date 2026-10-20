@@ -22,7 +22,7 @@ PROCEDURE CodegenRepeatStmt(stmt: ADRMEM);
 PROCEDURE CodegenForStmt(stmt: ADRMEM);
 PROCEDURE EmitByteCopyLoop(dest_ptr, src_ptr: ADRMEM; count: ADRMEM);
 PROCEDURE EmitByteFillLoop(dest_ptr: ADRMEM; count: ADRMEM; fill_byte: INTEGER);
-PROCEDURE CodegenCopylst(args: ADRMEM);
+PROCEDURE CodegenCopylst(stmt: ADRMEM);
 PROCEDURE CodegenCopystr(args: ADRMEM);
 PROCEDURE CodegenInsert(args: ADRMEM);
 PROCEDURE CodegenDelete(args: ADRMEM);
