@@ -1629,8 +1629,10 @@ FUNCTION ResolveIntLiteral(node: ADRMEM): INTEGER32;
   needs to drill into the node's own 'value' field, not treat the node
   itself as a bare JSON number. Also resolves a bare Identifier bound
   through the CONST table (e.g. "ARRAY [1..MAX_SYMBOLS]"), pervasive in
-  this repository's own native sources; any other computed bound expression
-  is still not supported. }
+  this repository's own native sources, and a constant call
+  (CHR(250)..CHR(255), CHR(K)) through FoldConstInt, which yields the
+  converted ordinal; any other computed bound expression is still not
+  supported. }
 VAR
   nm, ch: Str255;
   ci: INTEGER32;
@@ -1663,6 +1665,20 @@ BEGIN
       ResolveIntLiteral := CheckedIndexBound(wide);
     END;
   END
+  ELSE IF NodeType(node) = 'FuncCall' THEN
+  BEGIN
+    { The typechecker has already rejected an enabled out-of-domain CHR or
+      BYWORD here (CheckConstByteDomain); FoldConstInt declines such a call,
+      so a frozen AST that skipped that check still cannot fold it into a
+      bound. }
+    IF FoldConstInt(node, wide) THEN
+      ResolveIntLiteral := CheckedIndexBound(wide)
+    ELSE
+    BEGIN
+      AbortWith2('codegen: array index bound call is not a foldable constant: ', GetStr(node, 'name'));
+      ResolveIntLiteral := 0;
+    END;
+  END
   ELSE
   BEGIN
     AbortWith('codegen: array index bounds must be integer literals or CONST identifiers');
@@ -1672,9 +1688,13 @@ END;
 
 FUNCTION BoundHostTid(node: ADRMEM): INTEGER;
 { The host type of a subrange or array index bound: CHAR, BOOLEAN, an
-  enumeration, or INTEGER. A named constant has the type of its value. }
+  enumeration, or INTEGER. A named constant has the type of its value; a
+  constant call has CHR's CHAR, SUCC/PRED's argument type, or INTEGER
+  (ORD, WRD, BYWORD), as the typechecker's ConstCallBoundKind agrees. }
 VAR
   ci: INTEGER32;
+  nm: Str255;
+  args: ADRMEM;
 BEGIN
   BoundHostTid := TK_INTEGER;
   IF NodeType(node) = 'CharLiteral' THEN BoundHostTid := TK_CHAR
@@ -1686,6 +1706,14 @@ BEGIN
       IF const_tbl[ci].enum_tid <> 0 THEN BoundHostTid := const_tbl[ci].enum_tid
       ELSE IF const_tbl[ci].is_char THEN BoundHostTid := TK_CHAR
       ELSE IF const_tbl[ci].integer_tid <> 0 THEN BoundHostTid := const_tbl[ci].integer_tid;
+  END
+  ELSE IF NodeType(node) = 'FuncCall' THEN
+  BEGIN
+    nm := UpperStr(GetStr(node, 'name'));
+    args := GetObj(node, 'args');
+    IF nm = 'CHR' THEN BoundHostTid := TK_CHAR
+    ELSE IF ((nm = 'SUCC') OR (nm = 'PRED')) AND (ArrSize(args) = 1) THEN
+      BoundHostTid := BoundHostTid(ArrItem(args, 0));
   END;
 END;
 

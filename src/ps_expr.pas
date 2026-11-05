@@ -219,6 +219,20 @@ BEGIN
   IsConversionBuiltin := StringEqual(up, 'TRUNC') OR StringEqual(up, 'ROUND');
 END;
 
+FUNCTION IsConstantCallName(name: Str255): BOOLEAN;
+{ The function-shaped forms of a constant expression: ParseConstant admits
+  exactly these names followed by `(`, and a type clause recognizes one as
+  the start of a subrange (CHR(250)..CHR(255)) rather than a parameterized
+  type name (LSTRING(10)). }
+VAR
+  up: Str255;
+BEGIN
+  up := UpperStr(name);
+  IsConstantCallName := StringEqual(up, 'WRD') OR StringEqual(up, 'BYWORD') OR
+    StringEqual(up, 'ORD') OR StringEqual(up, 'CHR') OR
+    StringEqual(up, 'SUCC') OR StringEqual(up, 'PRED');
+END;
+
 PROCEDURE AddOpLocation(node: ADRMEM; tok: PToken);
 VAR
   location: ADRMEM;
@@ -345,10 +359,7 @@ BEGIN
     val_str := CurLex;
     name_tok := GetTok(0);
     Expect('IDENTIFIER');
-    IF (StringEqual(UpperStr(val_str), 'WRD') OR StringEqual(UpperStr(val_str), 'BYWORD') OR
-        StringEqual(UpperStr(val_str), 'ORD') OR StringEqual(UpperStr(val_str), 'CHR') OR
-        StringEqual(UpperStr(val_str), 'SUCC') OR StringEqual(UpperStr(val_str), 'PRED')) AND
-       (CurKind = 'LPAREN') THEN
+    IF IsConstantCallName(val_str) AND (CurKind = 'LPAREN') THEN
     BEGIN
       BEGIN RelayTokenTrivia; pos := pos + 1; END;
       node := CreateTriviaNode('FuncCall');
@@ -848,7 +859,11 @@ VAR
 BEGIN
   IF CurKind = 'IDENTIFIER' THEN
   BEGIN
-    IF NextKind = 'RANGE' THEN
+    { A constant call (CHR(250)..CHR(255)) begins a subrange, as a named
+      constant does; a type name never takes `(` except as the capacity
+      of STRING/LSTRING, which are not constant call names. }
+    IF (NextKind = 'RANGE') OR
+       (IsConstantCallName(CurLex) AND (NextKind = 'LPAREN')) THEN
     BEGIN
       low_e := ParseConstant;
       Expect('RANGE');
@@ -1133,7 +1148,9 @@ BEGIN
     AddStringField(node, 'flavor', 'ADS');
     ParseType := node;
   END
-  ELSE IF (CurKind = 'IDENTIFIER') AND (NextKind = 'RANGE') THEN
+  ELSE IF (CurKind = 'IDENTIFIER') AND
+          ((NextKind = 'RANGE') OR
+           (IsConstantCallName(CurLex) AND (NextKind = 'LPAREN'))) THEN
   BEGIN
     node := ParseSetBase;
     ParseType := node;

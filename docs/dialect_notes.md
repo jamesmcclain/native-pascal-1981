@@ -43,6 +43,7 @@ its [unsafe raw boundary](#descriptor-unsafe-raw-boundary) and ownership limits.
 - [Host SUPER ARRAY descriptor ABI](#host-super-array-descriptor-abi-native)
 - [Bound expressions](#bound-expressions-native)
 - [Subrange range checks](#subrange-range-checks-native)
+- [Constant calls in subrange bounds](#constant-calls-in-subrange-bounds-both)
 - [Named ordinal array index types](#named-ordinal-array-index-types-native)
 - [MATHCK: integer overflow and division checks](#mathck-integer-overflow-and-division-checks-both)
 - [Integer widths](#integer-widths)
@@ -1533,6 +1534,52 @@ array index at compile time (error 198). [Pascal/VS](https://www.bitsavers.org/p
 uses `%CHECK SUBSCRIPT` instead and includes string subscripts. Neither
 historical contract implies that the unchecked cases above are safe.
 
+## Constant calls in subrange bounds **[both]**
+
+The manual lets a subrange bound be a constant expression (6-8) and lists
+`CHR`, `ORD`, `WRD`, `BYWORD`, `SUCC` and `PRED` among the constant
+functions (5-9). Both dialects accept those calls, with constant arguments,
+as the bounds of a subrange type, an explicit array index range and a `SET`
+base; this is the only way to name the non-printable `CHAR` tail:
+
+```pascal
+CONST K = 250;
+TYPE Tail = CHR(250)..CHR(255);      { the non-printable CHAR tail }
+     FromK = CHR(K)..CHR(255);       { a CONST argument }
+     Wide = 'a'..CHR(255);           { a literal and a call }
+VAR a: ARRAY [CHR(250)..CHR(255)] OF INTEGER;
+    n: ARRAY [Tail] OF INTEGER;
+    s: SET OF CHR(250)..CHR(252);
+```
+
+A bound folds to its converted ordinal exactly as a `CONST` value does
+(`CHR(250)` is 250; under `$RANGECK-`, `CHR(300)` is 44), and its host type
+is `CHAR` for `CHR`, the argument's type for `SUCC`/`PRED`, and `INTEGER`
+for `ORD`, `WRD` and `BYWORD`; both ends must still agree (`Subrange bounds
+must be of the same ordinal type`). The typechecker and codegen fold the
+same bounds, so `LOWER`/`UPPER`, a `FOR` over the subrange, the `$RANGECK`
+store check (`runtime error: value 249 is outside subrange 250..255`) and
+the `$INDEXCK` guard (`runtime error: array index 249 is outside bounds
+250..255 at line L column C`) all use them. An enabled out-of-domain `CHR`
+(or `BYWORD`) in a bound is rejected where a `CONST` value would be, at type
+checking, with `RANGECK constant CHR argument outside 0..255 at line L
+column C` located at the call's name; it is never folded into a bound.
+
+In the parser a constant-call name followed by `(` begins a subrange in type
+position; `STRING(n)` and `LSTRING(n)` are not constant-call names, so a
+parameterized type name still parses as before. The vintage `CONST` section
+is unchanged: it still rejects `ORD`, `CHR`, `SUCC` and `PRED` values
+(`CONST intrinsic calls require the extended-const-intrinsics feature`,
+a gate ported from the reference compiler rather than from the manual), so
+a vintage program writes `CHR(250)` in the bound itself, not through a
+named constant. Admitting the calls in vintage bounds was decided without
+the operator: the manual's constant-expression feature is not dialect
+specific, and gating the bounds would leave the `CHAR` tail unnameable.
+Fixtures: `tests/corpus/golden/chr_subrange_bounds.pas`,
+`chr_subrange_rangeck_bad.pas`, `chr_subrange_indexck_bad.pas` and
+`chr_subrange_bound_domain.pas`; `tests/contract/chr_constant_folding.sh`
+pins the `$RANGECK-` bound value.
+
 ## Named ordinal array index types **[native]**
 
 The 1981 manual (printed pp. 6-11/6-12, 10-3) says a fixed array's index
@@ -1950,7 +1997,7 @@ under RANGECK-, `ORD(CHR(300)) + 1` is 45, not 301, and
 converted ordinal, including negative and MIN64 arguments, without negating
 their magnitude; the backend checks the original domain before normalizing.
 This applies to CONST
-transport, admitted CASE labels and array-bound consumers as well as arithmetic;
+transport, admitted CASE labels, subrange and array-bound consumers as well as arithmetic;
 it does not erase an enabled bad-argument check or broaden constant syntax.
 `tests/contract/chr_constant_folding.sh` pins constant/runtime twins in both
 dialects at O0–O3 and the CONST/label/bound consumers.
@@ -2580,8 +2627,10 @@ least once:
 - **`CONST` accepts literals, named constants, and `WRD`/`BYWORD` constant
   constructors.** Multi-character string constants are supported. `WRD(x)`
   and `BYWORD(hi, lo)` are the only function-shaped forms in the vintage
-  `constant` grammar; ordinary calls, including `ORD`, `CHR`, `SUCC`, and
-  `PRED`, are not valid `CONST` values.
+  `CONST` section; ordinary calls, including `ORD`, `CHR`, `SUCC`, and
+  `PRED`, are not valid vintage `CONST` values. Subrange and array index
+  bounds do take them in both dialects (see
+  [Constant calls in subrange bounds](#constant-calls-in-subrange-bounds-both)).
 - **A `CASE` label range (`1 .. 3:`) is not lowered [both].** The selector
   itself may be any ordinal — every integer width, `CHAR`, `BOOLEAN`, an
   enumerated type — and labels of a narrower type than the selector are

@@ -63,6 +63,18 @@ for opt in 0 1 2 3; do
   diff -u "$work/expected" "$work/output" || die "CONST/bounds O$opt"
   pass "CONST/bounds O$opt"
 done
+# A subrange or index bound folds the same converted ordinal in both
+# dialects: under RANGECK-, CHR(300)..CHR(301) is 44..45.
+printf '%s\n' 'PROGRAM bound;' '{$RANGECK-}' 'TYPE T = CHR(300)..CHR(301);' \
+  'VAR a: ARRAY [T] OF INTEGER; b: ARRAY [CHR(300)..CHR(301)] OF INTEGER; t: T;' \
+  'BEGIN t := CHR(45); WRITELN(ORD(LOWER(a)), ORD(UPPER(b)), ORD(t)) END.' > "$work/bound.pas"
+printf '444545\n' > "$work/expected"
+for dialect in vintage extended; do
+  bin/pascal1981 --dialect "$dialect" "$work/bound.pas" -o "$work/bound"
+  "$work/bound" > "$work/output"
+  diff -u "$work/expected" "$work/output" || die "$dialect unchecked CHR bound"
+  pass "$dialect unchecked CHR bound"
+done
 # Enabled domain checks must not be folded away into a valid character.
 printf '%s\n' 'PROGRAM bad;' 'BEGIN WRITELN(ORD(CHR(300)) + 1) END.' > "$work/bad.pas"
 if bin/pascal1981 "$work/bad.pas" -o "$work/bad" > "$work/output" 2> "$work/error"; then
