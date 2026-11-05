@@ -2398,14 +2398,15 @@ These are implementation limitations, not vintage-language restrictions.
 - **Array allocation size [both].** Vintage `WORD` bounds through `65535` are
   retained. A large valid range can still request a correspondingly large
   object from LLVM and the linker.
-- **At most about 500 names in scope at once [both].** Codegen keeps one
-  symbol table of `MAX_SYMBOLS = 500` entries (`src/cg_base.inc`); a few are
-  used internally, so a program can declare 498 global variables but not 499,
-  which fails with `codegen: too many symbols` and no source location. A
-  routine's locals are released when the routine ends, so the limit is on the
-  names visible at one point (globals plus the enclosing routines' locals),
-  not on a program's total. Generated test programs should reuse a few
-  variables rather than declaring one per case.
+- **At most 2000 names in scope at once [both].** The typechecker keeps one
+  symbol table of `MAX_SYMBOLS = 2000` entries (`src/tc_base.inc`). Types,
+  constants, enumeration values, variables, parameters and WITH-bound fields
+  all use entries, and a few are predeclared. Overflow fails with
+  `Too many names in scope (limit 2000) at line L column C`, at the
+  declaration that did not fit. Codegen's table holds 4000 entries, so it is
+  never the first limit. A routine's locals are released when the routine
+  ends, so the limit is on the names visible at one point (globals plus the
+  enclosing routines' locals), not on a program's total.
 
 ## Other things that cost time **[both, unless marked otherwise]**
 

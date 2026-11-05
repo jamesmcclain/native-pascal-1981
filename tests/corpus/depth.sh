@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/harness.sh"
-# Native parser depth and resource-limit tests. No Python is required.
+# Native parser depth, symbol-table and resource-limit tests. No Python is
+# required.
 
 for stage in lexer parser typechecker codegen; do
   if [ ! -x "bin/$stage" ]; then
@@ -37,6 +38,19 @@ make_statements() {
       printf '  IF a = %d THEN a := 1 ELSE\n' "$i"
     done
     printf '  a := 2;\nEND.\n'
+  } > "$output"
+}
+
+make_globals() {
+  local count=$1 output=$2 i
+  {
+    printf 'PROGRAM S(OUTPUT);\nTYPE R = RECORD\n'
+    for ((i = 0; i < 79; i++)); do printf '  f%d: INTEGER;\n' "$i"; done
+    printf '  f79: INTEGER\nEND;\nVAR r: R;\n'
+    for ((i = 0; i < count; i++)); do printf '  v%d: INTEGER;\n' "$i"; done
+    printf 'PROCEDURE P(a, b: INTEGER);\nBEGIN\n'
+    printf '  WITH r DO BEGIN f79 := a + b; WRITELN(f79) END;\nEND;\n'
+    printf 'BEGIN\n  v%d := 1; P(v%d, 2);\nEND.\n' $((count - 1)) $((count - 1))
   } > "$output"
 }
 
@@ -128,6 +142,45 @@ if [ "$status" -ne 0 ] &&
 else
   fail "type nesting rejects depth 128 with its diagnostic"
   cat "$work/type128.err" >&2
+fi
+
+# The typechecker's symbol table is the binding limit: codegen's is larger,
+# so a program the typechecker accepts never fails late in codegen.
+make_globals 1900 "$work/globals1900.pas"
+status=0
+timeout 60 bin/pascal1981 "$work/globals1900.pas" -o "$work/globals1900" \
+  > "$work/globals1900.out" 2> "$work/globals1900.err" || status=$?
+if [ "$status" -eq 0 ] &&
+   [ "$(timeout 5 "$work/globals1900")" = 3 ]; then
+  pass "1900 globals with WITH fields and parameters compile and run"
+else
+  fail "1900 globals with WITH fields and parameters compile and run"
+  cat "$work/globals1900.err" >&2
+fi
+
+make_globals 2100 "$work/globals2100.pas"
+status=0
+timeout 60 bin/pascal1981 "$work/globals2100.pas" -o "$work/globals2100" \
+  > "$work/globals2100.out" 2> "$work/globals2100.err" || status=$?
+if [ "$status" -eq 1 ] && [ ! -e "$work/globals2100" ] &&
+   grep -Eq 'Too many names in scope \(limit 2000\) at line [0-9]+ column 3$' \
+     "$work/globals2100.err"; then
+  pass "symbol table overflow is a located typechecker diagnostic"
+else
+  fail "symbol table overflow is a located typechecker diagnostic"
+  echo "driver status: $status" >&2
+  cat "$work/globals2100.err" >&2
+fi
+
+tc_symbols=$(sed -nE 's/^ *MAX_SYMBOLS = ([0-9]+);.*/\1/p' src/tc_base.inc)
+tc_impl_symbols=$(sed -nE 's/^ *MAX_SYMBOLS *= *([0-9]+);.*/\1/p' src/tc_base.pas)
+cg_symbols=$(sed -nE 's/^ *MAX_SYMBOLS = ([0-9]+);.*/\1/p' src/cg_base.inc)
+if [ -n "$tc_symbols" ] && [ "$tc_symbols" = "$tc_impl_symbols" ] &&
+   [ "$tc_symbols" = 2000 ] && [ "$cg_symbols" -ge $((2 * tc_symbols)) ]; then
+  pass "codegen symbol table is at least twice the typechecker's"
+else
+  fail "codegen symbol table is at least twice the typechecker's" \
+    "typechecker=$tc_symbols/$tc_impl_symbols codegen=$cg_symbols"
 fi
 
 bounded_source=tests/corpus/checklit/parser/should_fail/16_stray_rparen_in_compound.pas

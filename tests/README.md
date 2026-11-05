@@ -92,7 +92,7 @@ is its entry here.
 | unit | [`pasboot`](unit/pasboot.sh) | Per-feature fixtures for pasboot, the C bootstrap translator. |
 | unit | [`runtime`](unit/runtime.sh) | C unit tests of the runtime library. |
 | corpus | [`astcompare`](corpus/astcompare.sh) | astcompare, the JSON AST comparator, and the frozen reference ASTs it checks. |
-| corpus | [`depth`](corpus/depth.sh) | Native parser depth and resource-limit tests. |
+| corpus | [`depth`](corpus/depth.sh) | Native parser depth, symbol-table and resource-limit tests. |
 | corpus | [`fixtures`](corpus/fixtures.sh) | Every run and check fixture in the corpus, each against what it declares. |
 | contract | [`array_named_index_parser`](contract/array_named_index_parser.sh) | Named ordinal array index types parse, and pretty81 round-trips them. |
 | contract | [`chr_constant_folding`](contract/chr_constant_folding.sh) | Unchecked CHR folding has the same low-eight-bit value as runtime conversion. |
@@ -333,7 +333,7 @@ outputs and `corpus/depth.sh` cover those behaviors natively.
 ### Depth limits (`tests/corpus/depth.sh`)
 
 - **Runner**: [`tests/corpus/depth.sh`](corpus/depth.sh)
-- **Description**: Checks expression, statement, and type nesting boundaries in the native parser. It checks depth unwinding between sibling expressions. It also sends frozen oversized ASTs to the native typechecker and code generator. Bounded tests use a five-second timeout; parser and typechecker tests also use a 128 MiB address-space limit.
+- **Description**: Checks expression, statement, and type nesting boundaries in the native parser. It checks depth unwinding between sibling expressions. It checks that a program near the 2000-name symbol limit compiles and runs, and that overflow is a located typechecker diagnostic. It also sends frozen oversized ASTs to the native typechecker and code generator. Bounded tests use a five-second timeout; parser and typechecker tests also use a 128 MiB address-space limit.
 - **Artifact updates**: Run `PYTHONPATH=. ./scripts/update-reference-depth.py`. Review changes under `tests/corpus/reference/depth/` before you commit them. Routine tests do not run this maintenance command.
 - **Running**:
   ```bash

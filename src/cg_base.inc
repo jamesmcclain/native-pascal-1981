@@ -253,7 +253,9 @@ CONST
     ResolveTypeExpr), lo/hi are 0/lanes-1 so LOWER/UPPER read the table
     unchanged, and llvm_ty is the <n x T> vector type. }
 
-  MAX_SYMBOLS = 500;
+  MAX_SYMBOLS = 4000; { Twice the typechecker's 2000, which reports overflow
+    with a source location; codegen's few internal and WITH/alias entries
+    must never exhaust this table first. }
   MAX_SCOPES = 64;
   MAX_PARAMS = 16;
   MAX_SYSV_LEAVES = 32; { Upper bound on the scalar leaves of an aggregate the

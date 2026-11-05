@@ -6,6 +6,7 @@
 IMPLEMENTATION OF tc_base;
 
 FUNCTION cJSON_IsNull(item: ADRMEM): CINT [C]; EXTERN;
+PROCEDURE exit(code: CINT) [C]; EXTERN;
 
 CONST
   TK_UNKNOWN  = 0;
@@ -355,8 +356,30 @@ BEGIN
   ELSE LookupSymbolInScope := 0;
 END;
 
-FUNCTION DefineSymbol(name: Str255; kind: Str255; tk, aux, aux2, aux3, idx_tk: INTEGER): INTEGER32;
+PROCEDURE ReportErrorsAndExit;
+{ Print the collected diagnostics and stop the stage. Also used by DefineSymbol
+  when the symbol table is full, since checking cannot continue. }
+VAR
+  i: INTEGER32;
 BEGIN
+  EPrint('Type checking failed:');
+  FOR i := 1 TO nerrors DO
+    EPrint(errors[i]);
+  exit(1);
+END;
+
+FUNCTION DefineSymbol(name: Str255; kind: Str255; tk, aux, aux2, aux3, idx_tk: INTEGER): INTEGER32;
+VAR
+  msg: Str255;
+BEGIN
+  IF nsymbols >= MAX_SYMBOLS THEN
+  BEGIN
+    msg := 'Too many names in scope (limit ';
+    TcAppendText(msg, TcIntText(MAX_SYMBOLS));
+    TcAppendChar(msg, ')');
+    AddError(msg);
+    ReportErrorsAndExit;
+  END;
   nsymbols := nsymbols + 1;
   symbols[nsymbols].name := name;
   symbols[nsymbols].kind := kind;
