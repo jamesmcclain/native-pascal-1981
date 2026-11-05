@@ -99,6 +99,7 @@ is its entry here.
 | contract | [`descriptor_contract`](contract/descriptor_contract.sh) | Host descriptor transport ABI and unsupported-boundary contracts. |
 | contract | [`driver_math`](contract/driver_math.sh) | The driver links REAL math builtins at every optimization level without user -lm. |
 | contract | [`driver`](contract/driver.sh) | The driver: option parsing, stage dispatch, outputs and failure cleanup. |
+| contract | [`fixture_negative`](contract/fixture_negative.sh) | The corpus runner's negative-compile checks reject wrong status, stdout and output files. |
 | contract | [`indexck_diagnostics`](contract/indexck_diagnostics.sh) | INDEXCK failures report the first index token, preserving bounds and side effects. |
 | contract | [`indexck_guard_ir`](contract/indexck_guard_ir.sh) | INDEXCK guard IR: only enabled host selectors are guarded, at full ordinal width. |
 | contract | [`indexck_metadata`](contract/indexck_metadata.sh) | Verify native per-index metadata without Python or unchecked bad accesses. |
@@ -249,7 +250,10 @@ These are observed host timings, not timing-sensitive correctness oracles.
 - **Description**: one runner, one directive language. A fixture without
   CHECK directives is compiled with the native driver, run, and compared
   with its sidecar files (`.out`, `.err`, `.exitcode`, `.stdin`, `.args`,
-  `.build.sh`). A fixture with CHECK directives (all of `checklit/`) is
+  `.build.sh`). A nonzero `.exitcode` with no `.out` makes it a negative
+  fixture: the compile must exit with exactly that status, write nothing to
+  stdout and leave no executable (`contract/fixture_negative.sh` pins these
+  checks). A fixture with CHECK directives (all of `checklit/`) is
   compiled to LLVM IR or PTX text, or piped through the stages that
   `CHECK-STAGES` names, and checked with literal, unordered substring
   directives (`CHECK`, `CHECK-NOT`, `CHECK-ANY`, `CHECK-COUNT`,

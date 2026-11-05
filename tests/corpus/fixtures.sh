@@ -24,6 +24,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib/harness.sh"
 #                              fixture is expected not to compile)
 #   <name>.exitcode            expected exit status (default 0); nonzero
 #                              with no .out means the compile must fail
+#                              with exactly that status, empty stdout and
+#                              no output file
 #   <name>.stdin               standard input
 #   <name>.args                one argument per line (an argument naming an
 #                              existing path is passed as its absolute path)
@@ -170,11 +172,30 @@ EOF
     "$DRIVER" "${compile_args[@]}" "$test_src" -o "$test_bin" > "$work_dir/compile.out" 2> "$work_dir/compile.err" || compile_code=$?
   fi
 
-  # Negative compilation test. A sibling .err fixture, when present, also
-  # verifies that diagnostics reach stderr rather than the pipeline's stdout.
+  # Negative compilation test: the compile exits with exactly the expected
+  # status, writes nothing to stdout and leaves no executable. A sibling .err
+  # fixture, when present, must equal stderr exactly.
   if [ "$exp_code" -ne 0 ] && [ ! -f "$expected_out" ]; then
     if [ "$compile_code" -eq 0 ]; then
       echo "FAIL: $label (expected compile failure with code $exp_code, but compiled successfully)" >&2
+      return 1
+    fi
+    if [ "$compile_code" -ne "$exp_code" ]; then
+      echo "FAIL: $label (expected compile exit code $exp_code, got $compile_code)" >&2
+      if [ "$VERBOSE" -eq 1 ]; then
+        cat "$work_dir/compile.err" >&2
+      fi
+      return 1
+    fi
+    if [ -s "$work_dir/compile.out" ]; then
+      echo "FAIL: $label (a failed compile wrote to stdout)" >&2
+      if [ "$VERBOSE" -eq 1 ]; then
+        cat "$work_dir/compile.out" >&2
+      fi
+      return 1
+    fi
+    if [ -e "$test_bin" ]; then
+      echo "FAIL: $label (a failed compile left an output file)" >&2
       return 1
     fi
     if [ -f "$expected_err" ] && ! diff -u "$expected_err" "$work_dir/compile.err" > "$work_dir/diff_err.out"; then
