@@ -338,6 +338,42 @@ BEGIN
   END;
 END;
 
+PROCEDURE CheckInsert(args_arr: ADRMEM);
+{ INSERT(CONST S: STRING; VAR D: LSTRING; I: INTEGER) into a bare LSTRING
+  variable, including type aliases and formals; aux2 = 1 marks LSTRING.
+  One-character literals adapt as strings, not arbitrary CHARs. }
+VAR
+  arg: ADRMEM;
+  tk: INTEGER;
+  si: INTEGER32;
+BEGIN
+  IF cJSON_GetArraySize(args_arr) <> 3 THEN
+    AddError('INSERT expects exactly three arguments (S, D, I)')
+  ELSE
+  BEGIN
+    arg := cJSON_GetArrayItem(args_arr, 0);
+    tk := CheckExpr(arg);
+    IF (tk <> TK_STRING) AND (tk <> TK_UNKNOWN) AND
+       (NodeType(arg) <> 'CharLiteral') THEN
+      AddError('INSERT source must be STRING or LSTRING');
+    arg := cJSON_GetArrayItem(args_arr, 1);
+    IF NodeType(arg) <> 'Identifier' THEN
+      AddError('INSERT destination must be a bare LSTRING variable')
+    ELSE
+    BEGIN
+      si := LookupSymbol(GetStr(arg, 'name'));
+      IF si = 0 THEN
+        AddUndefinedIdentifier(arg)
+      ELSE IF (symbols[si].kind <> 'VAR') OR
+              (symbols[si].tk <> TK_STRING) OR (symbols[si].aux2 <> 1) THEN
+        AddError('INSERT destination must be a bare LSTRING variable');
+    END;
+    tk := CheckExprForTarget(cJSON_GetArrayItem(args_arr, 2), TK_INTEGER);
+    IF NOT CanAssign(TK_INTEGER, tk) THEN
+      AddError('INSERT position must be INTEGER');
+  END;
+END;
+
 PROCEDURE CheckDelete(args_arr: ADRMEM);
 { DELETE(VAR D: LSTRING; I, L: INTEGER) on a bare LSTRING variable, including
   type aliases and formals; aux2 = 1 marks LSTRING. }
@@ -667,6 +703,8 @@ BEGIN
       CheckCopystr(args_arr)
     ELSE IF pname = 'DELETE' THEN
       CheckDelete(args_arr)
+    ELSE IF pname = 'INSERT' THEN
+      CheckInsert(args_arr)
     ELSE IF pname = 'CONCAT' THEN
     BEGIN
       { CONCAT(VAR d: LSTRING-or-STRING-or-Str255; CONST s: STRING-or-

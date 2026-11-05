@@ -116,6 +116,7 @@ is its entry here.
 | contract | [`initck_scalar`](contract/initck_scalar.sh) | INITCK producers and guards for scalar locals. |
 | contract | [`initck_state`](contract/initck_state.sh) | Shadow allocation/reset independently of enabled guards (see initck_scalar.sh). |
 | contract | [`initck_validation`](contract/initck_validation.sh) | INITCK release gate: checked success and failure, values, ABI. |
+| contract | [`insert`](contract/insert.sh) | INSERT admits LSTRING insertions and always checks position and capacity first. |
 | contract | [`mathck_address_arith`](contract/mathck_address_arith.sh) | Address arithmetic and [C] values at MATHCK's boundary. |
 | contract | [`mathck_baseline`](contract/mathck_baseline.sh) | Executable G1-G29 gap inventory, not a claim that MATHCK is implemented. |
 | contract | [`mathck_bootstrap_audit`](contract/mathck_bootstrap_audit.sh) | The arithmetic the self-hosting compiler sources depend on. |

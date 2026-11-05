@@ -24,7 +24,7 @@ PROCEDURE EmitByteCopyLoop(dest_ptr, src_ptr: ADRMEM; count: ADRMEM);
 PROCEDURE EmitByteFillLoop(dest_ptr: ADRMEM; count: ADRMEM; fill_byte: INTEGER);
 PROCEDURE CodegenCopylst(stmt: ADRMEM);
 PROCEDURE CodegenCopystr(stmt: ADRMEM);
-PROCEDURE CodegenInsert(args: ADRMEM);
+PROCEDURE CodegenInsert(stmt: ADRMEM);
 PROCEDURE CodegenDelete(stmt: ADRMEM);
 PROCEDURE CodegenConcat(stmt: ADRMEM);
 FUNCTION EmitLaunchThunk(ridx: INTEGER32): ADRMEM;

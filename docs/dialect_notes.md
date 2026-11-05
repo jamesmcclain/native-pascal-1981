@@ -1268,8 +1268,8 @@ inside its source expression. Legacy statements inherit scoped RANGECK and
 report 0/0 if location is absent. `$RANGECK-` emits no capacity guard: invalid
 unchecked appends may corrupt memory or wrap the length byte. This is not
 unconditional memory safety, does not affect MATHCK, and does not add checks
-to whole-string assignment, value parameters or INSERT.
-COPYLST and COPYSTR have their own checks below.
+to whole-string assignment or value parameters.
+COPYLST, COPYSTR, DELETE and INSERT have their own checks below.
 Direct length-byte assignment has a separate check below. CPU DEVICE uses
 the host check; NVPTX retains its existing unchecked boundary without
 calling host diagnostics. Regression: `tests/contract/rangeck_concat.sh`.
@@ -1376,6 +1376,43 @@ explicit unsupported boundary, as for other string operands.
 
 Regression: `tests/contract/delete.sh`.
 
+#### INSERT admission and always-caught position and capacity checks **[native]**
+
+`INSERT(s, d, i)` inserts the characters of `s` just before `d[i]` and
+lengthens the LSTRING `d` by the length of `s` (manual 11-20). The source has
+the same forms as COPYLST's; the destination must be a bare LSTRING
+variable, including type aliases, VAR formals and WITH-bound names; `i` must
+be INTEGER-compatible. A fixed STRING, selected, constant or function
+destination is rejected at typechecking. User routines named INSERT retain
+precedence.
+
+`s` is evaluated first, then `i`, and only then is the length of `d` read.
+Two checks run before any byte moves or the length changes. Both are IBM
+error 2151, which the manual says is **always caught** (A-46): they run under
+`$RANGECK+` and `$RANGECK-` alike, on the host and in CPU DEVICE code, and
+MATHCK does not affect them.
+
+- The position must be in `1..length(d) + 1`. The manual's text,
+  "length (D) < I", also rejects `length(d) + 1`, which would make it
+  impossible to append or to insert into an empty string. Native INSERT
+  accepts that position and appends: a deliberate difference.
+- The new length must fit `min(capacity, 255)`. As for COPYLST, the
+  source's current length is used, not its declared capacity.
+
+Failures flush stdout and report one of:
+
+    runtime error: INSERT position I is outside 1..N at line L column COL
+    runtime error: INSERT length V exceeds capacity CAP at line L column COL
+
+The destination and its length are unchanged on failure. Inserting `d` into
+itself is valid: it can only alias the whole destination, and the shift
+never overwrites the bytes still to be copied. A legacy AST without a
+location reports 0/0. NVPTX code has no host diagnostics and keeps its
+unchecked insertion. Under INITCK+, nonliteral string sources and the string
+destination, which INSERT reads, are explicit unsupported boundaries.
+
+Regression: `tests/contract/insert.sh`.
+
 #### LSTRING length-byte stores **[native]**
 
 Under `$RANGECK+`, assigning to `t.LEN` checks the new unsigned byte against
@@ -1459,8 +1496,8 @@ without adding host diagnostics there.
 
 This INDEXCK slice does **not** add checks to `STRING`/`LSTRING` subscripts,
 or the capacities of `COPYLST`, `COPYSTR` and `INSERT`. `CONCAT` and
-`COPYLST` have the separate RANGECK capacity contracts above, and `COPYSTR`
-its always-caught one. Nor does INDEXCK
+`COPYLST` have the separate RANGECK capacity contracts above, and `COPYSTR`,
+`DELETE` and `INSERT` their always-caught ones. Nor does INDEXCK
 change `VECTOR` lane indexing or the super-array guard's interaction with
 `VLOAD`/`VSTORE`: constant out-of-range vector
 lanes and fixed-array vector transfers retain their compile-time diagnostics;
@@ -1935,7 +1972,8 @@ is an ordinary call, outside this classification.
 | RANGECK | `COPYLST` | Admitted string source and bare LSTRING destination; host/CPU RANGECK+ checks source length against `min(capacity, 255)` before any copy or length publication. RANGECK- and NVPTX remain unchecked. |
 | Separate contract | `COPYSTR` | Admitted string source and bare fixed STRING destination; the source length is checked against the destination's capacity before any copy or blank fill, always (IBM error 2150), whatever the RANGECK setting. NVPTX remains unchecked ([above](#copystr-admission-and-always-caught-capacity-check-native)). |
 | Separate contract | `DELETE` | Admitted bare LSTRING destination; the span is checked against the current length before any move or length publication, always (IBM error 2151), whatever the RANGECK setting. A position below 1 or a negative count also fails. NVPTX remains unchecked ([above](#delete-admission-and-always-caught-span-check-native)). |
-| Separate contract | `INSERT`, `ENCODE`, `DECODE` | **Unreachable:** codegen lowers them, but the typechecker rejects every call as an undefined procedure or function. When enabled, their internal length and position arithmetic (`pos - 1`, `len - pos`) needs capacity and position checks, not MATHCK; DECODE is a text-to-number conversion. |
+| Separate contract | `INSERT` | Admitted string source and bare LSTRING destination; the position (1..length + 1) and the new length are checked before any move or length publication, always (IBM error 2151), whatever the RANGECK setting. NVPTX remains unchecked ([above](#insert-admission-and-always-caught-position-and-capacity-checks-native)). |
+| Separate contract | `ENCODE`, `DECODE` | **Unreachable:** codegen lowers them, but the typechecker rejects every call as an undefined procedure or function. When enabled, their internal length and position arithmetic (`pos - 1`, `len - pos`) needs capacity and position checks, not MATHCK; DECODE is a text-to-number conversion. |
 | Separate contract | `NEW` bounds, `DEVALLOC`, `SIZEOF`, `LOWER`, `UPPER` | Descriptor and layout arithmetic; layouts above 2147483647 bytes are rejected (`TypeSizeBytes`). |
 | Separate contract | `READ`/`READLN` of integers | Text conversion, checked independently of MATHCK (G29). |
 | No check | `ORD` | Same value and width; an enumeration gives its ordinal as INTEGER, so `ORD(e) * 20000` is checked 16-bit arithmetic. [`ORD(WORD)`](#deferred-ordword-conversion-gap-g25) stays WORD (G25). |
