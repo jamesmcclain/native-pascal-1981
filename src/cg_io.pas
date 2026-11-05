@@ -57,16 +57,29 @@ BEGIN
                                     LLVMPointerType(i8ptrty, 0), MakeCStr(''));
 END;
 
+FUNCTION IsCharArrayTk(tid: INTEGER): BOOLEAN;
+{ A fixed one-dimensional ARRAY whose components are CHAR (or a CHAR
+  subrange), at any lower bound. WRITE treats it as a STRING of its
+  hi - lo + 1 characters; see dialect_notes "WRITE of a CHAR array". }
+BEGIN
+  IsCharArrayTk := FALSE;
+  IF TypeKind(tid) = TK_ARRAY THEN
+    IF TypeKind(types[tid].elem_tid) = TK_CHAR THEN
+      IsCharArrayTk := TRUE;
+END;
+
 FUNCTION IsStringWriteTk(tid: INTEGER): BOOLEAN;
 { The WRITE argument types formatted by EmitStringWriteArg. }
 BEGIN
-  IsStringWriteTk := (TypeKind(tid) = TK_LSTRING) OR (TypeKind(tid) = TK_STRING);
+  IsStringWriteTk := (TypeKind(tid) = TK_LSTRING) OR (TypeKind(tid) = TK_STRING)
+                     OR IsCharArrayTk(tid);
 END;
 
 PROCEDURE EmitStringWriteArg(addr: ADRMEM; tid: INTEGER; have_width, have_prec: BOOLEAN;
   width_val, prec_val: ADRMEM; VAR fmt: Str255; vals: ADRMEM; VAR vi: INTEGER32);
 { Appends the bounded string format and arguments for an LSTRING/STRING
-  value already resolved to an address. Extended mode uses an explicit
+  value, or a CHAR array written as a STRING, already resolved to an
+  address. Extended mode uses an explicit
   precision as the character limit. Vintage mode retains the full stored
   length. This is shared by the Identifier, Designator and value (function
   result) paths. }
@@ -88,7 +101,10 @@ BEGIN
   END
   ELSE
   BEGIN
-    len_val := LLVMConstInt(i32ty, types[tid].hi, 0);
+    IF TypeKind(tid) = TK_STRING THEN
+      len_val := LLVMConstInt(i32ty, types[tid].hi, 0)
+    ELSE
+      len_val := LLVMConstInt(i32ty, types[tid].hi - types[tid].lo + 1, 0);
     gep_idx := AllocPtrArray(2);
     SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
     SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
@@ -253,9 +269,10 @@ END;
 PROCEDURE EmitValueWriteArg(in_v: ADRMEM; tid: INTEGER; have_width, have_prec: BOOLEAN;
   width_val, prec_val: ADRMEM; VAR fmt: Str255; vals: ADRMEM; VAR vi: INTEGER32);
 { A WRITE argument already evaluated to an SSA value (exactly once, by the
-  caller). A string-shaped value -- an LSTRING/STRING function result --
-  has no address of its own, so it is spilled to a private temporary and
-  formatted from there; anything else is a scalar. }
+  caller). A string-shaped value -- an LSTRING/STRING function result, or
+  a whole CHAR array variable -- has no address here, so it is spilled to
+  a private temporary and formatted from there; anything else is a
+  scalar. }
 VAR
   tmp: ADRMEM;
 BEGIN
@@ -426,7 +443,8 @@ BEGIN
       addr := ComputeDesignatorAddress(expr);
       lstr_tid := last_val_tk;
       IF ArrSize(GetObj(expr, 'selectors')) <> 0 THEN
-        IF (last_desig_shadow <> NIL) AND InitckTrackedTk(lstr_tid) THEN
+        IF (last_desig_shadow <> NIL) AND
+           (InitckTrackedTk(lstr_tid) OR IsCharArrayTk(lstr_tid)) THEN
           GuardInitckComponent(expr, last_desig_shadow, lstr_tid)
         ELSE IF GetBool(GetObj(expr, 'read_flags'), 'INITCK') THEN
           InitckBoundaryAt('selected storage', expr);

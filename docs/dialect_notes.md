@@ -32,6 +32,7 @@ its [unsafe raw boundary](#descriptor-unsafe-raw-boundary) and ownership limits.
 - [Niladic EOF and EOLN](#niladic-eof-and-eoln-both)
 - [Wide signed integer input](#wide-signed-integer-input-extended)
 - [String precision](#string-precision)
+- [WRITE of a CHAR array](#write-of-a-char-array-both)
 - [READSET and tuning hints](#readset-and-tuning-hints)
 - [GPU (NVPTX) kernels need `{$MATHCK-}` for integer arithmetic](#gpu-nvptx-kernels-need-mathck--for-integer-arithmetic-extended)
 - [Vectors (SIMD)](#vectors-simd-extended)
@@ -564,8 +565,10 @@ the `file buffer` boundary for enabled reads and PUTs. There is no other
 aggregate I/O: the typechecker rejects READ/WRITE of typed files ("file
 selector must be a TEXT file") and selecting a field of a file buffer
 (`g^.a`), so record buffers are written and read whole; codegen rejects WRITE
-of an array; strings and sets read or written by READ/WRITE/READSET stay
-untracked storage. INPUT and OUTPUT are not identifiers the typechecker
+of an array other than a one-dimensional CHAR array, which is read whole
+like a copy source (see
+[WRITE of a CHAR array](#write-of-a-char-array-both)); strings and sets read
+or written by READ/WRITE/READSET stay untracked storage. INPUT and OUTPUT are not identifiers the typechecker
 knows, so `INPUT^` is not reachable.
 
 DEVICE code. INITCK is host-only. A DEVICE compiland, CPU-targeted or
@@ -723,6 +726,34 @@ Extended mode uses string precision as the maximum number of characters to
 write. The width continues to specify the minimum field width. This rule does
 not change numeric formatting. Numeric width and precision have the same
 behavior in both dialects.
+
+## WRITE of a CHAR array **[both]**
+
+The IBM manual writes CHAR, STRING and LSTRING values, and a `STRING(n)` is
+identical to `PACKED ARRAY [1..n] OF CHAR` (6-16, 12-26). An unpacked array
+of CHAR is not a STRING, so the manual rejects writing it (error 234). This
+compiler does not support `PACKED` arrays at all (`codegen: PACKED arrays are
+not supported`), so an unpacked array is the only array of CHAR a program can
+declare. As a deliberate difference, `WRITE`/`WRITELN` therefore accept a
+one-dimensional `ARRAY [lo..hi] OF CHAR` (or of a CHAR subrange) at any
+bounds and with any index type. It is written exactly like a `STRING` of its
+`hi - lo + 1` characters: all of them by default, `:width` padding on the
+left (on the right when negative), and the extended `::precision` limit. The
+array may be a variable, a selected component (`r.tag`, `m[k]`), a formal or
+a function result.
+
+- An array of CHAR arrays (`ARRAY [1..2] OF Row`) is not a string; writing it
+  whole still fails with `codegen: unsupported WRITE argument type`. Write
+  its rows instead.
+- Under INITCK a tracked CHAR array is read whole, by the strict copy rule:
+  every component must be set (`uninitialized part of a`). A heap or global
+  array is the usual INITCK boundary.
+- As for `STRING`, output is formatted with C's `%.*s`, so a `CHR(0)`
+  component ends the written text early, and the field width counts only the
+  characters before it.
+
+Regression: `tests/corpus/golden/write_char_array*.pas` and
+`write_char_matrix_rejected.pas`.
 
 ## READSET and tuning hints
 

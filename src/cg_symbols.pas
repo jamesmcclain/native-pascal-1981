@@ -557,6 +557,31 @@ BEGIN
       their bound/tag operands are reads. UNSAFERAW reads its descriptor
       and UNSAFESUPER its raw pointer and bounds (its type name is not
       storage). }
+    { WRITE/WRITELN of a whole CHAR array reads every component, a
+      strict whole-value read like a copy source (cg_io), so an output
+      item may name an aggregate whole; its width and precision are
+      ordinary reads. }
+    IF (nm = 'WRITE') OR (nm = 'WRITELN') THEN
+    BEGIN
+      args := GetObj(node, 'args');
+      FOR i := 0 TO ArrSize(args) - 1 DO
+      BEGIN
+        arg := ArrItem(args, i);
+        IF NodeType(arg) = 'WriteArg' THEN
+        BEGIN
+          IF InitckLocalEscapes(GetObj(arg, 'expr'), name, tid, unsafe, opaque, in_with, TRUE) THEN
+            found := TRUE;
+          IF InitckLocalEscapes(GetObj(arg, 'width'), name, tid, unsafe, opaque, in_with, FALSE) THEN
+            found := TRUE;
+          IF InitckLocalEscapes(GetObj(arg, 'precision'), name, tid, unsafe, opaque, in_with, FALSE) THEN
+            found := TRUE;
+        END
+        ELSE IF InitckLocalEscapes(arg, name, tid, unsafe, opaque, in_with, FALSE) THEN
+          found := TRUE;
+      END;
+      InitckLocalEscapes := found;
+      RETURN;
+    END;
     IF (nm <> 'WRITE') AND (nm <> 'WRITELN') AND (nm <> 'ORD') AND
        (nm <> 'CHR') AND (nm <> 'ODD') AND (nm <> 'ABS') AND
        (nm <> 'POSITN') AND (nm <> 'READ') AND (nm <> 'READLN') AND (nm <> 'NEW') AND
