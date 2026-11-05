@@ -713,7 +713,9 @@ existing formatted numeric readers.
 ## String precision
 
 In vintage mode, `::precision` does not limit string output. A string literal,
-`STRING` value, or `LSTRING` value writes its full contents. In
+`STRING` value, or `LSTRING` value writes its full contents. A value here may
+be a variable, a selected component, or a function result (the call runs
+once; regression: `tests/corpus/golden/write_string_funcs*.pas`). In
 `value:width:precision`, the width still pads the full value. The compiler
 ignores the precision.
 

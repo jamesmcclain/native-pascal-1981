@@ -234,12 +234,10 @@ BEGIN
 END;
 
 PROCEDURE Out(s: Str255);
-{ codegen's WRITE only takes an LSTRING argument when it is a bare
-  Identifier/Designator (something addressable) -- a function-call
-  expression returning Str255 by value falls through to the scalar path
-  and aborts ("unsupported WRITE argument type"). Every print call in this
-  file routes through here (and OutLn below) so the WRITE the compiler
-  actually sees is always of a local variable. }
+{ Every print call in this file routes through here (and OutLn below), so
+  output has one choke point. Older codegen could not WRITE a Str255
+  function result directly; it can now, but the copy into a local is kept
+  to leave this file's generated code unchanged. }
 VAR tmp: Str255;
 BEGIN
   tmp := s;

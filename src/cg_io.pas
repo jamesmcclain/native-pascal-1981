@@ -57,12 +57,19 @@ BEGIN
                                     LLVMPointerType(i8ptrty, 0), MakeCStr(''));
 END;
 
+FUNCTION IsStringWriteTk(tid: INTEGER): BOOLEAN;
+{ The WRITE argument types formatted by EmitStringWriteArg. }
+BEGIN
+  IsStringWriteTk := (TypeKind(tid) = TK_LSTRING) OR (TypeKind(tid) = TK_STRING);
+END;
+
 PROCEDURE EmitStringWriteArg(addr: ADRMEM; tid: INTEGER; have_width, have_prec: BOOLEAN;
   width_val, prec_val: ADRMEM; VAR fmt: Str255; vals: ADRMEM; VAR vi: INTEGER32);
-{ Appends the bounded string format and arguments for an LSTRING/STRING value
-  already resolved to an address. Extended mode uses an explicit precision as
-  the character limit. Vintage mode retains the full stored length. This is
-  shared by the Identifier and Designator paths. }
+{ Appends the bounded string format and arguments for an LSTRING/STRING
+  value already resolved to an address. Extended mode uses an explicit
+  precision as the character limit. Vintage mode retains the full stored
+  length. This is shared by the Identifier, Designator and value (function
+  result) paths. }
 VAR
   gep_idx, len_ptr, len_val, chars_ptr: ADRMEM;
 BEGIN
@@ -243,6 +250,26 @@ BEGIN
   END;
 END;
 
+PROCEDURE EmitValueWriteArg(in_v: ADRMEM; tid: INTEGER; have_width, have_prec: BOOLEAN;
+  width_val, prec_val: ADRMEM; VAR fmt: Str255; vals: ADRMEM; VAR vi: INTEGER32);
+{ A WRITE argument already evaluated to an SSA value (exactly once, by the
+  caller). A string-shaped value -- an LSTRING/STRING function result --
+  has no address of its own, so it is spilled to a private temporary and
+  formatted from there; anything else is a scalar. }
+VAR
+  tmp: ADRMEM;
+BEGIN
+  IF IsStringWriteTk(tid) THEN
+  BEGIN
+    tmp := EntryAlloca(LLVMTypeForTk(tid), 'writetmp');
+    LLVMBuildStore(builder, in_v, tmp);
+    EmitStringWriteArg(tmp, tid, have_width, have_prec,
+                       width_val, prec_val, fmt, vals, vi);
+  END
+  ELSE
+    EmitScalarWriteArg(in_v, tid, have_width, have_prec, width_val, prec_val, fmt, vals, vi);
+END;
+
 FUNCTION GetDefaultInputFcbPtr: ADRMEM;
 { Loads the predeclared INPUT/OUTPUT FCBs (registered unconditionally for
   every PROGRAM by RegisterPredeclaredFiles) and lazily binds them to real
@@ -376,7 +403,7 @@ BEGIN
       ELSE
       BEGIN
         v := CodegenExpr(expr);
-        EmitScalarWriteArg(v, last_val_tk, have_width, have_prec, width_val, prec_val, fmt, vals, vi);
+        EmitValueWriteArg(v, last_val_tk, have_width, have_prec, width_val, prec_val, fmt, vals, vi);
       END;
     END
     ELSE IF NodeType(expr) = 'Designator' THEN
@@ -403,7 +430,7 @@ BEGIN
           GuardInitckComponent(expr, last_desig_shadow, lstr_tid)
         ELSE IF GetBool(GetObj(expr, 'read_flags'), 'INITCK') THEN
           InitckBoundaryAt('selected storage', expr);
-      IF (TypeKind(lstr_tid) = TK_LSTRING) OR (TypeKind(lstr_tid) = TK_STRING) THEN
+      IF IsStringWriteTk(lstr_tid) THEN
         EmitStringWriteArg(addr, lstr_tid, have_width, have_prec,
                            width_val, prec_val, fmt, vals, vi)
       ELSE
@@ -415,7 +442,7 @@ BEGIN
     ELSE
     BEGIN
       v := CodegenExpr(expr);
-      EmitScalarWriteArg(v, last_val_tk, have_width, have_prec, width_val, prec_val, fmt, vals, vi);
+      EmitValueWriteArg(v, last_val_tk, have_width, have_prec, width_val, prec_val, fmt, vals, vi);
     END;
   END;
   IF newline THEN AppendChar(fmt, CHR(10));
