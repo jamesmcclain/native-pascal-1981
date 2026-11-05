@@ -338,6 +338,39 @@ BEGIN
   END;
 END;
 
+PROCEDURE CheckDelete(args_arr: ADRMEM);
+{ DELETE(VAR D: LSTRING; I, L: INTEGER) on a bare LSTRING variable, including
+  type aliases and formals; aux2 = 1 marks LSTRING. }
+VAR
+  arg: ADRMEM;
+  tk: INTEGER;
+  si: INTEGER32;
+BEGIN
+  IF cJSON_GetArraySize(args_arr) <> 3 THEN
+    AddError('DELETE expects exactly three arguments (D, I, L)')
+  ELSE
+  BEGIN
+    arg := cJSON_GetArrayItem(args_arr, 0);
+    IF NodeType(arg) <> 'Identifier' THEN
+      AddError('DELETE destination must be a bare LSTRING variable')
+    ELSE
+    BEGIN
+      si := LookupSymbol(GetStr(arg, 'name'));
+      IF si = 0 THEN
+        AddUndefinedIdentifier(arg)
+      ELSE IF (symbols[si].kind <> 'VAR') OR
+              (symbols[si].tk <> TK_STRING) OR (symbols[si].aux2 <> 1) THEN
+        AddError('DELETE destination must be a bare LSTRING variable');
+    END;
+    tk := CheckExprForTarget(cJSON_GetArrayItem(args_arr, 1), TK_INTEGER);
+    IF NOT CanAssign(TK_INTEGER, tk) THEN
+      AddError('DELETE position must be INTEGER');
+    tk := CheckExprForTarget(cJSON_GetArrayItem(args_arr, 2), TK_INTEGER);
+    IF NOT CanAssign(TK_INTEGER, tk) THEN
+      AddError('DELETE count must be INTEGER');
+  END;
+END;
+
 PROCEDURE CheckCopylst(args_arr: ADRMEM);
 { Native COPYLST initially supports the backend's bare destination seam.
   aux2 distinguishes LSTRING from fixed STRING, including type aliases and
@@ -632,6 +665,8 @@ BEGIN
       CheckCopylst(args_arr)
     ELSE IF pname = 'COPYSTR' THEN
       CheckCopystr(args_arr)
+    ELSE IF pname = 'DELETE' THEN
+      CheckDelete(args_arr)
     ELSE IF pname = 'CONCAT' THEN
     BEGIN
       { CONCAT(VAR d: LSTRING-or-STRING-or-Str255; CONST s: STRING-or-

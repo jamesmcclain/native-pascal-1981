@@ -330,6 +330,9 @@ _Bool UMULOK(uint32_t a, uint32_t b, uint16_t *c);
 /* COPYSTR overflow is error 2150, always caught: no switch disables it. */
 void  pas_copystr_error(uint64_t length, int32_t capacity,
                         int32_t line, int32_t column) __attribute__((noreturn));
+/* DELETE past the LSTRING's length is error 2151, always caught. */
+void  pas_delete_error(int32_t position, int32_t count, int32_t length,
+                       int32_t line, int32_t column) __attribute__((noreturn));
 
 void  pas_copylst_error(uint64_t length, int32_t capacity,
                         int32_t line, int32_t column) __attribute__((noreturn));

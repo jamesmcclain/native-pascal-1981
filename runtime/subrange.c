@@ -37,6 +37,15 @@ void pas_copystr_error(uint64_t length, int32_t capacity, int32_t line, int32_t 
     abort();
 }
 
+void pas_delete_error(int32_t position, int32_t count, int32_t length, int32_t line, int32_t column)
+{
+    fflush(stdout);
+    fprintf(stderr, "runtime error: DELETE position %" PRId32 " count %" PRId32 " is outside length %" PRId32 " at line %" PRId32 " column %" PRId32 "\n", position, count, length,
+            line, column);
+    fflush(stderr);
+    abort();
+}
+
 void pas_lstring_length_error(uint64_t length, int32_t capacity, int32_t line, int32_t column)
 {
     fflush(stdout);

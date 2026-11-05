@@ -794,6 +794,8 @@ PROCEDURE EmitStringCapacityCheck(new_len: ADRMEM; capacity: INTEGER32;
   site: ADRMEM; prefix, error_name: Str255); FORWARD;
 PROCEDURE EmitStringCapacityGuard(new_len: ADRMEM; capacity: INTEGER32;
   site: ADRMEM; prefix, error_name: Str255); FORWARD;
+PROCEDURE EmitStringSpanGuard(pos, count, len: ADRMEM; site: ADRMEM;
+  prefix, error_name: Str255); FORWARD;
 
 PROCEDURE CodegenCopylst(stmt: ADRMEM);
 { COPYLST(CONST S: STRING-or-LSTRING-or-literal; VAR D: LSTRING): copies S's
@@ -964,11 +966,15 @@ BEGIN
   END;
 END;
 
-PROCEDURE CodegenDelete(args: ADRMEM);
-{ DELETE(VAR D: LSTRING-or-STRING; pos, count: INTEGER): removes `count`
-  characters starting at `pos` by memmove-ing the remaining tail left, and
-  (LSTRING only) shrinks the length-prefix byte by `count`. }
+PROCEDURE CodegenDelete(stmt: ADRMEM);
+{ DELETE(VAR D: LSTRING; pos, count: INTEGER): removes `count` characters
+  starting at D[pos] by memmove-ing the remaining tail left, and shrinks the
+  length byte by `count` (manual 11-20). The position and count are evaluated
+  once, before D's length is read. A deletion past D's length is error 2151,
+  always caught (manual A-46): no switch turns the check off. A position
+  below 1 or a negative count fails the same check, before any write. }
 VAR
+  args: ADRMEM;
   d_symi: INTEGER32;
   d_tid: INTEGER;
   d_addr, dst_chars, dst_len: ADRMEM;
@@ -978,20 +984,21 @@ VAR
   gep_idx, call_args: ADRMEM;
   discard: ADRMEM;
 BEGIN
+  args := GetObj(stmt, 'args');
   IF ArrSize(args) <> 3 THEN
     AbortWith('codegen: DELETE expects exactly 3 arguments');
-  ResolveStringDestVar(ArrItem(args, 0), d_symi, d_tid, d_addr, dst_chars, dst_len);
-
   pos_val := CodegenExpr(ArrItem(args, 1));
-  IF last_val_tk <> TK_INTEGER THEN
-    AbortWith('codegen: DELETE''s position argument must be INTEGER');
+  pos_val := CoerceForAssign(pos_val, last_val_tk, TK_INTEGER, ArrItem(args, 1), 'DELETE');
   count_val := CodegenExpr(ArrItem(args, 2));
-  IF last_val_tk <> TK_INTEGER THEN
-    AbortWith('codegen: DELETE''s count argument must be INTEGER');
+  count_val := CoerceForAssign(count_val, last_val_tk, TK_INTEGER, ArrItem(args, 2), 'DELETE');
+  ResolveStringDestVar(ArrItem(args, 0), d_symi, d_tid, d_addr, dst_chars, dst_len);
+  IF TypeKind(d_tid) <> TK_LSTRING THEN
+    AbortWith('codegen: DELETE''s destination must be an LSTRING variable');
 
-  start := LLVMBuildSExt(builder, pos_val, i32ty, MakeCStr(''));
+  start := LLVMBuildSExt(builder, pos_val, i32ty, MakeCStr('delete.position'));
+  count32 := LLVMBuildSExt(builder, count_val, i32ty, MakeCStr('delete.count'));
+  EmitStringSpanGuard(start, count32, dst_len, stmt, 'delete', 'pas_delete_error');
   start := LLVMBuildSub(builder, start, LLVMConstInt(i32ty, 1, 0), MakeCStr(''));
-  count32 := LLVMBuildSExt(builder, count_val, i32ty, MakeCStr(''));
 
   src_off := LLVMBuildAdd(builder, start, count32, MakeCStr(''));
   rem := LLVMBuildSub(builder, dst_len, src_off, MakeCStr(''));
@@ -1010,15 +1017,12 @@ BEGIN
   discard := LLVMBuildCall2(builder, memmove_fnty, memmove_fn, call_args, 3, MakeCStr(''));
 
   new_len := LLVMBuildSub(builder, dst_len, count32, MakeCStr(''));
-  IF TypeKind(d_tid) = TK_LSTRING THEN
-  BEGIN
-    gep_idx := AllocPtrArray(2);
-    SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-    SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
-    len_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(d_tid), d_addr, gep_idx, 2, MakeCStr(''));
-    new_len_byte := LLVMBuildTrunc(builder, new_len, i8ty, MakeCStr(''));
-    LLVMBuildStore(builder, new_len_byte, len_ptr);
-  END;
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
+  len_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(d_tid), d_addr, gep_idx, 2, MakeCStr(''));
+  new_len_byte := LLVMBuildTrunc(builder, new_len, i8ty, MakeCStr(''));
+  LLVMBuildStore(builder, new_len_byte, len_ptr);
 END;
 
 PROCEDURE EmitStringCapacityCheck(new_len: ADRMEM; capacity: INTEGER32;
@@ -1071,6 +1075,59 @@ BEGIN
   SetPtrArrayElem(args, 2, LLVMConstInt(i32ty, line, 0));
   SetPtrArrayElem(args, 3, LLVMConstInt(i32ty, column, 0));
   discard := LLVMBuildCall2(builder, fnty, fn, args, 4, MakeCStr(''));
+  discard := LLVMBuildUnreachable(builder);
+  LLVMPositionBuilderAtEnd(builder, ok_bb);
+END;
+
+PROCEDURE EmitStringSpanGuard(pos, count, len: ADRMEM; site: ADRMEM;
+  prefix, error_name: Str255);
+{ Fail through error_name(pos, count, len, line, column) unless the i32 span
+  [pos, pos + count - 1] lies in 1..len with count >= 0; an empty span may
+  start at len + 1. Always caught except on NVPTX, which has no host
+  diagnostics. Check before any destination byte or length publication. }
+VAR
+  ok, last, bad_bb, ok_bb, ps, fnty, fn, call_args, discard, location: ADRMEM;
+  line, column: INTEGER32;
+  in_name, bad_name, ok_name: Str255;
+BEGIN
+  IF is_nvptx_device THEN RETURN;
+  in_name := prefix; CONCAT(in_name, '.in');
+  bad_name := prefix; CONCAT(bad_name, '.bad');
+  ok_name := prefix; CONCAT(ok_name, '.ok');
+  last := LLVMBuildAdd(builder, pos, count, MakeCStr(''));
+  last := LLVMBuildSub(builder, last, LLVMConstInt(i32ty, 1, 0), MakeCStr(''));
+  ok := LLVMBuildAnd(builder,
+    LLVMBuildICmp(builder, LLVMIntSGE, pos, LLVMConstInt(i32ty, 1, 0), MakeCStr('')),
+    LLVMBuildICmp(builder, LLVMIntSGE, count, LLVMConstInt(i32ty, 0, 0), MakeCStr('')),
+    MakeCStr(''));
+  ok := LLVMBuildAnd(builder, ok,
+    LLVMBuildICmp(builder, LLVMIntSLE, last, len, MakeCStr('')), MakeCStr(in_name));
+  bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr(bad_name));
+  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr(ok_name));
+  LLVMBuildCondBr(builder, ok, ok_bb, bad_bb);
+  LLVMPositionBuilderAtEnd(builder, bad_bb);
+  ps := AllocPtrArray(5);
+  SetPtrArrayElem(ps, 0, i32ty);
+  SetPtrArrayElem(ps, 1, i32ty);
+  SetPtrArrayElem(ps, 2, i32ty);
+  SetPtrArrayElem(ps, 3, i32ty);
+  SetPtrArrayElem(ps, 4, i32ty);
+  fnty := LLVMFunctionType(voidty, ps, 5, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr(error_name));
+  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr(error_name), fnty);
+  line := 0; column := 0;
+  location := GetObjOrNil(site, 'location');
+  IF location <> NIL THEN
+  BEGIN
+    line := GetInt(location, 'line'); column := GetInt(location, 'column');
+  END;
+  call_args := AllocPtrArray(5);
+  SetPtrArrayElem(call_args, 0, pos);
+  SetPtrArrayElem(call_args, 1, count);
+  SetPtrArrayElem(call_args, 2, len);
+  SetPtrArrayElem(call_args, 3, LLVMConstInt(i32ty, line, 0));
+  SetPtrArrayElem(call_args, 4, LLVMConstInt(i32ty, column, 0));
+  discard := LLVMBuildCall2(builder, fnty, fn, call_args, 5, MakeCStr(''));
   discard := LLVMBuildUnreachable(builder);
   LLVMPositionBuilderAtEnd(builder, ok_bb);
 END;
@@ -1623,7 +1680,7 @@ BEGIN
   ELSE IF name = 'INSERT' THEN
     CodegenInsert(GetObj(stmt, 'args'))
   ELSE IF name = 'DELETE' THEN
-    CodegenDelete(GetObj(stmt, 'args'))
+    CodegenDelete(stmt)
   ELSE IF name = 'POSITN' THEN
     discard := CodegenPositn(GetObj(stmt, 'args'))
   ELSE IF name = 'SCANEQ' THEN

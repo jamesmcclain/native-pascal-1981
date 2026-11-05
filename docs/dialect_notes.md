@@ -1348,6 +1348,34 @@ like COPYLST: a copy fails only when the characters copied would not fit.
 
 Regression: `tests/contract/copystr.sh`.
 
+#### DELETE admission and always-caught span check **[native]**
+
+`DELETE(d, i, l)` removes `l` characters from the LSTRING `d`, starting with
+`d[i]`, and shortens its length by `l` (manual 11-20). The destination must
+be a bare LSTRING variable, including type aliases, VAR formals and
+WITH-bound names; a fixed STRING, a selected destination, a constant or a
+function is rejected at typechecking. `i` and `l` must be INTEGER-compatible.
+User routines named DELETE retain precedence.
+
+`i` and `l` are evaluated once, in that order, and only then is the length
+of `d` read, so a call in either argument that changes `d` is seen. A span
+past the length is IBM error 2151, which the manual says is **always
+caught** (A-46): the check runs under `$RANGECK+` and `$RANGECK-` alike, on
+the host and in CPU DEVICE code, and MATHCK does not affect it. The manual
+states the error as length(d) < i + l - 1; the native check also fails a
+position below 1 or a negative count, which the manual does not mention and
+which would otherwise move bytes outside the string. `DELETE(d, length + 1,
+0)` deletes nothing and is valid. A failure flushes stdout and reports:
+
+    runtime error: DELETE position I count L is outside length N at line L column COL
+
+The destination and its length are unchanged on failure. A legacy AST
+without a location reports 0/0. NVPTX code has no host diagnostics and keeps
+its unchecked move. Under INITCK+, reading the string destination is an
+explicit unsupported boundary, as for other string operands.
+
+Regression: `tests/contract/delete.sh`.
+
 #### LSTRING length-byte stores **[native]**
 
 Under `$RANGECK+`, assigning to `t.LEN` checks the new unsigned byte against
@@ -1906,7 +1934,8 @@ is an ordinary call, outside this classification.
 | Separate contract | `POSITN` | Host pattern search with an explicit starting position ([below](#positn-both)); no MATHCK arithmetic or string writes. |
 | RANGECK | `COPYLST` | Admitted string source and bare LSTRING destination; host/CPU RANGECK+ checks source length against `min(capacity, 255)` before any copy or length publication. RANGECK- and NVPTX remain unchecked. |
 | Separate contract | `COPYSTR` | Admitted string source and bare fixed STRING destination; the source length is checked against the destination's capacity before any copy or blank fill, always (IBM error 2150), whatever the RANGECK setting. NVPTX remains unchecked ([above](#copystr-admission-and-always-caught-capacity-check-native)). |
-| Separate contract | `INSERT`, `DELETE`, `ENCODE`, `DECODE` | **Unreachable:** codegen lowers them, but the typechecker rejects every call as an undefined procedure or function. When enabled, their internal length and position arithmetic (`pos - 1`, `len - pos`) needs capacity and position checks, not MATHCK; DECODE is a text-to-number conversion. |
+| Separate contract | `DELETE` | Admitted bare LSTRING destination; the span is checked against the current length before any move or length publication, always (IBM error 2151), whatever the RANGECK setting. A position below 1 or a negative count also fails. NVPTX remains unchecked ([above](#delete-admission-and-always-caught-span-check-native)). |
+| Separate contract | `INSERT`, `ENCODE`, `DECODE` | **Unreachable:** codegen lowers them, but the typechecker rejects every call as an undefined procedure or function. When enabled, their internal length and position arithmetic (`pos - 1`, `len - pos`) needs capacity and position checks, not MATHCK; DECODE is a text-to-number conversion. |
 | Separate contract | `NEW` bounds, `DEVALLOC`, `SIZEOF`, `LOWER`, `UPPER` | Descriptor and layout arithmetic; layouts above 2147483647 bytes are rejected (`TypeSizeBytes`). |
 | Separate contract | `READ`/`READLN` of integers | Text conversion, checked independently of MATHCK (G29). |
 | No check | `ORD` | Same value and width; an enumeration gives its ordinal as INTEGER, so `ORD(e) * 20000` is checked 16-bit arithmetic. [`ORD(WORD)`](#deferred-ordword-conversion-gap-g25) stays WORD (G25). |
