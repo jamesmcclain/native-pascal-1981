@@ -594,6 +594,10 @@ BEGIN
   readln_skip_fnty := LLVMFunctionType(voidty, NIL, 0, 0);
   readln_skip_fn := LLVMAddFunction(modl, MakeCStr('pas_readln_skip'), readln_skip_fnty);
 
+  read_eof_fnty := LLVMFunctionType(i32ty, NIL, 0, 0);
+  read_eof_fn := LLVMAddFunction(modl, MakeCStr('pas_read_eof'), read_eof_fnty);
+  read_eoln_fn := LLVMAddFunction(modl, MakeCStr('pas_read_eoln'), read_eof_fnty);
+
   param_arr := AllocPtrArray(1);
   { C malloc takes size_t; the supported native host ABI is LP64. }
   SetPtrArrayElem(param_arr, 0, i64ty);

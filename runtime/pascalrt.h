@@ -194,6 +194,8 @@ int   pas_read_word(uint16_t *out);
 int   pas_read_ptr(uint64_t *out);
 int   pas_read_real(double *out);
 int   pas_read_char(uint8_t *out);
+int   pas_read_eof(void);
+int   pas_read_eoln(void);
 int   pas_read_lstring(uint8_t *buf, int cap);
 int   pas_read_string(uint8_t *buf, int cap);
 int   pas_read_enum_name(int32_t *out, const char **names, int lo, int hi);

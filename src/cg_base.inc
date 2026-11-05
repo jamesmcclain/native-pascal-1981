@@ -578,6 +578,7 @@ VAR
   read_lstring_fnty, read_lstring_fn: ADRMEM;
   read_string_fnty, read_string_fn: ADRMEM;
   readln_skip_fnty, readln_skip_fn: ADRMEM;
+  read_eof_fnty, read_eof_fn, read_eoln_fn: ADRMEM; { niladic EOF/EOLN }
   byval_kind_id, align_kind_id: CINT; { LLVM enum attribute kind ids for the
     [C] FOREIGN MEMORY-class byval call marshalling below, resolved once at
     init time (see byval_align_kinds_init) rather than re-resolving by name

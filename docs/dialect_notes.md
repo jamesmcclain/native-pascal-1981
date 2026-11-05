@@ -29,6 +29,7 @@ its [unsafe raw boundary](#descriptor-unsafe-raw-boundary) and ownership limits.
 - [There are two command-line dialects](#there-are-two-command-line-dialects)
 - [Initialization checking: host storage](#initialization-checking-host-storage-native)
 - [Enumerated and BOOLEAN I/O](#enumerated-and-boolean-io)
+- [Niladic EOF and EOLN](#niladic-eof-and-eoln-both)
 - [Wide signed integer input](#wide-signed-integer-input-extended)
 - [String precision](#string-precision)
 - [READSET and tuning hints](#readset-and-tuning-hints)
@@ -665,6 +666,23 @@ and to explicit text files.
 `BOOLEAN` keeps its documented vintage behavior in both dialects. Output is
 `TRUE` or `FALSE`. Input accepts those names without regard to letter case and
 also accepts the numeric ordinals `1` and `0`.
+
+## Niladic EOF and EOLN **[both]**
+
+`EOF` and `EOLN` without an argument mean `EOF(INPUT)` and `EOLN(INPUT)`
+(manual 12-10, 12-11). They test standard input, the stream that a bare
+`READ` or `READLN` reads. They look at the next character and do not
+consume it. `EOLN` is true at a line marker (`'\n'`). `EOLN` at end of file
+aborts with `runtime error: EOLN at end of file`. A user declaration named
+`EOF` or `EOLN` (a variable, constant or function, in any scope that is
+visible) hides the builtin. DEVICE code cannot use them.
+
+Deliberate difference: the IBM manual warns when a program uses INPUT or
+OUTPUT and does not name them in the program heading (6-27, 13-5). Native
+gives no warning for niladic `EOF` or `EOLN`, as for a bare `READ` or
+`WRITE`. It does not require INPUT in the heading. Fixtures:
+`tests/corpus/golden/niladic_eof_eoln.pas`, `niladic_eof_shadow.pas`,
+`niladic_eoln_at_eof.pas` and `niladic_eof_no_input_param.pas`.
 
 ## Wide signed integer input **[extended]**
 

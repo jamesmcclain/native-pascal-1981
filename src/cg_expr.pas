@@ -3372,6 +3372,19 @@ BEGIN
           fall through to the shared call path instead of treating it as an
           undefined variable. }
         res := CodegenCallCommon(nm, NIL)
+      ELSE IF (routi = 0) AND ((nmu = 'EOF') OR (nmu = 'EOLN')) THEN
+      BEGIN
+        { Niladic EOF/EOLN mean EOF(INPUT)/EOLN(INPUT) (manual 12-10/11),
+          reached only when no user declaration shadows the name. They
+          peek at stdin, the stream the bare READ/READLN readers consume,
+          so they agree with what those readers will see next. }
+        IF nmu = 'EOF' THEN
+          res := LLVMBuildCall2(builder, read_eof_fnty, read_eof_fn, NIL, 0, MakeCStr(''))
+        ELSE
+          res := LLVMBuildCall2(builder, read_eof_fnty, read_eoln_fn, NIL, 0, MakeCStr(''));
+        res := LLVMBuildICmp(builder, LLVMIntNE, res, LLVMConstInt(i32ty, 0, 0), MakeCStr(''));
+        last_val_tk := TK_BOOLEAN;
+      END
       ELSE
       BEGIN
         AbortWith2('codegen: undefined variable: ', nm);

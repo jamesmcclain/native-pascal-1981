@@ -284,6 +284,28 @@ int pas_read_string(uint8_t *buf, int cap)
     return 0;
 }
 
+/* Niladic EOF / EOLN: EOF(INPUT) / EOLN(INPUT) on the stream the bare
+ * READ/READLN readers above consume.  Peek one character and push it back,
+ * so the next bare read still sees it.  The line marker is '\n', exactly
+ * as pas_read_char and pas_readln_skip treat it. */
+int pas_read_eof(void)
+{
+    int ch = getchar();
+    if (ch == EOF)
+        return 1;
+    unread(ch);
+    return 0;
+}
+
+int pas_read_eoln(void)
+{
+    int ch = getchar();
+    if (ch == EOF)
+        die("EOLN at end of file");
+    unread(ch);
+    return ch == '\n';
+}
+
 void pas_readln_skip(void)
 {
     int ch;

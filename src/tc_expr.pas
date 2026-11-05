@@ -1478,7 +1478,16 @@ BEGIN
     ELSE
     BEGIN
       si := LookupSymbol(name);
-      IF si = 0 THEN
+      IF (si = 0) AND ((UpperStr(name) = 'EOF') OR (UpperStr(name) = 'EOLN')) THEN
+      BEGIN
+        { Niladic EOF/EOLN mean EOF(INPUT)/EOLN(INPUT) (manual 12-10/11).
+          Only reached when no user declaration shadows the name. }
+        IF is_device_compiland THEN
+          AddError2('Standard input is host-only and cannot appear in DEVICE code: ', name);
+        CheckExprBody := TK_BOOLEAN;
+        last_sem_scalar_base := TK_BOOLEAN;
+      END
+      ELSE IF si = 0 THEN
       BEGIN
         AddError2('Undefined identifier: ', name);
         CheckExprBody := TK_UNKNOWN;
