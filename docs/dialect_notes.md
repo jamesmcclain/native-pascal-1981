@@ -1268,8 +1268,8 @@ inside its source expression. Legacy statements inherit scoped RANGECK and
 report 0/0 if location is absent. `$RANGECK-` emits no capacity guard: invalid
 unchecked appends may corrupt memory or wrap the length byte. This is not
 unconditional memory safety, does not affect MATHCK, and does not add checks
-to whole-string assignment, value parameters or COPYSTR/INSERT.
-COPYLST has its own check below.
+to whole-string assignment, value parameters or INSERT.
+COPYLST and COPYSTR have their own checks below.
 Direct length-byte assignment has a separate check below. CPU DEVICE uses
 the host check; NVPTX retains its existing unchecked boundary without
 calling host diagnostics. Regression: `tests/contract/rangeck_concat.sh`.
@@ -1316,6 +1316,37 @@ Completed COPYLST punchlist:
 
 Regression: `tests/contract/rangeck_copylst.sh`; coverage and boundaries:
 [`docs/testing/rangeck_copylst.md`](testing/rangeck_copylst.md).
+
+#### COPYSTR admission and always-caught capacity check **[native]**
+
+`COPYSTR(s, t)` copies `s` into the fixed STRING `t` and sets the remaining
+characters of `t` to blanks (manual 11-21). The source has the same forms as
+COPYLST's. The destination must be a bare fixed STRING variable, including
+type aliases, VAR formals and WITH-bound names; an LSTRING, a selected
+destination such as `a[i]`, a constant or a function is rejected at
+typechecking. User routines named COPYSTR retain precedence.
+
+A source longer than the destination is IBM error 2150, which the manual
+says is **always caught** (A-46). Unlike CONCAT and COPYLST, no switch
+controls the check: it runs under `$RANGECK+` and `$RANGECK-` alike, on the
+host and in CPU DEVICE code, and MATHCK does not affect it. The source is
+evaluated once, and its length (the whole capacity of a fixed STRING, the
+current length of an LSTRING) is checked before any character is copied or
+blank-filled. An oversized source flushes stdout and reports:
+
+    runtime error: COPYSTR length V exceeds capacity CAP at line L column COL
+
+The destination is unchanged on failure; source side effects are retained.
+A legacy AST without a location reports 0/0. NVPTX code has no host
+diagnostics and keeps its unchecked copy. INITCK treats string operands as
+COPYLST does: nonliteral sources are explicit unsupported boundaries, and the
+destination is write-only.
+
+The manual states the error as upper(D) < upper(S). For an LSTRING source,
+the native check uses its current length rather than its declared capacity,
+like COPYLST: a copy fails only when the characters copied would not fit.
+
+Regression: `tests/contract/copystr.sh`.
 
 #### LSTRING length-byte stores **[native]**
 
@@ -1400,7 +1431,8 @@ without adding host diagnostics there.
 
 This INDEXCK slice does **not** add checks to `STRING`/`LSTRING` subscripts,
 or the capacities of `COPYLST`, `COPYSTR` and `INSERT`. `CONCAT` and
-`COPYLST` have the separate RANGECK capacity contracts above. Nor does INDEXCK
+`COPYLST` have the separate RANGECK capacity contracts above, and `COPYSTR`
+its always-caught one. Nor does INDEXCK
 change `VECTOR` lane indexing or the super-array guard's interaction with
 `VLOAD`/`VSTORE`: constant out-of-range vector
 lanes and fixed-array vector transfers retain their compile-time diagnostics;
@@ -1873,7 +1905,8 @@ is an ordinary call, outside this classification.
 | RANGECK | `CONCAT` (LSTRING length byte) | Host RANGECK+ checks combined length against `min(capacity, 255)` before copying or publishing; failure leaves compiler-written destination bytes unchanged. RANGECK- and NVPTX remain unchecked; this is not MATHCK arithmetic. |
 | Separate contract | `POSITN` | Host pattern search with an explicit starting position ([below](#positn-both)); no MATHCK arithmetic or string writes. |
 | RANGECK | `COPYLST` | Admitted string source and bare LSTRING destination; host/CPU RANGECK+ checks source length against `min(capacity, 255)` before any copy or length publication. RANGECK- and NVPTX remain unchecked. |
-| Separate contract | `INSERT`, `DELETE`, `COPYSTR`, `ENCODE`, `DECODE` | **Unreachable:** codegen lowers them, but the typechecker rejects every call as an undefined procedure or function. When enabled, their internal length and position arithmetic (`pos - 1`, `len - pos`) needs capacity and position checks, not MATHCK; DECODE is a text-to-number conversion. |
+| Separate contract | `COPYSTR` | Admitted string source and bare fixed STRING destination; the source length is checked against the destination's capacity before any copy or blank fill, always (IBM error 2150), whatever the RANGECK setting. NVPTX remains unchecked ([above](#copystr-admission-and-always-caught-capacity-check-native)). |
+| Separate contract | `INSERT`, `DELETE`, `ENCODE`, `DECODE` | **Unreachable:** codegen lowers them, but the typechecker rejects every call as an undefined procedure or function. When enabled, their internal length and position arithmetic (`pos - 1`, `len - pos`) needs capacity and position checks, not MATHCK; DECODE is a text-to-number conversion. |
 | Separate contract | `NEW` bounds, `DEVALLOC`, `SIZEOF`, `LOWER`, `UPPER` | Descriptor and layout arithmetic; layouts above 2147483647 bytes are rejected (`TypeSizeBytes`). |
 | Separate contract | `READ`/`READLN` of integers | Text conversion, checked independently of MATHCK (G29). |
 | No check | `ORD` | Same value and width; an enumeration gives its ordinal as INTEGER, so `ORD(e) * 20000` is checked 16-bit arithmetic. [`ORD(WORD)`](#deferred-ordword-conversion-gap-g25) stays WORD (G25). |

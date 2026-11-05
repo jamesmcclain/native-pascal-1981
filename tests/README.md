@@ -96,6 +96,7 @@ is its entry here.
 | corpus | [`fixtures`](corpus/fixtures.sh) | Every run and check fixture in the corpus, each against what it declares. |
 | contract | [`array_named_index_parser`](contract/array_named_index_parser.sh) | Named ordinal array index types parse, and pretty81 round-trips them. |
 | contract | [`chr_constant_folding`](contract/chr_constant_folding.sh) | Unchecked CHR folding has the same low-eight-bit value as runtime conversion. |
+| contract | [`copystr`](contract/copystr.sh) | COPYSTR admits fixed-STRING copies and always checks capacity before writing. |
 | contract | [`descriptor_contract`](contract/descriptor_contract.sh) | Host descriptor transport ABI and unsupported-boundary contracts. |
 | contract | [`driver_math`](contract/driver_math.sh) | The driver links REAL math builtins at every optimization level without user -lm. |
 | contract | [`driver`](contract/driver.sh) | The driver: option parsing, stage dispatch, outputs and failure cleanup. |

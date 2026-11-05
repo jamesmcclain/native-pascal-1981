@@ -792,6 +792,8 @@ END;
 
 PROCEDURE EmitStringCapacityCheck(new_len: ADRMEM; capacity: INTEGER32;
   site: ADRMEM; prefix, error_name: Str255); FORWARD;
+PROCEDURE EmitStringCapacityGuard(new_len: ADRMEM; capacity: INTEGER32;
+  site: ADRMEM; prefix, error_name: Str255); FORWARD;
 
 PROCEDURE CodegenCopylst(stmt: ADRMEM);
 { COPYLST(CONST S: STRING-or-LSTRING-or-literal; VAR D: LSTRING): copies S's
@@ -845,13 +847,15 @@ BEGIN
   LLVMBuildStore(builder, src_len_byte, len_ptr);
 END;
 
-PROCEDURE CodegenCopystr(args: ADRMEM);
+PROCEDURE CodegenCopystr(stmt: ADRMEM);
 { COPYSTR(CONST S: STRING-or-LSTRING-or-literal; VAR D: STRING): copies S's
   characters into D from byte[0], then blank-pads the remaining bytes (from
   length(S) up to D's fixed capacity) with 0x20 -- STRING has no length
-  byte, so every declared byte always holds a real character. }
+  byte, so every declared byte always holds a real character. A source
+  longer than D is error 2150, always caught (manual A-46): no switch turns
+  the check off, and it runs before any destination byte is written. }
 VAR
-  d_arg: ADRMEM;
+  args, d_arg, source: ADRMEM;
   d_symi: INTEGER32;
   d_tid: INTEGER;
   d_addr: ADRMEM;
@@ -859,6 +863,7 @@ VAR
   src_chars, src_len: ADRMEM;
   gep_idx: ADRMEM;
 BEGIN
+  args := GetObj(stmt, 'args');
   IF ArrSize(args) <> 2 THEN
     AbortWith('codegen: COPYSTR expects exactly 2 arguments');
   d_arg := ArrItem(args, 1);
@@ -872,7 +877,13 @@ BEGIN
     AbortWith('codegen: COPYSTR''s destination must be a STRING variable');
   d_addr := symbols[d_symi].llvm_val;
 
-  ResolveStringExprCharsLen(ArrItem(args, 0), src_chars, src_len);
+  source := ArrItem(args, 0);
+  IF (NodeType(source) <> 'StringLiteral') AND (NodeType(source) <> 'CharLiteral') THEN
+    IF GetBool(GetObjOrNil(source, 'read_flags'), 'INITCK') THEN
+      InitckBoundaryAt('STRING/LSTRING COPYSTR operand', source);
+  ResolveStringExprCharsLen(source, src_chars, src_len);
+  EmitStringCapacityGuard(LLVMBuildZExt(builder, src_len, i64ty, MakeCStr('copystr.length')),
+    types[d_tid].hi, stmt, 'copystr', 'pas_copystr_error');
 
   gep_idx := AllocPtrArray(2);
   SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
@@ -1015,12 +1026,22 @@ PROCEDURE EmitStringCapacityCheck(new_len: ADRMEM; capacity: INTEGER32;
 { RANGECK owns this semantic capacity check, not MATHCK. As with other
   RANGECK guards, unchecked and NVPTX paths retain their existing behavior.
   Check before any destination byte or length publication. }
+BEGIN
+  IF cur_rangeck THEN
+    EmitStringCapacityGuard(new_len, capacity, site, prefix, error_name);
+END;
+
+PROCEDURE EmitStringCapacityGuard(new_len: ADRMEM; capacity: INTEGER32;
+  site: ADRMEM; prefix, error_name: Str255);
+{ Fail through error_name(new_len, capacity, line, column) unless new_len <=
+  capacity. Callers decide whether a switch controls the guard; NVPTX has no
+  host diagnostics and keeps its unchecked boundary. }
 VAR
   ok, bad_bb, ok_bb, ps, fnty, fn, args, discard, location: ADRMEM;
   line, column: INTEGER32;
   in_name, bad_name, ok_name: Str255;
 BEGIN
-  IF NOT cur_rangeck OR is_nvptx_device THEN RETURN;
+  IF is_nvptx_device THEN RETURN;
   in_name := prefix; CONCAT(in_name, '.in');
   bad_name := prefix; CONCAT(bad_name, '.bad');
   ok_name := prefix; CONCAT(ok_name, '.ok');
@@ -1598,7 +1619,7 @@ BEGIN
   ELSE IF name = 'COPYLST' THEN
     CodegenCopylst(stmt)
   ELSE IF name = 'COPYSTR' THEN
-    CodegenCopystr(GetObj(stmt, 'args'))
+    CodegenCopystr(stmt)
   ELSE IF name = 'INSERT' THEN
     CodegenInsert(GetObj(stmt, 'args'))
   ELSE IF name = 'DELETE' THEN
