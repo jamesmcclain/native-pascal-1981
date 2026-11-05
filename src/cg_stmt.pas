@@ -571,7 +571,7 @@ VAR
   start_node, end_node: ADRMEM;
   start_val, end_val, cur_val, cmp_val, next_val: ADRMEM;
   loop_bb, body_bb, step_bb, inc_bb, end_bb, chk_bb, cont_bb: ADRMEM;
-  done_bb, saved_taint: ADRMEM;
+  done_bb, saved_taint, start_state: ADRMEM;
   down, narrow, unsigned, sub_chk, tracked, unset_at_exit: BOOLEAN;
 BEGIN
   var_name := GetStr(stmt, 'var');
@@ -590,18 +590,18 @@ BEGIN
   unsigned := narrow OR IsUnsignedWordTk(var_tk) OR (TypeKind(var_tk) = TK_ENUM);
   var_llty := LLVMTypeForTk(var_tk);
 
+  { The initial value is evaluated first, then the final value, both before
+    the statement runs (manual 9-17); the control variable is assigned only
+    after both and their range checks, so a final expression naming it reads
+    its prior value and nothing observes an unchecked initial value. }
   start_node := GetObj(stmt, 'start');
   tracked := InitckTracked(symi);
   IF tracked THEN saved_taint := BeginInitckValue(start_node);
   start_val := CodegenExpr(start_node);
   start_val := CoerceForAssign(start_val, last_val_tk, var_tk, start_node, var_name);
-  LLVMBuildStore(builder, start_val, symbols[symi].llvm_val);
   { The initial assignment is a producer carrying the initial value's state;
-    increments only derive from it. Published before the final expression is
-    evaluated because the data store already happened (an end expression
-    naming the control variable reads the initial value). }
-  IF tracked THEN
-    LLVMBuildStore(builder, EndInitckValue(saved_taint), symbols[symi].init_state);
+    increments only derive from it. }
+  IF tracked THEN start_state := EndInitckValue(saved_taint);
 
   end_node := GetObj(stmt, 'end');
   end_val := CodegenExpr(end_node);
@@ -635,6 +635,9 @@ BEGIN
     LLVMBuildBr(builder, cont_bb);
     LLVMPositionBuilderAtEnd(builder, cont_bb);
   END;
+  LLVMBuildStore(builder, start_val, symbols[symi].llvm_val);
+  IF tracked THEN
+    LLVMBuildStore(builder, start_state, symbols[symi].init_state);
 
   loop_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('for_loop'));
   body_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('for_body'));

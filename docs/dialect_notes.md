@@ -261,8 +261,9 @@ call result, ...) is outside coverage and contributes initialized. Implicit cont
 unset value does not taint what the branch assigns. A READ/READLN destination
 becomes initialized only after its conversion returns success; a trapped file
 error keeps the prior state (stdin errors abort). A FOR control variable takes
-the initial value's state when it is assigned and keeps it through the
-iterations. After **natural** termination it is unset (the manual leaves its
+the initial value's state when it is assigned, after both bounds are
+evaluated, and keeps it through the iterations; a final expression naming an
+unset control variable is therefore an uninitialized read. After **natural** termination it is unset (the manual leaves its
 value undefined, 9-17); BREAK and GOTO exits keep the value of the iteration
 they left. The FOR statement's own bound comparisons are never INITCK consumers,
 so FOR over excluded storage is not a boundary. `ADR` of the slot releases it
@@ -1213,7 +1214,11 @@ The check covers:
 - a `FOR` loop over a subrange control variable: if the loop runs at all,
   its initial and final values must both be in range, and the check is made
   once, before the first iteration. A loop that runs zero times is not
-  checked.
+  checked. As the manual requires (9-17), the initial value is evaluated
+  first, then the final value, and only then, after the check, is the
+  control variable assigned: a final expression that names the control
+  variable, or a function it calls, sees the variable's prior value, never
+  an unchecked initial value.
 
 The check is made on the value before it is narrowed to the subrange's
 storage width, so a wide value cannot wrap into range. A constant that is
