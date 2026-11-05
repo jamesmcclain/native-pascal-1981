@@ -401,6 +401,26 @@ BEGIN
   LowByte := b;
 END;
 
+FUNCTION IsWord64MinLiteral(node: ADRMEM): BOOLEAN;
+{ The word64-marked IntLiteral 2^63, whose INTEGER64 bit pattern is -2^63.
+  The bound is built from small literals, as the typechecker's is. }
+VAR
+  bits, n, low: INTEGER64;
+BEGIN
+  IsWord64MinLiteral := FALSE;
+  IF node <> NIL THEN
+    IF NodeType(node) = 'IntLiteral' THEN
+      IF GetBool(node, 'word64') THEN
+      BEGIN
+        bits := GetInt64(node, 'value');
+        n := 16384;
+        n := n * 4;                    { 2^16 }
+        low := n * n * 32768;
+        low := -low;                   { -(2^47); Pascal's - binds below * }
+        IsWord64MinLiteral := bits = low * n;
+      END;
+END;
+
 FUNCTION FoldConstInt(expr_node: ADRMEM; VAR folded: INTEGER64): BOOLEAN;
 { Fold the integer-only constant-expression subset used by the reference
   typechecker's _fold_const_int: literals, unary +/-, arithmetic, earlier
@@ -421,7 +441,9 @@ BEGIN
     { Exact, not Real64ToInt64(GetReal(...)): a JSON number keeps 15 digits,
       so 9223372036854775805 used to compile as 9223372036854775807. }
     folded := GetInt64(expr_node, 'value');
-    FoldConstInt := TRUE;
+    { A literal of 2^63 or more holds only its WORD64 bit pattern; it is a
+      WORD64 operand, never an INTEGER64 constant (CodegenExpr). }
+    FoldConstInt := NOT GetBool(expr_node, 'word64');
   END
   ELSE IF nt = 'BoolLiteral' THEN
   BEGIN
@@ -445,6 +467,13 @@ BEGIN
     BEGIN
       IF op = 'MINUS' THEN FoldConstInt := FoldArith('MINUS', 0, folded, folded)
       ELSE FoldConstInt := TRUE;
+    END
+    ELSE IF (op = 'MINUS') AND IsWord64MinLiteral(GetObj(expr_node, 'operand')) THEN
+    BEGIN
+      { -9223372036854775808: the bit pattern of 2^63 is already the
+        INTEGER64 minimum. }
+      folded := GetInt64(GetObj(expr_node, 'operand'), 'value');
+      FoldConstInt := TRUE;
     END;
   END
   ELSE IF nt = 'BinOp' THEN
@@ -483,7 +512,9 @@ BEGIN
     ci := LookupConst(GetStr(expr_node, 'name'));
     IF ci <> 0 THEN
     BEGIN
-      IF NOT const_tbl[ci].is_real THEN
+      { A WORD64 constant of 2^63 or more holds only its bit pattern. }
+      IF NOT const_tbl[ci].is_real AND
+         NOT ((const_tbl[ci].integer_tid = TK_WORD64) AND (const_tbl[ci].ival < 0)) THEN
       BEGIN
         folded := const_tbl[ci].ival;
         FoldConstInt := TRUE;

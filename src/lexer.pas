@@ -74,6 +74,11 @@ VAR
   pending_unroll_set: BOOLEAN;
   pending_unroll_val: INTEGER;
 
+  { One-shot mark for the next INTEGER_LITERAL token: its value is at least
+    2^63, so the INTEGER64 int_val holds only its WORD64 bit pattern. }
+  pending_word64_literal: BOOLEAN;
+  two16, two31, two32: INTEGER64; { set once: built from small literals }
+
   { $PUSH/$POP stack of ON/OFF flag snapshots. Fixed depth is fine: no
     real source nests metacommand PUSH/POP anywhere near this deep. }
   flag_stack: ARRAY [1..32] OF MetacmdFlags;
@@ -189,6 +194,12 @@ BEGIN
   BEGIN
     fieldName := 'value'; key_ptr := MakeCStr(fieldName);
     pas_cjson_add_int64(tok_obj, key_ptr, int_val);
+    IF pending_word64_literal THEN
+    BEGIN
+      fieldName := 'word64'; key_ptr := MakeCStr(fieldName);
+      cJSON_AddItemToObject(tok_obj, key_ptr, cJSON_CreateBool(1));
+      pending_word64_literal := FALSE;
+    END;
   END
   ELSE IF val_type = 2 THEN
     val_item := cJSON_CreateNumber(real_val)
@@ -1342,6 +1353,66 @@ BEGIN
   ClampedSpanLen := n;
 END;
 
+PROCEDURE AccumulateDigit(VAR hi, lo: INTEGER64; VAR too_big: BOOLEAN;
+  radix, digit: INTEGER);
+{ hi:lo := hi:lo * radix + digit, the halves each below 2^32. too_big
+  sticks once the value passes 2^64 - 1 (the halves are then meaningless).
+  A radix is at most 36, so no intermediate leaves INTEGER64. }
+VAR
+  low: INTEGER64;
+BEGIN
+  IF NOT too_big THEN
+  BEGIN
+    low := lo * radix + digit;
+    lo := low MOD two32;
+    hi := hi * radix + low DIV two32;
+    IF hi >= two32 THEN too_big := TRUE;
+  END;
+END;
+
+FUNCTION LexIntText(n: INTEGER): Str255;
+{ Decimal text of a nonnegative line or column number. }
+VAR
+  rev, text: Str255;
+  k: INTEGER;
+BEGIN
+  rev[0] := CHR(1);
+  rev[1] := CHR(ORD('0') + n MOD 10);
+  n := n DIV 10;
+  WHILE n > 0 DO
+  BEGIN
+    rev[0] := CHR(ORD(rev[0]) + 1);
+    rev[ORD(rev[0])] := CHR(ORD('0') + n MOD 10);
+    n := n DIV 10;
+  END;
+  text[0] := rev[0];
+  FOR k := 1 TO ORD(rev[0]) DO text[k] := rev[ORD(rev[0]) + 1 - k];
+  LexIntText := text;
+END;
+
+FUNCTION FinishIntegerLiteral(hi, lo: INTEGER64; too_big: BOOLEAN;
+  line, col: INTEGER): INTEGER64;
+{ The literal's INTEGER64 value. At 2^63 and above that is only the WORD64
+  bit pattern, and the token is marked word64 for the later stages. Past
+  2^64 - 1 no type holds it: a located lexer error, not a wrapped value. }
+VAR
+  msg: Str255;
+BEGIN
+  IF too_big THEN
+  BEGIN
+    msg := 'Lexer Error: integer literal exceeds 18446744073709551615 at line ';
+    CONCAT(msg, LexIntText(line));
+    CONCAT(msg, ' column ');
+    CONCAT(msg, LexIntText(col));
+    EPrint(msg);
+    exit(1);
+  END;
+  pending_word64_literal := hi >= two31;
+  (*$MATHCK-*)
+  FinishIntegerLiteral := hi * two32 + lo;
+  (*$MATHCK+*)
+END;
+
 PROCEDURE ScanNumber;
 VAR
   start_pos: INTEGER32;
@@ -1357,7 +1428,12 @@ VAR
     (used as a FOR loop bound below, which must match i's own INTEGER
     type), never the literal's own value. }
   radix, digit_val, look: INTEGER;
-  real_val, frac_part, frac_scale: REAL;
+  { The digit run accumulates as two 32-bit halves held in INTEGER64, so
+    every step is exact and the 2^64 limit is a plain test: no WORD64 in
+    the bootstrap subset, and the lexer itself runs MATHCK-checked. }
+  acc_hi, acc_lo: INTEGER64;
+  too_big: BOOLEAN;
+  real_val, frac_part, frac_scale, real_acc: REAL;
   exp_neg: BOOLEAN;
   lexeme: Str255;
   ch: CHAR;
@@ -1367,11 +1443,16 @@ BEGIN
   start_line := cur_line;
   start_col := cur_col;
   int_val := 0;
+  acc_hi := 0;
+  acc_lo := 0;
+  too_big := FALSE;
+  real_acc := 0.0;
 
   WHILE (src_pos < src_len) AND IsDigit(ReadBufChar(src_pos)) DO
   BEGIN
     ch := ReadBufChar(src_pos);
-    int_val := int_val * 10 + (ORD(ch) - ORD('0'));
+    AccumulateDigit(acc_hi, acc_lo, too_big, 10, ORD(ch) - ORD('0'));
+    real_acc := real_acc * 10.0 + (ORD(ch) - ORD('0'));
     AdvancePos(1);
   END;
 
@@ -1381,15 +1462,19 @@ BEGIN
       int_val is INTEGER64 (it accumulates any digit run's full value), but a
       radix base is always small and the language has no implicit narrowing;
       RETYPE makes the deliberate truncation explicit. }
-    radix := RETYPE(INTEGER, int_val);   { a base is always small }
+    IF too_big OR (acc_hi <> 0) OR (acc_lo > 36) THEN radix := 0
+    ELSE radix := RETYPE(INTEGER, acc_lo);   { a base is always small }
     AdvancePos(1); { consume '#' }
-    int_val := 0;
+    acc_hi := 0;
+    acc_lo := 0;
+    too_big := FALSE;
     WHILE (src_pos < src_len) AND (RadixDigitValue(ReadBufChar(src_pos), radix) >= 0) DO
     BEGIN
       digit_val := RadixDigitValue(ReadBufChar(src_pos), radix);
-      int_val := int_val * radix + digit_val;
+      AccumulateDigit(acc_hi, acc_lo, too_big, radix, digit_val);
       AdvancePos(1);
     END;
+    int_val := FinishIntegerLiteral(acc_hi, acc_lo, too_big, start_line, start_col);
 
     len := ClampedSpanLen(start_pos, src_pos);
     lexeme[0] := CHR(len);
@@ -1406,7 +1491,10 @@ BEGIN
       The leading '..' range operator is excluded above by requiring a
       digit right after the dot. }
     AdvancePos(1); { consume '.' }
-    real_val := pas_int64_to_double(int_val);
+    { The integer part may exceed every integer type; it is only a REAL's.
+      Below 2^63 it converts exactly, as before. }
+    IF too_big OR (acc_hi >= two31) THEN real_val := real_acc
+    ELSE real_val := pas_int64_to_double(acc_hi * two32 + acc_lo);
     frac_part := 0.0;
     frac_scale := 1.0;
     WHILE (src_pos < src_len) AND IsDigit(ReadBufChar(src_pos)) DO
@@ -1465,6 +1553,7 @@ BEGIN
   END
   ELSE
   BEGIN
+    int_val := FinishIntegerLiteral(acc_hi, acc_lo, too_big, start_line, start_col);
     len := ClampedSpanLen(start_pos, src_pos);
     lexeme[0] := CHR(len);
     FOR i := 1 TO len DO
@@ -1676,6 +1765,11 @@ BEGIN
   flag_stack_top := 0;
   meta_const_count := 0;
   pending_unroll_set := FALSE;
+  pending_word64_literal := FALSE;
+  two16 := 16384;
+  two16 := two16 * 4;
+  two32 := two16 * two16;
+  two31 := two32 DIV 2;
   pending_leading_count := 0;
   has_last_token := FALSE;
   brace_str[0] := CHR(1);

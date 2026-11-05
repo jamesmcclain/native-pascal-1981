@@ -1190,7 +1190,29 @@ BEGIN
   nt := NodeType(node);
   last_sem_set_base := SB_UNKNOWN;
   last_sem_scalar_base := SB_UNKNOWN;
-  IF nt = 'IntLiteral' THEN
+  IF IsWord64Literal(node) THEN
+  BEGIN
+    { 2^63..2^64-1 fits only WORD64. It is not folded, so the usual WORD64
+      operand rules apply; a narrower integer context is the constant's
+      own range error, as for any other literal. }
+    IF NOT (active_features.wide_integers OR is_device_compiland) THEN
+    BEGIN
+      AddError('Integer constant is outside the native 16-bit range -32768..65535');
+      ot := TK_UNKNOWN;
+    END
+    ELSE IF IsInteger(expr_context_tk) AND (expr_context_tk <> TK_WORD64) THEN
+    BEGIN
+      AddError2('Positive integer constant out of range for ', IntegerTypeName(expr_context_tk));
+      ot := TK_UNKNOWN;
+    END
+    ELSE BEGIN
+      ot := TK_WORD64;
+      TagIntegerType(node, ot);
+    END;
+    CheckExprBody := ot;
+    last_sem_scalar_base := SemanticOrdinalBase(ot, 0);
+  END
+  ELSE IF nt = 'IntLiteral' THEN
   BEGIN
     ot := CheckIntegerConstant(node, JsonIntegerValue(node));
     CheckExprBody := ot;
@@ -1646,6 +1668,11 @@ BEGIN
     BEGIN
       ot := CheckIntegerConstant(node, folded_value);
       IF ot <> TK_UNKNOWN THEN TagIntegerType(operand_node, ot);
+    END
+    ELSE IF (op = 'MINUS') AND IsWord64Literal(operand_node) THEN
+    BEGIN
+      AddError('Negative integer constant out of range for INTEGER64');
+      ot := TK_UNKNOWN;
     END
     ELSE
       ot := CheckExpr(operand_node);

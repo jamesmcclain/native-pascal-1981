@@ -2091,6 +2091,15 @@ BEGIN
       IF GetBool(val_node, 'value') THEN ival := 1 ELSE ival := 0;
       integer_tid := TK_BOOLEAN;
     END
+    ELSE IF GetBool(val_node, 'word64') OR (integer_tid = TK_WORD64) AND
+            NOT IsIntLiteralLike(val_node) THEN
+    BEGIN
+      { 2^63..2^64-1, a bare literal or the name of one (the typechecker
+        admits nothing else): kept as its WORD64 bit pattern. }
+      IF NodeType(val_node) = 'Identifier' THEN ival := const_tbl[ci].ival
+      ELSE ival := GetInt64(val_node, 'value');
+      integer_tid := TK_WORD64;
+    END
     ELSE
     BEGIN
       ival := IntLiteralValue(val_node);

@@ -49,6 +49,9 @@ TYPE
     value_int: INTEGER64;
     value_real: REAL;
     value_type: INTEGER32;
+    { The integer value is at least 2^63, so value_int holds only its
+      WORD64 bit pattern (the lexer's word64 mark). }
+    value_word64: BOOLEAN;
     line: INTEGER32;
     col: INTEGER32;
     f_brave, f_debug, f_entry, f_goto, f_indexck, f_initck, f_line, f_list,
@@ -79,6 +82,7 @@ FUNCTION GetTok(off: INTEGER32): PToken;
 FUNCTION CurKind: Str255;
 FUNCTION CurLex: Str255;
 FUNCTION CurValueInt: INTEGER64;
+FUNCTION CurValueWord64: BOOLEAN;
 FUNCTION CurValueReal: REAL;
 FUNCTION CurValueStr: Str255;
 FUNCTION CurIndexCk: BOOLEAN;

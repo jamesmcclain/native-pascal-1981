@@ -298,9 +298,18 @@ BEGIN
   ParseIdentListArr := arr;
 END;
 
+PROCEDURE AddIntLiteralValue(node: ADRMEM);
+{ The current INTEGER_LITERAL token's value. A literal of 2^63 or more is
+  stored as its WORD64 bit pattern and marked word64, which every later
+  stage reads before the value. }
+BEGIN
+  AddIntField(node, 'value', CurValueInt());
+  IF CurValueWord64 THEN AddBoolField(node, 'word64', TRUE);
+END;
+
 FUNCTION ParseConstant: ADRMEM;
 VAR
-  node, args_arr_const: ADRMEM;
+  node, args_arr_const, literal: ADRMEM;
   val_str: Str255;
   sign_neg: BOOLEAN;
   res_c: CINT;
@@ -313,7 +322,7 @@ BEGIN
   IF CurKind = 'INTEGER_LITERAL' THEN
   BEGIN
     node := CreateTriviaNode('IntLiteral');
-    AddIntField(node, 'value', CurValueInt());
+    AddIntLiteralValue(node);
     Expect('INTEGER_LITERAL');
     ParseConstant := node;
   END
@@ -393,10 +402,21 @@ BEGIN
     IF CurKind = 'INTEGER_LITERAL' THEN
     BEGIN
       node := CreateTriviaNode('IntLiteral');
-      IF sign_neg THEN
+      IF sign_neg AND CurValueWord64 THEN
+      BEGIN
+        { -(2^63 or more) has no negated INTEGER64 value to store; keep the
+          sign as an operator so the typechecker folds -2^63 and reports
+          the rest at their own location. }
+        AddIntLiteralValue(node);
+        literal := node;
+        node := CreateTriviaNode('UnaryOp');
+        AddStringField(node, 'op', 'MINUS');
+        AddField(node, 'operand', literal);
+      END
+      ELSE IF sign_neg THEN
         AddIntField(node, 'value', -CurValueInt())
       ELSE
-        AddIntField(node, 'value', CurValueInt());
+        AddIntLiteralValue(node);
       Expect('INTEGER_LITERAL');
       ParseConstant := node;
     END
@@ -485,7 +505,7 @@ BEGIN
   ELSE IF CurKind = 'INTEGER_LITERAL' THEN
   BEGIN
     node := CreateTriviaNode('IntLiteral');
-    AddIntField(node, 'value', CurValueInt());
+    AddIntLiteralValue(node);
     Expect('INTEGER_LITERAL');
     ParseFactorBody := node;
   END

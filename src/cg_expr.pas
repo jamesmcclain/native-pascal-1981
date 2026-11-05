@@ -3207,9 +3207,17 @@ BEGIN
       building every literal at i16 wrapped those. A literal tagged INTEGER,
       or untagged legacy input, stays plain INTEGER and still adapts to a
       sibling operand in CodegenBinOp. }
-    last_val_tk := FoldedOperationTk(node);
-    IF last_val_tk = TK_UNKNOWN THEN last_val_tk := TK_INTEGER;
-    res := LLVMConstInt(LLVMTypeForTk(last_val_tk), IntLiteralValue(node), 1);
+    IF GetBool(node, 'word64') THEN
+    BEGIN
+      { 2^63..2^64-1: the value field is already the WORD64 bit pattern. }
+      last_val_tk := TK_WORD64;
+      res := LLVMConstInt(i64ty, GetInt64(node, 'value'), 0);
+    END
+    ELSE BEGIN
+      last_val_tk := FoldedOperationTk(node);
+      IF last_val_tk = TK_UNKNOWN THEN last_val_tk := TK_INTEGER;
+      res := LLVMConstInt(LLVMTypeForTk(last_val_tk), IntLiteralValue(node), 1);
+    END;
   END
   ELSE IF nt = 'RealLiteral' THEN
   BEGIN

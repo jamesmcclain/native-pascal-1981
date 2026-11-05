@@ -13,6 +13,7 @@ FUNCTION SemanticChildTypeNode(node: ADRMEM): ADRMEM;
 FUNCTION FwdCachedType(node: ADRMEM; VAR tk, aux, aux2, aux3, idx_tk: INTEGER): BOOLEAN;
 FUNCTION JsonIntegerValue(node: ADRMEM): INTEGER64;
 FUNCTION FoldConstInt(node: ADRMEM; VAR folded_value: INTEGER64): BOOLEAN;
+FUNCTION IsWord64Literal(node: ADRMEM): BOOLEAN;
 PROCEDURE CheckConstByteDomain(node: ADRMEM);
 VAR
   { Set by FoldArith; read by tc_expr's CheckFoldedOperation. }

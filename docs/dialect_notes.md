@@ -2419,6 +2419,23 @@ and `tests/corpus/golden/literal_wide_range.pas` pin this. Literals of more than
 (beyond the precision of a printed JSON double) are preserved exactly across compiler
 stages via companion decimal representation (`tests/corpus/golden/literal_int64_exact.pas`).
 
+A literal from 2^63 (9223372036854775808) to 2^64 - 1
+(18446744073709551615), in decimal or radix form, is a WORD64 operand:
+`w := 18446744073709551615` and `CASE w OF 9223372036854775808: ...` are
+valid. It is out of range for every other integer type. The compiler
+folds constants in INTEGER64, which cannot hold these values, so such a
+literal is not folded: a `CONST` may name it (`CONST BIG = 18446744073709551615;
+SAME = BIG;`), and `BIG DIV 10` is computed as WORD64 arithmetic at run
+time, under MATHCK like any other WORD64 operation. `-9223372036854775808`
+is the INTEGER64 minimum; a negated literal below it is an error. A
+literal above 2^64 - 1 is a located lexer error (`Lexer Error: integer
+literal exceeds 18446744073709551615 at line L column C`), and a `REAL`
+literal's integer part may be larger than any integer type
+(`tests/corpus/golden/real_literal_wide_integer_part.pas`). In the vintage
+dialect these literals are outside the native range like any literal above
+65535. `tests/corpus/golden/word64_literal_*.pas` pin this, and
+`tests/contract/pretty81_integers.sh` pins their pretty81 spelling.
+
 A literal too large for its target type is an error:
 
 ```pascal

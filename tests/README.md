@@ -137,7 +137,7 @@ is its entry here.
 | contract | [`mathck_word_scalar`](contract/mathck_word_scalar.sh) | Scalar WORD arithmetic against native arithmetic oracles. |
 | contract | [`nilck_dispose`](contract/nilck_dispose.sh) | NILCK-controlled DISPOSE: null checks before retirement/free, snapshots and aliases. |
 | contract | [`nilck`](contract/nilck.sh) | NILCK null-only host dereferences: diagnostics, snapshots, aliases and IR ordering. |
-| contract | [`pretty81_integers`](contract/pretty81_integers.sh) | pretty81 preserves exact signed INTEGER64 literals through parsed and typed ASTs. |
+| contract | [`pretty81_integers`](contract/pretty81_integers.sh) | pretty81 preserves exact INTEGER64 and upper-half WORD64 literals through parsed and typed ASTs. |
 | contract | [`pretty81_sequential`](contract/pretty81_sequential.sh) | pretty81 prints AND THEN/OR ELSE chains without parentheses, which the 1981 manual forbids around them: its output parses again, prints the same text, and the program behaves the same. |
 | contract | [`quoted_literal_limits`](contract/quoted_literal_limits.sh) | Quoted token spellings include both delimiters and doubled quotes. |
 | contract | [`rangeck_byword`](contract/rangeck_byword.sh) | BYWORD checks both original ordinal operands before packing their low bytes. |

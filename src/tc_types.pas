@@ -70,6 +70,43 @@ BEGIN
   JsonIntegerValue := GetInt64(node, 'value');
 END;
 
+FUNCTION IsWord64Literal(node: ADRMEM): BOOLEAN;
+{ An IntLiteral of 2^63 or more: its value field is the WORD64 bit
+  pattern, negative as an INTEGER64. }
+BEGIN
+  IsWord64Literal := FALSE;
+  IF node <> NIL THEN
+    IF NodeType(node) = 'IntLiteral' THEN
+      IsWord64Literal := GetBool(node, 'word64');
+END;
+
+FUNCTION MinInteger64Value: INTEGER64;
+VAR
+  n, low: INTEGER64;
+BEGIN
+  { -2^63 from vintage-sized literals, as MaxInteger32Value in tc_expr. }
+  n := 16384;
+  n := n * 4;                    { 2^16 }
+  low := n * n * 32768;
+  low := -low;                   { -(2^47); Pascal's - binds below * }
+  MinInteger64Value := low * n;
+END;
+
+FUNCTION IsNegatedMinInt64(node: ADRMEM): BOOLEAN;
+{ -9223372036854775808: unary minus of the WORD64 literal 2^63, whose bit
+  pattern is already the INTEGER64 minimum. }
+VAR
+  operand: ADRMEM;
+BEGIN
+  IsNegatedMinInt64 := FALSE;
+  IF GetStr(node, 'op') = 'MINUS' THEN
+  BEGIN
+    operand := GetObj(node, 'operand');
+    IF IsWord64Literal(operand) THEN
+      IsNegatedMinInt64 := JsonIntegerValue(operand) = MinInteger64Value;
+  END;
+END;
+
 FUNCTION FoldArith(op: Str255; left, right: INTEGER64;
   VAR folded: INTEGER64): BOOLEAN;
 { The exact constant left + - * right, or FALSE when it leaves INTEGER64.
@@ -129,8 +166,10 @@ BEGIN
   FoldConstInt := FALSE;
   IF nt = 'IntLiteral' THEN
   BEGIN
+    { A WORD64 literal of 2^63 or more has no INTEGER64 value to fold; it
+      stays a typed WORD64 operand (CheckExpr). }
     folded_value := JsonIntegerValue(node);
-    FoldConstInt := TRUE;
+    FoldConstInt := NOT IsWord64Literal(node);
   END
   ELSE IF nt = 'BoolLiteral' THEN
   BEGIN
@@ -146,7 +185,12 @@ BEGIN
   ELSE IF nt = 'UnaryOp' THEN
   BEGIN
     op := GetStr(node, 'op');
-    IF ((op = 'PLUS') OR (op = 'MINUS')) AND FoldConstInt(GetObj(node, 'operand'), folded_value) THEN
+    IF IsNegatedMinInt64(node) THEN
+    BEGIN
+      folded_value := JsonIntegerValue(GetObj(node, 'operand'));
+      FoldConstInt := TRUE;
+    END
+    ELSE IF ((op = 'PLUS') OR (op = 'MINUS')) AND FoldConstInt(GetObj(node, 'operand'), folded_value) THEN
     BEGIN
       IF op = 'MINUS' THEN
         FoldConstInt := FoldArith('MINUS', 0, folded_value, folded_value)

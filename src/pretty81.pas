@@ -140,6 +140,32 @@ BEGIN
   IntToStr := result;
 END;
 
+FUNCTION Word64BitsToStr(bits: INTEGER64): Str255;
+{ The unsigned decimal of a word64 literal's bit pattern (negative as an
+  INTEGER64, so the value is 2^64 + bits). 2^64 = 10 * q0 + 6, hence
+  value = 10 * (q0 + t DIV 10) + t MOD 10 with t = bits + 6, taking
+  floored DIV/MOD; q0 is built from small literals. }
+VAR
+  m, q0, t, q, r: INTEGER64;
+  text: Str255;
+BEGIN
+  m := 16384;
+  m := m * 4;                              { 2^16 }
+  q0 := ((m * m * m * 16384 - 1) * 2 + 1 - 2) DIV 5;   { (2^63 - 3) / 5 }
+  t := bits + 6;
+  q := t DIV 10;
+  r := t MOD 10;
+  IF r < 0 THEN
+  BEGIN
+    r := r + 10;
+    q := q - 1;
+  END;
+  text := IntToStr(q0 + q);
+  text[0] := CHR(ORD(text[0]) + 1);
+  text[ORD(text[0])] := CHR(ORD('0') + r);
+  Word64BitsToStr := text;
+END;
+
 FUNCTION RealToStr(rv: REAL): Str255;
 { Canonical decimal rendering, 6 fractional digits with trailing zeros
   trimmed (but at least one kept -- Pascal REAL literals require a digit
@@ -297,7 +323,12 @@ BEGIN
   IF nt = 'Identifier' THEN
     Out(GetStr(node, 'name'))
   ELSE IF nt = 'IntLiteral' THEN
-    Out(IntToStr(GetInt64(node, 'value')))
+  BEGIN
+    IF GetBool(node, 'word64') THEN
+      Out(Word64BitsToStr(GetInt64(node, 'value')))
+    ELSE
+      Out(IntToStr(GetInt64(node, 'value')));
+  END
   ELSE IF nt = 'RealLiteral' THEN
     Out(RealToStr(GetReal(node, 'value')))
   ELSE IF nt = 'StringLiteral' THEN
@@ -329,6 +360,14 @@ BEGIN
     Out(Ch(' ')); Out(OpSymbol(GetStr(node, 'op'))); Out(Ch(' '));
     PrintExpr(GetObj(node, 'right'));
     Out(Ch(')'));
+  END
+  ELSE IF (nt = 'UnaryOp') AND (GetStr(node, 'op') = 'MINUS') AND
+          GetBool(GetObj(node, 'operand'), 'word64') THEN
+  BEGIN
+    { The parser keeps the sign of -9223372036854775808 as an operator;
+      print it back as the signed literal it was, which a CONST accepts. }
+    Out(Ch('-'));
+    PrintExpr(GetObj(node, 'operand'));
   END
   ELSE IF nt = 'UnaryOp' THEN
   BEGIN
