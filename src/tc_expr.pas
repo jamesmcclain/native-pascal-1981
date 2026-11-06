@@ -877,10 +877,12 @@ BEGIN
       AddError('HIBYTE/LOBYTE requires exactly one argument')
     ELSE BEGIN
       atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
-      IF NOT IsInteger(atk) AND (atk <> TK_UNKNOWN) THEN
-        AddError('HIBYTE/LOBYTE argument must be an integer type');
+      IF (atk <> TK_INTEGER) AND (atk <> TK_WORD) AND (atk <> TK_UNKNOWN) THEN
+        AddError('HIBYTE/LOBYTE argument must be INTEGER or WORD');
     END;
-    CheckFuncCall := TK_CHAR;
+    { IBM returns the byte (0..255) with the argument's own type. }
+    IF (atk = TK_INTEGER) OR (atk = TK_WORD) THEN CheckFuncCall := atk
+    ELSE CheckFuncCall := TK_INTEGER;
     RETURN;
   END;
   IF name = 'WRD8' THEN

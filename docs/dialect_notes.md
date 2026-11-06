@@ -2077,7 +2077,7 @@ is an ordinary call, outside this classification.
 | No check | `ORD` | Same value and width; an enumeration gives its ordinal as INTEGER, so `ORD(e) * 20000` is checked 16-bit arithmetic. [`ORD(WORD)`](#deferred-ordword-conversion-gap-g25) stays WORD (G25). |
 | No check | `WRD`, `WRD8` | Bit-pattern conversion: `WRD(-2)` is 65534 (IBM 11-8). |
 | No check | `ODD` | Low-bit test. |
-| No check | `HIBYTE`, `LOBYTE` | Byte extraction, never above 255. They return CHAR; IBM returns the argument's type, a typing difference, not a MATHCK question. |
+| No check | `HIBYTE`, `LOBYTE` | Byte extraction, never above 255. As in IBM, they return the argument's type (INTEGER or WORD). |
 | RANGECK | `BYWORD` | Both original ordinal operands must be in 0..255 before packing under host/CPU RANGECK+. Disabled checking and NVPTX retain low-byte packing. Domain checking is not MATHCK overflow. |
 | No check | `FLOAT` | Exact for every INTEGER-family value up to 2^53; WORD-family values convert unsigned ([WORD to REAL](#word-to-real-conversion)). |
 | No check | `RETYPE`, `ADR`, `ADS`, pointer `+` | Reinterpretation and [address arithmetic](#outside-mathck). |

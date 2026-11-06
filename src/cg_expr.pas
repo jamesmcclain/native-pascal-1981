@@ -2931,17 +2931,13 @@ BEGIN
   END
   ELSE IF (nm = 'HIBYTE') OR (nm = 'LOBYTE') THEN
   BEGIN
-    { The reference (typecheck/exprs.py) restricts these to INTEGER/WORD
-      arguments only -- not INTEGER8/CHAR/BOOLEAN, despite the codegen
-      truncation working for any i16-or-narrower value -- and returns
-      CHAR, not a byte-integer type, since HIBYTE/LOBYTE is "the faithful
-      dialect pair" that predates the wide-integer extension family. }
+    { INTEGER/WORD arguments only, as in the IBM manual; the result is
+      the byte value 0..255 with the argument's own type. }
     IF (argtk <> TK_INTEGER) AND (argtk <> TK_WORD) THEN
       AbortWith2('codegen: HIBYTE/LOBYTE require an INTEGER/WORD argument: ', nm);
     IF nm = 'HIBYTE' THEN res := LLVMBuildLShr(builder, v, LLVMConstInt(i16ty, 8, 0), MakeCStr(''))
-    ELSE res := v;
-    res := LLVMBuildTrunc(builder, res, i8ty, MakeCStr(''));
-    last_val_tk := TK_CHAR;
+    ELSE res := LLVMBuildAnd(builder, v, LLVMConstInt(i16ty, 255, 0), MakeCStr(''));
+    last_val_tk := argtk;
   END
   ELSE IF nm = 'WRD8' THEN
   BEGIN

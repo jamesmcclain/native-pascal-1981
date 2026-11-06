@@ -89,8 +89,8 @@
   INTEGER8 target, truncated to i8, matching the reference's constant-only
   exemption more closely since narrowing isn't something this file wants
   to allow silently for a non-constant value); plus HIBYTE/LOBYTE
-  (INTEGER/WORD argument only, returns CHAR, matching the reference's
-  "faithful dialect pair" restriction), WRD (any INTEGER/WORD/CHAR/
+  (INTEGER/WORD argument only, returns the byte with the argument's
+  type, as in the IBM manual), WRD (any INTEGER/WORD/CHAR/
   BOOLEAN/INTEGER8 argument widens/passes-through to WORD), and BYWORD
   (packs two ordinal bytes into WORD, checking original 0..255 domains
   under host/CPU RANGECK+; disabled/NVPTX paths keep low-byte masking).
