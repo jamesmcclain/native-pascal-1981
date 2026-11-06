@@ -274,6 +274,15 @@ BEGIN
       last_sem_scalar_base := SemanticOrdinalBase(target_tk, 0);
     END;
   END;
+  { SIZEOF is a compile-time constant that the IBM manual types as WORD, so
+    like a fitting literal it may flow into a WORD target. This checker
+    types it INTEGER (the compiler's own arithmetic mixes it with INTEGER
+    operands), so the exemption is by node kind. Its value is known only to
+    codegen's layout, so no range check is possible here; the 16-bit
+    pattern passes through unchanged. }
+  IF (target_tk = TK_WORD) AND (result_tk = TK_INTEGER) AND
+     (nerrors = errors_before) AND (NodeType(node) = 'SizeofExpr') THEN
+    result_tk := target_tk;
   CheckExprForSetTarget := result_tk;
 END;
 
