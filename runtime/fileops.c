@@ -230,18 +230,43 @@ static void fcb_unget_char(struct pas_file_fcb *f, FILE *h, int ch)
     f->touched = 0;
 }
 
+/* The INPUT FCB attached to stdin, if any (see pas_std_input_sync). */
+static struct pas_file_fcb *std_input_fcb = NULL;
+
 void pas_file_attach_std(struct pas_file_fcb *in, struct pas_file_fcb *out)
 {
     if (in && !(in->mode & MODE_STD)) {
         in->handle = stdin;
         set_mode_flags(in, MODE_READ, 0, 0, 1);
         in->mode |= MODE_STD;
+        std_input_fcb = in;
     }
     if (out && !(out->mode & MODE_STD)) {
         out->handle = stdout;
         set_mode_flags(out, MODE_WRITE, 1, 0, 0);
         out->mode |= MODE_STD;
     }
+}
+
+/* The bare READ/READLN/EOF/EOLN readers (readq.c) take characters
+ * straight from stdin, while INPUT^, EOF(INPUT) and the other FCB paths
+ * fill the attached INPUT FCB's buffer from the same stream. Before a bare
+ * reader runs, a component the FCB holds is pushed back onto stdin and the
+ * FCB returns to pending, so both kinds of reader see one sequence: the
+ * next FCB use refills from stdin. A line marker goes back as '\n'. */
+void pas_std_input_sync(void)
+{
+    struct pas_file_fcb *f = std_input_fcb;
+    if (!f || !(f->mode & MODE_STD) || !f->handle || !f->buffer)
+        return;
+    if (current_mode(f) != MODE_READ || is_eof(f) || is_pending(f))
+        return;
+    int ch = *((unsigned char *) f->buffer);
+    if ((f->mode & MODE_EOLN) != 0)
+        ch = '\n';
+    ungetc(ch, f->handle);
+    set_mode_flags(f, MODE_READ, 0, 0, 1);
+    f->touched = 0;
 }
 
 void *pas_file_buffer(struct pas_file_fcb *f)

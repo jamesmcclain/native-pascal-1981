@@ -1,0 +1,1 @@
+runtime error: division by zero in DIV at div_zero.pas line 11 (left=7, right=0)

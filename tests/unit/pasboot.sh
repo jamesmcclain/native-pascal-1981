@@ -4,7 +4,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib/harness.sh"
 #
 # Each <name>.pas with a <name>.out is a
 # PROGRAM that USES the testio unit: it is translated, compiled, linked with
-# testio and run, and its output must equal <name>.out. Each <name>.pas with
+# testio and run, and its output must equal <name>.out. With a <name>.rterr
+# as well, the program must instead fail at run time after that output, and
+# its stderr must be exactly <name>.rterr. Each <name>.pas with
 # a <name>.err must be rejected, and the first line of <name>.err must
 # appear in pasboot's diagnostic. Each <name>.pas with a <name>.inits is a
 # PROGRAM whose generated main must call exactly those unit inits, in order.
@@ -22,7 +24,25 @@ cd tests/unit/pasboot
 for src in *.pas; do
   name="${src%.pas}"
   [ "$name" = testio ] && continue
-  if [ -f "$name.out" ]; then
+  if [ -f "$name.rterr" ]; then
+    status=0
+    if "$pasboot" "$src" -o "$work/$name.c" 2>"$work/$name.log" &&
+       "$CLANG" "${CFLAGS[@]}" "$work/$name.c" "$work/testio.o" "$runtime_lib" -o "$work/$name" 2>>"$work/$name.log"; then
+      # The subshell absorbs bash's own "Aborted" job report.
+      ("$work/$name" >"$work/$name.actual" 2>"$work/$name.err"; exit) 2>/dev/null || status=$?
+      if [ "$status" -ne 0 ] && cmp -s "$work/$name.actual" "$name.out" &&
+         cmp -s "$work/$name.err" "$name.rterr"; then
+        pass "$name (run-time error)"
+      else
+        fail "$name (status $status)"
+        diff "$name.out" "$work/$name.actual" || true
+        diff "$name.rterr" "$work/$name.err" || true
+      fi
+    else
+      fail "$name"
+      cat "$work/$name.log"
+    fi
+  elif [ -f "$name.out" ]; then
     if "$pasboot" "$src" -o "$work/$name.c" 2>"$work/$name.log" &&
        "$CLANG" "${CFLAGS[@]}" "$work/$name.c" "$work/testio.o" "$runtime_lib" -o "$work/$name" 2>>"$work/$name.log" &&
        "$work/$name" >"$work/$name.actual" 2>>"$work/$name.log" &&
@@ -57,5 +77,25 @@ for src in *.pas; do
     fail "$name has neither $name.out nor $name.err"
   fi
 done
+
+# The arithmetic edges again, without -fwrapv and under UBSan: unchecked
+# wrapping, MIN DIV -1 and FOR at the maximum must be defined C on their own.
+# The checks trap in place, so no sanitizer runtime is needed; a compiler
+# without -fsanitize-trap skips this check.
+name=arith_edges
+ubsan=(-O1 -w -fsanitize=undefined -fsanitize-trap=undefined -I"$ROOT/bootstrap")
+if ! echo 'int main(void){return 0;}' |
+     "$CLANG" -fsanitize=undefined -fsanitize-trap=undefined -x c - -o "$work/ubsan-probe" 2>/dev/null; then
+  skip "$name under UBSan" "$CLANG lacks -fsanitize-trap=undefined"
+elif "$pasboot" "$name.pas" -o "$work/$name.c" 2>"$work/$name.log" &&
+     "$CLANG" "${ubsan[@]}" -c "$work/testio.c" -o "$work/testio-ubsan.o" 2>>"$work/$name.log" &&
+     "$CLANG" "${ubsan[@]}" "$work/$name.c" "$work/testio-ubsan.o" "$runtime_lib" -o "$work/$name-ubsan" 2>>"$work/$name.log" &&
+     "$work/$name-ubsan" >"$work/$name-ubsan.actual" 2>>"$work/$name.log" &&
+     cmp -s "$work/$name-ubsan.actual" "$name.out"; then
+  pass "$name under UBSan without -fwrapv"
+else
+  fail "$name under UBSan without -fwrapv"
+  cat "$work/$name.log"
+fi
 
 finish "pasboot fixtures"

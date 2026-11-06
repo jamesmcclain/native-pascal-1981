@@ -26,7 +26,7 @@ FUNCTION cJSON_CreateString(val: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateNumber(num: REAL): ADRMEM [C]; EXTERN;
 PROCEDURE cJSON_AddItemToObject(obj: ADRMEM; key: ADRMEM; item: ADRMEM) [C]; EXTERN;
 FUNCTION cJSON_AddItemToArray(arr: ADRMEM; item: ADRMEM): CINT [C]; EXTERN;
-FUNCTION cJSON_GetObjectItem(obj: ADRMEM; key: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION cJSON_GetObjectItemCaseSensitive(obj: ADRMEM; key: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_Compare(left: ADRMEM; right: ADRMEM; case_sensitive: CINT): CINT [C]; EXTERN;
 FUNCTION cJSON_GetArraySize(arr: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_GetArrayItem(arr: ADRMEM; index: CINT): ADRMEM [C]; EXTERN;
@@ -148,7 +148,7 @@ BEGIN
   ELSE
   BEGIN
     JxStage(key, kbuf);
-    JxGet := cJSON_GetObjectItem(obj, ADR kbuf);
+    JxGet := cJSON_GetObjectItemCaseSensitive(obj, ADR kbuf);
   END;
 END;
 

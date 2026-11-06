@@ -5,10 +5,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib/harness.sh"
 #
 # Pin the arithmetic dependencies found by the self-hosting source audit
 # (docs/bootstrap_subset.md#self-hosting-arithmetic):
-#   flags     the only MATHCK- region in compiler Pascal source is the label
-#             key converter in src/ps_base.pas: the lexer's own token flags
-#             show exactly 1 MUL, 1 PLUS and 2 MINUS (digit subtraction and
-#             negation) unchecked, and MATHCK+ restored before STRTOREALVAL
+#   flags     the label key converter in src/ps_base.pas (CurLabelKey)
+#             reduces the token value modulo 65536 and needs no MATHCK-
+#             region: by the lexer's own token flags, no token of
+#             ps_base.pas is unchecked
 #   wide      the actual tc_expr/cg_decl units through all four stages: both
 #             WORD limit constructors and the INTEGER32 build-ups use i64
 #             multiply and add (plain or checked), never 16-bit arithmetic
@@ -28,15 +28,10 @@ declare -A expect=([flags]=1 [wide]=4 [labels]=8 [pasboot]=4 [malformed]=4 [nati
 
 flags_unit() {
   (cd src && "$ROOT/bin/lexer" < ps_base.pas) > "$dir/tokens.json" || die "lexer ps_base.pas"
-  jq -e '[.[] | select(.flags.MATHCK | not) | .kind] as $k
-         | ([$k[] | select(. == "MUL")] | length) == 1
-           and ([$k[] | select(. == "PLUS")] | length) == 1
-           and ([$k[] | select(. == "MINUS")] | length) == 2' \
-    "$dir/tokens.json" > /dev/null || die "unchecked MUL/PLUS/MINUS counts"
-  jq -e '([to_entries[] | select(.value.flags.MATHCK | not) | .key] | last) as $last
-         | $last != null
-           and any(.[$last + 1:][]; .lexeme | ascii_upcase == "STRTOREALVAL")' \
-    "$dir/tokens.json" > /dev/null || die "MATHCK+ not restored before STRTOREALVAL"
+  jq -e 'length > 1000 and all(.[]; .flags.MATHCK)' \
+    "$dir/tokens.json" > /dev/null || die "unchecked tokens in ps_base.pas"
+  jq -e 'any(.[]; .lexeme | ascii_upcase == "CURLABELKEY")' \
+    "$dir/tokens.json" > /dev/null || die "no CurLabelKey in ps_base.pas"
   count flags
 }
 

@@ -29,7 +29,7 @@ void pas_initck_fail(const char *what, const char *name, int32_t line, int32_t c
     fflush(stdout);
     fprintf(stderr, "runtime error: INITCK uninitialized %s %s", what, name);
     if (line > 0 && column > 0)
-        fprintf(stderr, " at line %" PRId32 " column %" PRId32, line, column);
+        fprintf(stderr, " at line %" PRId32 " column %" PRId32 "%s", line, column, pas_diag_where());
     fputc('\n', stderr);
     fflush(stderr);
     abort();

@@ -74,14 +74,12 @@ BEGIN
     END
     ELSE
     BEGIN
-      EPrint('Parser Error: expected attribute item');
-      exit(1);
+      ParseFail('Parser Error: expected attribute item');
     END;
   END
   ELSE
   BEGIN
-    EPrint('Parser Error: expected attribute item');
-    exit(1);
+    ParseFail('Parser Error: expected attribute item');
   END;
 END;
 
@@ -215,20 +213,23 @@ END;
 
 PROCEDURE ParseLabelSection(decls_arr: ADRMEM);
 VAR
-  node, labels_arr: ADRMEM;
+  node, labels_arr, location: ADRMEM;
 BEGIN
   Expect('LABEL');
+  { The first label's position locates a duplicate-label diagnostic. }
+  location := CurLocation;
   node := CreateTriviaNode('LabelDecl');
+  AddField(node, 'location', location);
   labels_arr := cJSON_CreateArray;
   IF CurKind = 'INTEGER_LITERAL' THEN
-    cJSON_AddItemToArray(labels_arr, cJSON_CreateNumber(StrToIntVal(CurLex)))
+    cJSON_AddItemToArray(labels_arr, cJSON_CreateNumber(CurLabelKey))
   ELSE
     cJSON_AddItemToArray(labels_arr, cJSON_CreateString(MakeCStr(CurLex)));
   BEGIN RelayTokenTrivia; pos := pos + 1; END;
   WHILE Match('COMMA') DO
   BEGIN
     IF CurKind = 'INTEGER_LITERAL' THEN
-      cJSON_AddItemToArray(labels_arr, cJSON_CreateNumber(StrToIntVal(CurLex)))
+      cJSON_AddItemToArray(labels_arr, cJSON_CreateNumber(CurLabelKey))
     ELSE
       cJSON_AddItemToArray(labels_arr, cJSON_CreateString(MakeCStr(CurLex)));
     BEGIN RelayTokenTrivia; pos := pos + 1; END;
@@ -242,10 +243,11 @@ FUNCTION ParseProcDecl: ADRMEM;
 VAR
   location, node, params_arr, attrs_arr, body_node: ADRMEM;
   nm, directive_str: Str255;
-  has_directive: BOOLEAN;
+  has_directive, stackck: BOOLEAN;
 BEGIN
   Expect('PROCEDURE');
   location := CurLocation;
+  stackck := CurStackCk;
   nm := CurLex;
   Expect('IDENTIFIER');
   params_arr := cJSON_CreateArray;
@@ -260,6 +262,7 @@ BEGIN
   node := CreateTriviaNode('ProcDecl');
   AddField(node, 'location', location);
   AddStringField(node, 'name', nm);
+  AddBoolField(node, 'stackck', stackck);
   AddField(node, 'params', params_arr);
   AddField(node, 'attributes', attrs_arr);
   IF (CurKind = 'EXTERN') OR (CurKind = 'EXTERNAL') OR (CurKind = 'FORWARD') THEN
@@ -288,10 +291,11 @@ FUNCTION ParseFuncDecl: ADRMEM;
 VAR
   location, node, params_arr, attrs_arr, body_node, ret_type: ADRMEM;
   nm, directive_str: Str255;
-  has_directive: BOOLEAN;
+  has_directive, stackck: BOOLEAN;
 BEGIN
   Expect('FUNCTION');
   location := CurLocation;
+  stackck := CurStackCk;
   nm := CurLex;
   Expect('IDENTIFIER');
   params_arr := cJSON_CreateArray;
@@ -308,6 +312,7 @@ BEGIN
   node := CreateTriviaNode('FuncDecl');
   AddField(node, 'location', location);
   AddStringField(node, 'name', nm);
+  AddBoolField(node, 'stackck', stackck);
   AddField(node, 'params', params_arr);
   AddField(node, 'return_type', ret_type);
   AddField(node, 'attributes', attrs_arr);
@@ -486,7 +491,7 @@ BEGIN
   cJSON_AddItemToArray(arr, ParseUsesImport);
   WHILE Match('COMMA') DO
     cJSON_AddItemToArray(arr, ParseUsesImport);
-  IF CurKind = 'SEMICOLON' THEN BEGIN RelayTokenTrivia; pos := pos + 1; END;
+  Expect('SEMICOLON');
 END;
 
 FUNCTION IsAtDevicePrefix(target_kind: Str255): BOOLEAN;
@@ -500,13 +505,16 @@ FUNCTION ParseModuleUnit(is_device: BOOLEAN): ADRMEM;
 VAR
   node, uses_arr, decls_arr: ADRMEM;
   nm: Str255;
+  stackck: BOOLEAN;
 BEGIN
   Expect('MODULE');
   nm := CurLex;
+  stackck := CurStackCk;
   Expect('IDENTIFIER');
   Expect('SEMICOLON');
   node := CreateTriviaNode('ModuleUnit');
   AddStringField(node, 'name', nm);
+  AddBoolField(node, 'stackck', stackck);
   uses_arr := cJSON_CreateArray;
   WHILE CurKind = 'USES' DO
     ParseUsesClauseInto(uses_arr);
@@ -567,8 +575,7 @@ BEGIN
       put executable init logic in the IMPLEMENTATION's init block instead. }
     IF ArrSize(GetObj(discard_node, 'stmts')) > 0 THEN
     BEGIN
-      EPrint('Parser Error: an INTERFACE unit''s BEGIN..END block must be empty -- put executable init code in the IMPLEMENTATION''s init block instead');
-      exit(1);
+      ParseFail('Parser Error: an INTERFACE unit''s BEGIN..END block must be empty -- put executable init code in the IMPLEMENTATION''s init block instead');
     END;
     Expect('SEMICOLON');
   END
@@ -586,14 +593,17 @@ FUNCTION ParseImplementationUnit(is_device: BOOLEAN): ADRMEM;
 VAR
   node, uses_arr, decls_arr: ADRMEM;
   nm: Str255;
+  stackck: BOOLEAN;
 BEGIN
   Expect('IMPLEMENTATION');
   Expect('OF');
   nm := CurLex;
+  stackck := CurStackCk;
   Expect('IDENTIFIER');
   Expect('SEMICOLON');
   node := CreateTriviaNode('ImplementationUnit');
   AddStringField(node, 'name', nm);
+  AddBoolField(node, 'stackck', stackck);
   uses_arr := cJSON_CreateArray;
   WHILE CurKind = 'USES' DO
     ParseUsesClauseInto(uses_arr);
@@ -630,9 +640,7 @@ BEGIN
     pos := pos - 1;
     AddField(node, 'read_flags', BuildMetaFlagsNode());
     tok := GetTok(0);
-    location := cJSON_CreateObject;
-    AddIntField(location, 'line', tok^.line);
-    AddIntField(location, 'column', tok^.col);
+    location := TokLocation(tok);
     AddField(node, 'read_location', location);
     pos := pos + 1;
   END
@@ -647,13 +655,16 @@ VAR
   node, params_arr, uses_arr, block_node: ADRMEM;
   name: Str255;
   res_c: CINT;
+  stackck: BOOLEAN;
 BEGIN
   Expect('PROGRAM');
   name := CurLex;
+  stackck := CurStackCk;
   Expect('IDENTIFIER');
 
   node := CreateTriviaNode('ProgramUnit');
   AddStringField(node, 'name', name);
+  AddBoolField(node, 'stackck', stackck);
 
   params_arr := cJSON_CreateArray;
   IF Match('LPAREN') THEN

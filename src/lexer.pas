@@ -11,7 +11,10 @@ FUNCTION cJSON_CreateArray: ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateObject: ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateString(val: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateNumber(num: REAL): ADRMEM [C]; EXTERN;
-FUNCTION pas_int64_to_double(v: INTEGER64): REAL [C]; EXTERN;
+FUNCTION pas_real_literal_value(text: ADRMEM; len: CINT): REAL [C]; EXTERN;
+FUNCTION pas_real_is_finite(v: REAL): CINT [C]; EXTERN;
+FUNCTION pas_cjson_create_string_span(text: ADRMEM; len: CINT): ADRMEM [C]; EXTERN;
+FUNCTION pas_cjson_print_exact(item: ADRMEM; formatted: CINT): ADRMEM [C]; EXTERN;
 PROCEDURE pas_cjson_add_int64(obj: ADRMEM; key: ADRMEM; val: INTEGER64) [C]; EXTERN;
 FUNCTION cJSON_CreateBool(b: CINT): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateNull: ADRMEM [C]; EXTERN;
@@ -19,6 +22,7 @@ PROCEDURE cJSON_AddItemToArray(arr: ADRMEM; item: ADRMEM) [C]; EXTERN;
 PROCEDURE cJSON_AddItemToObject(obj: ADRMEM; key: ADRMEM; item: ADRMEM) [C]; EXTERN;
 FUNCTION cJSON_GetArraySize(arr: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_GetArrayItem(arr: ADRMEM; index: CINT): ADRMEM [C]; EXTERN;
+FUNCTION cJSON_GetObjectItemCaseSensitive(obj: ADRMEM; key: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_Print(item: ADRMEM): ADRMEM [C]; EXTERN;
 PROCEDURE cJSON_Delete(item: ADRMEM) [C]; EXTERN;
 PROCEDURE puts(str: ADRMEM) [C]; EXTERN;
@@ -67,7 +71,14 @@ VAR
     ScanNumber's start_pos) must match this width or it silently truncates
     on assignment. }
   src_len, src_pos: INTEGER32;
-  cur_line, cur_col: INTEGER;
+  { INTEGER32 too: a source with more than 32767 lines, or a line longer
+    than that, used to stop the lexer with a MATHCK overflow in AdvancePos. }
+  cur_line, cur_col: INTEGER32;
+  { The file the buffer being lexed came from: empty for the primary file
+    (standard input), else the $INCLUDE path as written. Every token from
+    an included file carries it as its `file' field; primary-file tokens
+    carry none, so their JSON is unchanged. }
+  cur_file: Str255;
 
   { One-shot $UNROLL(n) count, stamped onto the flags of exactly the next
     emitted token (mirrors Python Lexer._pending_unroll). }
@@ -77,6 +88,10 @@ VAR
   { One-shot mark for the next INTEGER_LITERAL token: its value is at least
     2^63, so the INTEGER64 int_val holds only its WORD64 bit pattern. }
   pending_word64_literal: BOOLEAN;
+  { One-shot source span for the next token's lexeme: a numeric literal
+    keeps its whole text, which a Str255 lexeme cuts at 255 characters. }
+  pending_lexeme_span: BOOLEAN;
+  pending_span_pos, pending_span_len: INTEGER32;
   two16, two31, two32: INTEGER64; { set once: built from small literals }
 
   { $PUSH/$POP stack of ON/OFF flag snapshots. Fixed depth is fine: no
@@ -106,7 +121,7 @@ VAR
     becoming leading trivia for whatever follows. }
   pending_leading: ARRAY [1..32] OF Str255;
   pending_leading_count: INTEGER;
-  last_token_line: INTEGER;
+  last_token_line: INTEGER32;
   has_last_token: BOOLEAN;
 
 PROCEDURE InitFlags(VAR f: MetacmdFlags);
@@ -165,7 +180,7 @@ BEGIN
   CreateFlagsObj := f_obj;
 END;
 
-PROCEDURE AddToken(kind: Str255; code: INTEGER; lexeme: Str255; val_type: INTEGER; int_val: INTEGER64; real_val: REAL; str_val: Str255; line, col: INTEGER);
+PROCEDURE AddToken(kind: Str255; code: INTEGER; lexeme: Str255; val_type: INTEGER; int_val: INTEGER64; real_val: REAL; str_val: Str255; line, col: INTEGER32);
 VAR
   tok_obj, val_item, flags_obj, comments_arr: ADRMEM;
   kind_ptr, lex_ptr, str_ptr, key_ptr: ADRMEM;
@@ -184,7 +199,14 @@ BEGIN
   cJSON_AddItemToObject(tok_obj, key_ptr, cJSON_CreateNumber(code));
 
   fieldName := 'lexeme'; key_ptr := MakeCStr(fieldName);
-  cJSON_AddItemToObject(tok_obj, key_ptr, cJSON_CreateString(lex_ptr));
+  IF pending_lexeme_span THEN
+  BEGIN
+    cJSON_AddItemToObject(tok_obj, key_ptr, pas_cjson_create_string_span(
+      src_buf + pending_span_pos, RETYPE(CINT, pending_span_len)));
+    pending_lexeme_span := FALSE;
+  END
+  ELSE
+    cJSON_AddItemToObject(tok_obj, key_ptr, cJSON_CreateString(lex_ptr));
 
   { Value field handling: 0=null, 1=int, 2=real, 3=str, 4=bool. An integer
     goes through pas_cjson_add_int64, which adds an exact decimal companion
@@ -224,6 +246,12 @@ BEGIN
 
   fieldName := 'column'; key_ptr := MakeCStr(fieldName);
   cJSON_AddItemToObject(tok_obj, key_ptr, cJSON_CreateNumber(col));
+
+  IF ORD(cur_file[0]) > 0 THEN
+  BEGIN
+    fieldName := 'file'; key_ptr := MakeCStr(fieldName);
+    cJSON_AddItemToObject(tok_obj, key_ptr, cJSON_CreateString(MakeCStr(cur_file)));
+  END;
 
   flags_obj := CreateFlagsObj(flags);
   IF pending_unroll_set THEN
@@ -515,9 +543,9 @@ BEGIN
 END;
 
 FUNCTION CaptureToLit(lit: Str255): Str255;
-{ Like ConsumeToLit, but returns the text consumed (capped at 255 chars,
-  the same convention ScanIdentifier uses) instead of discarding it. Used
-  to capture ordinary comment bodies for pretty81's trivia-attachment. }
+{ Like ConsumeToLit, but returns the text consumed (capped at 255 chars)
+  instead of discarding it. Used to capture ordinary comment bodies for
+  pretty81's trivia-attachment. }
 VAR
   start_pos: INTEGER32;
   len: INTEGER;
@@ -538,22 +566,28 @@ BEGIN
   CaptureToLit := text;
 END;
 
-PROCEDURE RecordComment(text: Str255; start_line: INTEGER);
+PROCEDURE RecordComment(text: Str255; start_line: INTEGER32);
 { Queues a captured ordinary-comment body as trivia. A comment that starts
   on the same source line as the most recently emitted token, with nothing
   already queued as leading trivia, attaches directly to that token as its
   trailing_comment; every other comment queues as leading trivia for
-  whatever real token comes next (drained in AddToken). }
+  whatever real token comes next (drained in AddToken). A token has one
+  trailing comment: a second comment on its line queues as leading trivia
+  too (the token used to get a second trailing_comment key, which no stage
+  read). }
 VAR
   last_obj: ADRMEM;
   key_ptr, str_ptr: ADRMEM;
   fieldName: Str255;
 BEGIN
-  IF (pending_leading_count = 0) AND has_last_token AND (start_line = last_token_line) THEN
-  BEGIN
+  last_obj := NIL;
+  fieldName := 'trailing_comment'; key_ptr := MakeCStr(fieldName);
+  IF has_last_token THEN
     last_obj := cJSON_GetArrayItem(root_array, cJSON_GetArraySize(root_array) - 1);
+  IF (pending_leading_count = 0) AND has_last_token AND (start_line = last_token_line) AND
+     (cJSON_GetObjectItemCaseSensitive(last_obj, key_ptr) = NIL) THEN
+  BEGIN
     str_ptr := MakeCStr(text);
-    fieldName := 'trailing_comment'; key_ptr := MakeCStr(fieldName);
     cJSON_AddItemToObject(last_obj, key_ptr, cJSON_CreateString(str_ptr));
   END
   ELSE IF pending_leading_count < 32 THEN
@@ -561,6 +595,77 @@ BEGIN
     pending_leading_count := pending_leading_count + 1;
     pending_leading[pending_leading_count] := text;
   END;
+END;
+
+FUNCTION LexIntText(n: INTEGER32): Str255;
+{ Decimal text of a nonnegative line or column number. }
+VAR
+  rev, text: Str255;
+  k: INTEGER;
+BEGIN
+  rev[0] := CHR(1);
+  rev[1] := CHR(ORD('0') + n MOD 10);
+  n := n DIV 10;
+  WHILE n > 0 DO
+  BEGIN
+    rev[0] := CHR(ORD(rev[0]) + 1);
+    rev[ORD(rev[0])] := CHR(ORD('0') + n MOD 10);
+    n := n DIV 10;
+  END;
+  text[0] := rev[0];
+  FOR k := 1 TO ORD(rev[0]) DO text[k] := rev[ORD(rev[0]) + 1 - k];
+  LexIntText := text;
+END;
+
+PROCEDURE AppendText(VAR s: Str255; t: Str255);
+{ Append, silently stopping at the 255-character capacity. }
+VAR
+  i, len: INTEGER;
+BEGIN
+  FOR i := 1 TO ORD(t[0]) DO
+  BEGIN
+    len := ORD(s[0]);
+    IF len < 255 THEN
+    BEGIN
+      s[len + 1] := t[i];
+      s[0] := CHR(len + 1);
+    END;
+  END;
+END;
+
+PROCEDURE AppendLocation(VAR msg: Str255; line, col: INTEGER32);
+{ The located-diagnostic suffix every stage uses: ` at line L column C',
+  plus ` of file NAME' while lexing an included file. }
+BEGIN
+  AppendText(msg, ' at line ');
+  AppendText(msg, LexIntText(line));
+  AppendText(msg, ' column ');
+  AppendText(msg, LexIntText(col));
+  IF ORD(cur_file[0]) > 0 THEN
+  BEGIN
+    AppendText(msg, ' of file ');
+    AppendText(msg, cur_file);
+  END;
+END;
+
+PROCEDURE LexFailAt(msg: Str255; line, col: INTEGER32);
+{ Report `Lexer Error: msg at line L column C' (plus ` of file NAME' in an
+  included file) and stop. }
+BEGIN
+  AppendLocation(msg, line, col);
+  EPrint(msg);
+  exit(1);
+END;
+
+PROCEDURE CountMetaChar(VAR len: INTEGER; line, col: INTEGER32);
+{ One more character of a metacommand name or value, which is kept in a
+  Str255. A longer one used to overrun CHR(len) (a RANGECK failure inside
+  the lexer) and, past 32767 characters, its INTEGER counter: report it at
+  the metacommand instead. }
+BEGIN
+  IF len >= 255 THEN
+    LexFailAt('Lexer Error: metacommand name or value exceeds 255 characters', line, col);
+  len := len + 1;
 END;
 
 FUNCTION ReadMetaName: Str255;
@@ -571,8 +676,8 @@ BEGIN
   len := 0;
   WHILE (src_pos < src_len) AND (IsAlpha(ReadBufChar(src_pos)) OR IsDigit(ReadBufChar(src_pos))) DO
   BEGIN
-    len := len + 1;
-    IF len <= 255 THEN res[len] := UpCaseChar(ReadBufChar(src_pos));
+    CountMetaChar(len, cur_line, cur_col);
+    res[len] := UpCaseChar(ReadBufChar(src_pos));
     AdvancePos(1);
   END;
   res[0] := CHR(len);
@@ -580,9 +685,14 @@ BEGIN
 END;
 
 FUNCTION ParseSignedIntStr(s: Str255; VAR ok: BOOLEAN): INTEGER;
-{ Optional leading '-' followed by 1+ digits; ok is FALSE (v=0) otherwise. }
+{ Optional leading '-' followed by 1+ digits; ok is FALSE (v=0) otherwise.
+  A metacommand value is an INTEGER: one outside -32768..32767 is a
+  located error. The digits accumulate in INTEGER32 and stop at the first
+  one past the range, so a MATHCK:40000 metacommand no longer overflows
+  the lexer's own (MATHCK-checked) accumulator. }
 VAR
-  i, len, start, v: INTEGER;
+  i, len, start: INTEGER;
+  v: INTEGER32;
   neg, bad: BOOLEAN;
 BEGIN
   len := ORD(s[0]);
@@ -603,12 +713,18 @@ BEGIN
     IF NOT bad THEN
     BEGIN
       FOR i := start TO len DO
+      BEGIN
         v := v * 10 + (ORD(s[i]) - ORD('0'));
+        IF v > 32768 THEN
+          LexFailAt('Lexer Error: metacommand integer value out of range', cur_line, cur_col);
+      END;
       IF neg THEN v := -v;
+      IF v > 32767 THEN
+        LexFailAt('Lexer Error: metacommand integer value out of range', cur_line, cur_col);
       ok := TRUE;
     END;
   END;
-  ParseSignedIntStr := v;
+  ParseSignedIntStr := RETYPE(INTEGER, v);
 END;
 
 FUNCTION IsFlagName(name: Str255): BOOLEAN;
@@ -767,8 +883,8 @@ BEGIN
   len := 0;
   WHILE (src_pos < src_len) AND (ReadBufChar(src_pos) <> '''') DO
   BEGIN
-    len := len + 1;
-    IF len <= 255 THEN res[len] := ReadBufChar(src_pos);
+    CountMetaChar(len, cur_line, cur_col);
+    res[len] := ReadBufChar(src_pos);
     AdvancePos(1);
   END;
   IF src_pos < src_len THEN AdvancePos(1); { closing quote }
@@ -787,7 +903,8 @@ PROCEDURE SpliceIncludedFile(fname: Str255);
 VAR
   save_buf: ADRMEM;
   save_len, save_pos: INTEGER32;
-  save_line, save_col: INTEGER;
+  save_line, save_col: INTEGER32;
+  save_file: Str255;
   new_buf: ADRMEM;
   new_len: INTEGER32;
   ok: BOOLEAN;
@@ -797,6 +914,7 @@ BEGIN
   save_pos := src_pos;
   save_line := cur_line;
   save_col := cur_col;
+  save_file := cur_file;
 
   ok := ReadFileToBuf(fname, new_buf, new_len);
   IF NOT ok THEN
@@ -810,6 +928,10 @@ BEGIN
   src_pos := 0;
   cur_line := 1;
   cur_col := 1;
+  cur_file := fname;
+  { A comment can trail only a token of its own file: line numbers of
+    different files are unrelated. }
+  has_last_token := FALSE;
 
   TokenizeBuffer;
 
@@ -819,6 +941,8 @@ BEGIN
   src_pos := save_pos;
   cur_line := save_line;
   cur_col := save_col;
+  cur_file := save_file;
+  has_last_token := FALSE;
 END;
 
 FUNCTION TryIncludeDirective: BOOLEAN;
@@ -914,8 +1038,8 @@ BEGIN
               wlen := 0;
               WHILE IsAlphaOnly(ReadBufChar(src_pos)) DO
               BEGIN
-                wlen := wlen + 1;
-                IF wlen <= 255 THEN word[wlen] := UpCaseChar(ReadBufChar(src_pos));
+                CountMetaChar(wlen, cur_line, cur_col);
+                word[wlen] := UpCaseChar(ReadBufChar(src_pos));
                 AdvancePos(1);
               END;
               word[0] := CHR(wlen);
@@ -984,8 +1108,8 @@ BEGIN
         nlen := 0;
         WHILE IsDigit(ReadBufChar(src_pos)) DO
         BEGIN
-          nlen := nlen + 1;
-          IF nlen <= 255 THEN const_token[nlen] := ReadBufChar(src_pos);
+          CountMetaChar(nlen, cur_line, cur_col);
+          const_token[nlen] := ReadBufChar(src_pos);
           AdvancePos(1);
         END;
         const_token[0] := CHR(nlen);
@@ -997,8 +1121,8 @@ BEGIN
         AdvancePos(1);
         WHILE IsDigit(ReadBufChar(src_pos)) DO
         BEGIN
-          nlen := nlen + 1;
-          IF nlen <= 255 THEN const_token[nlen] := ReadBufChar(src_pos);
+          CountMetaChar(nlen, cur_line, cur_col);
+          const_token[nlen] := ReadBufChar(src_pos);
           AdvancePos(1);
         END;
         const_token[0] := CHR(nlen);
@@ -1090,8 +1214,8 @@ BEGIN
         nlen := 0;
         WHILE IsDigit(ReadBufChar(src_pos)) DO
         BEGIN
-          nlen := nlen + 1;
-          IF nlen <= 255 THEN count_token[nlen] := ReadBufChar(src_pos);
+          CountMetaChar(nlen, cur_line, cur_col);
+          count_token[nlen] := ReadBufChar(src_pos);
           AdvancePos(1);
         END;
         count_token[0] := CHR(nlen);
@@ -1130,8 +1254,8 @@ BEGIN
         END;
         WHILE IsDigit(ReadBufChar(src_pos)) DO
         BEGIN
-          nlen := nlen + 1;
-          IF nlen <= 255 THEN numstr[nlen] := ReadBufChar(src_pos);
+          CountMetaChar(nlen, cur_line, cur_col);
+          numstr[nlen] := ReadBufChar(src_pos);
           AdvancePos(1);
         END;
         numstr[0] := CHR(nlen);
@@ -1223,7 +1347,7 @@ PROCEDURE SkipComments;
   try_include_directive()/skip_comment() calls. }
 VAR
   keep_going: BOOLEAN;
-  comment_line: INTEGER;
+  comment_line: INTEGER32;
 BEGIN
   keep_going := TRUE;
   WHILE keep_going DO
@@ -1261,7 +1385,8 @@ END;
 PROCEDURE ScanIdentifier;
 VAR
   start_pos: INTEGER32;
-  start_line, start_col, len: INTEGER;
+  start_line, start_col: INTEGER32;
+  len: INTEGER;
   lexeme, upper_str: Str255;
   i, code: INTEGER;
   ch: CHAR;
@@ -1271,15 +1396,19 @@ BEGIN
   start_line := cur_line;
   start_col := cur_col;
 
-  { len is a plain INTEGER (never assigned from a wide src_pos-start_pos
-    subtraction, which the type checker rightly refuses to narrow
-    implicitly): count characters as they're consumed instead, capping at
-    255 the same way the old "len := src_pos - start_pos; IF len > 255..."
-    did, but without ever holding an INTEGER32 value in an INTEGER var. }
+  { Every stage carries an identifier in a Str255, so one longer than 255
+    characters is rejected here, at its first character, rather than cut:
+    two long names sharing their first 255 characters would otherwise
+    silently be the same identifier. Every character of a shorter one is
+    significant (the IBM manual keeps only 31, 5-3; see the dialect notes).
+    len is a plain INTEGER counted as characters are consumed, never
+    narrowed from an INTEGER32 src_pos difference. }
   len := 0;
   WHILE (src_pos < src_len) AND (IsAlpha(ReadBufChar(src_pos)) OR IsDigit(ReadBufChar(src_pos))) DO
   BEGIN
-    IF len < 255 THEN len := len + 1;
+    IF len >= 255 THEN
+      LexFailAt('Lexer Error: identifier longer than 255 characters', start_line, start_col);
+    len := len + 1;
     AdvancePos(1);
   END;
 
@@ -1370,28 +1499,8 @@ BEGIN
   END;
 END;
 
-FUNCTION LexIntText(n: INTEGER): Str255;
-{ Decimal text of a nonnegative line or column number. }
-VAR
-  rev, text: Str255;
-  k: INTEGER;
-BEGIN
-  rev[0] := CHR(1);
-  rev[1] := CHR(ORD('0') + n MOD 10);
-  n := n DIV 10;
-  WHILE n > 0 DO
-  BEGIN
-    rev[0] := CHR(ORD(rev[0]) + 1);
-    rev[ORD(rev[0])] := CHR(ORD('0') + n MOD 10);
-    n := n DIV 10;
-  END;
-  text[0] := rev[0];
-  FOR k := 1 TO ORD(rev[0]) DO text[k] := rev[ORD(rev[0]) + 1 - k];
-  LexIntText := text;
-END;
-
 FUNCTION FinishIntegerLiteral(hi, lo: INTEGER64; too_big: BOOLEAN;
-  line, col: INTEGER): INTEGER64;
+  line, col: INTEGER32): INTEGER64;
 { The literal's INTEGER64 value. At 2^63 and above that is only the WORD64
   bit pattern, and the token is marked word64 for the later stages. Past
   2^64 - 1 no type holds it: a located lexer error, not a wrapped value. }
@@ -1400,10 +1509,8 @@ VAR
 BEGIN
   IF too_big THEN
   BEGIN
-    msg := 'Lexer Error: integer literal exceeds 18446744073709551615 at line ';
-    CONCAT(msg, LexIntText(line));
-    CONCAT(msg, ' column ');
-    CONCAT(msg, LexIntText(col));
+    msg := 'Lexer Error: integer literal exceeds 18446744073709551615';
+    AppendLocation(msg, line, col);
     EPrint(msg);
     exit(1);
   END;
@@ -1413,28 +1520,37 @@ BEGIN
   (*$MATHCK+*)
 END;
 
+PROCEDURE SetLexemeSpan(start_p, end_p: INTEGER32);
+{ The next token's lexeme is the source text start_p .. end_p - 1, whole:
+  the Str255 lexeme passed to AddToken stops at 255 characters, and a
+  numeric literal can be longer (leading zeros, a long fraction or
+  exponent). The values never depend on that text: the lexer computes
+  them from the source, and the later stages read the token's value. }
+BEGIN
+  pending_lexeme_span := TRUE;
+  pending_span_pos := start_p;
+  pending_span_len := end_p - start_p;
+END;
+
 PROCEDURE ScanNumber;
 VAR
   start_pos: INTEGER32;
-  start_line, start_col, len, exp_val, i: INTEGER;
+  start_line, start_col: INTEGER32;
+  len, i: INTEGER;
   int_val: INTEGER64; { the accumulated literal value can exceed 16-bit
     INTEGER's range (any decimal literal above 32767, or a radix literal
     like 16#FFFF) and can exceed 32 bits too, since INTEGER64 is a type a
     program may write a literal for -- this is purely the lexer's own scan
     accumulator, so it needs the widest host-side width regardless of the
     dialect's own native INTEGER width. It was INTEGER32, which silently
-    wrapped a literal like 5000000000 to 705032704. exp_val stays plain
-    INTEGER: it only ever counts a REAL literal's decimal exponent digits
-    (used as a FOR loop bound below, which must match i's own INTEGER
-    type), never the literal's own value. }
+    wrapped a literal like 5000000000 to 705032704. }
   radix, digit_val, look: INTEGER;
   { The digit run accumulates as two 32-bit halves held in INTEGER64, so
     every step is exact and the 2^64 limit is a plain test: no WORD64 in
     the bootstrap subset, and the lexer itself runs MATHCK-checked. }
   acc_hi, acc_lo: INTEGER64;
   too_big: BOOLEAN;
-  real_val, frac_part, frac_scale, real_acc: REAL;
-  exp_neg: BOOLEAN;
+  real_val: REAL;
   lexeme: Str255;
   ch: CHAR;
   kind_str: Str255;
@@ -1446,13 +1562,11 @@ BEGIN
   acc_hi := 0;
   acc_lo := 0;
   too_big := FALSE;
-  real_acc := 0.0;
 
   WHILE (src_pos < src_len) AND IsDigit(ReadBufChar(src_pos)) DO
   BEGIN
     ch := ReadBufChar(src_pos);
     AccumulateDigit(acc_hi, acc_lo, too_big, 10, ORD(ch) - ORD('0'));
-    real_acc := real_acc * 10.0 + (ORD(ch) - ORD('0'));
     AdvancePos(1);
   END;
 
@@ -1468,6 +1582,11 @@ BEGIN
     acc_hi := 0;
     acc_lo := 0;
     too_big := FALSE;
+    { A base outside 2..36, or no digit after the '#', used to give the
+      value 0 and leave the digits to lex as a second literal. }
+    IF (radix < 2) OR (RadixDigitValue(ReadBufChar(src_pos), radix) < 0) OR
+       (src_pos >= src_len) THEN
+      LexFailAt('Lexer Error: bad radix constant', start_line, start_col);
     WHILE (src_pos < src_len) AND (RadixDigitValue(ReadBufChar(src_pos), radix) >= 0) DO
     BEGIN
       digit_val := RadixDigitValue(ReadBufChar(src_pos), radix);
@@ -1482,6 +1601,7 @@ BEGIN
       lexeme[i] := ReadBufChar(start_pos + i - 1);
 
     kind_str := 'INTEGER_LITERAL';
+    SetLexemeSpan(start_pos, src_pos);
     AddToken(kind_str, 81, lexeme, 1, int_val, 0.0, lexeme, start_line, start_col);
   END
   ELSE IF (src_pos < src_len) AND (ReadBufChar(src_pos) = '.') AND
@@ -1491,20 +1611,8 @@ BEGIN
       The leading '..' range operator is excluded above by requiring a
       digit right after the dot. }
     AdvancePos(1); { consume '.' }
-    { The integer part may exceed every integer type; it is only a REAL's.
-      Below 2^63 it converts exactly, as before. }
-    IF too_big OR (acc_hi >= two31) THEN real_val := real_acc
-    ELSE real_val := pas_int64_to_double(acc_hi * two32 + acc_lo);
-    frac_part := 0.0;
-    frac_scale := 1.0;
     WHILE (src_pos < src_len) AND IsDigit(ReadBufChar(src_pos)) DO
-    BEGIN
-      ch := ReadBufChar(src_pos);
-      frac_scale := frac_scale / 10.0;
-      frac_part := frac_part + (ORD(ch) - ORD('0')) * frac_scale;
       AdvancePos(1);
-    END;
-    real_val := real_val + frac_part;
 
     { Only consume 'E'/'e' as an exponent marker if it is followed by an
       optional sign and then at least one digit -- otherwise leave it for
@@ -1520,27 +1628,27 @@ BEGIN
         look := look + 1;
       IF (src_pos + look < src_len) AND IsDigit(ReadBufChar(src_pos + look)) THEN
       BEGIN
-        AdvancePos(1); { consume 'E'/'e' }
-        exp_neg := FALSE;
-        IF (src_pos < src_len) AND (ReadBufChar(src_pos) = '+') THEN
-          AdvancePos(1)
-        ELSE IF (src_pos < src_len) AND (ReadBufChar(src_pos) = '-') THEN
-        BEGIN
-          exp_neg := TRUE;
-          AdvancePos(1);
-        END;
-        exp_val := 0;
+        AdvancePos(look); { consume 'E'/'e' and the sign }
         WHILE (src_pos < src_len) AND IsDigit(ReadBufChar(src_pos)) DO
-        BEGIN
-          exp_val := exp_val * 10 + (ORD(ReadBufChar(src_pos)) - ORD('0'));
           AdvancePos(1);
-        END;
-        FOR i := 1 TO exp_val DO
-          IF exp_neg THEN
-            real_val := real_val / 10.0
-          ELSE
-            real_val := real_val * 10.0;
       END;
+    END;
+
+    { The value is the correctly rounded double of the whole literal text
+      (strtod in the runtime), not digit-by-digit REAL arithmetic: that
+      rounded at every step, and an exponent applied as repeated * or / 10
+      drifted further, so e.g. 2.2250738585072014E-308 was off by many
+      ulps. The literal text, not the Str255 lexeme, is read, so even a
+      literal over 255 characters keeps its exact value. A literal beyond
+      the largest double is a located error, not an infinity. }
+    real_val := pas_real_literal_value(src_buf + start_pos,
+      RETYPE(CINT, src_pos - start_pos));
+    IF pas_real_is_finite(real_val) = 0 THEN
+    BEGIN
+      lexeme := 'Lexer Error: REAL literal out of range';
+      AppendLocation(lexeme, start_line, start_col);
+      EPrint(lexeme);
+      exit(1);
     END;
 
     len := ClampedSpanLen(start_pos, src_pos);
@@ -1549,6 +1657,7 @@ BEGIN
       lexeme[i] := ReadBufChar(start_pos + i - 1);
 
     kind_str := 'REAL_LITERAL';
+    SetLexemeSpan(start_pos, src_pos);
     AddToken(kind_str, 82, lexeme, 2, 0, real_val, lexeme, start_line, start_col);
   END
   ELSE
@@ -1560,13 +1669,15 @@ BEGIN
       lexeme[i] := ReadBufChar(start_pos + i - 1);
 
     kind_str := 'INTEGER_LITERAL';
+    SetLexemeSpan(start_pos, src_pos);
     AddToken(kind_str, 81, lexeme, 1, int_val, 0.0, lexeme, start_line, start_col);
   END;
 END;
 
 PROCEDURE ScanString;
 VAR
-  start_line, start_col, str_len, lex_len, i: INTEGER;
+  start_line, start_col: INTEGER32;
+  str_len, lex_len, i: INTEGER;
   start_pos: INTEGER32;
   closed: BOOLEAN;
   ch: CHAR;
@@ -1664,7 +1775,7 @@ END;
 
 PROCEDURE ScanSymbol;
 VAR
-  start_line, start_col: INTEGER;
+  start_line, start_col: INTEGER32;
   ch, c2: CHAR;
   kind_str, lex_str: Str255;
 BEGIN
@@ -1766,6 +1877,7 @@ BEGIN
   meta_const_count := 0;
   pending_unroll_set := FALSE;
   pending_word64_literal := FALSE;
+  pending_lexeme_span := FALSE;
   two16 := 16384;
   two16 := two16 * 4;
   two32 := two16 * two16;
@@ -1775,6 +1887,7 @@ BEGIN
   brace_str[0] := CHR(1);
   brace_str[1] := '}';
   root_array := cJSON_CreateArray;
+  cur_file := '';
   cur_line := 1;
   cur_col := 1;
   src_pos := 0;
@@ -1788,7 +1901,9 @@ BEGIN
   empty_str := '';
   AddToken(eof_kind, 0, empty_str, 0, 0, 0.0, empty_str, cur_line, cur_col);
 
-  json_str := cJSON_Print(root_array);
+  { Not cJSON_Print: it keeps only 15 significant digits of a REAL value
+    (runtime/json_helpers.c). }
+  json_str := pas_cjson_print_exact(root_array, 1);
   puts(json_str);
   free(json_str);
   cJSON_Delete(root_array);

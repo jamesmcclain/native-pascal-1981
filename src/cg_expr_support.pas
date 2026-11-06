@@ -143,7 +143,7 @@ BEGIN
                                     LLVMPointerType(i8ptrty, 0), MakeCStr(''));
 END;
 
-PROCEDURE EmitScalarWriteArg(in_v: ADRMEM; tid: INTEGER; have_width, have_prec: BOOLEAN;
+PROCEDURE EmitScalarWriteArgHost(in_v: ADRMEM; tid: INTEGER; have_width, have_prec: BOOLEAN;
   width_val, prec_val: ADRMEM; VAR fmt: Str255; vals: ADRMEM; VAR vi: INTEGER32);
 { The generic INTEGER/WORD/REAL/CHAR/BOOLEAN WRITE-argument formatter,
   shared by every WRITE argument shape that isn't itself string-typed
@@ -273,6 +273,15 @@ BEGIN
     SetPtrArrayElem(vals, vi, out_v);
     vi := vi + 1;
   END;
+END;
+
+PROCEDURE EmitScalarWriteArg(in_v: ADRMEM; tid: INTEGER; have_width, have_prec: BOOLEAN;
+  width_val, prec_val: ADRMEM; VAR fmt: Str255; vals: ADRMEM; VAR vi: INTEGER32);
+{ EmitScalarWriteArgHost on a subrange's host, so a WORD subrange value
+  (NEW-32) is written unsigned and an INTEGER32 one in full. }
+BEGIN
+  EmitScalarWriteArgHost(in_v, SubrangeBaseTid(tid), have_width, have_prec,
+    width_val, prec_val, fmt, vals, vi);
 END;
 
 FUNCTION BoolNameTable: ADRMEM;

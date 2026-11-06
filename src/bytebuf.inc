@@ -29,7 +29,7 @@
   into bytebuf.pas itself ahead of its IMPLEMENTATION. }
 
 INTERFACE;
-UNIT bytebuf (BufInit, BufFree, BufClear, BufReserve,
+UNIT bytebuf (BufInit, BufFree, BufClear, BufReserve, BufGrowCap,
               BufAppendChar, BufAppendStr, BufAppendCStr, BufAppendBytes,
               BufAppendBuf, BufAppendInt,
               BufLen, BufPtr, BufCStr, BufAt, BufSetAt, BufTruncate,
@@ -45,11 +45,24 @@ TYPE
   END;
 
 { Lifecycle. BufInit rounds a request below the minimum up, so BufInit(b, 0)
-  is a valid way to ask for a default-sized buffer. }
+  is a valid way to ask for a default-sized buffer.
+
+  Growth is checked. A buffer holds at most 2147483647 bytes, the largest
+  INTEGER32 length. An append that would go past that, or a failed malloc,
+  stops the program with `runtime error: bytebuf size exceeds 2147483647
+  bytes` or `runtime error: bytebuf allocation failed` on stderr (after
+  flushing stdout) and abort(), like the runtime's other run-time errors. It
+  never wraps a length or capacity, whatever the caller's $MATHCK. }
 PROCEDURE BufInit(VAR b: ByteBuf; initial_cap: INTEGER32);
 PROCEDURE BufFree(VAR b: ByteBuf);
 PROCEDURE BufClear(VAR b: ByteBuf);
 PROCEDURE BufReserve(VAR b: ByteBuf; need: INTEGER32);
+
+{ The capacity BufReserve grows a buffer of capacity cap to so that it can
+  hold need bytes: cap (at least the minimum) doubled until it reaches need,
+  capped at 2147483647. cap itself when need <= cap. Computed in INTEGER64,
+  so a capacity of 1 GiB or more doubles to the cap instead of wrapping. }
+FUNCTION BufGrowCap(cap: INTEGER32; need: INTEGER32): INTEGER32;
 
 { Appending. }
 PROCEDURE BufAppendChar(VAR b: ByteBuf; c: CHAR);

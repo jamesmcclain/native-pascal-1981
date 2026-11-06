@@ -36,26 +36,26 @@ run_check() { # dialect opt expected-value [expected-error]
 # Direct calls with actuals, bare/explicit niladic calls and nested builtins.
 for dialect in vintage extended; do
   for math in + -; do
-    while IFS='|' read -r expr seed result bad; do
+    while IFS='|' read -r expr seed result bad col; do
       for range in + -; do
         program "$expr" "$seed" "$range" "$math"
         for opt in 0 1 2 3; do
           if [ "$range" = + ]; then
-            run_check "$dialect" "$opt" "$result" "value $bad is outside subrange -2..3"
+            run_check "$dialect" "$opt" "$result" "value $bad is outside subrange -2..3 at line 15 column $col"
           else
             run_check "$dialect" "$opt" "$result"
           fi
         done
       done
     done <<'CASES'
-SUCC(GetValue(3))|3|4|4
-PRED(GetValue(-2))|-2|-3|-3
-SUCC(GetBare)|3|4|4
-SUCC(GetBare())|3|4|4
-PRED(GetBare)|-2|-3|-3
-PRED(GetBare())|-2|-3|-3
-SUCC(PRED(GetValue(-2)))|-2|-2|-3
-PRED(SUCC(GetValue(3)))|3|3|4
+SUCC(GetValue(3))|3|4|4|11
+PRED(GetValue(-2))|-2|-3|-3|11
+SUCC(GetBare)|3|4|4|11
+SUCC(GetBare())|3|4|4|11
+PRED(GetBare)|-2|-3|-3|11
+PRED(GetBare())|-2|-3|-3|11
+SUCC(PRED(GetValue(-2)))|-2|-2|-3|16
+PRED(SUCC(GetValue(3)))|3|3|4|16
 CASES
     for range in + -; do
       program 'SUCC(GetValue(1))' 1 "$range" "$math"
@@ -80,7 +80,7 @@ BEGIN
 END.
 OTHER
       for opt in 0 1 2 3; do
-        run_check "$dialect" "$opt" 0 "value $bad is outside subrange $lo..$hi"
+        run_check "$dialect" "$opt" 0 "value $bad is outside subrange $lo..$hi at line 10 column 15"
       done
     done <<'DOMAINS'
 Slice = 'a'..'c';|CHAR|'c'|100|97|99
@@ -98,7 +98,7 @@ DOMAINS
       sed "s/GetValue/$name/g" "$work/test.pas" > "$work/shadow.pas"
       mv "$work/shadow.pas" "$work/test.pas"
       for opt in 0 1 2 3; do
-        run_check "$dialect" "$opt" 0 "value $bad is outside subrange -2..3"
+        run_check "$dialect" "$opt" 0 "value $bad is outside subrange -2..3 at line 15 column 11"
       done
     done
   done
@@ -119,7 +119,7 @@ BEGIN
 END.
 WITH
     for opt in 0 1 2 3; do
-      run_check "$dialect" "$opt" 0 'value 4 is outside subrange -2..3'
+      run_check "$dialect" "$opt" 0 'value 4 is outside subrange -2..3 at line 8 column 21'
     done
   done
   # At the shared host/domain endpoint, enabled MATHCK wins. With MATHCK
@@ -130,7 +130,7 @@ WITH
       if [ "$math" = + ]; then
         run_check "$dialect" "$opt" 0 'MATHCK signed overflow in SUCC at line 15 column 11 (operand=32767)'
       else
-        run_check "$dialect" "$opt" 0 'value -32768 is outside subrange 0..32767'
+        run_check "$dialect" "$opt" 0 'value -32768 is outside subrange 0..32767 at line 15 column 11'
       fi
     done
   done

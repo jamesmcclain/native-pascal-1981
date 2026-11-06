@@ -39,7 +39,7 @@ BEGIN
   IF (pt^.kind = 'ASSIGN') OR (pt^.kind = 'EQ') OR (pt^.kind = 'LBRACKET') OR
      (pt^.kind = 'DOT') OR (pt^.kind = 'POINTER') THEN
   BEGIN
-    node := CreateTriviaNode('AssignStmt');
+    node := CreateLeadTriviaNode('AssignStmt');
     target := ParseDesignator;
     IF Match('ASSIGN') OR Match('EQ') THEN ;
     AddField(node, 'target', target);
@@ -50,7 +50,7 @@ BEGIN
   END
   ELSE
   BEGIN
-    node := CreateTriviaNode('ProcCallStmt');
+    node := CreateLeadTriviaNode('ProcCallStmt');
     Expect('IDENTIFIER');
     AddStringField(node, 'name', name);
     args_arr := cJSON_CreateArray;
@@ -76,6 +76,22 @@ BEGIN
   END;
 END;
 
+PROCEDURE ExpectStmtSeparator;
+{ Consume the ";" after a statement of a BEGIN..END list, which the
+  closing END alone may replace. The IBM manual makes ";" a statement
+  separator, so two statements with neither between them are an error, at
+  the second one (NEW-13); a doubled or trailing ";" is an empty statement.
+  At end of file the caller reports the missing END instead. }
+BEGIN
+  IF CurKind = 'SEMICOLON' THEN
+  BEGIN
+    RelayTokenTrivia;
+    pos := pos + 1;
+  END
+  ELSE IF (CurKind <> 'END') AND (CurKind <> 'EOF') THEN
+    Expect('SEMICOLON');
+END;
+
 FUNCTION ParseCompoundStmt: ADRMEM;
 VAR
   node, stmts_arr, stmt_node: ADRMEM;
@@ -90,11 +106,10 @@ BEGIN
     stmt_node := ParseStatement;
     PinTrailingCommentTarget(stmt_node);
     cJSON_AddItemToArray(stmts_arr, stmt_node);
-    IF CurKind = 'SEMICOLON' THEN BEGIN RelayTokenTrivia; pos := pos + 1; END;
+    ExpectStmtSeparator;
     IF pos = start_pos THEN
     BEGIN
-      EPrint('Parser Error: statement failed to advance token stream');
-      exit(1);
+      ParseFail('Parser Error: statement failed to advance token stream');
     END;
   END;
   Expect('END');
@@ -115,11 +130,10 @@ BEGIN
     stmt_node := ParseStatement;
     PinTrailingCommentTarget(stmt_node);
     cJSON_AddItemToArray(arr, stmt_node);
-    IF CurKind = 'SEMICOLON' THEN BEGIN RelayTokenTrivia; pos := pos + 1; END;
+    ExpectStmtSeparator;
     IF pos = start_pos THEN
     BEGIN
-      EPrint('Parser Error: statement failed to advance token stream');
-      exit(1);
+      ParseFail('Parser Error: statement failed to advance token stream');
     END;
   END;
   Expect('END');
@@ -167,8 +181,7 @@ BEGIN
   END
   ELSE
   BEGIN
-    EPrint('Parser Error: expected TO or DOWNTO');
-    exit(1);
+    ParseFail('Parser Error: expected TO or DOWNTO');
   END;
   AddField(node, 'end', ParseExpression);
   Expect('DO');
@@ -221,6 +234,8 @@ BEGIN
       IF CurKind = 'UNTIL' THEN BREAK;
       cJSON_AddItemToArray(stmts_arr, ParseStatement);
     END;
+    { Name the missing ";" between two statements (NEW-13). }
+    IF (CurKind <> 'UNTIL') AND (CurKind <> 'EOF') THEN Expect('SEMICOLON');
   END;
   Expect('UNTIL');
   AddField(node, 'body', stmts_arr);
@@ -236,12 +251,69 @@ FUNCTION ParseCaseElement: ADRMEM;
 VAR
   node, constants_arr: ADRMEM;
 BEGIN
-  node := CreateTriviaNode('CaseElement');
+  node := CreateLeadTriviaNode('CaseElement');
   constants_arr := ParseCaseConstantList;
   Expect('COLON');
   AddField(node, 'constants', constants_arr);
   AddField(node, 'stmt', ParseStatement);
   ParseCaseElement := node;
+END;
+
+FUNCTION ParseOtherwiseList: ADRMEM;
+{ The statement list after OTHERWISE, up to the CASE's END (NEW-19). The
+  IBM manual allows a list there, with ";" separating its statements as in
+  BEGIN..END. One statement, with or without a trailing ";", is returned
+  as itself, so its AST is what it was when OTHERWISE took one statement;
+  two or more are wrapped in a CompoundStmt, which every later stage
+  already handles and which pretty81 prints as BEGIN..END. The wrapper
+  takes the first statement's location, RANGECK and metacommand state, as
+  an explicit BEGIN there would. }
+VAR
+  first_node, stmt_node, stmts_arr, wrapper, location, flags: ADRMEM;
+  saved_rangeck: BOOLEAN;
+  start_pos: INTEGER32;
+BEGIN
+  location := CurLocation;
+  saved_rangeck := CurRangeCk();
+  flags := BuildMetaFlagsNode();
+  first_node := ParseStatement;
+  PinTrailingCommentTarget(first_node);
+  ExpectStmtSeparator;
+  stmts_arr := NIL;
+  WHILE (CurKind <> 'END') AND (CurKind <> 'EOF') DO
+  BEGIN
+    IF stmts_arr = NIL THEN
+    BEGIN
+      stmts_arr := cJSON_CreateArray;
+      cJSON_AddItemToArray(stmts_arr, first_node);
+    END;
+    start_pos := pos;
+    stmt_node := ParseStatement;
+    PinTrailingCommentTarget(stmt_node);
+    cJSON_AddItemToArray(stmts_arr, stmt_node);
+    ExpectStmtSeparator;
+    IF pos = start_pos THEN
+    BEGIN
+      ParseFail('Parser Error: statement failed to advance token stream');
+    END;
+  END;
+  IF stmts_arr = NIL THEN
+  BEGIN
+    cJSON_Delete(location);
+    cJSON_Delete(flags);
+    ParseOtherwiseList := first_node;
+  END
+  ELSE
+  BEGIN
+    { CreateNode, not CreateTriviaNode: the wrapper has no token of its
+      own, so it must not take a comment queued for the next node. }
+    wrapper := CreateNode('CompoundStmt');
+    AddField(wrapper, 'stmts', stmts_arr);
+    AddField(wrapper, 'location', location);
+    AddBoolField(wrapper, 'rangeck', saved_rangeck);
+    AddField(wrapper, 'meta_flags', flags);
+    ParseOtherwiseList := wrapper;
+  END;
 END;
 
 FUNCTION ParseCaseStmt: ADRMEM;
@@ -265,14 +337,14 @@ BEGIN
       PinTrailingCommentTarget(elem_node);
       cJSON_AddItemToArray(elements_arr, elem_node);
     END;
+    { Name the missing ";" between two CASE arms (NEW-13). }
+    IF (CurKind <> 'OTHERWISE') AND (CurKind <> 'END') AND
+       (CurKind <> 'EOF') THEN
+      Expect('SEMICOLON');
   END;
   AddField(node, 'elements', elements_arr);
   IF Match('OTHERWISE') THEN
-  BEGIN
-    elem_node := ParseStatement;
-    PinTrailingCommentTarget(elem_node);
-    AddField(node, 'otherwise', elem_node);
-  END
+    AddField(node, 'otherwise', ParseOtherwiseList)
   ELSE
     AddNullField(node, 'otherwise');
   Expect('END');
@@ -347,10 +419,10 @@ FUNCTION ParseLabelStmt: ADRMEM;
 VAR
   node: ADRMEM;
 BEGIN
-  node := CreateTriviaNode('LabelStmt');
+  node := CreateLeadTriviaNode('LabelStmt');
   IF CurKind = 'INTEGER_LITERAL' THEN
   BEGIN
-    AddIntField(node, 'label', StrToIntVal(CurLex));
+    AddIntField(node, 'label', CurLabelKey);
     BEGIN RelayTokenTrivia; pos := pos + 1; END;
   END
   ELSE
@@ -376,8 +448,7 @@ BEGIN
     misplaced hint here rather than silently dropping it. }
   IF CurHasUnroll() AND (k <> 'FOR') AND (k <> 'WHILE') AND (k <> 'REPEAT') THEN
   BEGIN
-    EPrint('Parser Error: {$UNROLL n} must immediately precede a FOR, WHILE, or REPEAT statement');
-    exit(1);
+    ParseFail('Parser Error: {$UNROLL n} must immediately precede a FOR, WHILE, or REPEAT statement');
   END;
   IF k = 'BEGIN' THEN
     ParseStatementBody := ParseCompoundStmt
@@ -399,7 +470,7 @@ BEGIN
     node := CreateTriviaNode('GotoStmt');
     IF CurKind = 'INTEGER_LITERAL' THEN
     BEGIN
-      AddIntField(node, 'label', StrToIntVal(CurLex));
+      AddIntField(node, 'label', CurLabelKey);
       BEGIN RelayTokenTrivia; pos := pos + 1; END;
     END
     ELSE
@@ -413,12 +484,10 @@ BEGIN
   BEGIN
     { A function RETURN reads the result it publishes: keep the RETURN
       token's INITCK snapshot and coordinates for that read site. }
-    node := CreateTriviaNode('ReturnStmt');
+    node := CreateLeadTriviaNode('ReturnStmt');
     AddField(node, 'read_flags', BuildMetaFlagsNode());
     tok := GetTok(0);
-    location := cJSON_CreateObject;
-    AddIntField(location, 'line', tok^.line);
-    AddIntField(location, 'column', tok^.col);
+    location := TokLocation(tok);
     AddField(node, 'read_location', location);
     BEGIN RelayTokenTrivia; pos := pos + 1; END;
     ParseStatementBody := node;
@@ -430,7 +499,7 @@ BEGIN
     IF (CurKind = 'INTEGER_LITERAL') OR (CurKind = 'IDENTIFIER') THEN
     BEGIN
       IF CurKind = 'INTEGER_LITERAL' THEN
-        AddIntField(node, 'label', StrToIntVal(CurLex))
+        AddIntField(node, 'label', CurLabelKey)
       ELSE
         AddStringField(node, 'label', CurLex);
       BEGIN RelayTokenTrivia; pos := pos + 1; END;
@@ -446,7 +515,7 @@ BEGIN
     IF (CurKind = 'INTEGER_LITERAL') OR (CurKind = 'IDENTIFIER') THEN
     BEGIN
       IF CurKind = 'INTEGER_LITERAL' THEN
-        AddIntField(node, 'label', StrToIntVal(CurLex))
+        AddIntField(node, 'label', CurLabelKey)
       ELSE
         AddStringField(node, 'label', CurLex);
       BEGIN RelayTokenTrivia; pos := pos + 1; END;
@@ -461,14 +530,13 @@ BEGIN
     ParseStatementBody := ParseAssignOrCallStmt
   ELSE IF (k = 'SEMICOLON') OR (k = 'END') OR (k = 'UNTIL') OR
           (k = 'ELSE') OR (k = 'OTHERWISE') THEN
-    ParseStatementBody := CreateTriviaNode('EmptyStmt')
+    ParseStatementBody := CreateLeadTriviaNode('EmptyStmt')
   ELSE
   BEGIN
     { An empty statement is legal only at a statement boundary.  Returning
       one for arbitrary input leaves the token unconsumed and makes callers
       such as ParseCompoundStmt loop forever on malformed source. }
-    EPrint('Parser Error: expected statement');
-    exit(1);
+    ParseFail('Parser Error: expected statement');
     ParseStatementBody := NIL;
   END;
   LeaveStmtLevel;

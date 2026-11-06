@@ -1,0 +1,17 @@
+fixed: abc
+lstring: abc len 3
+quote: it's len 4
+empty: [] len 0
+char: x
+width: [   abc] [it's]
+fixed = S
+fixed <> Q
+lstring = T
+lstring < abd
+const param: abc
+value param: abc
+lstring param: it's len 4
+function: abc
+shadow: local xyz
+variable hides constant: 42
+integer constant still: 7

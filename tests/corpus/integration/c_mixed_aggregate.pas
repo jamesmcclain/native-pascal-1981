@@ -10,17 +10,17 @@ TYPE
     a: INTEGER32;
     b: INTEGER32;
   END;
-  Big = RECORD
+  TBig = RECORD
     v: ARRAY [1..8] OF INTEGER32;
   END;
   Trio = ARRAY [1..3] OF INTEGER32;
 
-FUNCTION mixed_call(n: CINT; p: Pair; big: Big; q: Pair; k: CINT): CINT [C]; EXTERN;
+FUNCTION mixed_call(n: CINT; p: Pair; big: TBig; q: Pair; k: CINT): CINT [C]; EXTERN;
 FUNCTION trio_sum(t: Trio): CINT [C]; EXTERN;
 
 VAR
   p, q: Pair;
-  big: Big;
+  big: TBig;
   t: Trio;
   i: INTEGER32;
 BEGIN

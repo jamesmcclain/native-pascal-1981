@@ -1,0 +1,3 @@
+Type checking failed:
+A super-array STRING/LSTRING parameter cannot cross a [C] routine signature: PutS at line 6 column 11
+A super-array STRING/LSTRING parameter cannot cross a [C] routine signature: PutL at line 7 column 11

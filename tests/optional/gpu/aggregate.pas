@@ -1,7 +1,8 @@
 (*$INCLUDE:'aggregate.inc'*)
-{ NVPTX integer arithmetic is a MATHCK unsupported boundary (no device
-  failure path); this ABI fixture opts out. }
-{$MATHCK-}
+{ NVPTX integer arithmetic and pointer dereference are MATHCK and NILCK
+  unsupported boundaries (no device failure path); this ABI fixture opts
+  out. }
+{$MATHCK-}{$NILCK-}
 DEVICE IMPLEMENTATION OF aggregateu;
 FUNCTION sum8(v: T8): INTEGER32;
 BEGIN sum8 := v.a + v.b END;

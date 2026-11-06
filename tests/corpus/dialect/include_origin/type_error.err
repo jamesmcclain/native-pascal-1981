@@ -1,0 +1,2 @@
+Type checking failed:
+Cannot assign incompatible type without narrowing: n at line 4 column 3 of file type_error.inc

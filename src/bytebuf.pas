@@ -9,9 +9,62 @@ IMPLEMENTATION OF bytebuf;
 FUNCTION malloc(size: CINT): ADRMEM [C]; EXTERN;
 PROCEDURE free(p: ADRMEM) [C]; EXTERN;
 FUNCTION memcpy(dst: ADRMEM; src: ADRMEM; n: CSIZE_T): ADRMEM [C]; EXTERN;
+FUNCTION fflush(stream: ADRMEM): CINT [C]; EXTERN;
+PROCEDURE pas_eprint(msg: ADRMEM) [C]; EXTERN;
+PROCEDURE abort [C]; EXTERN;
 
 CONST
   MIN_CAP = 256;
+
+{ ------------------------------------------------------------------ }
+{ Failure                                                             }
+{ ------------------------------------------------------------------ }
+
+{ Stop the program: a buffer that cannot grow has no useful state left to
+  return to the caller, and every caller would otherwise go on to write past
+  the allocation. Flushes stdout first so the message follows the output
+  that preceded it. }
+PROCEDURE BufFail(why: ByteStr);
+VAR
+  line: ByteStr;
+  p: ADRMEM;
+  n: INTEGER;
+  ignored: CINT;
+BEGIN
+  line := 'runtime error: bytebuf ';
+  CONCAT(line, why);
+  n := ORD(line[0]);
+  IF n < 255 THEN line[n + 1] := CHR(0) ELSE line[255] := CHR(0);
+  ignored := fflush(NIL);
+  p := ADR line;
+  pas_eprint(p + 1);
+  abort;
+END;
+
+FUNCTION CheckedMalloc(size: INTEGER32): ADRMEM;
+VAR
+  p: ADRMEM;
+BEGIN
+  p := malloc(size);
+  IF p = NIL THEN BufFail('allocation failed');
+  CheckedMalloc := p;
+END;
+
+FUNCTION BufGrowCap(cap: INTEGER32; need: INTEGER32): INTEGER32;
+VAR
+  wide: INTEGER64;
+BEGIN
+  IF need <= cap THEN
+    BufGrowCap := cap
+  ELSE
+  BEGIN
+    wide := cap;
+    IF wide < MIN_CAP THEN wide := MIN_CAP;
+    WHILE wide < need DO wide := wide * 2;
+    IF wide > 2147483647 THEN wide := 2147483647;
+    BufGrowCap := RETYPE(INTEGER32, wide);
+  END;
+END;
 
 { ------------------------------------------------------------------ }
 { Lifecycle                                                           }
@@ -23,7 +76,7 @@ VAR
 BEGIN
   want := initial_cap;
   IF want < MIN_CAP THEN want := MIN_CAP;
-  b.data := malloc(want);
+  b.data := CheckedMalloc(want);
   b.len := 0;
   b.cap := want;
 END;
@@ -41,9 +94,9 @@ BEGIN
   b.len := 0;
 END;
 
-{ Grow to at least `need` bytes, doubling. The loop (rather than a single
-  multiply) covers an append larger than the current capacity, where one
-  doubling would not be enough. }
+{ Grow to at least `need` bytes, doubling (BufGrowCap). The loop there
+  (rather than a single multiply) covers an append larger than the current
+  capacity, where one doubling would not be enough. }
 PROCEDURE BufReserve(VAR b: ByteBuf; need: INTEGER32);
 VAR
   old: ADRMEM;
@@ -52,14 +105,25 @@ BEGIN
   IF b.data = NIL THEN BufInit(b, need);
   IF need > b.cap THEN
   BEGIN
-    newcap := b.cap;
-    WHILE newcap < need DO newcap := newcap * 2;
+    newcap := BufGrowCap(b.cap, need);
     old := b.data;
-    b.data := malloc(newcap);
+    b.data := CheckedMalloc(newcap);
     IF b.len > 0 THEN memcpy(b.data, old, RETYPE(CSIZE_T, b.len));
     free(old);
     b.cap := newcap;
   END;
+END;
+
+{ Make room for `extra` more bytes. The new length is formed in INTEGER64:
+  b.len + extra in INTEGER32 would wrap (or trap) at the size limit. }
+PROCEDURE ReserveMore(VAR b: ByteBuf; extra: INTEGER32);
+VAR
+  wide: INTEGER64;
+BEGIN
+  wide := b.len;
+  wide := wide + extra;
+  IF wide > 2147483647 THEN BufFail('size exceeds 2147483647 bytes');
+  BufReserve(b, RETYPE(INTEGER32, wide));
 END;
 
 { ------------------------------------------------------------------ }
@@ -70,7 +134,7 @@ PROCEDURE BufAppendChar(VAR b: ByteBuf; c: CHAR);
 VAR
   base, p: ^CHAR;
 BEGIN
-  BufReserve(b, b.len + 1);
+  ReserveMore(b, 1);
   base := b.data;
   p := base + b.len;
   p^ := c;
@@ -84,7 +148,7 @@ VAR
 BEGIN
   IF n > 0 THEN
   BEGIN
-    BufReserve(b, b.len + n);
+    ReserveMore(b, n);
     dst_base := b.data;
     dst := dst_base + b.len;
     memcpy(dst, p, RETYPE(CSIZE_T, n));
@@ -189,7 +253,7 @@ FUNCTION BufCStr(VAR b: ByteBuf): ADRMEM;
 VAR
   base, p: ^CHAR;
 BEGIN
-  BufReserve(b, b.len + 1);
+  ReserveMore(b, 1);
   base := b.data;
   p := base + b.len;
   p^ := CHR(0);
@@ -255,7 +319,7 @@ VAR
   ok: BOOLEAN;
 BEGIN
   n := ORD(s[0]);
-  IF (i < 0) OR (i + n > b.len) THEN
+  IF (i < 0) OR (i > b.len - n) THEN
     BufMatchesStrAt := FALSE
   ELSE
   BEGIN
@@ -288,7 +352,7 @@ VAR
   ok: BOOLEAN;
 BEGIN
   n := ORD(s[0]);
-  IF (i < 0) OR (i + n > b.len) THEN
+  IF (i < 0) OR (i > b.len - n) THEN
     BufMatchesStrAtCI := FALSE
   ELSE
   BEGIN
@@ -340,7 +404,7 @@ VAR
 BEGIN
   n := count;
   IF n > 255 THEN n := 255;
-  IF from + n > b.len THEN n := b.len - from;
+  IF from > b.len - n THEN n := b.len - from;
   IF n < 0 THEN n := 0;
   out[0] := CHR(RETYPE(INTEGER, n));
   i := 1;

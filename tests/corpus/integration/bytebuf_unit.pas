@@ -106,6 +106,19 @@ BEGIN
   BufTruncate(b, 10);
   WRITELN('trunc=', BufLen(b));
 
+  { --- the growth policy, near the 2147483647-byte limit, without
+    allocating: doubling from 1 GiB or more is capped instead of wrapping
+    to a negative capacity (bytebuf_overflow.pas covers the requests that
+    cannot be met at all). --- }
+  WRITELN('grow_none=', BufGrowCap(512, 300));
+  WRITELN('grow_min=', BufGrowCap(0, 1));
+  WRITELN('grow_double=', BufGrowCap(256, 257));
+  WRITELN('grow_loop=', BufGrowCap(256, 100000));
+  WRITELN('grow_1g=', BufGrowCap(1073741824, 1073741825));
+  WRITELN('grow_top=', BufGrowCap(1610612736, 2147483647));
+  WRITELN('grow_from_min=', BufGrowCap(256, 2147483647));
+  WRITELN('grow_at_cap=', BufGrowCap(2147483647, 2147483647));
+
   BufFree(b);
   BufFree(other);
   WRITELN('done');

@@ -107,6 +107,9 @@ static char *int_lit(int64_t v)
 {
     if (v >= INT32_MIN && v <= INT32_MAX)
         return xfmt("%lld", (long long) v);
+    /* -9223372036854775808 is not a C literal: it negates an unsigned one. */
+    if (v == INT64_MIN)
+        return xfmt("INT64_MIN");
     return xfmt("INT64_C(%lld)", (long long) v);
 }
 
@@ -312,6 +315,8 @@ static int bits_of(Type *t)
     return 0;
 }
 
+static char *loc_file_lit(Loc loc);
+
 static CE gen_builtin(Expr *e)
 {
     const char *n = e->name;
@@ -367,7 +372,7 @@ static CE gen_builtin(Expr *e)
         CE v = gen_expr(a[0]);
         if (v.ty->kind != TY_REAL)
             fatal(e->loc, "TRUNC of %s", type_name(v.ty));
-        return mk(xfmt("((int16_t)(int64_t)%s)", v.s), t_integer, 0);
+        return mk(xfmt("pas_trunc16(%s, %s, %d)", v.s, loc_file_lit(e->loc), e->loc.line), t_integer, 0);
     }
     unsupported(e->loc, xfmt("builtin %s/%d", n, nargs));
 }
@@ -421,6 +426,50 @@ static const char *op_text(int op)
 static int is_cmp(int op)
 {
     return op >= OP_EQ && op <= OP_GE;
+}
+
+/* The source file of loc as a C string literal (its base name), for the
+ * run-time errors the prelude reports. */
+static char *loc_file_lit(Loc loc)
+{
+    const char *f = loc.file ? loc.file : "?";
+    const char *slash = strrchr(f, '/');
+    if (slash)
+        f = slash + 1;
+    Buf b = { 0 };
+    buf_put(&b, "\"");
+    for (; *f; f++) {
+        unsigned char c = (unsigned char) *f;
+        if (c == '"' || c == '\\')
+            buf_printf(&b, "\\%c", c);
+        else if (c < 32 || c > 126)
+            buf_printf(&b, "\\%03o", c);
+        else
+            buf_printf(&b, "%c", c);
+    }
+    buf_put(&b, "\"");
+    return b.p;
+}
+
+/* Integer + - * DIV MOD at width w: the prelude's wrapping helpers, never a
+ * bare C operator, so overflow, MIN DIV -1 and a zero divisor are defined. */
+static char *int_arith(int op, int w, const char *l, const char *r, Loc loc)
+{
+    const char *ct = int_ctype(w);
+    switch (op) {
+    case OP_ADD:
+        return xfmt("pas_add%d((%s)%s, (%s)%s)", w, ct, l, ct, r);
+    case OP_SUB:
+        return xfmt("pas_sub%d((%s)%s, (%s)%s)", w, ct, l, ct, r);
+    case OP_MUL:
+        return xfmt("pas_mul%d((%s)%s, (%s)%s)", w, ct, l, ct, r);
+    case OP_IDIV:
+        return xfmt("pas_div%d((%s)%s, (%s)%s, %s, %d)", w, ct, l, ct, r, loc_file_lit(loc), loc.line);
+    case OP_MOD:
+        return xfmt("pas_mod%d((%s)%s, (%s)%s, %s, %d)", w, ct, l, ct, r, loc_file_lit(loc), loc.line);
+    default:
+        fatal(loc, "bad integer operator");
+    }
 }
 
 static CE gen_binary(Expr *e)
@@ -496,8 +545,7 @@ static CE gen_binary(Expr *e)
     }
     if (is_int(l.ty) && is_int(r.ty)) {
         Type *t = wider(l.ty, r.ty);
-        const char *ct = int_ctype(t->width);
-        return mk(xfmt("((%s)((%s)%s %s (%s)%s))", ct, ct, l.s, o, ct, r.s), t, 0);
+        return mk(int_arith(op, t->width, l.s, r.s, loc), t, 0);
     }
     fatal(loc, "arithmetic on %s and %s", type_name(l.ty), type_name(r.ty));
 }
@@ -570,7 +618,7 @@ static CE gen_expr(Expr *e)
                 if (v.ty->kind == TY_REAL)
                     return mk(xfmt("(-%s)", v.s), t_real, 0);
                 if (is_int(v.ty))
-                    return mk(xfmt("((%s)-%s)", int_ctype(v.ty->width), v.s), v.ty, 0);
+                    return mk(xfmt("pas_neg%d((%s)%s)", v.ty->width, int_ctype(v.ty->width), v.s), v.ty, 0);
                 fatal(e->loc, "unary minus on %s", type_name(v.ty));
             }
             if (v.ty->kind == TY_BOOL)
@@ -735,8 +783,8 @@ static void gen_stmt(Stmt *s)
             line("%s = %s;", cv.s, conv(from, v->ty, s->from->loc));
             line("%s lim_%d = (%s)%s;", ct, n, ct, to.s);
             line("int done_%d = 0;", n);
-            line("for (; !done_%d && %s %s lim_%d; done_%d = %s == lim_%d, %s = (%s)(%s %s 1)) {", n, cv.s, s->down ? ">=" : "<=", n, n, cv.s, n, cv.s, ct, cv.s,
-                 s->down ? "-" : "+");
+            line("for (; !done_%d && %s %s lim_%d; done_%d = %s == lim_%d, %s = pas_%s%d(%s, 1)) {", n, cv.s, s->down ? ">=" : "<=", n, n, cv.s, n, cv.s,
+                 s->down ? "sub" : "add", v->ty->width, cv.s);
             gen_block_body(s->body);
             line("}");
             indent--;

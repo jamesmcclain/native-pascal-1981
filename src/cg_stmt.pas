@@ -188,7 +188,7 @@ BEGIN
   src_tid := last_val_tk;
   initck_copy_source := saved_source;
   IF src_tid <> tid THEN src_shadow := NIL;
-  v := CoerceCheckedForAssign(v, src_tid, tid, expr, nm);
+  v := CoerceCheckedForAssign(v, src_tid, tid, expr, nm, GetObjOrNil(stmt, 'location'));
   LLVMBuildStore(builder, v, addr);
   InitckTransferShadow(shadow, src_shadow, tid, EndInitckValue(saved_taint));
 END;
@@ -201,8 +201,11 @@ VAR
   v, addr, saved_taint, shadow: ADRMEM;
   target_tid: INTEGER;
   lstring_capacity: INTEGER32;
-  lstring_is_length: ADRMEM;
+  lstring_is_length, lstring_dyncap: ADRMEM;
   tracked: BOOLEAN;
+  res_frame: INTEGER32;
+  res_tk: INTEGER;
+  res_slot, res_state: ADRMEM;
 BEGIN
   target := GetObj(stmt, 'target');
   IF NodeType(target) <> 'Designator' THEN
@@ -210,26 +213,53 @@ BEGIN
   sel := GetObj(target, 'selectors');
   nm := GetStr(target, 'name');
 
+  res_frame := -1;
   IF (ArrSize(sel) = 0) AND (cur_func_name <> '') AND (nm = cur_func_name) THEN
+  BEGIN
+    res_frame := 0;
+    res_tk := cur_func_ret_tk;
+    res_slot := cur_func_ret_slot;
+    res_state := cur_func_ret_state;
+  END
+  ELSE IF ArrSize(sel) = 0 THEN
+  BEGIN
+    { An enclosing FUNCTION's result, assigned from a nested routine, is
+      reached through the static link like its locals. }
+    res_frame := EnclosingResultFrame(nm);
+    IF res_frame = 0 THEN res_frame := -1
+    ELSE
+    BEGIN
+      res_tk := frame_ret_tk[res_frame];
+      res_slot := CapturedFramePtr(res_frame, ENV_KEY_RESULT,
+                                   frame_ret_slot[res_frame], 'the result');
+      res_state := NIL;
+      IF frame_ret_state[res_frame] <> NIL THEN
+        res_state := CapturedFramePtr(res_frame, ENV_KEY_RESULT_STATE,
+                                      frame_ret_state[res_frame], 'the result');
+    END;
+  END;
+
+  IF res_frame >= 0 THEN
   BEGIN
     { `FuncName := expr` inside FuncName's own body assigns through the
       return-value slot, not a symbol -- see cur_func_name's declaration. }
-    IF (TypeKind(cur_func_ret_tk) = TK_LSTRING) AND (NodeType(GetObj(stmt, 'expr')) = 'StringLiteral') THEN
-      CodegenLStringLiteralAssign(cur_func_ret_slot, cur_func_ret_tk,
+    IF (TypeKind(res_tk) = TK_LSTRING) AND (NodeType(GetObj(stmt, 'expr')) = 'StringLiteral') THEN
+      CodegenLStringLiteralAssign(res_slot, res_tk,
         DecodeStringLiteral(GetStr(GetObj(stmt, 'expr'), 'value')))
-    ELSE IF (TypeKind(cur_func_ret_tk) = TK_STRING) AND (NodeType(GetObj(stmt, 'expr')) = 'StringLiteral') THEN
-      CodegenStringLiteralAssign(cur_func_ret_slot, cur_func_ret_tk,
+    ELSE IF (TypeKind(res_tk) = TK_STRING) AND (NodeType(GetObj(stmt, 'expr')) = 'StringLiteral') THEN
+      CodegenStringLiteralAssign(res_slot, res_tk,
         DecodeStringLiteral(GetStr(GetObj(stmt, 'expr'), 'value')))
     ELSE
     BEGIN
-      IF cur_func_ret_state <> NIL THEN
+      IF res_state <> NIL THEN
         saved_taint := BeginInitckValue(GetObj(stmt, 'expr'));
       v := CodegenExpr(GetObj(stmt, 'expr'));
-      v := CoerceCheckedForAssign(v, last_val_tk, cur_func_ret_tk, GetObj(stmt, 'expr'), nm);
-      LLVMBuildStore(builder, v, cur_func_ret_slot);
+      v := CoerceCheckedForAssign(v, last_val_tk, res_tk, GetObj(stmt, 'expr'), nm,
+        GetObjOrNil(stmt, 'location'));
+      LLVMBuildStore(builder, v, res_slot);
       { The result is a producer exactly like a tracked local. }
-      IF cur_func_ret_state <> NIL THEN
-        LLVMBuildStore(builder, EndInitckValue(saved_taint), cur_func_ret_state);
+      IF res_state <> NIL THEN
+        LLVMBuildStore(builder, EndInitckValue(saved_taint), res_state);
     END;
   END
   ELSE IF ArrSize(sel) = 0 THEN
@@ -237,6 +267,9 @@ BEGIN
     symi := LookupSym(nm);
     IF symi = 0 THEN
       AbortWith2('codegen: undefined variable: ', nm);
+    { The typechecker rejects this first (NEW-29). }
+    IF IsBorrowedString(symbols[symi].tk) THEN
+      AbortWith2('codegen: a super-array STRING/LSTRING formal cannot be assigned as a whole: ', nm);
     IF (TypeKind(symbols[symi].tk) = TK_LSTRING) AND (NodeType(GetObj(stmt, 'expr')) = 'StringLiteral') THEN
       CodegenLStringLiteralAssign(symbols[symi].llvm_val, symbols[symi].tk,
         DecodeStringLiteral(GetStr(GetObj(stmt, 'expr'), 'value')))
@@ -251,7 +284,8 @@ BEGIN
       tracked := InitckTracked(symi);
       IF tracked THEN saved_taint := BeginInitckValue(GetObj(stmt, 'expr'));
       v := CodegenExpr(GetObj(stmt, 'expr'));
-      v := CoerceCheckedForAssign(v, last_val_tk, symbols[symi].tk, GetObj(stmt, 'expr'), nm);
+      v := CoerceCheckedForAssign(v, last_val_tk, symbols[symi].tk, GetObj(stmt, 'expr'), nm,
+        GetObjOrNil(stmt, 'location'));
       LLVMBuildStore(builder, v, symbols[symi].llvm_val);
       { Publish state only after evaluation/coercion and the data store.
         Write tracking is independent of INITCK at the producer, but an
@@ -266,6 +300,7 @@ BEGIN
     target_tid := last_val_tk;
     lstring_capacity := last_desig_lstring_capacity;
     lstring_is_length := last_desig_lstring_is_length;
+    lstring_dyncap := last_desig_lstring_dyncap;
     { The destination (and its shadow) is selected before the RHS runs,
       exactly as the data address is. }
     shadow := last_desig_shadow;
@@ -281,8 +316,9 @@ BEGIN
     BEGIN
       IF shadow <> NIL THEN saved_taint := BeginInitckValue(GetObj(stmt, 'expr'));
       v := CodegenExpr(GetObj(stmt, 'expr'));
-      v := CoerceCheckedForAssign(v, last_val_tk, target_tid, GetObj(stmt, 'expr'), nm);
-      EmitLStringLengthCheck(v, lstring_is_length, lstring_capacity, target);
+      v := CoerceCheckedForAssign(v, last_val_tk, target_tid, GetObj(stmt, 'expr'), nm,
+        GetObjOrNil(stmt, 'location'));
+      EmitLStringLengthCheck(v, lstring_is_length, lstring_capacity, lstring_dyncap, target);
       LLVMBuildStore(builder, v, addr);
       { A selected leaf is a producer for that leaf only; its siblings,
         including overlapping variant alternatives, keep their own state. }
@@ -358,6 +394,7 @@ BEGIN
   location := GetObj(stmt, 'location');
   SetPtrArrayElem(args, 2, LLVMConstInt(i32ty, GetInt(location, 'line'), 0));
   SetPtrArrayElem(args, 3, LLVMConstInt(i32ty, GetInt(location, 'column'), 0));
+  EmitDiagFile(location);
   discard := LLVMBuildCall2(builder, fnty, fn, args, 4, MakeCStr(''));
   discard := LLVMBuildUnreachable(builder);
 END;
@@ -571,7 +608,7 @@ VAR
   start_node, end_node: ADRMEM;
   start_val, end_val, cur_val, cmp_val, next_val: ADRMEM;
   loop_bb, body_bb, step_bb, inc_bb, end_bb, chk_bb, cont_bb: ADRMEM;
-  done_bb, saved_taint, start_state: ADRMEM;
+  done_bb, saved_taint, start_state, loc: ADRMEM;
   down, narrow, unsigned, sub_chk, tracked, unset_at_exit: BOOLEAN;
 BEGIN
   var_name := GetStr(stmt, 'var');
@@ -630,8 +667,14 @@ BEGIN
     cont_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('for_ranged'));
     LLVMBuildCondBr(builder, cmp_val, chk_bb, cont_bb);
     LLVMPositionBuilderAtEnd(builder, chk_bb);
-    EmitSubrangeCheck(start_val, var_tk, symbols[symi].tk);
-    EmitSubrangeCheck(end_val, var_tk, symbols[symi].tk);
+    { Each bound is reported at its own expression (the FOR statement
+      for a legacy node without a location). }
+    loc := NodeDiagLocation(start_node);
+    IF loc = NIL THEN loc := GetObjOrNil(stmt, 'location');
+    EmitSubrangeCheck(start_val, var_tk, symbols[symi].tk, loc);
+    loc := NodeDiagLocation(end_node);
+    IF loc = NIL THEN loc := GetObjOrNil(stmt, 'location');
+    EmitSubrangeCheck(end_val, var_tk, symbols[symi].tk, loc);
     LLVMBuildBr(builder, cont_bb);
     LLVMPositionBuilderAtEnd(builder, cont_bb);
   END;
@@ -790,9 +833,9 @@ BEGIN
   LLVMPositionBuilderAtEnd(builder, end_bb);
 END;
 
-PROCEDURE EmitStringCapacityCheck(new_len: ADRMEM; capacity: INTEGER32;
+PROCEDURE EmitStringCapacityCheck(new_len: ADRMEM; capacity: ADRMEM;
   site: ADRMEM; prefix, error_name: Str255); FORWARD;
-PROCEDURE EmitStringCapacityGuard(new_len: ADRMEM; capacity: INTEGER32;
+PROCEDURE EmitStringCapacityGuard(new_len: ADRMEM; capacity: ADRMEM;
   site: ADRMEM; prefix, error_name: Str255); FORWARD;
 PROCEDURE EmitStringSpanGuard(pos, count, len: ADRMEM; site: ADRMEM;
   prefix, error_name: Str255); FORWARD;
@@ -804,7 +847,8 @@ PROCEDURE CodegenCopylst(stmt: ADRMEM);
 
 VAR
   args, d_arg, source: ADRMEM;
-  d_symi, capacity: INTEGER32;
+  d_symi: INTEGER32;
+  capacity: ADRMEM;
   d_tid: INTEGER;
   d_addr, len_ptr, src_len_byte: ADRMEM;
   dest_chars: ADRMEM;
@@ -831,8 +875,7 @@ BEGIN
       InitckBoundaryAt('STRING/LSTRING COPYLST operand', source);
   ResolveStringExprCharsLen(source, src_chars, src_len);
   src_len64 := LLVMBuildZExt(builder, src_len, i64ty, MakeCStr('copylst.length'));
-  capacity := types[d_tid].hi;
-  IF capacity > 255 THEN capacity := 255;
+  capacity := LStringLengthCap(d_tid, d_addr);
   EmitStringCapacityCheck(src_len64, capacity, stmt, 'copylst', 'pas_copylst_error');
 
   gep_idx := AllocPtrArray(2);
@@ -885,7 +928,7 @@ BEGIN
       InitckBoundaryAt('STRING/LSTRING COPYSTR operand', source);
   ResolveStringExprCharsLen(source, src_chars, src_len);
   EmitStringCapacityGuard(LLVMBuildZExt(builder, src_len, i64ty, MakeCStr('copystr.length')),
-    types[d_tid].hi, stmt, 'copystr', 'pas_copystr_error');
+    StringCapacityValue(d_tid, d_addr), stmt, 'copystr', 'pas_copystr_error');
 
   gep_idx := AllocPtrArray(2);
   SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
@@ -896,7 +939,7 @@ BEGIN
   gep_idx := AllocPtrArray(1);
   SetPtrArrayElem(gep_idx, 0, src_len);
   pad_ptr := LLVMBuildGEP2(builder, i8ty, dest_chars, gep_idx, 1, MakeCStr(''));
-  pad_len := LLVMBuildSub(builder, LLVMConstInt(i32ty, types[d_tid].hi, 0), src_len, MakeCStr(''));
+  pad_len := LLVMBuildSub(builder, StringCapacityValue(d_tid, d_addr), src_len, MakeCStr(''));
   EmitByteFillLoop(pad_ptr, pad_len, 32);
 END;
 
@@ -915,7 +958,8 @@ PROCEDURE CodegenInsert(stmt: ADRMEM);
 VAR
   args, source: ADRMEM;
   src_chars, src_len: ADRMEM;
-  d_symi, capacity: INTEGER32;
+  d_symi: INTEGER32;
+  capacity: ADRMEM;
   d_tid: INTEGER;
   d_addr, dst_chars, dst_len: ADRMEM;
   pos_val, pos32, pos0, new_len, tail_len, shift_offset: ADRMEM;
@@ -945,8 +989,7 @@ BEGIN
     overflowing length back into the accepted range. }
   new_len := LLVMBuildAdd(builder, LLVMBuildZExt(builder, dst_len, i64ty, MakeCStr('')),
     LLVMBuildZExt(builder, src_len, i64ty, MakeCStr('')), MakeCStr('insert.length'));
-  capacity := types[d_tid].hi;
-  IF capacity > 255 THEN capacity := 255;
+  capacity := LStringLengthCap(d_tid, d_addr);
   EmitStringCapacityGuard(new_len, capacity, stmt, 'insert', 'pas_insert_error');
 
   pos0 := LLVMBuildSub(builder, pos32, LLVMConstInt(i32ty, 1, 0), MakeCStr(''));
@@ -1040,7 +1083,7 @@ BEGIN
   LLVMBuildStore(builder, new_len_byte, len_ptr);
 END;
 
-PROCEDURE EmitStringCapacityCheck(new_len: ADRMEM; capacity: INTEGER32;
+PROCEDURE EmitStringCapacityCheck(new_len: ADRMEM; capacity: ADRMEM;
   site: ADRMEM; prefix, error_name: Str255);
 { RANGECK owns this semantic capacity check, not MATHCK. As with other
   RANGECK guards, unchecked and NVPTX paths retain their existing behavior.
@@ -1050,7 +1093,7 @@ BEGIN
     EmitStringCapacityGuard(new_len, capacity, site, prefix, error_name);
 END;
 
-PROCEDURE EmitStringCapacityGuard(new_len: ADRMEM; capacity: INTEGER32;
+PROCEDURE EmitStringCapacityGuard(new_len: ADRMEM; capacity: ADRMEM;
   site: ADRMEM; prefix, error_name: Str255);
 { Fail through error_name(new_len, capacity, line, column) unless new_len <=
   capacity. Callers decide whether a switch controls the guard; NVPTX has no
@@ -1065,7 +1108,7 @@ BEGIN
   bad_name := prefix; CONCAT(bad_name, '.bad');
   ok_name := prefix; CONCAT(ok_name, '.ok');
   ok := LLVMBuildICmp(builder, LLVMIntULE, new_len,
-    LLVMConstInt(i64ty, capacity, 0), MakeCStr(in_name));
+    LLVMBuildZExt(builder, capacity, i64ty, MakeCStr('')), MakeCStr(in_name));
   bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr(bad_name));
   ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr(ok_name));
   LLVMBuildCondBr(builder, ok, ok_bb, bad_bb);
@@ -1086,9 +1129,10 @@ BEGIN
   END;
   args := AllocPtrArray(4);
   SetPtrArrayElem(args, 0, new_len);
-  SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, capacity, 0));
+  SetPtrArrayElem(args, 1, capacity);
   SetPtrArrayElem(args, 2, LLVMConstInt(i32ty, line, 0));
   SetPtrArrayElem(args, 3, LLVMConstInt(i32ty, column, 0));
+  EmitDiagFile(location);
   discard := LLVMBuildCall2(builder, fnty, fn, args, 4, MakeCStr(''));
   discard := LLVMBuildUnreachable(builder);
   LLVMPositionBuilderAtEnd(builder, ok_bb);
@@ -1142,6 +1186,7 @@ BEGIN
   SetPtrArrayElem(call_args, 2, len);
   SetPtrArrayElem(call_args, 3, LLVMConstInt(i32ty, line, 0));
   SetPtrArrayElem(call_args, 4, LLVMConstInt(i32ty, column, 0));
+  EmitDiagFile(location);
   discard := LLVMBuildCall2(builder, fnty, fn, call_args, 5, MakeCStr(''));
   discard := LLVMBuildUnreachable(builder);
   LLVMPositionBuilderAtEnd(builder, ok_bb);
@@ -1155,7 +1200,7 @@ VAR
   args, d_arg: ADRMEM;
   d_symi: INTEGER32;
   d_tid: INTEGER;
-  capacity: INTEGER32;
+  capacity: ADRMEM;
   d_addr, len_ptr, dest_len_byte, dest_len, new_len, new_len_byte: ADRMEM;
   dest_chars, append_ptr: ADRMEM;
   src_chars, src_len, src_len64, dest_len64: ADRMEM;
@@ -1188,8 +1233,7 @@ BEGIN
   dest_len64 := LLVMBuildZExt(builder, dest_len, i64ty, MakeCStr(''));
   src_len64 := LLVMBuildZExt(builder, src_len, i64ty, MakeCStr(''));
   new_len := LLVMBuildAdd(builder, dest_len64, src_len64, MakeCStr('concat.length'));
-  capacity := types[d_tid].hi;
-  IF capacity > 255 THEN capacity := 255;
+  capacity := LStringLengthCap(d_tid, d_addr);
   EmitStringCapacityCheck(new_len, capacity, stmt, 'concat', 'pas_concat_error');
 
   gep_idx := AllocPtrArray(2);
@@ -1215,8 +1259,7 @@ VAR
   indices, call_args: ADRMEM;
   i: INTEGER32;
 BEGIN
-  thunk_name := '__pas_klaunch_';
-  CONCAT(thunk_name, routines[ridx].name);
+  thunk_name := BoundedSymbol('__pas_klaunch_', routines[ridx].name);
   thunk_ty := LLVMFunctionType(voidty, MakeArgs1(LLVMPointerType(i8ptrty, 0)), 1, 0);
   thunk := LLVMAddFunction(modl, MakeCStr(thunk_name), thunk_ty);
   LLVMSetLinkage(thunk, 8); { LLVMInternalLinkage -- reached only through the
@@ -1826,7 +1869,10 @@ BEGIN
       alloca for COERCED). Mirrors that procedure's own epilogue exactly. }
     ret_class := 0;
     IF IsAggregateTk(cur_func_ret_tk) AND (NOT is_nvptx_device) THEN
-      ClassifyAggregate(cur_func_ret_tk, ret_class, n_pieces, piece_kind, piece_bytes);
+      ClassifyAggregate(cur_func_ret_tk, ret_class, n_pieces, piece_kind, piece_bytes)
+    ELSE IF IsAggregateTk(cur_func_ret_tk) THEN
+      IF LargeAggregateTy(LLVMTypeForTk(cur_func_ret_tk)) THEN
+        ret_class := SYSV_CLASS_MEMORY; { NVPTX large result: sret }
     IF ret_class = SYSV_CLASS_MEMORY THEN
       LLVMBuildRetVoid(builder)
     ELSE IF ret_class = SYSV_CLASS_COERCED THEN
@@ -1997,8 +2043,10 @@ PROCEDURE CodegenStmt(stmt: ADRMEM);
 VAR
   nt, msg: Str255;
   saved_rangeck: BOOLEAN;
+  saved_line, saved_column: INTEGER32;
 BEGIN
   EnterStmtLevel;
+  EnterLayoutSite(stmt, saved_line, saved_column);
   saved_rangeck := cur_rangeck;
   nt := NodeType(stmt);
   IF GetObjOrNil(stmt, 'rangeck') <> NIL THEN
@@ -2025,6 +2073,7 @@ BEGIN
     AbortWith(msg);
   END;
   cur_rangeck := saved_rangeck;
+  LeaveLayoutSite(saved_line, saved_column);
   LeaveStmtLevel;
 END;
 

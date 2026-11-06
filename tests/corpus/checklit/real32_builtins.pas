@@ -5,7 +5,9 @@
 { CHECK: fpext float }
 { CHECK: fptosi double }
 { CHECK: fcmp olt float }
-{ CHECK: fsub float }
+{ CHECK: fneg float }
+{ CHECK: fcmp oeq float }
+{ CHECK-NOT: fsub float }
 { CHECK: fmul float }
 { CHECK: call double @sqrt(double }
 { CHECK-NOT: sitofp float }

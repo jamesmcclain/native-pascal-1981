@@ -16,4 +16,12 @@ roundtrip=TRUE
 biglen=100000
 mismatches=0
 trunc=10
+grow_none=512
+grow_min=256
+grow_double=512
+grow_loop=131072
+grow_1g=2147483647
+grow_top=2147483647
+grow_from_min=2147483647
+grow_at_cap=2147483647
 done

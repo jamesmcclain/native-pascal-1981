@@ -57,9 +57,7 @@ VAR
   tok: PToken;
 BEGIN
   tok := GetTok(0);
-  location := cJSON_CreateObject;
-  AddIntField(location, 'line', tok^.line);
-  AddIntField(location, 'column', tok^.col);
+  location := TokLocation(tok);
   DerefLocation := location;
 END;
 
@@ -252,9 +250,7 @@ PROCEDURE AddOpLocation(node: ADRMEM; tok: PToken);
 VAR
   location: ADRMEM;
 BEGIN
-  location := cJSON_CreateObject;
-  AddIntField(location, 'line', tok^.line);
-  AddIntField(location, 'column', tok^.col);
+  location := TokLocation(tok);
   AddField(node, 'op_location', location);
 END;
 
@@ -386,9 +382,8 @@ BEGIN
   ELSE IF CurKind = 'REAL_LITERAL' THEN
   BEGIN
     node := CreateTriviaNode('RealLiteral');
-    val_str := CurLex;
+    AddRealField(node, 'value', CurValueReal());
     Expect('REAL_LITERAL');
-    AddRealField(node, 'value', StrToRealVal(val_str));
     ParseConstant := node;
   END
   ELSE IF CurKind = 'CHAR_LITERAL' THEN
@@ -455,8 +450,29 @@ BEGIN
   ELSE IF (CurKind = 'PLUS') OR (CurKind = 'MINUS') THEN
   BEGIN
     sign_neg := (CurKind = 'MINUS');
+    name_tok := GetTok(0);
     BEGIN RelayTokenTrivia; pos := pos + 1; END;
-    IF CurKind = 'INTEGER_LITERAL' THEN
+    IF CurKind = 'IDENTIFIER' THEN
+    BEGIN
+      { "Any numeric constant (literal or identifier) can be given a + or -
+        sign" (IBM manual, 5-9). -N is a UnaryOp, as in an expression, so
+        the typechecker rejects a non-numeric N and folds the value; +N is
+        N itself, as unary plus is in an expression. }
+      val_str := CurLex;
+      Expect('IDENTIFIER');
+      node := CreateTriviaNode('Identifier');
+      AddStringField(node, 'name', val_str);
+      IF sign_neg THEN
+      BEGIN
+        literal := node;
+        node := CreateTriviaNode('UnaryOp');
+        AddStringField(node, 'op', 'MINUS');
+        AddField(node, 'operand', literal);
+        AddMathckSnapshot(node, name_tok);
+      END;
+      ParseConstant := node;
+    END
+    ELSE IF CurKind = 'INTEGER_LITERAL' THEN
     BEGIN
       node := CreateTriviaNode('IntLiteral');
       IF sign_neg AND CurValueWord64 THEN
@@ -480,24 +496,21 @@ BEGIN
     ELSE IF CurKind = 'REAL_LITERAL' THEN
     BEGIN
       node := CreateTriviaNode('RealLiteral');
-      val_str := CurLex;
-      Expect('REAL_LITERAL');
       IF sign_neg THEN
-        AddRealField(node, 'value', -StrToRealVal(val_str))
+        AddRealField(node, 'value', -CurValueReal())
       ELSE
-        AddRealField(node, 'value', StrToRealVal(val_str));
+        AddRealField(node, 'value', CurValueReal());
+      Expect('REAL_LITERAL');
       ParseConstant := node;
     END
     ELSE
     BEGIN
-      EPrint('Parser Error: expected numeric constant');
-      exit(1);
+      ParseFail('Parser Error: expected numeric constant');
     END;
   END
   ELSE
   BEGIN
-    EPrint('Parser Error: expected constant');
-    exit(1);
+    ParseFail('Parser Error: expected constant');
   END;
 END;
 
@@ -529,9 +542,7 @@ VAR
 BEGIN
   parenthesized := CurKind = 'LPAREN';
   tok := GetTok(0);
-  location := cJSON_CreateObject;
-  AddIntField(location, 'line', tok^.line);
-  AddIntField(location, 'column', tok^.col);
+  location := TokLocation(tok);
   flags := BuildMetaFlagsNode();
   node := ParseFactorBody(flags);
   IF NOT parenthesized THEN
@@ -569,9 +580,8 @@ BEGIN
   ELSE IF CurKind = 'REAL_LITERAL' THEN
   BEGIN
     node := CreateTriviaNode('RealLiteral');
-    val_str := CurLex;
+    AddRealField(node, 'value', CurValueReal());
     Expect('REAL_LITERAL');
-    AddRealField(node, 'value', StrToRealVal(val_str));
     ParseFactorBody := node;
   END
   ELSE IF CurKind = 'CHAR_LITERAL' THEN
@@ -737,8 +747,7 @@ BEGIN
   ELSE
   BEGIN
     EPrint('Parser Error: Invalid factor expression');
-    EPrint(CurKind);
-    exit(1);
+    ParseFail(CurKind);
   END;
 END;
 
@@ -837,8 +846,7 @@ BEGIN
   IF (expr_depth <> sequential_depth) AND
      (((CurKind = 'AND') AND (NextKind = 'THEN')) OR ((CurKind = 'OR') AND (NextKind = 'ELSE'))) THEN
   BEGIN
-    EPrint('Parser Error: AND THEN/OR ELSE can only join the operands of an IF, WHILE or UNTIL condition, not in parentheses or another expression');
-    exit(1);
+    ParseFail('Parser Error: AND THEN/OR ELSE can only join the operands of an IF, WHILE or UNTIL condition, not in parentheses or another expression');
   END;
   LeaveExprLevel;
 END;
@@ -996,8 +1004,7 @@ BEGIN
   END
   ELSE
   BEGIN
-    EPrint('Parser Error: expected set base type');
-    exit(1);
+    ParseFail('Parser Error: expected set base type');
   END;
 END;
 
@@ -1046,8 +1053,7 @@ BEGIN
       fire. }
     IF packed_flag THEN
     BEGIN
-      EPrint('Parser Error: PACKED VECTOR is not supported');
-      exit(1);
+      ParseFail('Parser Error: PACKED VECTOR is not supported');
     END;
     BEGIN RelayTokenTrivia; pos := pos + 1; END;
     Expect('LBRACKET');
@@ -1097,7 +1103,11 @@ BEGIN
       IF CurKind = 'SEMICOLON' THEN
         pos := pos + 1
       ELSE
+      BEGIN
+        { ";" separates the fixed part from a variant part (NEW-13). }
+        IF CurKind = 'CASE' THEN Expect('SEMICOLON');
         BREAK;
+      END;
     END;
     variants_arr := cJSON_CreateArray;
     tag_type := cJSON_CreateNull;
@@ -1242,8 +1252,7 @@ BEGIN
     node := ParseSetBase;
     IF NodeType(node) <> 'SubrangeType' THEN
     BEGIN
-      EPrint('Parser Error: expected subrange high bound');
-      exit(1);
+      ParseFail('Parser Error: expected subrange high bound');
     END;
     ParseType := node;
   END
@@ -1259,17 +1268,20 @@ BEGIN
       Expect('RPAREN');
       { NamedType.param is a bare int or identifier-name, not the full
         constant-expression node, matching parser.py's unwrapping. }
-      IF StringEqual(CStrToStr255(cJSON_GetStringValue(cJSON_GetObjectItem(param_expr, MakeCStr('__node_type__')))), 'IntLiteral') THEN
-        { Not TRUNC: the capacity is a 32-bit quantity on both ends --
-          cg_types reads this field back with GetInt -- and a capacity
-          past 32767 (LSTRING(40000), say) would be poison through the
-          16-bit INTEGER TRUNC produces. GetInt does the conversion in
-          32 bits, exactly as codegen will on the other side. }
-        AddIntField(node, 'param', GetInt(param_expr, 'value'))
-      ELSE IF StringEqual(CStrToStr255(cJSON_GetStringValue(cJSON_GetObjectItem(param_expr, MakeCStr('__node_type__')))), 'Identifier') THEN
-        AddStringField(node, 'param', CStrToStr255(cJSON_GetStringValue(cJSON_GetObjectItem(param_expr, MakeCStr('name')))))
+      IF StringEqual(CStrToStr255(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(param_expr, MakeCStr('__node_type__')))), 'IntLiteral') THEN
+        { Not TRUNC: a capacity past 32767 (LSTRING(40000), say) would be
+          poison through the 16-bit INTEGER TRUNC produces. The whole
+          value is kept, so the typechecker rejects one past its limit
+          (CheckStringCapacity) rather than a 32-bit wrap of it; codegen
+          reads only a checked capacity back with GetInt. }
+        AddIntField(node, 'param', GetInt64(param_expr, 'value'))
+      ELSE IF StringEqual(CStrToStr255(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(param_expr, MakeCStr('__node_type__')))), 'Identifier') THEN
+        AddStringField(node, 'param', CStrToStr255(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(param_expr, MakeCStr('name')))))
       ELSE
-        AddNullField(node, 'param');
+        { Any other constant (-N, WRD(5), 'A') stays the expression, for
+          the typechecker to fold or reject; a null here read as no
+          capacity at all, so STRING(-N) was a bare STRING. }
+        AddField(node, 'param', param_expr);
     END
     ELSE
       AddNullField(node, 'param');
@@ -1285,8 +1297,7 @@ BEGIN
   END
   ELSE
   BEGIN
-    EPrint('Parser Error: expected type');
-    exit(1);
+    ParseFail('Parser Error: expected type');
   END;
   LeaveTypeLevel;
 END;

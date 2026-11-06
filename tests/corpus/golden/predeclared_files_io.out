@@ -1,0 +1,9 @@
+start
+not eof
+peek=4 again=4
+x=42 y=-5
+eoln agrees
+bare after peek=q
+x2=17
+abc 3
+eof

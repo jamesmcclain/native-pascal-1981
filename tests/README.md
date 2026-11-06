@@ -96,6 +96,7 @@ is its entry here.
 | corpus | [`fixtures`](corpus/fixtures.sh) | Every run and check fixture in the corpus, each against what it declares. |
 | contract | [`array_named_index_parser`](contract/array_named_index_parser.sh) | Named ordinal array index types parse, and pretty81 round-trips them. |
 | contract | [`chr_constant_folding`](contract/chr_constant_folding.sh) | Unchecked CHR folding has the same low-eight-bit value as runtime conversion. |
+| contract | [`const_fold_shadowing`](contract/const_fold_shadowing.sh) | The typechecker and codegen constant folders agree on every shadowed name. |
 | contract | [`copystr`](contract/copystr.sh) | COPYSTR admits fixed-STRING copies and always checks capacity before writing. |
 | contract | [`delete`](contract/delete.sh) | DELETE admits LSTRING deletions and always checks the span before writing. |
 | contract | [`descriptor_contract`](contract/descriptor_contract.sh) | Host descriptor transport ABI and unsupported-boundary contracts. |
@@ -117,6 +118,9 @@ is its entry here.
 | contract | [`initck_state`](contract/initck_state.sh) | Shadow allocation/reset independently of enabled guards (see initck_scalar.sh). |
 | contract | [`initck_validation`](contract/initck_validation.sh) | INITCK release gate: checked success and failure, values, ABI. |
 | contract | [`insert`](contract/insert.sh) | INSERT admits LSTRING insertions and always checks position and capacity first. |
+| contract | [`json_key_case`](contract/json_key_case.sh) | Compiler JSON key lookups are case-sensitive, so a lower-case per-site snapshot (indexck, mathck, rangeck) never matches an upper-case directive entry (INDEXCK, MATHCK, RANGECK) of a meta_flags/read_flags object. |
+| contract | [`lexer_identifier_limits`](contract/lexer_identifier_limits.sh) | Identifiers of up to 255 characters, every one significant (NEW-17). |
+| contract | [`lexer_numeric_limits`](contract/lexer_numeric_limits.sh) | Oversized numbers, metacommand values and source positions in the lexer. |
 | contract | [`mathck_address_arith`](contract/mathck_address_arith.sh) | Address arithmetic and [C] values at MATHCK's boundary. |
 | contract | [`mathck_baseline`](contract/mathck_baseline.sh) | Executable G1-G29 gap inventory, not a claim that MATHCK is implemented. |
 | contract | [`mathck_bootstrap_audit`](contract/mathck_bootstrap_audit.sh) | The arithmetic the self-hosting compiler sources depend on. |
@@ -137,7 +141,12 @@ is its entry here.
 | contract | [`mathck_word_scalar`](contract/mathck_word_scalar.sh) | Scalar WORD arithmetic against native arithmetic oracles. |
 | contract | [`nilck_dispose`](contract/nilck_dispose.sh) | NILCK-controlled DISPOSE: null checks before retirement/free, snapshots and aliases. |
 | contract | [`nilck`](contract/nilck.sh) | NILCK null-only host dereferences: diagnostics, snapshots, aliases and IR ordering. |
+| contract | [`pretty81_capacities`](contract/pretty81_capacities.sh) | pretty81 prints every STRING and LSTRING capacity (NEW-22). |
+| contract | [`pretty81_comments`](contract/pretty81_comments.sh) | pretty81 output is a fixed point: printing it again gives the same text, comments included (NEW-18). |
+| contract | [`pretty81_headings`](contract/pretty81_headings.sh) | pretty81 prints a PROGRAM heading's parameters as written (NEW-20). |
 | contract | [`pretty81_integers`](contract/pretty81_integers.sh) | pretty81 preserves exact INTEGER64 and upper-half WORD64 literals through parsed and typed ASTs. |
+| contract | [`pretty81_otherwise`](contract/pretty81_otherwise.sh) | pretty81 round-trips OTHERWISE statement lists (NEW-19): its output parses to the same AST, prints the same text again, and behaves the same. |
+| contract | [`pretty81_reals`](contract/pretty81_reals.sh) | pretty81 prints REAL literals that parse back to the identical double, with an E exponent where needed. |
 | contract | [`pretty81_sequential`](contract/pretty81_sequential.sh) | pretty81 prints AND THEN/OR ELSE chains without parentheses, which the 1981 manual forbids around them: its output parses again, prints the same text, and the program behaves the same. |
 | contract | [`quoted_literal_limits`](contract/quoted_literal_limits.sh) | Quoted token spellings include both delimiters and doubled quotes. |
 | contract | [`rangeck_byword`](contract/rangeck_byword.sh) | BYWORD checks both original ordinal operands before packing their low bytes. |
@@ -148,6 +157,7 @@ is its entry here.
 | contract | [`rangeck_lstring_len`](contract/rangeck_lstring_len.sh) | LSTRING length-byte stores (assignment, READ, VAR CHAR actuals) check capacity. |
 | contract | [`rangeck_scope`](contract/rangeck_scope.sh) | RANGECK settings reach the AST and IR of FOR, CASE and SUCC where they apply. |
 | contract | [`rangeck_succpred`](contract/rangeck_succpred.sh) | SUCC/PRED preserve subrange domains through function results without replaying calls. |
+| contract | [`stackck`](contract/stackck.sh) | STACKCK+ probes host frames and reports main-thread stack overflow; STACKCK- does not. |
 | contract | [`stage_cli`](contract/stage_cli.sh) | Standalone compiler-stage command-line contract tests. |
 | contract | [`super_new_contract`](contract/super_new_contract.sh) | Hardened NEW failures, inspected through a test-only C harness. |
 | contract | [`sysutil`](contract/sysutil.sh) | Exercise the reusable filesystem and child-process substrate from Pascal. |
@@ -158,7 +168,7 @@ is its entry here.
 | service | [`proxy_corpus_smoke`](service/proxy_corpus_smoke.sh) | Replay the realistic completion corpus using the native Pascal client. |
 | service | [`proxy_oneshot`](service/proxy_oneshot.sh) | Check tests/service/proxy/oneshot.pas -- one upstream call, in Pascal -- against the deterministic stub backend. |
 | service | [`proxy_transforms`](service/proxy_transforms.sh) | Check proxycore's pure transforms against the frozen native golden corpus. |
-| optional | [`gpu_orchestration`](optional/gpu_orchestration.sh) | Compile and run vector addition through the real CUDA device backend. |
+| optional | [`gpu_orchestration`](optional/gpu_orchestration.sh) | Compile and run vector addition, the aggregate ABI and the TRUNC/ROUND device error channel on a real CUDA GPU. |
 | optional | [`initck_overhead`](optional/initck_overhead.py) | Opt-in INITCK measurement, not a timing pass/fail gate. |
 | optional | [`mathck_overhead`](optional/mathck_overhead.py) | Opt-in MATHCK measurement, not a timing pass/fail gate. |
 <!-- suite-index:end -->
@@ -263,7 +273,10 @@ These are observed host timings, not timing-sensitive correctness oracles.
   `CHECK-FAIL`). Either kind may ask for a compile matrix with
   `{ DIALECT: vintage extended }` and `{ OPT: 0 1 2 3 }`; each cell is a
   separate check. Directives are parsed by `tests/lib/fixture.sh`, which
-  `mathck_twins` shares.
+  `mathck_twins` shares. Run fixtures execute with glibc
+  `MALLOC_PERTURB_=165` (override with `FIXTURE_MALLOC_PERTURB`, 0 turns it
+  off), so fresh `NEW` storage never reads as zero: a fixture must write
+  every heap element it reads.
 - **Running**:
   ```bash
   ./tests/corpus/fixtures.sh                     # every fixture
@@ -361,8 +374,8 @@ outputs and `corpus/depth.sh` cover those behaviors natively.
 ### GPU orchestration (`tests/optional/gpu_orchestration.sh`)
 
 - **Runner**: [`tests/optional/gpu_orchestration.sh`](optional/gpu_orchestration.sh)
-- **Description**: Compiles and runs vector addition with the CUDA backend. The runner uses frozen typed ASTs from the independent Python front end. It checks each GPU and CUDA prerequisite. It prints one skip reason if a prerequisite is not available.
-- **Artifact updates**: Run `./scripts/update-reference-gpu.sh`. Review the Pascal sources and typed ASTs under `tests/optional/gpu/` before you commit changes.
+- **Description**: Compiles and runs vector addition with the CUDA backend. The runner uses frozen typed ASTs from the independent Python front end. It then compiles the aggregate-ABI kernels and the TRUNC/ROUND device-error-channel kernels (`gpu/convck.*`) with the native front end and runs them. Each row of `gpu/convck.cases` is one run of `gpu/convck_host.pas`: the result after `prefix`, or the exact host-format `runtime error:` line and a failing exit. The `kinc` kernel's checks are in included files (`gpu/convck_kinc.inc`, `gpu/convck_kround.inc`), so its reports name the file. It checks each GPU and CUDA prerequisite. It prints one skip reason if a prerequisite is not available.
+- **Artifact updates**: Run `./scripts/update-reference-gpu.sh` for the frozen `vadd`/`host` typed ASTs. Review the Pascal sources and typed ASTs under `tests/optional/gpu/` before you commit changes. The `aggregate` and `convck` expected outputs (`*.out`, `convck.cases`) are written by hand; check a changed expectation against the same program run as CPU DEVICE code, which takes the host failure path.
 - **Running**:
   ```bash
   make test-gpu

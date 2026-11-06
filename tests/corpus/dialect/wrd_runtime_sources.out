@@ -1,0 +1,7 @@
+enum 2 1 1
+subrange 7
+char 65 boolean 1
+integer 65534 32768 32767
+word 65535
+WRD(i) = CONST WRD(-2) = 65534
+const char 66

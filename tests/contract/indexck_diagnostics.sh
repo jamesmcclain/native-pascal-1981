@@ -4,15 +4,15 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib/harness.sh"
 require bin/pascal1981 bin/lexer bin/parser bin/typechecker bin/codegen
 for dialect in vintage extended; do
   for shape in fixed super; do
-    array='ARRAY [-2..3]'; slot='a: A'; target='a'; setup='i := 4'
+    array='ARRAY [-2..3]'; slot='a: Arr'; target='a'; setup='i := 4'
     if [[ $shape == super ]]; then
-      array='SUPER ARRAY [-2..*]'; slot='p: ^A'; target='p^'; setup='NEW(p, 3); i := 4'
+      array='SUPER ARRAY [-2..*]'; slot='p: ^Arr'; target='p^'; setup='NEW(p, 3); i := 4'
     fi
     for consumer in load store; do
       access="  WRITELN($target["
       tail='    next {$INDEXCK-}]);'
       if [[ $consumer == store ]]; then access="  $target["; tail='    next {$INDEXCK-}] := 7;'; fi
-      printf '%s\n' 'PROGRAM checked;' "TYPE A = $array OF INTEGER;" \
+      printf '%s\n' 'PROGRAM checked;' "TYPE Arr = $array OF INTEGER;" \
         "VAR $slot; i: INTEGER;" 'FUNCTION next: INTEGER;' \
         'BEGIN WRITELN('\''index'\''); next := i END;' 'BEGIN' \
         "  $setup;" '  WRITELN('\''before'\'');' "$access" "$tail" \

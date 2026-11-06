@@ -13,6 +13,8 @@ VAR
 FUNCTION CheckExprForTarget(node: ADRMEM; target_tk: INTEGER): INTEGER;
 FUNCTION CheckExprForSetTarget(node: ADRMEM; target_tk, target_set_base: INTEGER): INTEGER;
 FUNCTION ShadowedWriteArg(arg: ADRMEM; pname: Str255): ADRMEM;
+FUNCTION SuperStringRefSym(node: ADRMEM): INTEGER32;
+PROCEDURE CheckRoutineArg(arg: ADRMEM; si, pi: INTEGER32; atk: INTEGER; rname: Str255);
 FUNCTION CheckDesignator(node: ADRMEM): INTEGER;
 FUNCTION CheckExpr(node: ADRMEM): INTEGER;
 

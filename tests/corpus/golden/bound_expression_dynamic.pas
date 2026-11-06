@@ -2,10 +2,10 @@
 PROGRAM BoundExpressionDynamic(output);
 TYPE Data = SUPER ARRAY [2..*] OF INTEGER;
      PData = ^Data;
-     Holder = RECORD data: PData END;
-     PHolder = ^Holder;
+     THolder = RECORD data: PData END;
+     PHolder = ^THolder;
 VAR p, q: PData; a: ARRAY [0..1] OF PData;
-    holder: Holder; ph: PHolder;
+    holder: THolder; ph: PHolder;
     calls, indexes: INTEGER;
 FUNCTION get(n: INTEGER): PData;
 BEGIN calls := calls + 1; get := p END;

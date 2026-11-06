@@ -1,7 +1,7 @@
 { DIALECT: extended }
 PROGRAM indexck_wide_ordinals(OUTPUT);
 CONST c200 = CHR(200); c201 = CHR(201);
-TYPE Color = (red, green, blue);
+TYPE TColor = (red, green, blue);
 VAR a: ARRAY[-2..2] OF INTEGER;
     w: ARRAY[32768..32769] OF INTEGER;
     c: ARRAY[c200..c201] OF INTEGER;
@@ -10,7 +10,7 @@ VAR a: ARRAY[-2..2] OF INTEGER;
     n: ARRAY[-128..127] OF INTEGER;
     u: ARRAY[0..255] OF INTEGER;
     si: INTEGER8; ui: WORD8; li: INTEGER64; wi: WORD;
-    ch: CHAR; flag: BOOLEAN; color: Color;
+    ch: CHAR; flag: BOOLEAN; color: TColor;
 BEGIN
   li := -2; a[li] := 11; li := 2; a[li] := 12;
   si := -128; n[si] := 13; si := 127; n[si] := 14;

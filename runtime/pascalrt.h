@@ -74,6 +74,7 @@ typedef struct {
 
 void  pas_file_attach_std(struct pas_file_fcb *in,
                           struct pas_file_fcb *out);
+void  pas_std_input_sync(void);
 void *pas_file_buffer(struct pas_file_fcb *f);
 void  pas_file_touch_buffer(struct pas_file_fcb *f);
 void  pas_file_get(struct pas_file_fcb *f);
@@ -267,8 +268,20 @@ void  pas_super_import_check(void *raw, int64_t lower_bits, int32_t lower_unsign
 void  pas_vector_range_error(int32_t is_store, int64_t idx, int32_t idx_unsigned,
                              int32_t lanes, int64_t lo, int64_t hi) __attribute__((noreturn));
 
+/* ---- $STACKCK+ main-thread overflow reporter (stackck.c) ---- */
+/* Idempotent; called at program/unit entry when the compiland has probed
+ * (STACKCK+) functions. */
+void pas_stackck_init(void);
+
 /* ---- $INITCK host locals, formals, results and aggregates (initck.c) ---- */
 /* Null-only ordinary host pointer dereference failure; never returns. */
+/* Located diagnostics (diagnostics.c): pas_diag_file names the $INCLUDEd
+ * source of the failure being reported (NULL: the primary file), and
+ * pas_diag_where() is "" or " of file NAME", printed right after a
+ * failure's "at line L column C". */
+extern _Thread_local const char *pas_diag_file;
+const char *pas_diag_where(void);
+
 void pas_nilck_error(int32_t line, int32_t column);
 void pas_nilck_dispose_error(int32_t line, int32_t column);
 void pas_initck_error(const char *name, int32_t line, int32_t column);
@@ -325,6 +338,43 @@ void  pas_math_overflow(int32_t is_unsigned, int32_t op,
                         int64_t left, int64_t right,
                         int32_t line, int32_t column) __attribute__((noreturn));
 
+/* ---- NVPTX device error channel (dev_error.c) ----
+ * NVPTX code cannot call the host failure routines, so a failing device check
+ * records the first error in the module global PAS_DEV_ERROR_SYMBOL and the
+ * thread continues with a defined (saturated) value. The CUDA launch shim
+ * reads the cell after cuCtxSynchronize and, when code is nonzero, calls
+ * pas_dev_error_report, which prints the host check's own diagnostic and
+ * aborts. The first writer wins: a device thread claims the cell with an
+ * atomic compare-and-swap of code from 0, then stores the other fields.
+ * Layout (24 bytes, align 8) must match DeviceErrorCell in src/cg_expr.pas.
+ * A new device check adds a code here and a case in pas_dev_error_report.
+ *
+ * Device code cannot hand the host a string, so a check in an $INCLUDEd file
+ * stores a small file index k (1, 2, ...) in `file`, and the same module
+ * defines the NUL-terminated constant string __pas_dev_file_k (the include
+ * path as written; DeviceFileIndex in src/cg_expr.pas). The launch shim
+ * reads that global and passes it to pas_dev_error_report, which names it
+ * exactly as the host diagnostic does (" of file NAME", pas_diag_where). A
+ * primary-file check leaves `file` 0. */
+#define PAS_DEV_ERROR_SYMBOL "__pas_dev_error"
+#define PAS_DEV_FILE_SYMBOL  "__pas_dev_file_"  /* + decimal file index */
+#define PAS_DEV_ERROR_NONE  0
+#define PAS_DEV_ERROR_TRUNC 1   /* TRUNC out of INTEGER range or NaN */
+#define PAS_DEV_ERROR_ROUND 2   /* ROUND out of INTEGER range or NaN */
+typedef struct {
+    int32_t code;       /* PAS_DEV_ERROR_*; 0 = no error */
+    int32_t line;       /* source location of the failing check */
+    int32_t column;
+    int32_t file;       /* 0: primary file; k: __pas_dev_file_k */
+    double  value;      /* TRUNC/ROUND: the REAL argument */
+} pas_dev_error_cell;
+/* Returns only when code is PAS_DEV_ERROR_NONE. file is the string the
+ * cell's file index names, or NULL (primary file, or not found). */
+void  pas_dev_error_report(const pas_dev_error_cell *cell, const char *file);
+/* The module global holding file index `file` ("__pas_dev_file_<k>") into
+ * buf; false when the index names no file (0 or negative). */
+_Bool pas_dev_error_file_symbol(int32_t file, char *buf, size_t size);
+
 /* ---- IBM never-trapping 16-bit arithmetic (overflow_ok.c) ----
  * For programs that declare these EXTERN as the manual (11-21) says; an
  * undeclared call is lowered inline. Only the low 16 bits of a and b are
@@ -365,7 +415,8 @@ void  pas_case_error(int64_t value, int32_t value_unsigned,
                      int32_t line, int32_t column) __attribute__((noreturn));
 
 void  pas_subrange_error(int64_t value, int32_t value_unsigned,
-                         int64_t lo, int64_t hi) __attribute__((noreturn));
+                         int64_t lo, int64_t hi,
+                         int32_t line, int32_t column) __attribute__((noreturn));
 
 /* ---- set constructor elements outside 0..255 (set_element.c) ---- */
 

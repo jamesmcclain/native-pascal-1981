@@ -50,7 +50,7 @@ double pas_int64_to_double(long long value)
 void pas_conversion_error(int32_t kind, double value, int32_t line, int32_t column)
 {
     fflush(stdout);
-    fprintf(stderr, "runtime error: %s result out of INTEGER range at line %" PRId32 " column %" PRId32, kind ? "ROUND" : "TRUNC", line, column);
+    fprintf(stderr, "runtime error: %s result out of INTEGER range at line %" PRId32 " column %" PRId32 "%s", kind ? "ROUND" : "TRUNC", line, column, pas_diag_where());
     /* A NaN's sign bit depends on how it was produced (and on -O). */
     if (isnan(value))
         fprintf(stderr, " (value=NaN)\n");

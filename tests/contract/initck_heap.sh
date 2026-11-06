@@ -444,4 +444,32 @@ expect_boundary super-real 'heap storage'
 # (A whole heap aggregate cannot reach READ/WRITE here: only TEXT files and
 # scalar/string items are supported, and the typechecker rejects the rest.)
 
+# --- Leaf cap: no frame-sized shadow for a huge referent (NEW-9). ---
+# A referent (or SUPER element) above 65536 leaves is untracked under
+# INITCK+ and INITCK- alike: no lookup, no registration and no per-site
+# fallback slot, which used to be as large as the object (2 GiB here).
+cp tests/contract/fixtures/initck_heap/huge-ir.pas "$work/huge-ir.pas"
+sed 's/{\$INITCK+}/{$INITCK-}/' "$work/huge-ir.pas" > "$work/huge-ir-off.pas"
+for twin in huge-ir huge-ir-off; do
+  bin/pascal1981 --dialect extended -O0 -S "$work/$twin.pas" -o "$work/$twin.ll"
+  python3 tests/contract/fixtures/initck_heap/huge-ir.py "$work/$twin.ll"
+done
+# One leaf over the cap is the heap storage boundary; at the cap the
+# referent is still tracked.
+cp tests/contract/fixtures/initck_heap/cap-over.pas "$work/cap-over.pas"
+expect_boundary cap-over 'heap storage'
+cp tests/contract/fixtures/initck_heap/cap-at.pas "$work/cap-at.pas"
+expect_fail cap-at 'z\n' "runtime error: INITCK uninitialized component p^[256][255] at $(at cap-at 10 'p^[256][255]')"
+# A 32 MiB referent runs in a memory-capped process (each lookup site used
+# to reserve 32 MiB of stack and overflowed it).
+cp tests/contract/fixtures/initck_heap/big-ok.pas "$work/big-ok.pas"
+printf 'k\n26 bz\n' > "$work/big-ok.expected"
+for opt in 0 2; do
+  bin/pascal1981 --dialect extended -O"$opt" "$work/big-ok.pas" -o "$work/big-ok" 2> "$work/err"
+  test ! -s "$work/err"
+  (ulimit -v 524288; "$work/big-ok") > "$work/actual" 2> "$work/err"
+  diff -u "$work/big-ok.expected" "$work/actual"
+  test ! -s "$work/err"
+done
+
 echo 'PASS: INITCK pointers and heap storage'

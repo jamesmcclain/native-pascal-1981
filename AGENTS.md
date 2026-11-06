@@ -25,8 +25,8 @@ pathological.
 ## Know what the checks cover
 
 The checking switches (`$INITCK`, `$MATHCK`, `$RANGECK`, `$INDEXCK`,
-`$NILCK`) each cover a stated slice of the language. They are not
-whole-program protection.
+`$NILCK`, `$STACKCK`) each cover a stated slice of the language. They are
+not whole-program protection.
 
 - For example, INITCK host enforcement covers supported scalar locals,
   formals and results, fixed aggregates, typed pointers, and tracked
@@ -52,7 +52,7 @@ Use the notes' "Checklist before committing Pascal in this tree".
 ## GPU kernels need `{$MATHCK-}` for integer arithmetic
 
 Integer overflow checking (`$MATHCK`) is on by default. NVPTX code cannot
-report a run-time error. Thus, in DEVICE code compiled for NVPTX, each
+stop at a failing MATHCK check. Thus, in DEVICE code compiled for NVPTX, each
 integer operation that MATHCK would check is a compile-time error:
 
     MATHCK unsupported boundary: DEVICE arithmetic at line L column C
@@ -62,3 +62,8 @@ The operations are `+ - * DIV MOD`, unary `-`, `SUCC`, `PRED`, `ABS` and
 then unchecked and wraps. CPU (serial) DEVICE code is checked like host
 code. See
 [GPU kernels and `$MATHCK`](docs/dialect_notes.md#gpu-nvptx-kernels-need-mathck--for-integer-arithmetic-extended).
+
+`TRUNC`/`ROUND` stay checked on NVPTX. A failure is recorded in the
+[device error channel](docs/dialect_notes.md#nvptx-device-error-channel-extended),
+and the program fails with the host diagnostic after the launch. A new NVPTX
+run-time check must report through this channel.

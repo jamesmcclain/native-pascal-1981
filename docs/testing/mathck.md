@@ -20,6 +20,7 @@ in the dialect notes, not from earlier compiler output.
 | FOR stops at the final value without MATHCK | `mathck_for_endpoints.sh` | [FOR endpoints](#for-endpoint-termination) |
 | DIV/MOD zero divisor and MIN/-1, both settings, no LLVM UB | `mathck_divmod_safety.sh` | [DIV/MOD safety](#scalar-divmod-safety-prerequisite) |
 | Constant folding: truncating DIV/MOD, exact fit, constant zero divisor | `mathck_constant_folding.sh` | [constant folding](#constant-divmod-folding-prerequisite) |
+| The two constant folders agree on shadowed names | `const_fold_shadowing.sh` | [constant folding](#constant-divmod-folding-prerequisite) |
 | MATHCK-sensitive arithmetic in the compiler sources and pasboot | `mathck_bootstrap_audit.sh` | [bootstrap audit](#bootstrapself-hosting-arithmetic-audit) |
 | Per-operation `mathck`/`op_location` snapshots in the AST | `mathck_metadata.sh` | [metadata](#per-operation-mathck-metadata) |
 | Scalar `+ - * DIV` and negation at every width, trap vs. wrap, constants | `mathck_scalar.sh` | [overflow](#mathck-overflow-enforcement), [fixtures](#mathck-scalar-fixtures) |
@@ -173,6 +174,15 @@ by CASE labels and array bounds, and test zero rejection in the typechecker
 and codegen independently. The source CONST/CASE/bound grammar does not admit
 binary expressions, and these tests do not broaden it.
 
+`./tests/contract/const_fold_shadowing.sh` (in `make test`) runs the
+typechecker's and codegen's `FoldConstInt` side by side on names reached
+through scopes. The names are a CONST hidden by a VAR, parameter, FOR
+variable, WITH field, routine or deeper CONST, enumeration members, the
+predeclared maxima, and user routines spelled like ORD, CHR, SUCC, PRED, ABS,
+SQR, BYWORD, HIBYTE or LOBYTE, in general and constant expressions. Each
+probe's typechecker tag and codegen IR must both match the declared answer.
+Each program's output must match a hand-derived expectation at O0 and O2.
+
 The fixtures are in `tests/contract/fixtures/mathck`: `constfold_twins.pas/.out` (each row
 folded as a constant and computed at run time; both dialects, the suite
 prepends either setting), `constfold_zero.pas/.err` (a template for the 16
@@ -323,7 +333,7 @@ MATHCK- O0 IR has no overflow intrinsic, and the MATHCK+ program with its
 snapshots stripped (a legacy AST) wraps when linked. CHAR, BOOLEAN and
 enumeration SUCC/PRED are RANGECK's under either MATHCK setting: stepping
 past the type's last or first value fails with the subrange diagnostic
-(`value 3 is outside subrange 0..2`). The result has the argument's type,
+(`value 3 is outside subrange 0..2 at line L column C`, at the call). The result has the argument's type,
 so a subrange variable, designator or user-function result argument (or a
 nested builtin SUCC/PRED of one) is checked against its declared bounds at
 the call under RANGECK+, before result use; a subrange at its host's extreme
@@ -494,8 +504,9 @@ operator or function-name token. Zero divisors fail under MATHCK- too, and the
 overflow cases run to completion there. RANGECK store and SUCC/PRED domain
 failures, INDEXCK bounds, INITCK reads and TRUNC failures are run beside them
 and must keep their own texts, never the MATHCK stem. INDEXCK bounds failures
-report the first index-expression token; existing subrange RANGECK messages
-remain unlocated ([contract](../dialect_notes.md#mathck-runtime-diagnostics)).
+report the first index-expression token; subrange RANGECK messages report
+the store's statement or the SUCC/PRED call
+([contract](../dialect_notes.md#mathck-runtime-diagnostics)).
 
 The fixtures are in `tests/contract/fixtures/mathck`. `diag.pas` holds one failing statement
 per stdin case (cases 0–6 MATHCK, 7–10 the other checks), and the suite

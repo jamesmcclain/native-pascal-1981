@@ -1,0 +1,28 @@
+(*$INCLUDE:'uplevel_units.api.inc'*)
+IMPLEMENTATION OF uplevelapi;
+FUNCTION SumCells(c: PCells; n: INTEGER): INTEGER;
+VAR i, t: INTEGER;
+  PROCEDURE Add;
+  BEGIN
+    t := t + c^[i];
+  END;
+BEGIN
+  t := 0;
+  FOR i := 1 TO n DO Add;
+  SumCells := t;
+END;
+PROCEDURE Scale(c: PCells; n, f: INTEGER);
+VAR i: INTEGER;
+  PROCEDURE One;
+    PROCEDURE Twice;
+    BEGIN
+      c^[i] := c^[i] * f;
+    END;
+  BEGIN
+    Twice;
+    Twice;
+  END;
+BEGIN
+  FOR i := 1 TO n DO One;
+END;
+BEGIN END.

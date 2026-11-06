@@ -8,7 +8,7 @@ USES jsonutil;
 FUNCTION cJSON_Parse(val: ADRMEM): ADRMEM [C];
 FUNCTION cJSON_GetArraySize(arr: ADRMEM): CINT [C];
 FUNCTION cJSON_GetArrayItem(arr: ADRMEM; index: CINT): ADRMEM [C];
-FUNCTION cJSON_GetObjectItem(obj: ADRMEM; key: ADRMEM): ADRMEM [C];
+FUNCTION cJSON_GetObjectItemCaseSensitive(obj: ADRMEM; key: ADRMEM): ADRMEM [C];
 FUNCTION cJSON_CreateObject: ADRMEM [C];
 FUNCTION cJSON_CreateArray: ADRMEM [C];
 FUNCTION cJSON_CreateString(val: ADRMEM): ADRMEM [C];
@@ -63,9 +63,13 @@ TYPE
       captured by the lexer and carried on tokens as optional JSON fields,
       read back here so CreateTriviaNode can relay them onto AST nodes. }
     has_leading_comment: BOOLEAN;
-    leading_comment: Str255;
+    leading_comments: ADRMEM; { the lexer's array of comment strings }
     has_trailing_comment: BOOLEAN;
     trailing_comment: Str255;
+    { The token's source file as a C string: NIL for the primary file, else
+      the lexer's `file' field (the $INCLUDE path as written). Consecutive
+      tokens of one file share one string. }
+    file_name: ADRMEM;
   END;
   PToken = ^Token;
   TokenBufArray = ARRAY [0..32000] OF Token;
@@ -87,17 +91,20 @@ FUNCTION CurValueReal: REAL;
 FUNCTION CurValueStr: Str255;
 FUNCTION CurIndexCk: BOOLEAN;
 FUNCTION CurRangeCk: BOOLEAN;
+FUNCTION CurStackCk: BOOLEAN;
 FUNCTION CurHasUnroll: BOOLEAN;
 FUNCTION CurUnrollVal: INTEGER;
 FUNCTION BuildMetaFlagsNode: ADRMEM;
 PROCEDURE RelayTokenTrivia;
 FUNCTION CurLocation: ADRMEM;
+FUNCTION TokLocation(tok: PToken): ADRMEM;
 FUNCTION CreateTriviaNode(type_name: Str255): ADRMEM;
+FUNCTION CreateLeadTriviaNode(type_name: Str255): ADRMEM;
 PROCEDURE PinTrailingCommentTarget(node: ADRMEM);
-FUNCTION StrToIntVal(s: Str255): INTEGER;
-FUNCTION StrToRealVal(s: Str255): REAL;
+FUNCTION CurLabelKey: INTEGER;
 FUNCTION StringEqual(s1, s2: Str255): BOOLEAN;
 FUNCTION UpperStr(s: Str255): Str255;
+PROCEDURE ParseFail(msg: Str255);
 PROCEDURE Expect(k: Str255);
 FUNCTION Match(k: Str255): BOOLEAN;
 PROCEDURE EnterExprLevel;

@@ -1,0 +1,17 @@
+Type checking failed:
+Identifier already declared in this scope: Done at line 9 column 3
+Identifier already declared in this scope: K at line 13 column 3
+Identifier already declared in this scope: T at line 16 column 3
+Identifier already declared in this scope: RED at line 18 column 3
+Identifier already declared in this scope: hue at line 19 column 3
+Identifier already declared in this scope: w at line 21 column 3
+Identifier already declared in this scope: A at line 22 column 3
+Identifier already declared in this scope: Colour at line 23 column 3
+Identifier already declared in this scope: green at line 24 column 3
+Identifier already declared in this scope: LAB at line 25 column 3
+Identifier already declared in this scope: p at line 29 column 11
+Identifier already declared in this scope: r at line 37 column 11
+Identifier already declared in this scope: X at line 41 column 10
+Identifier already declared in this scope: x at line 44 column 3
+Identifier already declared in this scope: X2 at line 46 column 3
+Identifier already declared in this scope: Q at line 51 column 11

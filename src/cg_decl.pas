@@ -35,6 +35,55 @@ BEGIN
     LLVMAddTargetDependentFunctionAttr(fn, MakeCStr('target-features'), target_features_cstr);
 END;
 
+PROCEDURE ApplyStackckAttrs(fn, node: ADRMEM);
+{ STACKCK+ on a host function body: "probe-stack"="inline-asm" makes the
+  backend touch every page of a frame (prologue and dynamic allocas) while
+  reserving it, as clang's -fstack-clash-protection does, so no frame can
+  jump over the guard area below the stack -- exhaustion faults at the
+  first page past the limit, before the body runs. The snapshot is the
+  `stackck' field the parser records at the routine's (or the program's or
+  unit's) name token; a legacy AST without it opts out. NVPTX has no host
+  stack or reporter: an explicit, documented boundary. }
+BEGIN
+  IF is_nvptx_device THEN RETURN;
+  IF NOT GetBool(node, 'stackck') THEN RETURN;
+  LLVMAddTargetDependentFunctionAttr(fn, MakeCStr('probe-stack'), MakeCStr('inline-asm'));
+  stackck_used := TRUE;
+END;
+
+PROCEDURE EmitStackckCtor;
+{ When any function of this compiland is probed, register the runtime
+  reporter (runtime/stackck.c; idempotent) as a module constructor, so it is
+  installed before main's own probed prologue -- which, once a large
+  routine is inlined into it, can itself exhaust the stack -- and no matter
+  which compiland's code runs first. It turns the guard fault into the
+  STACKCK diagnostic. An llvm.global_ctors entry is the struct (i32
+  priority, ptr function, ptr data); 7 is LLVMAppendingLinkage. }
+VAR
+  fnty, fn, elems, entry_ty, vals, entry, arr, gv: ADRMEM;
+BEGIN
+  IF NOT stackck_used THEN RETURN;
+  fnty := LLVMFunctionType(voidty, AllocPtrArray(0), 0, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_stackck_init'));
+  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr('pas_stackck_init'), fnty);
+  elems := AllocPtrArray(3);
+  SetPtrArrayElem(elems, 0, i32ty);
+  SetPtrArrayElem(elems, 1, i8ptrty);
+  SetPtrArrayElem(elems, 2, i8ptrty);
+  entry_ty := LLVMStructTypeInContext(ctx, elems, 3, 0);
+  vals := AllocPtrArray(3);
+  SetPtrArrayElem(vals, 0, LLVMConstInt(i32ty, 65535, 0));
+  SetPtrArrayElem(vals, 1, fn);
+  SetPtrArrayElem(vals, 2, LLVMConstPointerNull(i8ptrty));
+  entry := LLVMConstStructInContext(ctx, vals, 3, 0);
+  vals := AllocPtrArray(1);
+  SetPtrArrayElem(vals, 0, entry);
+  arr := LLVMConstArray(entry_ty, vals, 1);
+  gv := LLVMAddGlobal(modl, LLVMArrayType(entry_ty, 1), MakeCStr('llvm.global_ctors'));
+  LLVMSetInitializer(gv, arr);
+  LLVMSetLinkage(gv, 7);
+END;
+
 PROCEDURE BeginTypeSection(decls_arr: ADRMEM; first: INTEGER32);
 { Record the TYPE section that starts at decls_arr[first] -- the run of
   consecutive TypeDecls -- so a pointer type in it can name a type the
@@ -140,7 +189,7 @@ BEGIN
   BEGIN
     nm := UpperStr(GetStr(node, 'name'));
     args := GetObj(node, 'args');
-    IF nm = 'BYWORD' THEN ConstExprIsWord := TRUE
+    IF (nm = 'BYWORD') OR (nm = 'WRD') THEN ConstExprIsWord := TRUE
     ELSE IF ((nm = 'ORD') OR (nm = 'SUCC') OR (nm = 'PRED')) AND (ArrSize(args) = 1) THEN
       ConstExprIsWord := ConstExprIsWord(ArrItem(args, 0));
   END;
@@ -291,8 +340,7 @@ BEGIN
     len := ORD(uname[0]);
     FOR j := 1 TO len DO
       IF (uname[j] >= 'A') AND (uname[j] <= 'Z') THEN uname[j] := CHR(ORD(uname[j]) + 32);
-    init_name := 'pascal_init_';
-    CONCAT(init_name, uname);
+    init_name := BoundedSymbol('pascal_init_', uname);
     init_fnty := LLVMFunctionType(i32ty, NIL, 0, 0);
     init_fn := LLVMAddFunction(modl, MakeCStr(init_name), init_fnty);
     callres := LLVMBuildCall2(builder, init_fnty, init_fn, NIL, 0, MakeCStr(''));
@@ -325,6 +373,7 @@ BEGIN
     routines[nroutines].is_func := routines[ri].is_func;
     routines[nroutines].fn := routines[ri].fn;
     routines[nroutines].fnty := routines[ri].fnty;
+    routines[nroutines].env_depth := routines[ri].env_depth;
     routines[nroutines].ret_tk := routines[ri].ret_tk;
     routines[nroutines].nparams := routines[ri].nparams;
     FOR i := 1 TO routines[ri].nparams DO
@@ -527,25 +576,105 @@ BEGIN
   LLVMBuildStore(builder, LLVMBuildBitCast(builder, fcb, i8ptrty, MakeCStr('')), slot);
 END;
 
-PROCEDURE RegisterPredeclaredFiles;
-{ Unconditionally declares INPUT/OUTPUT as TEXT-file symbols for the main
-  PROGRAM, mirroring the reference's _register_predeclared_files -- without
-  this, LoadFileFcbPtr('INPUT') aborts as undefined for any program that
-  doesn't itself write VAR INPUT: TEXT, which is exactly the case READSET's
-  2-argument implicit-INPUT form needs to cover. A no-op if the program
-  already declared its own INPUT/OUTPUT (e.g. as an explicit heading
-  parameter with its own VAR). }
+FUNCTION DeclaresGlobalName(decls: ADRMEM; uname: Str255): BOOLEAN;
+{ TRUE when the PROGRAM's own top-level declarations name uname (a
+  variable, constant or routine), which then hides a predeclared file. }
+VAR
+  i, j: INTEGER32;
+  decl, names: ADRMEM;
+  nt: Str255;
+  found: BOOLEAN;
 BEGIN
-  IF LookupSym('INPUT') = 0 THEN
+  found := FALSE;
+  FOR i := 0 TO ArrSize(decls) - 1 DO
+  BEGIN
+    decl := ArrItem(decls, i);
+    nt := NodeType(decl);
+    IF nt = 'VarDecl' THEN
+    BEGIN
+      names := GetObj(decl, 'names');
+      FOR j := 0 TO ArrSize(names) - 1 DO
+        IF UpperStr(CStrToStr255(cJSON_GetStringValue(ArrItem(names, j)))) = uname THEN
+          found := TRUE;
+    END
+    ELSE IF (nt = 'ConstDecl') OR (nt = 'ProcDecl') OR (nt = 'FuncDecl') THEN
+      IF UpperStr(GetStr(decl, 'name')) = uname THEN found := TRUE;
+  END;
+  DeclaresGlobalName := found;
+END;
+
+PROCEDURE DeclarePredeclaredFiles(decls: ADRMEM; VAR in_si, out_si: INTEGER32);
+{ Declares INPUT/OUTPUT as TEXT-file globals of the main PROGRAM, mirroring
+  the reference's _register_predeclared_files, unless the program declares
+  the name itself at its top level (e.g. a heading parameter with its own
+  VAR); in_si/out_si are then 0. This runs before the program's own
+  declarations, so routine bodies, lowered with them, can name the files
+  (READ(INPUT, x) in a procedure); the typechecker defines the pair at the
+  same point (tc_decl's DeclarePredeclaredFiles). Their storage is set up
+  in the main body by InitPredeclaredFiles. Without them,
+  LoadFileFcbPtr('INPUT') would abort for READSET's 2-argument implicit
+  form too. }
+BEGIN
+  in_si := 0;
+  out_si := 0;
+  IF NOT DeclaresGlobalName(decls, 'INPUT') THEN
   BEGIN
     DeclareVar('INPUT', EnsureTextType);
-    InitFileStorage(symbols[nsymbols].llvm_val, TK_CHAR, 1, 'INPUT');
+    in_si := nsymbols;
   END;
-  IF LookupSym('OUTPUT') = 0 THEN
+  IF NOT DeclaresGlobalName(decls, 'OUTPUT') THEN
   BEGIN
     DeclareVar('OUTPUT', EnsureTextType);
-    InitFileStorage(symbols[nsymbols].llvm_val, TK_CHAR, 1, 'OUTPUT');
+    out_si := nsymbols;
   END;
+END;
+
+PROCEDURE InitPredeclaredFiles(in_si, out_si: INTEGER32);
+{ Allocates the predeclared files' FCBs in the main body and attaches them
+  to stdin/stdout there, before the program's first statement: a program
+  can name them directly (EOF(INPUT), READ(INPUT, x), WRITELN(OUTPUT, x),
+  INPUT^, a TEXT actual), and those paths use the FCB without
+  GetDefaultInputFcbPtr's lazy attach. A user's own INPUT or OUTPUT is
+  passed as NIL and keeps its old behavior. The runtime keeps the attached
+  INPUT FCB and the bare READ/EOF/EOLN readers on one character stream
+  (pas_std_input_sync). }
+VAR
+  in_fcb, out_fcb, call_args, discard, handle: ADRMEM;
+BEGIN
+  in_fcb := LLVMConstPointerNull(LLVMPointerType(filefcbty, 0));
+  out_fcb := in_fcb;
+  IF in_si <> 0 THEN
+  BEGIN
+    InitFileStorage(symbols[in_si].llvm_val, TK_CHAR, 1, 'INPUT');
+    handle := LLVMBuildLoad2(builder, i8ptrty, symbols[in_si].llvm_val, MakeCStr(''));
+    in_fcb := LLVMBuildBitCast(builder, handle, LLVMPointerType(filefcbty, 0), MakeCStr(''));
+  END;
+  IF out_si <> 0 THEN
+  BEGIN
+    InitFileStorage(symbols[out_si].llvm_val, TK_CHAR, 1, 'OUTPUT');
+    handle := LLVMBuildLoad2(builder, i8ptrty, symbols[out_si].llvm_val, MakeCStr(''));
+    out_fcb := LLVMBuildBitCast(builder, handle, LLVMPointerType(filefcbty, 0), MakeCStr(''));
+  END;
+  call_args := AllocPtrArray(2);
+  SetPtrArrayElem(call_args, 0, in_fcb);
+  SetPtrArrayElem(call_args, 1, out_fcb);
+  discard := LLVMBuildCall2(builder, file_attach_std_fnty, file_attach_std_fn,
+                            call_args, 2, MakeCStr(''));
+END;
+
+FUNCTION HasPublicAttribute(decl: ADRMEM): BOOLEAN;
+{ [PUBLIC] among a declaration's attributes (names are canonical
+  uppercase in the AST, as for [C]). }
+VAR
+  attrs_arr: ADRMEM;
+  i: INTEGER32;
+  found: BOOLEAN;
+BEGIN
+  attrs_arr := GetObj(decl, 'attributes');
+  found := FALSE;
+  FOR i := 0 TO ArrSize(attrs_arr) - 1 DO
+    IF GetStr(ArrItem(attrs_arr, i), 'name') = 'PUBLIC' THEN found := TRUE;
+  HasPublicAttribute := found;
 END;
 
 FUNCTION VarResidenceAddressSpace(decl: ADRMEM): INTEGER;
@@ -606,6 +735,12 @@ BEGIN
   BEGIN
     vname := CStrToStr255(cJSON_GetStringValue(ArrItem(names, i)));
     DeclareVarInSpace(vname, tk, address_space);
+    { [PUBLIC] gives private IMPLEMENTATION storage back its external
+      symbol (IBM Pascal, Aug. 1981, 7-5); DeclareVarInSpace made it
+      internal. }
+    IF defining_implementation AND (NOT in_local_scope) AND
+       (NOT lowering_spliced_interface) AND HasPublicAttribute(decl) THEN
+      LLVMSetLinkage(symbols[LookupSym(vname)].llvm_val, 0); { external }
     IF TypeKind(tk) = TK_FILE THEN
       InitFileStorage(symbols[nsymbols].llvm_val, types[tk].elem_tid, types[tk].hi, vname);
   END;
@@ -769,6 +904,22 @@ BEGIN
 END;
 
 
+FUNCTION IsConformantStringType(te: ADRMEM): BOOLEAN;
+{ te names the predeclared STRING or LSTRING itself: no capacity, and no
+  user TYPE of the name shadowing it (the typechecker's SuperStringKind). }
+VAR
+  unm: Str255;
+BEGIN
+  IsConformantStringType := FALSE;
+  IF NodeType(te) = 'NamedType' THEN
+    IF GetObjOrNil(te, 'param') = NIL THEN
+      IF LookupNamedType(GetStr(te, 'name')) = 0 THEN
+      BEGIN
+        unm := UpperStr(GetStr(te, 'name'));
+        IsConformantStringType := (unm = 'STRING') OR (unm = 'LSTRING');
+      END;
+END;
+
 PROCEDURE FlattenParams(params_arr: ADRMEM; VAR n: INTEGER32; VAR names: ParamNameArr;
                          VAR tks: ParamTkArr; VAR isvar: ParamVarArr; VAR isconst: ParamVarArr;
                          VAR needs_copy: ParamVarArr);
@@ -798,6 +949,16 @@ BEGIN
       CONST formal accepts an actual without storage (see param_is_const). }
     is_const := (GetStr(param, 'mode') = 'CONST') OR (GetStr(param, 'mode') = 'CONSTS');
     is_v := is_const OR (GetStr(param, 'mode') = 'VAR') OR (GetStr(param, 'mode') = 'VARS');
+    { A reference formal of the super-array type STRING or LSTRING itself
+      is conformant (NEW-29): it takes any STRING(n)/LSTRING(n) actual and
+      receives the actual's upper bound with its data. Elsewhere a bare
+      name keeps its capacity-256 default. }
+    IF is_v AND IsConformantStringType(GetObj(param, 'type_expr')) THEN
+    BEGIN
+      IF is_device_compiland THEN
+        AbortWith('codegen: super-array STRING/LSTRING formals are not permitted in DEVICE code');
+      tk := BorrowedStringTid(TypeKind(tk) = TK_LSTRING);
+    END;
     { A plain value-mode ARRAY/RECORD/LSTRING/STRING param: too large to
       pass as a raw LLVM value the way a scalar is, so it is passed as a
       pointer too (see needs_copy at the routine-entry/call-site level),
@@ -1249,6 +1410,9 @@ VAR
   prev_n: INTEGER32;
   sig_ok: BOOLEAN;
   initck_any: BOOLEAN;
+  env_depth: INTEGER32;
+  env_param: ADRMEM;
+  view_gep: ADRMEM;
 BEGIN
   name := GetStr(decl, 'name');
   IF HasCAttribute(decl) AND (NOT FeaturesAreExtended(active_features)) THEN
@@ -1390,6 +1554,11 @@ BEGIN
             ClassifyAggregate(ret_tk, ret_class, ret_npieces, ret_pk, ret_pb);
             IF ret_class = SYSV_CLASS_MEMORY THEN ret_llvm_ty := voidty
             ELSE ret_llvm_ty := SysVCoercedRetType(ret_npieces, ret_pk, ret_pb);
+          END
+          ELSE IF LargeAggregateTy(LLVMTypeForTk(ret_tk)) THEN
+          BEGIN
+            ret_class := SYSV_CLASS_MEMORY;
+            ret_llvm_ty := voidty;
           END;
         END;
       END;
@@ -1419,6 +1588,9 @@ BEGIN
       FOR i := 1 TO n DO
         IF ExposesHostDescriptor(tks[i]) THEN
           AbortWith2('codegen: a super-array descriptor cannot cross a [C] routine signature: ', name);
+      FOR i := 1 TO n DO
+        IF IsBorrowedString(tks[i]) THEN
+          AbortWith2('codegen: a super-array STRING/LSTRING formal cannot cross a [C] routine signature: ', name);
       { A bare VECTOR can never cross a [C] signature: the SysV
         vector-register classes (SSEUP) are not implemented, and silently
         routing a vector through MEMORY byval would disagree with the ABI
@@ -1451,6 +1623,14 @@ BEGIN
           ClassifyAggregate(ret_tk, ret_class, ret_npieces, ret_pk, ret_pb);
           IF ret_class = SYSV_CLASS_MEMORY THEN ret_llvm_ty := voidty
           ELSE ret_llvm_ty := SysVCoercedRetType(ret_npieces, ret_pk, ret_pb);
+        END
+        ELSE IF LargeAggregateTy(LLVMTypeForTk(ret_tk)) THEN
+        BEGIN
+          { NVPTX returns an aggregate as one first-class value in its
+            .param buffer; a large one (which the NVPTX backend cannot
+            lower) goes through a hidden sret pointer, as on the host. }
+          ret_class := SYSV_CLASS_MEMORY;
+          ret_llvm_ty := voidty;
         END;
       END;
 
@@ -1460,7 +1640,7 @@ BEGIN
       parameter index, and n_llvm the final count. Two slots per Pascal
       parameter is the worst case, plus one for an sret hidden pointer
       (which also seeds llvm_idx at 1 instead of 0). }
-    param_llvm_types := AllocPtrArray(n * 2 + 1);
+    param_llvm_types := AllocPtrArray(n * 2 + 2);
     llvm_idx := 0;
     IF ret_class = SYSV_CLASS_MEMORY THEN
     BEGIN
@@ -1515,6 +1695,18 @@ BEGIN
         llvm_idx := llvm_idx + 1;
       END;
     END;
+    { A host routine nested in another routine's body takes that frame's
+      environment, its static link, as a hidden LAST parameter, so every
+      index computed above is unchanged (see cg_util's up-level access).
+      DEVICE, [C] and EXTERN routines keep their declared signature. }
+    env_depth := 0;
+    IF (frame_top > 0) AND (NOT is_device_compiland) AND (NOT is_c) AND
+       (NOT IsExternDirectiveDecl(decl)) AND (NOT IsCForeignDecl(decl)) THEN
+    BEGIN
+      env_depth := frame_top;
+      SetPtrArrayElem(param_llvm_types, llvm_idx, i8ptrty);
+      llvm_idx := llvm_idx + 1;
+    END;
     n_llvm := llvm_idx;
 
     { A handful of C runtime/libm functions (malloc, free, printf, ...) are
@@ -1558,6 +1750,15 @@ BEGIN
       fnty := LLVMFunctionType(ret_llvm_ty, param_llvm_types, n_llvm, vararg_flag);
       fn := LLVMAddFunction(modl, MakeCStr(name), fnty);
       ApplyTargetAttrs(fn);
+      { A routine an IMPLEMENTATION declares that is not a constituent of
+        its INTERFACE (those reuse the spliced placeholder above) is
+        private to the unit: internal linkage. EXTERN declarations name
+        code elsewhere, and a [C] or [PUBLIC] routine keeps its symbol. }
+      IF defining_implementation AND (NOT lowering_spliced_interface) AND
+         (NOT is_c) AND (NOT HasCAttribute(decl)) AND
+         (NOT HasPublicAttribute(decl)) AND
+         (NOT IsExternDirectiveDecl(decl)) AND (NOT is_exported_entry) THEN
+        LLVMSetLinkage(fn, 8); { LLVMInternalLinkage }
     END;
 
     { Reusing an init-declared function means the LLVM signature that call
@@ -1595,6 +1796,7 @@ BEGIN
     routines[ridx].is_extern := IsExternDirectiveDecl(decl) OR IsCForeignDecl(decl);
     routines[ridx].is_forward := IsForwardDirectiveDecl(decl);
     routines[ridx].is_vararg := is_vararg;
+    routines[ridx].env_depth := env_depth;
 
     { Attach byval(ty)/align (and sret(ty)/noalias/align for a MEMORY-class
       return) at the DECLARATION side too (not just the call site below) --
@@ -1696,7 +1898,12 @@ BEGIN
     entry_bb2 := LLVMAppendBasicBlockInContext(ctx, fn, MakeCStr('entry'));
     LLVMPositionBuilderAtEnd(builder, entry_bb2);
     cur_fn := fn;
+    ApplyStackckAttrs(fn, decl);
     PushScope;
+    env_param := NIL;
+    IF routines[ridx].env_depth > 0 THEN
+      env_param := LLVMGetParam(fn, LLVMCountParams(fn) - 1);
+    OpenFrame(fn, name, env_param);
     saved_initck_base := initck_scope_base;
     initck_scope_base := CurScopeBase;
     in_local_scope := TRUE;
@@ -1754,6 +1961,8 @@ BEGIN
       cur_func_name := '';
       cur_func_ret_state := NIL;
     END;
+    IF is_func THEN
+      SetFrameResult(name, ret_tk, cur_func_ret_slot, cur_func_ret_state);
 
     { llvm_idx is the running LLVM parameter index: it starts at 1 instead
       of 0 when a hidden sret result pointer occupies LLVM parameter 0 (see
@@ -1776,7 +1985,25 @@ BEGIN
     BEGIN
       param_val := LLVMGetParam(fn, llvm_idx);
       llvm_idx := llvm_idx + 1;
-      IF isvar[i] THEN
+      IF isvar[i] AND IsBorrowedString(tks[i]) THEN
+      BEGIN
+        { A conformant STRING/LSTRING formal (NEW-29): the incoming pointer
+          addresses the caller's (data, UPPER) pair. The data pointer is
+          the formal's storage; its UPPER stays in the pair, which outlives
+          the call, and is found again through the data pointer. }
+        view_gep := AllocPtrArray(2);
+        SetPtrArrayElem(view_gep, 0, LLVMConstInt(i32ty, 0, 0));
+        SetPtrArrayElem(view_gep, 1, LLVMConstInt(i32ty, 0, 0));
+        palloca := LLVMBuildLoad2(builder, i8ptrty,
+          LLVMBuildGEP2(builder, BorrowedViewTy, param_val, view_gep, 2, MakeCStr('')),
+          MakeCStr('super.data'));
+        view_gep := AllocPtrArray(2);
+        SetPtrArrayElem(view_gep, 0, LLVMConstInt(i32ty, 0, 0));
+        SetPtrArrayElem(view_gep, 1, LLVMConstInt(i32ty, 1, 0));
+        RegisterBorrowed(palloca,
+          LLVMBuildGEP2(builder, BorrowedViewTy, param_val, view_gep, 2, MakeCStr('super.upperp')));
+      END
+      ELSE IF isvar[i] THEN
         palloca := param_val { the incoming pointer already IS the storage }
       ELSE IF needs_copy[i] THEN
       BEGIN
@@ -1862,7 +2089,9 @@ BEGIN
     END;
 
     CodegenDeclList(GetObj(body_blk, 'decls'));
+    capture_suspended := TRUE;
     PrepareInitckLocals(body_blk);
+    capture_suspended := FALSE;
     SetupFunctionLabels(GetObj(body_blk, 'body'));
     CodegenStmtArray(GetObj(body_blk, 'body'));
 
@@ -1901,6 +2130,7 @@ BEGIN
       LLVMBuildRetVoid(builder);
     END;
 
+    CloseFrame;
     PopScope;
     initck_scope_base := saved_initck_base;
     in_local_scope := saved_in_local_scope;
@@ -2038,17 +2268,63 @@ BEGIN
   ELSE ConstIntegerType := TK_INTEGER64;
 END;
 
+FUNCTION SameRealBits(a, b: REAL): BOOLEAN;
+{ a and b are the same REAL CONST value: equal, and a zero has the same
+  sign (-0.0 = 0.0 compares TRUE, but 1.0 / -0.0 is -INF). }
+BEGIN
+  IF a <> b THEN SameRealBits := FALSE
+  ELSE IF a <> 0.0 THEN SameRealBits := TRUE
+  ELSE SameRealBits := (1.0 / a < 0.0) = (1.0 / b < 0.0);
+END;
+
+FUNCTION RealConstValue(node: ADRMEM; VAR r: REAL): BOOLEAN;
+{ The value of a REAL CONST's value: a REAL literal or the name of a REAL
+  CONST, either optionally negated. A negation, not 0.0 - x, so -0.0 keeps
+  its sign. FALSE for any other constant. }
+VAR
+  nt: Str255;
+  ci: INTEGER32;
+BEGIN
+  RealConstValue := FALSE;
+  nt := NodeType(node);
+  IF nt = 'RealLiteral' THEN
+  BEGIN
+    r := GetReal(node, 'value');
+    RealConstValue := TRUE;
+  END
+  ELSE IF nt = 'Identifier' THEN
+  BEGIN
+    ci := LookupConst(GetStr(node, 'name'));
+    IF ci <> 0 THEN
+      IF const_tbl[ci].is_real THEN
+      BEGIN
+        r := const_tbl[ci].rval;
+        RealConstValue := TRUE;
+      END;
+  END
+  ELSE IF (nt = 'UnaryOp') AND (GetStr(node, 'op') = 'MINUS') THEN
+    IF RealConstValue(GetObj(node, 'operand'), r) THEN
+    BEGIN
+      r := -r;
+      RealConstValue := TRUE;
+    END;
+END;
+
 PROCEDURE CodegenConstDecl(decl: ADRMEM);
 { Every CONST this file's own native sources declare is a plain (optionally
   MINUS-negated) integer or REAL literal -- this compile-time-folds and
   remembers the value in `const_tbl`, mirroring the Python reference's
   eval_const_expr/self.constants side table rather than emitting a real LLVM
-  global. }
+  global. A multi-character string CONST (or an alias of one, already
+  rewritten to the literal by the typechecker) is not folded: every
+  reference to it reaches codegen as its StringLiteral (NEW-21), so its
+  entry only claims the name for scoping. }
 VAR
   name: Str255;
   val_node: ADRMEM;
   existing: INTEGER32;
-  is_real, is_char: BOOLEAN;
+  is_real, is_char, is_string: BOOLEAN;
+  old_text: Str255;
   rval: REAL;
   ival: INTEGER64;
   ci: INTEGER32;
@@ -2062,17 +2338,11 @@ BEGIN
   integer_tid := 0;
   rval := 0.0;
   ival := 0;
-  IF NodeType(val_node) = 'RealLiteral' THEN
-  BEGIN
-    is_real := TRUE;
-    rval := GetReal(val_node, 'value');
-  END
-  ELSE IF (NodeType(val_node) = 'UnaryOp') AND (GetStr(val_node, 'op') = 'MINUS')
-      AND (NodeType(GetObj(val_node, 'operand')) = 'RealLiteral') THEN
-  BEGIN
-    is_real := TRUE;
-    rval := 0.0 - GetReal(GetObj(val_node, 'operand'), 'value');
-  END
+  is_string := NodeType(val_node) = 'StringLiteral';
+  IF is_string THEN
+    is_real := FALSE { nothing to fold }
+  ELSE IF RealConstValue(val_node, rval) THEN
+    is_real := TRUE
   ELSE
   BEGIN
     { A CHAR CONST folds to its ordinal like any other, and is_char is what
@@ -2129,13 +2399,20 @@ BEGIN
        (NOT lowering_spliced_interface) THEN
     BEGIN
       IF (const_tbl[existing].is_real <> is_real) OR
+         (const_tbl[existing].is_string <> is_string) OR
          (const_tbl[existing].is_char <> is_char) OR
          (const_tbl[existing].enum_tid <> enum_tid) OR
          (const_tbl[existing].integer_tid <> integer_tid) THEN
         AbortWith2('codegen: conflicting const declaration: ', name);
-      IF is_real THEN
+      IF is_string THEN
       BEGIN
-        IF const_tbl[existing].rval <> rval THEN
+        old_text := GetStr(const_tbl[existing].str_node, 'value');
+        IF old_text <> GetStr(val_node, 'value') THEN
+          AbortWith2('codegen: conflicting const declaration: ', name);
+      END
+      ELSE IF is_real THEN
+      BEGIN
+        IF NOT SameRealBits(const_tbl[existing].rval, rval) THEN
           AbortWith2('codegen: conflicting const declaration: ', name);
       END
       ELSE IF const_tbl[existing].ival <> ival THEN
@@ -2150,6 +2427,11 @@ BEGIN
   const_tbl[nconsts].is_char := is_char;
   const_tbl[nconsts].enum_tid := enum_tid;
   const_tbl[nconsts].integer_tid := integer_tid;
+  const_tbl[nconsts].int_const := NOT is_real AND NOT is_string AND
+    ConstValueIsIntConst(val_node);
+  const_tbl[nconsts].is_string := is_string;
+  const_tbl[nconsts].str_node := NIL;
+  IF is_string THEN const_tbl[nconsts].str_node := val_node;
   IF is_real THEN const_tbl[nconsts].rval := rval
   ELSE const_tbl[nconsts].ival := ival;
 END;
@@ -2157,7 +2439,9 @@ END;
 PROCEDURE CodegenDecl(decl: ADRMEM);
 VAR
   nt: Str255;
+  saved_line, saved_column: INTEGER32;
 BEGIN
+  EnterLayoutSite(decl, saved_line, saved_column);
   nt := NodeType(decl);
   IF nt = 'VarDecl' THEN CodegenVarDecl(decl)
   ELSE IF nt = 'TypeDecl' THEN CodegenTypeDecl(decl)
@@ -2172,6 +2456,7 @@ BEGIN
     BEGIN END
   ELSE
     AbortWith2('codegen: unhandled declaration kind: ', nt);
+  LeaveLayoutSite(saved_line, saved_column);
 END;
 
 

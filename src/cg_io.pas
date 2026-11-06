@@ -75,7 +75,7 @@ BEGIN
   ELSE
   BEGIN
     IF TypeKind(tid) = TK_STRING THEN
-      len_val := LLVMConstInt(i32ty, types[tid].hi, 0)
+      len_val := StringCapacityValue(tid, addr)
     ELSE
       len_val := LLVMConstInt(i32ty, types[tid].hi - types[tid].lo + 1, 0);
     gep_idx := AllocPtrArray(2);
@@ -130,7 +130,7 @@ END;
 
 FUNCTION GetDefaultInputFcbPtr: ADRMEM;
 { Loads the predeclared INPUT/OUTPUT FCBs (registered unconditionally for
-  every PROGRAM by RegisterPredeclaredFiles) and lazily binds them to real
+  every PROGRAM by DeclarePredeclaredFiles) and lazily binds them to real
   stdin/stdout via pas_file_attach_std, mirroring the reference's
   _file_selector_fcb attach-on-first-use behavior. Returns the INPUT FCB*. }
 VAR
@@ -357,7 +357,7 @@ BEGIN
   ELSE IF TypeKind(tid) = TK_LSTRING THEN
   BEGIN
     buf_i8 := LLVMBuildBitCast(builder, addr, i8ptrty, MakeCStr(''));
-    cap := LLVMConstInt(i32ty, types[tid].hi, 0);
+    cap := StringCapacityValue(tid, addr);
     call_args := AllocPtrArray(2);
     SetPtrArrayElem(call_args, 0, buf_i8);
     SetPtrArrayElem(call_args, 1, cap);
@@ -366,7 +366,7 @@ BEGIN
   ELSE IF TypeKind(tid) = TK_STRING THEN
   BEGIN
     buf_i8 := LLVMBuildBitCast(builder, addr, i8ptrty, MakeCStr(''));
-    cap := LLVMConstInt(i32ty, types[tid].hi, 0);
+    cap := StringCapacityValue(tid, addr);
     call_args := AllocPtrArray(2);
     SetPtrArrayElem(call_args, 0, buf_i8);
     SetPtrArrayElem(call_args, 1, cap);
@@ -431,7 +431,8 @@ BEGIN
     IF types[tid].is_subrange THEN
     BEGIN
       cur_v := LLVMBuildLoad2(builder, LLVMTypeForTk(SubrangeBaseTid(tid)), addr, MakeCStr(''));
-      EmitSubrangeCheck(cur_v, SubrangeBaseTid(tid), tid);
+      { A heading parameter has no source location: unlocated report. }
+      EmitSubrangeCheck(cur_v, SubrangeBaseTid(tid), tid, NIL);
     END;
 END;
 
@@ -578,6 +579,7 @@ VAR
   lstring_capacity: INTEGER32; { the destination's LSTRING capacity when it
     is a selected .LEN or index-zero byte, else -1 }
   lstring_is_length: ADRMEM;
+  lstring_dyncap: ADRMEM; { a conformant LSTRING formal's run-time bound }
 BEGIN
   nargs := ArrSize(args);
   start_idx := 0;
@@ -609,6 +611,7 @@ BEGIN
     dest_state := NIL;
     lstring_capacity := -1;
     lstring_is_length := NIL;
+    lstring_dyncap := NIL;
     IF NodeType(argnode) = 'Identifier' THEN
       dest_symi := LookupSym(GetStr(argnode, 'name'))
     ELSE IF NodeType(argnode) = 'Designator' THEN
@@ -627,6 +630,7 @@ BEGIN
       tid := last_val_tk;
       lstring_capacity := last_desig_lstring_capacity;
       lstring_is_length := last_desig_lstring_is_length;
+      lstring_dyncap := last_desig_lstring_dyncap;
       { A selected tracked leaf is a producer like a direct destination. }
       IF (dest_symi = 0) AND (last_desig_shadow <> NIL) AND InitckTrackedTk(tid) THEN
         dest_state := last_desig_shadow;
@@ -673,6 +677,9 @@ BEGIN
         SetPtrArrayElem(call_args, 0, addr);
         loaded := LLVMBuildCall2(builder, read_int32_fnty, read_int32_fn, call_args, 1, MakeCStr(''));
       END;
+      { The status gates the $RANGECK check of a WORD or INTEGER32
+        subrange (NEW-32) and INITCK, as for INTEGER. }
+      rd_status := loaded;
     END
     ELSE IF TypeKind(tid) = TK_INTEGER64 THEN
     BEGIN
@@ -689,6 +696,9 @@ BEGIN
         SetPtrArrayElem(call_args, 0, addr);
         loaded := LLVMBuildCall2(builder, read_int64_fnty, read_int64_fn, call_args, 1, MakeCStr(''));
       END;
+      { The status gates the $RANGECK check of a WORD or INTEGER32
+        subrange (NEW-32) and INITCK, as for INTEGER. }
+      rd_status := loaded;
     END
     ELSE IF TypeKind(tid) = TK_WORD THEN
     BEGIN
@@ -705,6 +715,9 @@ BEGIN
         SetPtrArrayElem(call_args, 0, addr);
         loaded := LLVMBuildCall2(builder, read_word_fnty, read_word_fn, call_args, 1, MakeCStr(''));
       END;
+      { The status gates the $RANGECK check of a WORD or INTEGER32
+        subrange (NEW-32) and INITCK, as for INTEGER. }
+      rd_status := loaded;
     END
     ELSE IF TypeKind(tid) = TK_REAL THEN
     BEGIN
@@ -742,7 +755,7 @@ BEGIN
     ELSE IF TypeKind(tid) = TK_LSTRING THEN
     BEGIN
       buf_i8 := LLVMBuildBitCast(builder, addr, i8ptrty, MakeCStr(''));
-      cap := LLVMConstInt(i32ty, types[tid].hi, 0);
+      cap := StringCapacityValue(tid, addr);
       IF using_file THEN
       BEGIN
         call_args := AllocPtrArray(3);
@@ -762,7 +775,7 @@ BEGIN
     ELSE IF TypeKind(tid) = TK_STRING THEN
     BEGIN
       buf_i8 := LLVMBuildBitCast(builder, addr, i8ptrty, MakeCStr(''));
-      cap := LLVMConstInt(i32ty, types[tid].hi, 0);
+      cap := StringCapacityValue(tid, addr);
       IF using_file THEN
       BEGIN
         call_args := AllocPtrArray(3);
@@ -890,7 +903,7 @@ BEGIN
       LLVMBuildCondBr(builder, ReadOk(rd_status, rd_ok), chk_bb, cont_bb);
       LLVMPositionBuilderAtEnd(builder, chk_bb);
       cur_v := LLVMBuildLoad2(builder, LLVMTypeForTk(SubrangeBaseTid(tid)), addr, MakeCStr(''));
-      EmitSubrangeCheck(cur_v, SubrangeBaseTid(tid), tid);
+      EmitSubrangeCheck(cur_v, SubrangeBaseTid(tid), tid, NodeDiagLocation(argnode));
       LLVMBuildBr(builder, cont_bb);
       LLVMPositionBuilderAtEnd(builder, cont_bb);
     END;
@@ -903,7 +916,8 @@ BEGIN
       cont_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('read_lengthed'));
       LLVMBuildCondBr(builder, ReadOk(rd_status, rd_ok), chk_bb, cont_bb);
       LLVMPositionBuilderAtEnd(builder, chk_bb);
-      EmitLStringLengthRecheck(addr, lstring_is_length, lstring_capacity, argnode);
+      EmitLStringLengthRecheck(addr, lstring_is_length, lstring_capacity,
+        lstring_dyncap, argnode);
       LLVMBuildBr(builder, cont_bb);
       LLVMPositionBuilderAtEnd(builder, cont_bb);
     END;
@@ -943,7 +957,7 @@ PROCEDURE CodegenReadSet(args: ADRMEM);
   pas_freadset (runtime/fileops.c) -- no runtime changes needed, only this
   call-site wiring, mirroring the reference's builtin_readset. The 2-argument
   form (implicit INPUT) routes through GetDefaultInputFcbPtr, which lazily
-  attaches the predeclared INPUT/OUTPUT FCBs (RegisterPredeclaredFiles) to
+  attaches the predeclared INPUT/OUTPUT FCBs (DeclarePredeclaredFiles) to
   real stdin/stdout via pas_file_attach_std -- mirroring the reference's
   own lazy-attach-on-first-use behavior. }
 VAR
@@ -977,7 +991,7 @@ BEGIN
     AbortWith('codegen: READSET destination must be LSTRING');
   addr := symbols[symi].llvm_val;
   buf_i8 := LLVMBuildBitCast(builder, addr, i8ptrty, MakeCStr(''));
-  cap := LLVMConstInt(i32ty, types[tid].hi, 0);
+  cap := StringCapacityValue(tid, addr);
 
   set_node := ArrItem(args, start_idx + 1);
   IF (NodeType(set_node) = 'SetConstructor') AND

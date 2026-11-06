@@ -1,0 +1,19 @@
+(*$INCLUDE:'unit_super_string.inc'*)
+{ NEW-29: conformant STRING/LSTRING formals across a unit boundary. The
+  interface heading and the implementation agree on the (data, UPPER)
+  pair the formal receives. }
+IMPLEMENTATION OF superstringunit;
+
+PROCEDURE Shout(CONST s: STRING);
+BEGIN
+  WRITELN(s, '! ', UPPER(s));
+END;
+
+PROCEDURE Grow(VAR d: LSTRING; CONST s: STRING);
+BEGIN
+  CONCAT(d, s);
+  WRITELN('grown to ', ORD(d[0]), ' of ', UPPER(d));
+END;
+
+BEGIN
+END.

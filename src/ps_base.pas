@@ -8,7 +8,8 @@ IMPLEMENTATION OF ps_base;
 FUNCTION cJSON_Parse(val: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_GetArraySize(arr: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_GetArrayItem(arr: ADRMEM; index: CINT): ADRMEM [C]; EXTERN;
-FUNCTION cJSON_GetObjectItem(obj: ADRMEM; key: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION cJSON_GetObjectItemCaseSensitive(obj: ADRMEM; key: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION cJSON_DetachItemFromObjectCaseSensitive(obj: ADRMEM; key: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateObject: ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateArray: ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateString(val: ADRMEM): ADRMEM [C]; EXTERN;
@@ -59,9 +60,10 @@ TYPE
     has_unroll: BOOLEAN;
     unroll_val: INTEGER;
     has_leading_comment: BOOLEAN;
-    leading_comment: Str255;
+    leading_comments: ADRMEM; { see ps_base.inc }
     has_trailing_comment: BOOLEAN;
     trailing_comment: Str255;
+    file_name: ADRMEM; { see ps_base.inc }
   END;
 
   PToken = ^Token;
@@ -144,7 +146,7 @@ BEGIN
     ReadBoolFlag := FALSE
   ELSE
   BEGIN
-    item := cJSON_GetObjectItem(flags_json, MakeCStr(key_str));
+    item := cJSON_GetObjectItemCaseSensitive(flags_json, MakeCStr(key_str));
     IF item = NIL THEN
       ReadBoolFlag := FALSE
     ELSE
@@ -160,7 +162,9 @@ VAR
   p_in, p_out, p_in_base, p_out_base: ^CHAR;
   json_root, item, field, val_obj, val_str_ptr, base_ptr, val_ptr: ADRMEM;
   k_kind, k_code, k_lex, k_val, k_line, k_col, k_flags: ADRMEM;
-  k_val_type, k_unroll, k_leading, k_trailing: ADRMEM;
+  k_val_type, k_unroll, k_leading, k_trailing, k_file: ADRMEM;
+  last_file_ptr: ADRMEM;
+  file_text, last_file_text: Str255;
   flags_obj: ADRMEM;
   empty_s, fieldName, kind_val: Str255;
   out_i: INTEGER32;
@@ -169,10 +173,7 @@ VAR
   tok_elem: ADRMEM;
   p_adrmem_off: ^ADRMEM;
   p_real_off: ^REAL;
-  comments_arr, comment_item: ADRMEM;
-  comments_n, ci: INTEGER32;
-  joined, one_comment: Str255;
-  jlen, olen, jc: INTEGER;
+  comments_arr: ADRMEM;
 BEGIN
   pending_leading_count := 0;
   last_created_node := NIL;
@@ -246,6 +247,9 @@ BEGIN
   fieldName := 'UNROLL'; k_unroll := MakeCStr(fieldName);
   fieldName := 'leading_comments'; k_leading := MakeCStr(fieldName);
   fieldName := 'trailing_comment'; k_trailing := MakeCStr(fieldName);
+  fieldName := 'file'; k_file := MakeCStr(fieldName);
+  last_file_ptr := NIL;
+  last_file_text := '';
 
   empty_s := '';
   out_i := 0;
@@ -260,7 +264,7 @@ BEGIN
       pervasive skip_include_directives() calls throughout the grammar.
       Dropping them here, once, up front achieves the same effect without
       needing a matching call at every one of those ~15 call sites. }
-    field := cJSON_GetObjectItem(item, k_kind);
+    field := cJSON_GetObjectItemCaseSensitive(item, k_kind);
     IF field <> NIL THEN
       kind_val := CStrToStr255(cJSON_GetStringValue(field))
     ELSE
@@ -270,19 +274,19 @@ BEGIN
     p_tok := tokens_buf + (out_i * SIZEOF(Token));
     p_tok^.kind := kind_val;
 
-    field := cJSON_GetObjectItem(item, k_code);
+    field := cJSON_GetObjectItemCaseSensitive(item, k_code);
     IF field <> NIL THEN
       p_tok^.code := RETYPE(INTEGER32, pas_cjson_int32(field))
     ELSE
       p_tok^.code := 0;
 
-    field := cJSON_GetObjectItem(item, k_lex);
+    field := cJSON_GetObjectItemCaseSensitive(item, k_lex);
     IF field <> NIL THEN
       p_tok^.lexeme := CStrToStr255(cJSON_GetStringValue(field))
     ELSE
       p_tok^.lexeme := empty_s;
 
-    field := cJSON_GetObjectItem(item, k_val);
+    field := cJSON_GetObjectItemCaseSensitive(item, k_val);
     IF (field <> NIL) AND (cJSON_IsNumber(field) <> 0) THEN
     BEGIN
       p_tok^.value_real := cJSON_GetNumberValue(field);
@@ -315,13 +319,13 @@ BEGIN
       p_tok^.value_type := 0;
     END;
 
-    field := cJSON_GetObjectItem(item, k_line);
+    field := cJSON_GetObjectItemCaseSensitive(item, k_line);
     IF field <> NIL THEN
       p_tok^.line := RETYPE(INTEGER32, pas_cjson_int32(field))
     ELSE
       p_tok^.line := 1;
 
-    field := cJSON_GetObjectItem(item, k_col);
+    field := cJSON_GetObjectItemCaseSensitive(item, k_col);
     { Not TRUNC, same conversion as line above: col is INTEGER32, and the
       column of a source line longer than 32767 characters does not fit the
       16-bit INTEGER TRUNC produces -- it would be poison in every
@@ -334,7 +338,21 @@ BEGIN
     ELSE
       p_tok^.col := 1;
 
-    flags_obj := cJSON_GetObjectItem(item, k_flags);
+    field := cJSON_GetObjectItemCaseSensitive(item, k_file);
+    p_tok^.file_name := NIL;
+    IF field <> NIL THEN
+      IF cJSON_IsString(field) <> 0 THEN
+      BEGIN
+        file_text := CStrToStr255(cJSON_GetStringValue(field));
+        IF (last_file_ptr = NIL) OR (file_text <> last_file_text) THEN
+        BEGIN
+          last_file_ptr := MakeCStr(file_text);
+          last_file_text := file_text;
+        END;
+        p_tok^.file_name := last_file_ptr;
+      END;
+
+    flags_obj := cJSON_GetObjectItemCaseSensitive(item, k_flags);
     p_tok^.f_brave := ReadBoolFlag(flags_obj, 'BRAVE');
     p_tok^.f_debug := ReadBoolFlag(flags_obj, 'DEBUG');
     p_tok^.f_entry := ReadBoolFlag(flags_obj, 'ENTRY');
@@ -352,7 +370,7 @@ BEGIN
     p_tok^.f_symtab := ReadBoolFlag(flags_obj, 'SYMTAB');
     p_tok^.f_warn := ReadBoolFlag(flags_obj, 'WARN');
 
-    field := cJSON_GetObjectItem(flags_obj, k_unroll);
+    field := cJSON_GetObjectItemCaseSensitive(flags_obj, k_unroll);
     IF field <> NIL THEN
     BEGIN
       p_tok^.has_unroll := TRUE;
@@ -364,38 +382,18 @@ BEGIN
       p_tok^.unroll_val := 0;
     END;
 
-    { leading_comments: join multiple entries with CHR(10) so pretty81 can
-      re-split them into separate comment lines; capped at 255 chars total
-      like every other Str255 here. }
-    comments_arr := cJSON_GetObjectItem(item, k_leading);
-    comments_n := 0;
-    jlen := 0;
+    { leading_comments: the lexer's array, one string per comment, kept
+      whole (it outlives json_root), so each comment stays its own entry
+      however many precede the token. Joining them into one Str255 used to
+      cut a long run of comments, and pretty81 then printed the run as one
+      line, which the next pass read as one comment: not idempotent. }
+    comments_arr := cJSON_DetachItemFromObjectCaseSensitive(item, k_leading);
+    p_tok^.has_leading_comment := FALSE;
     IF comments_arr <> NIL THEN
-    BEGIN
-      comments_n := cJSON_GetArraySize(comments_arr);
-      FOR ci := 0 TO comments_n - 1 DO
-      BEGIN
-        comment_item := cJSON_GetArrayItem(comments_arr, ci);
-        one_comment := CStrToStr255(cJSON_GetStringValue(comment_item));
-        olen := ORD(one_comment[0]);
-        IF (ci > 0) AND (jlen < 255) THEN
-        BEGIN
-          jlen := jlen + 1;
-          joined[jlen] := CHR(10);
-        END;
-        FOR jc := 1 TO olen DO
-          IF jlen < 255 THEN
-          BEGIN
-            jlen := jlen + 1;
-            joined[jlen] := one_comment[jc];
-          END;
-      END;
-    END;
-    joined[0] := CHR(jlen);
-    p_tok^.has_leading_comment := comments_n > 0;
-    p_tok^.leading_comment := joined;
+      p_tok^.has_leading_comment := cJSON_GetArraySize(comments_arr) > 0;
+    p_tok^.leading_comments := comments_arr;
 
-    field := cJSON_GetObjectItem(item, k_trailing);
+    field := cJSON_GetObjectItemCaseSensitive(item, k_trailing);
     IF field <> NIL THEN
     BEGIN
       p_tok^.has_trailing_comment := TRUE;
@@ -463,6 +461,10 @@ BEGIN
 END;
 
 FUNCTION CurValueReal: REAL;
+{ A REAL_LITERAL's value as the lexer computed it from the whole literal
+  text (correctly rounded) and printed it exactly. The parser used to
+  re-read the Str255 lexeme digit by digit in REAL arithmetic, which
+  rounded at each step: 0.30000000000000004 became 0.3000000000000001. }
 VAR
   pt: PToken;
 BEGIN
@@ -492,6 +494,16 @@ VAR
 BEGIN
   pt := GetTok(0);
   CurRangeCk := pt^.f_rangeck;
+END;
+
+FUNCTION CurStackCk: BOOLEAN;
+{ STACKCK at the current token: a routine's or unit's snapshot is taken at
+  its name token (ParseProcDecl and the unit parsers, ps_decl.pas). }
+VAR
+  pt: PToken;
+BEGIN
+  pt := GetTok(0);
+  CurStackCk := pt^.f_stackck;
 END;
 
 FUNCTION CurHasUnroll: BOOLEAN;
@@ -536,87 +548,18 @@ BEGIN
   BuildMetaFlagsNode := obj;
 END;
 
-FUNCTION StrToIntVal(s: Str255): INTEGER;
-{ Numeric labels use a 16-bit bit-pattern key, not a signed magnitude.
-  Preserve high-bit labels (32768..65535) modulo 65536. Only accumulation
-  and sign conversion intentionally wrap; restore the source's MATHCK+ after
-  each expression, leaving loop counters and other arithmetic checked. }
+FUNCTION CurLabelKey: INTEGER;
+{ A numeric label's key: the 16-bit bit pattern of the INTEGER_LITERAL's
+  value, so high-bit labels (32768..65535) are kept modulo 65536. It comes
+  from the token's value, not its Str255 lexeme, which stops at 255
+  characters: a label written with 300 leading zeros keeps its number. }
 VAR
-  i, len, val: INTEGER;
-  neg: BOOLEAN;
+  v: INTEGER64;
 BEGIN
-  len := ORD(s[0]);
-  val := 0;
-  neg := FALSE;
-  i := 1;
-  IF (len >= 1) AND (s[1] = '-') THEN
-  BEGIN
-    neg := TRUE;
-    i := 2;
-  END;
-  WHILE i <= len DO
-  BEGIN
-    IF (s[i] >= '0') AND (s[i] <= '9') THEN
-      (*$MATHCK-*) val := val * 10 + (ORD(s[i]) - ORD('0')); (*$MATHCK+*)
-    i := i + 1;
-  END;
-  IF neg THEN (*$MATHCK-*) val := -val; (*$MATHCK+*)
-  StrToIntVal := val;
-END;
-
-FUNCTION StrToRealVal(s: Str255): REAL;
-VAR
-  i, len, exp_val: INTEGER;
-  int_part, frac_part, frac_scale, result_val, pw: REAL;
-  exp_neg: BOOLEAN;
-  k: INTEGER;
-BEGIN
-  len := ORD(s[0]);
-  i := 1;
-  int_part := 0.0;
-  WHILE (i <= len) AND (s[i] >= '0') AND (s[i] <= '9') DO
-  BEGIN
-    int_part := int_part * 10.0 + (ORD(s[i]) - ORD('0'));
-    i := i + 1;
-  END;
-  frac_part := 0.0;
-  frac_scale := 1.0;
-  IF (i <= len) AND (s[i] = '.') THEN
-  BEGIN
-    i := i + 1;
-    WHILE (i <= len) AND (s[i] >= '0') AND (s[i] <= '9') DO
-    BEGIN
-      frac_scale := frac_scale / 10.0;
-      frac_part := frac_part + (ORD(s[i]) - ORD('0')) * frac_scale;
-      i := i + 1;
-    END;
-  END;
-  exp_val := 0;
-  exp_neg := FALSE;
-  IF (i <= len) AND ((s[i] = 'E') OR (s[i] = 'e')) THEN
-  BEGIN
-    i := i + 1;
-    IF (i <= len) AND (s[i] = '+') THEN
-      i := i + 1
-    ELSE IF (i <= len) AND (s[i] = '-') THEN
-    BEGIN
-      exp_neg := TRUE;
-      i := i + 1;
-    END;
-    WHILE (i <= len) AND (s[i] >= '0') AND (s[i] <= '9') DO
-    BEGIN
-      exp_val := exp_val * 10 + (ORD(s[i]) - ORD('0'));
-      i := i + 1;
-    END;
-  END;
-  result_val := int_part + frac_part;
-  pw := 1.0;
-  FOR k := 1 TO exp_val DO
-    IF exp_neg THEN
-      pw := pw / 10.0
-    ELSE
-      pw := pw * 10.0;
-  StrToRealVal := result_val * pw;
+  v := CurValueInt MOD 65536;
+  IF v < 0 THEN v := v + 65536;
+  IF v >= 32768 THEN v := v - 65536;
+  CurLabelKey := RETYPE(INTEGER, v);
 END;
 
 FUNCTION StringEqual(s1, s2: Str255): BOOLEAN;
@@ -668,21 +611,34 @@ VAR
   pt: PToken;
   key_ptr, str_ptr: ADRMEM;
   fieldName: Str255;
+  ci: INTEGER32;
 BEGIN
   pt := GetTok(0);
-  IF pt^.has_leading_comment AND (pending_leading_count < 32) THEN
-  BEGIN
-    pending_leading_count := pending_leading_count + 1;
-    pending_leading[pending_leading_count] := pt^.leading_comment;
-  END;
+  IF pt^.has_leading_comment THEN
+    FOR ci := 0 TO cJSON_GetArraySize(pt^.leading_comments) - 1 DO
+      IF pending_leading_count < 32 THEN
+      BEGIN
+        pending_leading_count := pending_leading_count + 1;
+        pending_leading[pending_leading_count] :=
+          CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(pt^.leading_comments, ci)));
+      END;
   IF pt^.has_trailing_comment THEN
   BEGIN
-    IF (pending_leading_count = 0) AND (last_created_node <> NIL) THEN
+    { A node keeps one trailing comment: a second queues for the next node,
+      as the lexer does for a second comment after one token. }
+    IF (pending_leading_count = 0) AND (last_created_node <> NIL) AND
+       (cJSON_GetObjectItemCaseSensitive(last_created_node, MakeCStr('trailing_comment')) = NIL) THEN
     BEGIN
       str_ptr := MakeCStr(pt^.trailing_comment);
       fieldName := 'trailing_comment'; key_ptr := MakeCStr(fieldName);
       cJSON_AddItemToObject(last_created_node, key_ptr, cJSON_CreateString(str_ptr));
-      last_trailing_target := last_created_node;
+      { After a separator the comment is final: the item before it is
+        already complete (pinned), and the next item's pin must not take
+        it. Otherwise the enclosing item's pin may still claim it. }
+      IF pt^.kind = 'SEMICOLON' THEN
+        last_trailing_target := NIL
+      ELSE
+        last_trailing_target := last_created_node;
     END
     ELSE IF pending_leading_count < 32 THEN
     BEGIN
@@ -690,6 +646,67 @@ BEGIN
       pending_leading[pending_leading_count] := pt^.trailing_comment;
     END;
   END;
+END;
+
+FUNCTION PsIntText(n: INTEGER32): Str255;
+{ Decimal text of a nonnegative line or column number. }
+VAR
+  rev, text: Str255;
+  k: INTEGER;
+BEGIN
+  rev[0] := CHR(1);
+  rev[1] := CHR(ORD('0') + n MOD 10);
+  n := n DIV 10;
+  WHILE n > 0 DO
+  BEGIN
+    rev[0] := CHR(ORD(rev[0]) + 1);
+    rev[ORD(rev[0])] := CHR(ORD('0') + n MOD 10);
+    n := n DIV 10;
+  END;
+  text[0] := rev[0];
+  FOR k := 1 TO ORD(rev[0]) DO text[k] := rev[ORD(rev[0]) + 1 - k];
+  PsIntText := text;
+END;
+
+PROCEDURE PsAppendText(VAR s: Str255; t: Str255);
+{ Append, silently stopping at the 255-character capacity. }
+VAR
+  i, len: INTEGER;
+BEGIN
+  FOR i := 1 TO ORD(t[0]) DO
+  BEGIN
+    len := ORD(s[0]);
+    IF len < 255 THEN
+    BEGIN
+      s[len + 1] := t[i];
+      s[0] := CHR(len + 1);
+    END;
+  END;
+END;
+
+PROCEDURE ParseFail(msg: Str255);
+{ Report a parser error at the current token and stop: msg followed by the
+  located-diagnostic suffix every stage uses, ` at line L column C', plus
+  ` of file NAME' for a token from an $INCLUDEd file. A report of several
+  lines prints the others first and passes its last line here. }
+VAR
+  tok: PToken;
+BEGIN
+  tok := GetTok(0);
+  IF (tok^.line > 0) AND (tok^.col > 0) THEN
+  BEGIN
+    PsAppendText(msg, ' at line ');
+    PsAppendText(msg, PsIntText(tok^.line));
+    PsAppendText(msg, ' column ');
+    PsAppendText(msg, PsIntText(tok^.col));
+    IF tok^.file_name <> NIL THEN
+    BEGIN
+      PsAppendText(msg, ' of file ');
+      PsAppendText(msg, CStrToStr255(tok^.file_name));
+    END;
+  END;
+  EPrint(msg);
+  exit(1);
 END;
 
 PROCEDURE Expect(k: Str255);
@@ -709,8 +726,7 @@ BEGIN
     EPrint('Parser Error: Expected token match failed. Expected:');
     EPrint(target_k);
     EPrint('Got:');
-    EPrint(ck);
-    exit(1);
+    ParseFail(ck);
   END;
 END;
 
@@ -729,20 +745,33 @@ BEGIN
     Match := FALSE;
 END;
 
-FUNCTION CurLocation: ADRMEM;
-{ The current token's line and column, for a node's `location' field. }
+FUNCTION TokLocation(tok: PToken): ADRMEM;
+{ A token's line and column, plus its `file' when it came from an included
+  file, for a node's `location', `op_location' or `read_location' field. A
+  primary-file location has no `file' field. }
 VAR
-  tok: PToken;
-  location: ADRMEM;
+  location, key_ptr: ADRMEM;
+  fieldName: Str255;
 BEGIN
-  tok := GetTok(0);
   location := cJSON_CreateObject;
   AddIntField(location, 'line', tok^.line);
   AddIntField(location, 'column', tok^.col);
-  CurLocation := location;
+  IF tok^.file_name <> NIL THEN
+  BEGIN
+    fieldName := 'file'; key_ptr := MakeCStr(fieldName);
+    cJSON_AddItemToObject(location, key_ptr, cJSON_CreateString(tok^.file_name));
+  END;
+  TokLocation := location;
+END;
+
+FUNCTION CurLocation: ADRMEM;
+{ The current token's location (TokLocation). }
+BEGIN
+  CurLocation := TokLocation(GetTok(0));
 END;
 
 FUNCTION CreateTriviaNode(type_name: Str255): ADRMEM;
+{ A node that takes the leading comments queued so far (pending_leading). }
 VAR
   node, comments_arr: ADRMEM;
   key_ptr: ADRMEM;
@@ -763,6 +792,32 @@ BEGIN
   CreateTriviaNode := node;
 END;
 
+FUNCTION CreateLeadTriviaNode(type_name: Str255): ADRMEM;
+{ CreateTriviaNode for a node built before its first token is consumed (an
+  assignment, a call, RETURN, a labelled or empty statement, a CASE
+  element): it also takes
+  that token's leading comments, now. They used to ride on whatever trivia
+  node came next, often in another statement, and moved again on every
+  pretty81 pass. }
+VAR
+  pt: PToken;
+  ci: INTEGER32;
+BEGIN
+  pt := GetTok(0);
+  IF pt^.has_leading_comment THEN
+  BEGIN
+    FOR ci := 0 TO cJSON_GetArraySize(pt^.leading_comments) - 1 DO
+      IF pending_leading_count < 32 THEN
+      BEGIN
+        pending_leading_count := pending_leading_count + 1;
+        pending_leading[pending_leading_count] :=
+          CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(pt^.leading_comments, ci)));
+      END;
+    pt^.has_leading_comment := FALSE;
+  END;
+  CreateLeadTriviaNode := CreateTriviaNode(type_name);
+END;
+
 { Re-point trailing-comment attachment at an enclosing node whose children
   are already fully parsed. Called by a list-parsing loop (statement list,
   decl section, case element, ...) right after it finishes one item and
@@ -772,21 +827,27 @@ END;
   the right-hand side, happened to be built last during that item's own
   parsing, instead of to the item itself. }
 PROCEDURE PinTrailingCommentTarget(node: ADRMEM);
+{ The comment then belongs to this item: last_trailing_target is cleared,
+  so the next item's pin cannot carry it further. It used to stay set, and
+  each later item of the list took the comment over in turn, so a comment
+  drifted to the end of its list (and further on every pretty81 pass). A
+  node that already has a trailing comment keeps it. }
 VAR
   text_item: ADRMEM;
   comment_text: Str255;
 BEGIN
-  IF (last_trailing_target <> NIL) AND (last_trailing_target <> node) THEN
+  IF (last_trailing_target <> NIL) AND (last_trailing_target <> node) AND
+     (cJSON_GetObjectItemCaseSensitive(node, MakeCStr('trailing_comment')) = NIL) THEN
   BEGIN
-    text_item := cJSON_GetObjectItem(last_trailing_target, MakeCStr('trailing_comment'));
+    text_item := cJSON_GetObjectItemCaseSensitive(last_trailing_target, MakeCStr('trailing_comment'));
     IF text_item <> NIL THEN
     BEGIN
       comment_text := CStrToStr255(cJSON_GetStringValue(text_item));
       cJSON_DeleteItemFromObject(last_trailing_target, MakeCStr('trailing_comment'));
       cJSON_AddItemToObject(node, MakeCStr('trailing_comment'), cJSON_CreateString(MakeCStr(comment_text)));
-      last_trailing_target := node;
     END;
   END;
+  last_trailing_target := NIL;
   last_created_node := node;
 END;
 
@@ -800,8 +861,7 @@ BEGIN
   expr_depth := expr_depth + 1;
   IF expr_depth > MAX_EXPR_DEPTH THEN
   BEGIN
-    EPrint('Parser Error: expression too complex (nesting deeper than 64); try breaking it up with intermediate value assigns');
-    exit(1);
+    ParseFail('Parser Error: expression too complex (nesting deeper than 64); try breaking it up with intermediate value assigns');
   END;
 END;
 
@@ -817,8 +877,7 @@ BEGIN
   stmt_depth := stmt_depth + 1;
   IF stmt_depth > MAX_STMT_DEPTH THEN
   BEGIN
-    EPrint('Parser Error: statements nested too deeply (deeper than 256); try splitting the routine up');
-    exit(1);
+    ParseFail('Parser Error: statements nested too deeply (deeper than 256); try splitting the routine up');
   END;
 END;
 
@@ -834,8 +893,7 @@ BEGIN
   type_depth := type_depth + 1;
   IF type_depth > MAX_TYPE_DEPTH THEN
   BEGIN
-    EPrint('Parser Error: type nested too deeply (deeper than 128); try defining intermediate named types');
-    exit(1);
+    ParseFail('Parser Error: type nested too deeply (deeper than 128); try defining intermediate named types');
   END;
 END;
 

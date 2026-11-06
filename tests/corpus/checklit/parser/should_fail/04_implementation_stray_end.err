@@ -1,4 +1,4 @@
 Parser Error: Expected token match failed. Expected:
 DOT
 Got:
-END
+END at line 7 column 1

@@ -1,0 +1,10 @@
+inner 5 abcde 9 5 hello
+deeper 5 e 9
+echo 5 abcde
+show nest
+main nest
+inner 3 xyz 9 4 nest
+deeper 3 z 9
+echo 3 xyz
+show nest
+main nest

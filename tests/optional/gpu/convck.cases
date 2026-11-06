@@ -1,0 +1,34 @@
+# NVPTX TRUNC/ROUND through the device error channel, for
+# tests/optional/gpu_orchestration.sh: kernel|count|value|expected.
+# convck_host.pas launches KERNEL on COUNT threads, thread i getting VALUE
+# (r and z are 0.0, so z / z is NaN). ktrunc and kround convert cell 0 (run
+# them on one thread); each kmany thread i stores TRUNC then ROUND of its
+# value in cells 2i and 2i+1, so 64 failing threads still report the TRUNC.
+# expected is the result line after "prefix", "@file" for a file of result
+# lines, or "!" and the exact stderr of a failing run: the host check's own
+# diagnostic, located in convck.pas (ktrunc's TRUNC at 8:16, nested's ROUND
+# at 5:17 for kround, kmany's TRUNC at 19:18), and nothing after "prefix".
+# kinc's conversions are in included files, and the report names the file
+# exactly as a host failure there does (TRUNC at 7:33 of convck_kinc.inc,
+# ROUND at 3:19 of convck_kround.inc, nested inside it).
+ktrunc|1|r + 1234.9|1234
+ktrunc|1|r - 32768.9|-32768
+ktrunc|1|r + 1.0E10|!runtime error: TRUNC result out of INTEGER range at line 8 column 16 (value=10000000000)
+ktrunc|1|r - 1.0E10|!runtime error: TRUNC result out of INTEGER range at line 8 column 16 (value=-10000000000)
+ktrunc|1|r + 32768.0|!runtime error: TRUNC result out of INTEGER range at line 8 column 16 (value=32768)
+ktrunc|1|z / z|!runtime error: TRUNC result out of INTEGER range at line 8 column 16 (value=NaN)
+kround|1|r + 32767.49|32767
+kround|1|r + 32767.5|!runtime error: ROUND result out of INTEGER range at line 5 column 17 (value=32767.5)
+kround|1|r - 32768.49|-32768
+kround|1|r - 32768.5|!runtime error: ROUND result out of INTEGER range at line 5 column 17 (value=-32768.5)
+kround|1|r + 2.5|3
+kround|1|r - 2.5|-3
+kround|1|r + 1.0E10|!runtime error: ROUND result out of INTEGER range at line 5 column 17 (value=10000000000)
+kround|1|z / z|!runtime error: ROUND result out of INTEGER range at line 5 column 17 (value=NaN)
+kmany|7|r + 32767.4 - FLOAT(i) * 9362.75|@convck_many.out
+kmany|64|r + 1.0E10|!runtime error: TRUNC result out of INTEGER range at line 19 column 18 (value=10000000000)
+kinc|1|r + 5.5|5
+kinc|1|r - 5.5|-6
+kinc|1|r + 1.0E10|!runtime error: TRUNC result out of INTEGER range at line 7 column 33 of file convck_kinc.inc (value=10000000000)
+kinc|1|r - 1.0E10|!runtime error: ROUND result out of INTEGER range at line 3 column 19 of file convck_kround.inc (value=-10000000000)
+kinc|1|z / z|!runtime error: ROUND result out of INTEGER range at line 3 column 19 of file convck_kround.inc (value=NaN)

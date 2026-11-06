@@ -57,6 +57,16 @@ CONST
   MAX_PARAMS  = 16;
   MAX_EXPR_DEPTH = 64;
   MAX_STMT_DEPTH = 256;
+  DECL_OTHER = 0;
+  DECL_ROUTINE_HEADING = 1;
+  DECL_ROUTINE_BODY = 2;
+  SUPER_STR_STRING = 1;
+  SUPER_STR_LSTRING = 2;
+  PARAM_VALUE = 0;
+  PARAM_VAR = 1;
+  PARAM_CONST = 2;
+  MAX_DECL_NAMES = 2500;
+  MAX_DECL_SCOPES = 64;
 
 TYPE
   SymRec = RECORD
@@ -70,6 +80,8 @@ TYPE
     set_sem_base: INTEGER; { semantic host, not set bounds/representation }
     scalar_sem_base: INTEGER; { ordinal host even when aux is a subrange marker }
     type_node: ADRMEM; { source type for aggregate selector traversal }
+    type_bound: INTEGER32; { ntypes when declared: type_node's names resolve
+                             among types[1..type_bound] (LookupTypeBefore) }
     nparams: INTEGER;
     param_set_sem_base: ARRAY [1..MAX_PARAMS] OF INTEGER;
     ret_set_sem_base: INTEGER;
@@ -93,6 +105,17 @@ TYPE
                            too); a consumer that needs an integer checks tk }
     const_int: INTEGER64;
     is_ref_param: BOOLEAN; { a formal declared VAR, VARS, CONST or CONSTS }
+    const_str_node: ADRMEM; { a multi-character string CONST: its
+                              StringLiteral value node, which every
+                              reference to the name is rewritten to }
+    super_str: INTEGER; { a VAR/VARS/CONST/CONSTS formal of the predeclared
+                          super-array type itself (NEW-29): 0 none,
+                          SUPER_STR_STRING or SUPER_STR_LSTRING }
+    is_const_param: BOOLEAN; { a formal declared CONST or CONSTS }
+    param_super_str: ARRAY [1..MAX_PARAMS] OF INTEGER; { a routine's
+                          formals' super_str }
+    param_mode: ARRAY [1..MAX_PARAMS] OF INTEGER; { a routine's formals'
+                          PARAM_VALUE, PARAM_VAR or PARAM_CONST }
   END;
 
   TypeRec = RECORD
@@ -106,6 +129,11 @@ TYPE
     scalar_sem_base: INTEGER; { enum/subrange host independent of aux }
     type_node: ADRMEM;
     is_super: BOOLEAN;
+  END;
+
+  DeclNameRec = RECORD
+    uname: Str255; { the declared identifier, upper-cased }
+    kind: INTEGER; { DECL_OTHER, DECL_ROUTINE_HEADING or DECL_ROUTINE_BODY }
   END;
 
   FieldRec = RECORD
@@ -135,6 +163,12 @@ VAR
   nfields: INTEGER32;
   next_record_id: INTEGER;
   next_enum_id: INTEGER; { monotonic across scopes: distinct declarations stay distinct }
+  { The id each resolved EnumType node was given (EnumIdOfNode): a node is
+    resolved to one id, and its members declared, once, so an anonymous
+    enumeration keeps one identity wherever its type node is read again. }
+  enum_nodes: ARRAY [1..MAX_ENUM_NODES] OF ADRMEM;
+  enum_node_ids: ARRAY [1..MAX_ENUM_NODES] OF INTEGER;
+  nenum_nodes: INTEGER32;
   fwd_types: ARRAY [1..MAX_FWD_TYPES] OF FwdTypeRec;
   nfwd_types: INTEGER32; { entries of the TYPE section being checked; 0
                             outside one }
@@ -150,12 +184,27 @@ VAR
     convention -- lets WithStmt recover the resolved record's id (aux) to
     scan `fields[]` for it, without changing CheckDesignator's signature or
     any existing call site. }
+  last_designator_type_bound: INTEGER32; { type_bound of the designator's root }
+  last_designator_sem_node: ADRMEM; { the type node the designator reached, or NIL }
+
+  { The identifiers declared in each open declaration scope (a program or
+    unit, an interface, a routine's parameters and block), for DeclareName.
+    Separate from symbols[]: TYPE names live in types[], and the
+    predeclared names and spliced interfaces are not in these scopes. }
+  decl_names: ARRAY [1..MAX_DECL_NAMES] OF DeclNameRec;
+  ndecl_names: INTEGER32;
+  decl_scope_stack: ARRAY [1..MAX_DECL_SCOPES] OF INTEGER32;
+  decl_scope_depth: INTEGER32; { may exceed MAX_DECL_SCOPES: deeper scopes
+                                 are not checked }
 
   errors: ARRAY [1..MAX_ERRORS] OF Str255;
   nerrors: INTEGER32;
   { Source position AddError appends: the innermost node being checked
     that carries one (TcEnterLocation); 0 when none is known. }
   err_line, err_col: INTEGER32;
+  { The location object err_line/err_col came from, or NIL: its `file'
+    field, present only for an included file, names the file. }
+  err_loc: ADRMEM;
   expr_depth, stmt_depth: INTEGER;
 
   cur_func_ret_tk: INTEGER; { TK_VOID when not inside a function }
@@ -163,6 +212,9 @@ VAR
   cur_func_set_sem_base: INTEGER;
   active_features: FeatureSet;
   is_device_compiland: BOOLEAN;
+  { Above 0 while a constant expression (a CONST value or a type's bounds)
+    is checked: a call there is always the intrinsic (UserDeclarationShadows). }
+  const_expr_level: INTEGER32;
 
   cur_func_name: Str255;   { '' when not inside a function. `F := expr`
                              inside F's own body assigns through the
@@ -217,32 +269,83 @@ BEGIN
   TcIntText := t;
 END;
 
-PROCEDURE AddError(msg: Str255);
-{ Codegen's located diagnostics use the same ` at line L column C` suffix. }
+FUNCTION TcElide(s: Str255; maxlen: INTEGER): Str255;
+{ s cut to at most maxlen characters by replacing its middle with `...', so
+  a diagnostic keeps both the start of a long name and the end that tells
+  it apart from a similar one. }
+VAR
+  r: Str255;
+  head, tail, i, len: INTEGER;
 BEGIN
-  IF nerrors < MAX_ERRORS THEN
+  len := ORD(s[0]);
+  IF len <= maxlen THEN
+    r := s
+  ELSE IF maxlen < 5 THEN
   BEGIN
-    IF (err_line > 0) AND (err_col > 0) THEN
-    BEGIN
-      TcAppendText(msg, ' at line ');
-      TcAppendText(msg, TcIntText(err_line));
-      TcAppendText(msg, ' column ');
-      TcAppendText(msg, TcIntText(err_col));
-    END;
-    nerrors := nerrors + 1;
-    errors[nerrors] := msg;
+    r := s;
+    IF maxlen < 0 THEN r[0] := CHR(0) ELSE r[0] := CHR(maxlen);
+  END
+  ELSE
+  BEGIN
+    head := (maxlen - 3) DIV 2;
+    tail := maxlen - 3 - head;
+    r := '';
+    FOR i := 1 TO head DO TcAppendChar(r, s[i]);
+    TcAppendText(r, '...');
+    FOR i := len - tail + 1 TO len DO TcAppendChar(r, s[i]);
   END;
+  TcElide := r;
 END;
 
 PROCEDURE AddError2(msg: Str255; name: Str255);
 { AddError with the offending identifier appended -- mirrors the codegen
-  units' own AbortWith2. }
+  units' own AbortWith2. Codegen's located diagnostics use the same
+  ` at line L column C' suffix. A name or file name too long for the
+  Str255 is shortened in the middle (TcElide), never the location. }
 VAR
-  buf: Str255;
+  suffix, buf: Str255;
+  room: INTEGER;
 BEGIN
-  buf := msg;
-  CONCAT(buf, name);
-  AddError(buf);
+  IF nerrors < MAX_ERRORS THEN
+  BEGIN
+    suffix := '';
+    IF (err_line > 0) AND (err_col > 0) THEN
+    BEGIN
+      TcAppendText(suffix, ' at line ');
+      TcAppendText(suffix, TcIntText(err_line));
+      TcAppendText(suffix, ' column ');
+      TcAppendText(suffix, TcIntText(err_col));
+      IF HasKey(err_loc, 'file') THEN
+      BEGIN
+        TcAppendText(suffix, ' of file ');
+        { The file name keeps whatever the message leaves, and at least
+          150. }
+        room := 255 - ORD(msg[0]) - ORD(name[0]) - ORD(suffix[0]);
+        IF room < 150 THEN room := 150;
+        TcAppendText(suffix, TcElide(GetStr(err_loc, 'file'), room));
+      END;
+    END;
+    room := 255 - ORD(suffix[0]);
+    IF ORD(msg[0]) > room THEN
+    BEGIN
+      buf := TcElide(msg, room);
+      name := '';
+    END
+    ELSE
+    BEGIN
+      buf := msg;
+      name := TcElide(name, room - ORD(msg[0]));
+    END;
+    TcAppendText(buf, name);
+    TcAppendText(buf, suffix);
+    nerrors := nerrors + 1;
+    errors[nerrors] := buf;
+  END;
+END;
+
+PROCEDURE AddError(msg: Str255);
+BEGIN
+  AddError2(msg, '');
 END;
 
 PROCEDURE AddUndefinedIdentifier(node: ADRMEM);
@@ -253,7 +356,8 @@ BEGIN
   AddError2('Undefined identifier: ', GetStr(node, 'name'));
 END;
 
-PROCEDURE TcEnterLocation(node: ADRMEM; VAR saved_line, saved_col: INTEGER32);
+PROCEDURE TcEnterLocation(node: ADRMEM; VAR saved_line, saved_col: INTEGER32;
+  VAR saved_loc: ADRMEM);
 { Save the current error position and move it to node's own, if the parser
   recorded one: `location' (statements, declarations, designators), else
   `op_location' (operators), else `read_location' (reads). Pair with
@@ -264,6 +368,7 @@ VAR
 BEGIN
   saved_line := err_line;
   saved_col := err_col;
+  saved_loc := err_loc;
   loc := GetObj(node, 'location');
   IF loc = NIL THEN loc := GetObj(node, 'op_location');
   IF loc = NIL THEN loc := GetObj(node, 'read_location');
@@ -271,13 +376,15 @@ BEGIN
   BEGIN
     err_line := GetInt(loc, 'line');
     err_col := GetInt(loc, 'column');
+    err_loc := loc;
   END;
 END;
 
-PROCEDURE TcLeaveLocation(saved_line, saved_col: INTEGER32);
+PROCEDURE TcLeaveLocation(saved_line, saved_col: INTEGER32; saved_loc: ADRMEM);
 BEGIN
   err_line := saved_line;
   err_col := saved_col;
+  err_loc := saved_loc;
 END;
 
 { ============================ symbol table ============================= }
@@ -332,9 +439,14 @@ END;
 FUNCTION UserDeclarationShadows(name: Str255): BOOLEAN;
 { Builtins are not registered in this stage's symbol table.  Any visible
   declaration therefore takes precedence over spelling-based builtin dispatch
-  (IBM Pascal, Aug. 1981, p.3-7). }
+  (IBM Pascal, Aug. 1981, p.3-7) -- except in a constant expression, where
+  ParseConstant admits the intrinsic names by spelling and a user routine
+  cannot be called, so `CONST K = ORD(5)' is the intrinsic whatever else is
+  in scope (docs/dialect_notes.md). Codegen's FoldConstInt folds the same
+  calls in those contexts. }
 BEGIN
-  UserDeclarationShadows := LookupSymbol(name) <> 0;
+  IF const_expr_level > 0 THEN UserDeclarationShadows := FALSE
+  ELSE UserDeclarationShadows := LookupSymbol(name) <> 0;
 END;
 
 FUNCTION LookupSymbolInScope(name: Str255): INTEGER32;
@@ -355,6 +467,55 @@ BEGIN
     i := i - 1;
   IF i > base THEN LookupSymbolInScope := i
   ELSE LookupSymbolInScope := 0;
+END;
+
+PROCEDURE BeginDeclScope;
+BEGIN
+  decl_scope_depth := decl_scope_depth + 1;
+  IF decl_scope_depth <= MAX_DECL_SCOPES THEN
+    decl_scope_stack[decl_scope_depth] := ndecl_names;
+END;
+
+PROCEDURE EndDeclScope;
+BEGIN
+  IF (decl_scope_depth >= 1) AND (decl_scope_depth <= MAX_DECL_SCOPES) THEN
+    ndecl_names := decl_scope_stack[decl_scope_depth];
+  decl_scope_depth := decl_scope_depth - 1;
+END;
+
+PROCEDURE DeclareName(name: Str255; kind: INTEGER);
+{ Record that name is declared in the innermost declaration scope, and
+  report a second declaration of it there (NEW-7). Identifiers are
+  case-insensitive, and constants, types, variables, parameters,
+  enumeration members, routines and identifier labels share one name
+  space per block: `CONST W = 1; VAR w: INTEGER;' is an error. A routine
+  heading without a body (FORWARD, EXTERN) may be followed by another
+  declaration of the same routine; CheckDeclBody rejects a body after
+  EXTERN on its own. Shadowing an outer scope's name is not a
+  redeclaration, nor is redeclaring a predeclared name. }
+VAR
+  i, base: INTEGER32;
+  uname: Str255;
+BEGIN
+  IF (decl_scope_depth < 1) OR (decl_scope_depth > MAX_DECL_SCOPES) THEN RETURN;
+  uname := UpperStr(name);
+  base := decl_scope_stack[decl_scope_depth];
+  i := ndecl_names;
+  WHILE (i > base) AND THEN (decl_names[i].uname <> uname) DO
+    i := i - 1;
+  IF i > base THEN
+  BEGIN
+    IF (kind <> DECL_OTHER) AND (decl_names[i].kind = DECL_ROUTINE_HEADING) THEN
+      decl_names[i].kind := kind
+    ELSE
+      AddError2('Identifier already declared in this scope: ', name);
+  END
+  ELSE IF ndecl_names < MAX_DECL_NAMES THEN
+  BEGIN
+    ndecl_names := ndecl_names + 1;
+    decl_names[ndecl_names].uname := uname;
+    decl_names[ndecl_names].kind := kind;
+  END;
 END;
 
 PROCEDURE ReportErrorsAndExit;
@@ -400,6 +561,7 @@ BEGIN
           (tk = TK_INTEGER64) OR (tk = TK_WORD8) OR (tk = TK_WORD32) OR
           (tk = TK_WORD64) THEN symbols[nsymbols].scalar_sem_base := tk;
   symbols[nsymbols].type_node := NIL;
+  symbols[nsymbols].type_bound := ntypes;
   symbols[nsymbols].nparams := 0;
   symbols[nsymbols].ret_tk := TK_VOID;
   symbols[nsymbols].ret_set_sem_base := SB_UNKNOWN;
@@ -412,6 +574,9 @@ BEGIN
   symbols[nsymbols].has_const_int := FALSE;
   symbols[nsymbols].const_int := 0;
   symbols[nsymbols].is_ref_param := FALSE;
+  symbols[nsymbols].const_str_node := NIL;
+  symbols[nsymbols].super_str := 0;
+  symbols[nsymbols].is_const_param := FALSE;
   DefineSymbol := nsymbols;
 END;
 
@@ -427,6 +592,23 @@ BEGIN
   WHILE (i >= 1) AND THEN (UpperStr(types[i].name) <> uname) DO
     i := i - 1;
   LookupType := i;
+END;
+
+FUNCTION LookupTypeBefore(name: Str255; bound: INTEGER32): INTEGER32;
+{ LookupType among types[1..bound] only: the TYPE a name meant where a
+  declaration made when ntypes was bound used it. The types table is never
+  popped, so a later routine's local TYPE (or an inner one that shadows the
+  name) has a higher index and is skipped. A negative bound means none. }
+VAR
+  i: INTEGER32;
+  uname: Str255;
+BEGIN
+  uname := UpperStr(name);
+  i := ntypes;
+  IF (bound >= 0) AND (bound < i) THEN i := bound;
+  WHILE (i >= 1) AND THEN (UpperStr(types[i].name) <> uname) DO
+    i := i - 1;
+  LookupTypeBefore := i;
 END;
 
 FUNCTION GetObjOrNil(obj: ADRMEM; key: Str255): ADRMEM;
@@ -535,17 +717,22 @@ VAR
 BEGIN
   active_features := requested_features;
   is_device_compiland := FALSE;
+  const_expr_level := 0;
   nsymbols := 0;
   scope_top := 0;
+  ndecl_names := 0;
+  decl_scope_depth := 0;
   ntypes := 0;
   nfields := 0;
   next_record_id := 1;
   next_enum_id := 0;
+  nenum_nodes := 0;
   nfwd_types := 0;
   fwd_cur := 0;
   nerrors := 0;
   err_line := 0;
   err_col := 0;
+  err_loc := NIL;
   expr_depth := 0;
   stmt_depth := 0;
   cur_func_ret_tk := TK_VOID;

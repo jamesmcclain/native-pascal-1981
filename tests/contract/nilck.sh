@@ -19,7 +19,7 @@ for kind in read store field array with var chain result; do
   cat > "$work/$kind.pas" <<PAS
 PROGRAM probe;
 {\$INITCK-}{\$NILCK-}
-TYPE PR = ^R; R = RECORD v: INTEGER; next: PR END;
+TYPE PR = ^Rec; Rec = RECORD v: INTEGER; next: PR END;
 VAR $decl;
 $extra
 BEGIN
@@ -54,8 +54,8 @@ done
 cat > "$work/valid.pas" <<'PAS'
 PROGRAM valid;
 {$INITCK-}
-TYPE PR = ^R; R = RECORD v: INTEGER; next: PR END;
-VAR p,q: PR; a: ARRAY [1..2] OF PR; calls: INTEGER; r: R;
+TYPE PR = ^Rec; Rec = RECORD v: INTEGER; next: PR END;
+VAR p,q: PR; a: ARRAY [1..2] OF PR; calls: INTEGER; r: Rec;
 PROCEDURE setv(VAR x: INTEGER); BEGIN x := 8 END;
 FUNCTION ident(x: PR): PR; BEGIN ident := x END;
 FUNCTION idx: INTEGER; BEGIN calls := calls + 1; idx := 1 END;

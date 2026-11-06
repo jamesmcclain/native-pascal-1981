@@ -1,0 +1,4 @@
+Type checking failed:
+LSTRING capacity -3 is outside 0..2147483647 at line 6 column 6
+STRING capacity -3 is outside 1..2147483647 at line 8 column 3
+STRING capacity 2147483648 is outside 1..2147483647 at line 9 column 3

@@ -16,7 +16,7 @@ FUNCTION cJSON_CreateBool(b: CINT): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateNull: ADRMEM [C]; EXTERN;
 PROCEDURE cJSON_AddItemToObject(obj: ADRMEM; key: ADRMEM; item: ADRMEM) [C]; EXTERN;
 FUNCTION cJSON_Parse(val: ADRMEM): ADRMEM [C]; EXTERN;
-FUNCTION cJSON_GetObjectItem(obj: ADRMEM; key: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION cJSON_GetObjectItemCaseSensitive(obj: ADRMEM; key: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_GetArraySize(arr: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_GetArrayItem(arr: ADRMEM; index: CINT): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_GetStringValue(item: ADRMEM): ADRMEM [C]; EXTERN;
@@ -143,7 +143,7 @@ BEGIN
   IF obj = NIL THEN
     NodeType := ''
   ELSE
-    NodeType := CStrToStr255(cJSON_GetStringValue(cJSON_GetObjectItem(obj, MakeCStr('__node_type__'))));
+    NodeType := CStrToStr255(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(obj, MakeCStr('__node_type__'))));
 END;
 
 FUNCTION GetObj(obj: ADRMEM; key: Str255): ADRMEM;
@@ -151,7 +151,7 @@ BEGIN
   IF obj = NIL THEN
     GetObj := NIL
   ELSE
-    GetObj := cJSON_GetObjectItem(obj, MakeCStr(key));
+    GetObj := cJSON_GetObjectItemCaseSensitive(obj, MakeCStr(key));
 END;
 
 FUNCTION GetStr(obj: ADRMEM; key: Str255): Str255;

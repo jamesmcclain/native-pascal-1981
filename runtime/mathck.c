@@ -15,8 +15,8 @@
 void pas_math_zero(int32_t is_unsigned, int32_t is_mod, int64_t left, int64_t right, int32_t line, int32_t column)
 {
     fflush(stdout);
-    fprintf(stderr, "runtime error: MATHCK %s division by zero in %s at line %" PRId32 " column %" PRId32, is_unsigned ? "unsigned" : "signed", is_mod ? "MOD" : "DIV", line,
-            column);
+    fprintf(stderr, "runtime error: MATHCK %s division by zero in %s at line %" PRId32 " column %" PRId32 "%s", is_unsigned ? "unsigned" : "signed", is_mod ? "MOD" : "DIV", line,
+            column, pas_diag_where());
     if (is_unsigned)
         fprintf(stderr, " (left=%" PRIu64 ", right=%" PRIu64 ")\n", (uint64_t) left, (uint64_t) right);
     else
@@ -39,7 +39,7 @@ void pas_math_overflow(int32_t is_unsigned, int32_t op, int64_t left, int64_t ri
     const char *name = (op >= 0 && op < 11) ? names[op] : "?";
 
     fflush(stdout);
-    fprintf(stderr, "runtime error: MATHCK %s overflow in %s at line %" PRId32 " column %" PRId32, is_unsigned ? "unsigned" : "signed", name, line, column);
+    fprintf(stderr, "runtime error: MATHCK %s overflow in %s at line %" PRId32 " column %" PRId32 "%s", is_unsigned ? "unsigned" : "signed", name, line, column, pas_diag_where());
     if (op >= 4 && op <= 8) {
         if (is_unsigned)
             fprintf(stderr, " (operand=%" PRIu64 ")\n", (uint64_t) left);

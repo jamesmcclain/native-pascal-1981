@@ -1,0 +1,10 @@
+Type checking failed:
+SET base type ordinals -3..3 are outside 0..255 at line 12 column 3
+SET base type ordinals -3..3 are outside 0..255 at line 14 column 3
+SET base type ordinals -3..3 are outside 0..255 at line 15 column 3
+SET base type ordinals -3..3 are outside 0..255 at line 16 column 3
+SET base type ordinals -3..3 are outside 0..255 at line 17 column 3
+SET base type ordinals 0..300 are outside 0..255 at line 18 column 3
+SET base type ordinals 10..300 are outside 0..255 at line 19 column 3
+SET base type ordinals -32768..32767 are outside 0..255 at line 20 column 3
+SET base type ordinals 0..65535 are outside 0..255 at line 21 column 3

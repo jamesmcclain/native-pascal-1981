@@ -1,0 +1,10 @@
+integer8 65534
+integer 65534
+integer32 4464 61072
+integer64 65534
+word8 200
+word 65000
+word32 1
+word64 1
+WRD(i32) = CONST WRD(70000) = 4464
+every -2 is 65534

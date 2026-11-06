@@ -1,0 +1,6 @@
+Type checking failed:
+Cannot assign a value of a different enumeration type: l at line 18 column 3
+Cannot assign incompatible type without narrowing: l at line 19 column 3
+Comparison operands are of different enumeration types at line 20 column 3
+CASE label is of a different enumeration type than the selector at line 21 column 3
+Array index type mismatch: different enumeration types at line 22 column 3

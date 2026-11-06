@@ -1,0 +1,4 @@
+Parser Error: Expected token match failed. Expected:
+DO
+Got:
+IDENTIFIER at line 7 column 5 of file parser_error.inc

@@ -8,7 +8,7 @@
 static void nilck_fail(const char *operation, int32_t line, int32_t column)
 {
     fflush(stdout);
-    fprintf(stderr, "runtime error: NILCK NIL pointer %s at line %" PRId32 " column %" PRId32 "\n", operation, line, column);
+    fprintf(stderr, "runtime error: NILCK NIL pointer %s at line %" PRId32 " column %" PRId32 "%s\n", operation, line, column, pas_diag_where());
     fflush(stderr);
     abort();
 }

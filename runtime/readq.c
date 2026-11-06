@@ -24,6 +24,22 @@ void pas_file_attach_std(struct pas_file_fcb *in, struct pas_file_fcb *out)
     }
 }
 
+/* Without fileops.o no INPUT FCB exists, so there is nothing to sync. */
+__attribute__((weak))
+void pas_std_input_sync(void)
+{
+}
+
+/* Every bare READ/READLN/EOF/EOLN reader takes its characters from stdin
+ * through here, after the attached INPUT FCB has handed back any
+ * component it holds (pas_std_input_sync), so INPUT^, EOF(INPUT),
+ * READ(INPUT, ...) and the bare forms read one character stream. */
+static int std_getchar(void)
+{
+    pas_std_input_sync();
+    return getchar();
+}
+
 __attribute__((weak))
 const char *pas_enum_write_token(int32_t value, const char **names, int count)
 {
@@ -40,7 +56,7 @@ const char *pas_enum_write_token(int32_t value, const char **names, int count)
 static int skip_ws_except_nl(void)
 {
     int ch;
-    while ((ch = getchar()) != EOF) {
+    while ((ch = std_getchar()) != EOF) {
         if (ch == '\n' || !isspace((unsigned char) ch))
             return ch;
     }
@@ -74,7 +90,7 @@ static int read_identifier_token(char *buf, int cap)
     do {
         if (n + 1 < cap)
             buf[n++] = (char) toupper((unsigned char) ch);
-        ch = getchar();
+        ch = std_getchar();
     } while (ch != EOF && (isalpha((unsigned char) ch) || isdigit((unsigned char) ch)));
     unread(ch);
     buf[n] = '\0';
@@ -124,7 +140,7 @@ static int64_t read_wide_decimal(int bits)
 {
     int ch;
     do
-        ch = getchar();
+        ch = std_getchar();
     while (ch != EOF && isspace((unsigned char) ch));
     if (ch == EOF)
         die("unexpected EOF while reading integer");
@@ -132,7 +148,7 @@ static int64_t read_wide_decimal(int bits)
     int n = 0, overflow = 0;
     if (ch == '+' || ch == '-') {
         token[n++] = (char) ch;
-        ch = getchar();
+        ch = std_getchar();
     }
     if (ch == EOF || !isdigit((unsigned char) ch)) {
         unread(ch);
@@ -146,7 +162,7 @@ static int64_t read_wide_decimal(int bits)
             token[n++] = (char) ch;
         else
             overflow = 1;
-        ch = getchar();
+        ch = std_getchar();
     } while (ch != EOF && isdigit((unsigned char) ch));
     unread(ch);
     if (n == sign_len)
@@ -194,7 +210,7 @@ int pas_read_word(uint16_t *out)
 static int stdin_next(void *src)
 {
     (void) src;
-    return getchar();
+    return std_getchar();
 }
 
 static void stdin_unget(void *src, int ch)
@@ -240,7 +256,7 @@ int pas_read_real(double *out)
 
 int pas_read_char(uint8_t *out)
 {
-    int ch = getchar();
+    int ch = std_getchar();
     if (ch == EOF)
         die("unexpected EOF while reading char");
     *out = (ch == '\n') ? ' ' : (uint8_t) ch;
@@ -251,7 +267,7 @@ int pas_read_lstring(uint8_t *buf, int cap)
 {
     int ch;
     int n = 0;
-    while ((ch = getchar()) != EOF && ch != '\n') {
+    while ((ch = std_getchar()) != EOF && ch != '\n') {
         if (n < cap)
             buf[1 + n] = (uint8_t) ch;
         n++;
@@ -272,7 +288,7 @@ int pas_read_string(uint8_t *buf, int cap)
      * at the line marker (pushed back), blank-pad the remainder. */
     int ch = 0;
     int n = 0;
-    while (n < cap && (ch = getchar()) != EOF && ch != '\n')
+    while (n < cap && (ch = std_getchar()) != EOF && ch != '\n')
         buf[n++] = (uint8_t) ch;
     if (n < cap) {
         if (ch == EOF)
@@ -290,7 +306,7 @@ int pas_read_string(uint8_t *buf, int cap)
  * as pas_read_char and pas_readln_skip treat it. */
 int pas_read_eof(void)
 {
-    int ch = getchar();
+    int ch = std_getchar();
     if (ch == EOF)
         return 1;
     unread(ch);
@@ -299,7 +315,7 @@ int pas_read_eof(void)
 
 int pas_read_eoln(void)
 {
-    int ch = getchar();
+    int ch = std_getchar();
     if (ch == EOF)
         die("EOLN at end of file");
     unread(ch);
@@ -309,6 +325,6 @@ int pas_read_eoln(void)
 void pas_readln_skip(void)
 {
     int ch;
-    while ((ch = getchar()) != EOF && ch != '\n') {
+    while ((ch = std_getchar()) != EOF && ch != '\n') {
     }
 }

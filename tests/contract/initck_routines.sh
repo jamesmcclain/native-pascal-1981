@@ -49,7 +49,9 @@ for mode in plain checked; do
 done
 # Calling conventions: INITCK adds no hidden parameters or result changes.
 # Every definition and Pascal call site is pinned, and checking-enabled
-# regions emit exactly the same signatures as the unannotated program.
+# regions emit exactly the same signatures as the unannotated program. The
+# nested `inner` takes its static link (NEW-26) last, in both programs; null
+# when it uses nothing of `outer`.
 for mode in plain checked; do
   bin/pascal1981 -O0 -S "$work/$mode.pas" -o "$work/$mode.ll"
   python3 tests/contract/fixtures/initck_routines/abi-signatures.py "$work/$mode.ll" > "$work/$mode.sig"
@@ -84,8 +86,8 @@ define i16 early(i16 %)
 define i16 fact(i16 %)
 call i16 fact(i16 %)
 define void outer(i16 %)
-call i16 inner(i16 %)
-define i16 inner(i16 %)
+call i16 inner(i16 %, ptr null)
+define i16 inner(i16 %, ptr %)
 SIG
 diff -u "$work/expected.sig" "$work/plain.sig"
 diff -u "$work/expected.sig" "$work/checked.sig"
@@ -275,10 +277,11 @@ for kind in withread nestedread nestedother; do
   expect_fail bad 'prefix\n' "runtime error: INITCK uninitialized $err at line ${site%%|*} column $col"
 done
 
-# Captures: without a static link this compiler cannot lower a nested
-# routine's reference to an enclosing local at all. An enabled read reports
-# the INITCK boundary before lowering; disabled, the pre-existing compiler
-# limitation remains, and INITCK adds nothing to it.
+# Captures: a nested routine reaches an enclosing local through its static
+# link (NEW-26), but captured storage stays outside the INITCK slice. An
+# enabled read in the nested routine reports the INITCK boundary before
+# lowering; disabled, the capture runs, and the local, which the nested
+# routine names, is disqualified in its own routine too.
 cp tests/contract/fixtures/initck_routines/capture.pas "$work/capture.pas"
 if bin/pascal1981 -O0 -S "$work/capture.pas" -o "$work/capture.ll" 2> "$work/err"; then
   echo 'FAIL: enabled capture accepted' >&2; exit 1
@@ -286,11 +289,13 @@ fi
 printf 'INITCK unsupported boundary: global or captured storage\n' > "$work/expected-err"
 sed -E 's/ at line [0-9]+ column [0-9]+$//' "$work/err" | diff -u "$work/expected-err" -
 sed -i 's/{\$INITCK+}/{$INITCK-}/' "$work/capture.pas"
+expect_ok capture '1\n'
+sed -i 's/inner END;/inner; {$INITCK+} WRITELN(x) END;/' "$work/capture.pas"
 if bin/pascal1981 -O0 -S "$work/capture.pas" -o "$work/capture.ll" 2> "$work/err"; then
-  echo 'FAIL: capture unexpectedly supported; revisit INITCK capture coverage' >&2; exit 1
+  echo 'FAIL: enabled read of a captured local accepted in its owner' >&2; exit 1
 fi
-test -s "$work/err"
-! grep -q INITCK "$work/err"
+printf 'INITCK unsupported boundary: escaped local or formal\n' > "$work/expected-err"
+sed -E 's/ at line [0-9]+ column [0-9]+$//' "$work/err" | diff -u "$work/expected-err" -
 
 # --- Uninstrumented C on either side of the side channel (executed). ---
 # drive (C) calls the Pascal probe_cb with nothing published: its formal is

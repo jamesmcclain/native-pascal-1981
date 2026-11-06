@@ -334,8 +334,11 @@ Sym *const_eval(Expr *e)
         return s;
     case E_UN:
         a = const_eval(e->a);
-        if (e->op == OP_NEG && is_int(a->ty))
+        if (e->op == OP_NEG && is_int(a->ty)) {
+            if (a->ival == INT64_MIN)
+                fatal(e->loc, "constant arithmetic overflows INTEGER64");
             return const_int(-a->ival, e->loc);
+        }
         if (e->op == OP_NEG && a->ty->kind == TY_REAL) {
             s = new_sym("<const>", SY_CONST, e->loc);
             s->ty = t_real;
@@ -348,16 +351,27 @@ Sym *const_eval(Expr *e)
         b = const_eval(e->b);
         if (!is_int(a->ty) || !is_int(b->ty))
             unsupported(e->loc, "non-integer constant arithmetic");
+        /* Constants are exact: a result outside INTEGER64 is an error, not
+         * undefined behaviour in pasboot itself. */
+        int64_t r;
         switch (e->op) {
         case OP_ADD:
-            return const_int(a->ival + b->ival, e->loc);
+            if (__builtin_add_overflow(a->ival, b->ival, &r))
+                fatal(e->loc, "constant arithmetic overflows INTEGER64");
+            return const_int(r, e->loc);
         case OP_SUB:
-            return const_int(a->ival - b->ival, e->loc);
+            if (__builtin_sub_overflow(a->ival, b->ival, &r))
+                fatal(e->loc, "constant arithmetic overflows INTEGER64");
+            return const_int(r, e->loc);
         case OP_MUL:
-            return const_int(a->ival * b->ival, e->loc);
+            if (__builtin_mul_overflow(a->ival, b->ival, &r))
+                fatal(e->loc, "constant arithmetic overflows INTEGER64");
+            return const_int(r, e->loc);
         case OP_IDIV:
             if (b->ival == 0)
                 fatal(e->loc, "division by zero in constant");
+            if (a->ival == INT64_MIN && b->ival == -1)
+                fatal(e->loc, "constant arithmetic overflows INTEGER64");
             return const_int(a->ival / b->ival, e->loc);
         default:
             unsupported(e->loc, "constant expression operator");

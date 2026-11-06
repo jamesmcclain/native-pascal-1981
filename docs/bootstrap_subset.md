@@ -93,8 +93,15 @@ fixture in `tests/unit/pasboot/`, and update this document.
 These rules are the ones that a C programmer does not expect:
 
 - `INTEGER` is 16 bits. An operation on two integer operands is done at the
-  width of the wider operand, and the result wraps at that width. The C is
-  compiled with `-fwrapv`. `$MATHCK` settings are accepted but deliberately
+  width of the wider operand, and the result wraps at that width. The
+  generated C does every integer `+ - * DIV MOD`, negation and `FOR` step
+  through the prelude's `pas_add16` ... `pas_mod64` helpers, which compute
+  in unsigned arithmetic. So the wrapping is defined C, also without
+  `-fwrapv`: `MIN DIV -1` is `MIN` and `MIN MOD -1` is 0 at every width.
+  A zero divisor stops the program with
+  `runtime error: division by zero in DIV at f.pas line L (left=X, right=0)`,
+  never a SIGFPE, as compiled Pascal does under either MATHCK setting.
+  The C is still compiled with `-fwrapv`. `$MATHCK` settings are accepted but deliberately
   ignored: generation 1 uses unchecked arithmetic, even under `$MATHCK+`.
   This is the native MATHCK- wrapping policy, not a claim of enabled checks.
   Malformed settings are rejected. No DEBUG coupling or PUSH/POP processing
@@ -142,14 +149,14 @@ not turn its arithmetic into MATHCK operations.
 
 ### Intentional wrapping and explicit overflow detection
 
-`ps_base:StrToIntVal` converts numeric LABEL/GOTO/statement labels to low
+`ps_base:CurLabelKey` converts numeric LABEL/GOTO/statement labels to low
 16-bit equality keys: 32767, 32768, 40000 and 65535 map to 32767, -32768,
 -25536 and -1. Declarations, definitions and references use the same converter.
-Only accumulator `val * 10 + digit` (including the safe 0..9 digit subtraction)
-and sign conversion `-val` run under local MATHCK-; each restores MATHCK+
-immediately. The loop increment and following routines stay enabled. This is
-not general integer-literal conversion, approval of aliases outside the native
-16-bit label domain, or a change to label grammar/range policy.
+It reduces the token's exact value modulo 65536, which cannot overflow, so
+it needs no local MATHCK-. It does not read the lexeme text, so leading
+zeros of any length do not change the key. This is not general
+integer-literal conversion, approval of aliases outside the native 16-bit
+label domain, or a change to label grammar/range policy.
 
 The `FoldArith` helpers in `tc_expr` and `cg_types` also use local MATHCK-:
 they compute wrapped INTEGER64 `+ - *` and negation, restore MATHCK+, and test
@@ -217,29 +224,65 @@ A valid-source fixed point is not proof that arbitrary hostile/oversized input
 cannot exhaust compiler counters or allocations. These remain limits, not
 reasons for blanket MATHCK-:
 
-- `lexer:ScanNumber`, `ParseSignedIntStr` and `ps_base:StrToRealVal` can exceed
-  accumulator/exponent widths on oversized numeric text. INTEGER64 literal
-  precision and WORD64 admission limitations remain; checking must not be
-  weakened to preserve garbage values.
-- Host constant/bound calculations in `tc_expr`, `cg_types` and `tc_decl`
-  need exact diagnostics/width handling on pathological expressions. The
-  `FoldArith` guards are not a proof that every constant calculation is safe.
-  Gen1 C DIV/MOD has no general zero or MIN64/-1 helper: audited bootstrap
-  inputs avoid these cases. Pasboot is not safe for arbitrary arithmetic edge
-  programs merely because a fixed point succeeds.
-- Buffer doubling in `lexer`, `jsonutil`, `ps_base`, `bytebuf`, INTEGER
-  line/column counters and aggregate layout/shadow products can outgrow their
-  representable widths or allocations. Table guards do not prove all sizes
-  safe; impose limits/guards, never modular allocation sizes.
-- `cg_util:IntToStr255` and `cg_symbols:InitckIntText` negate INTEGER32
-  without widening; its minimum has no positive INTEGER32 magnitude. Ordinary
-  bootstrap inputs avoid it. Widen the magnitude as `bytebuf:BufAppendInt`
-  does if that domain is needed; do not disable checks. `pretty81:IntToStr`
-  instead formats the full signed INTEGER64 domain using negative-domain
+Hardened (MTH-A-27), each pinned by a test:
+
+- Pasboot's generated C has no integer undefined behaviour. The prelude
+  helpers make overflow, `MIN DIV -1` and `MIN MOD -1` wrap and a zero
+  divisor a run-time error. `INT64_MIN` is emitted as itself, not as a negated
+  out-of-range literal. `tests/unit/pasboot/arith_edges.pas` runs once
+  normally and once without `-fwrapv` under `-fsanitize=undefined
+  -fsanitize-trap=undefined`. `div_zero.pas` pins the zero-divisor error.
+  `TRUNC` of a NaN or of a value outside INTEGER64 is a run-time error
+  (`pas_trunc16`), not an undefined C conversion.
+- Pasboot's own lexer and constant folder do not overflow. A decimal or
+  radix literal past INTEGER64, the widest pasboot type, is rejected with
+  `integer literal exceeds INTEGER64`. Before, `strtoull` saturated to -1 and
+  radix digits wrapped. A radix base is read without `atoi`, and a base
+  outside 2..36 is `bad radix constant`. Constant `+ - *`, negation and
+  `MIN DIV -1` that leave INTEGER64 are rejected with `constant arithmetic
+  overflows INTEGER64`. Before, they were undefined behaviour in pasboot
+  itself. See the `err_int_literal_*`, `err_radix_*` and `err_const_*`
+  fixtures.
+- The native lexer gives a located `Lexer Error:` and does not stop on a
+  MATHCK or RANGECK failure inside the compiler. The cases are a metacommand
+  integer value outside INTEGER, a metacommand name or value over 255
+  characters, and a radix literal with a bad base or no digit. Before, the
+  last one lexed as 0 followed by a second literal. The line and column
+  counters are INTEGER32, so a source with more than 32767 lines, or with a
+  longer line, compiles with exact positions. Integer literals past
+  2^64 - 1, and REAL literals past the largest double (an exponent of any
+  length), were already rejected. `tests/contract/lexer_numeric_limits.sh`
+  covers these cases.
+- `cg_util:IntToStr255` and `cg_symbols:InitckIntText` take the magnitude in
+  INTEGER64, so the INTEGER32 minimum formats as itself.
+
+Still limits, not reasons for blanket MATHCK-:
+
+- INTEGER64 literal precision and WORD64 admission limits remain. Checking
+  must not be weakened to keep garbage values.
+- Host constant and bound calculations in `tc_expr`, `cg_types` and
+  `tc_decl` need exact diagnostics and width handling on pathological
+  expressions. The `FoldArith` guards do not prove that every constant
+  calculation is safe.
+- A REAL literal's value comes from the runtime's strtod of the whole
+  literal (`pas_real_literal_value`), so its exponent needs no Pascal
+  accumulator.
+- Buffer doubling in `lexer`, `jsonutil` and `ps_base` can outgrow its
+  representable widths or allocations. Table guards do not prove that all
+  sizes are safe. Impose limits and guards, never modular allocation sizes.
+  `bytebuf` grows in INTEGER64, caps its capacity at 2147483647 and stops
+  with a run-time error past it (`BufGrowCap`;
+  `tests/corpus/integration/bytebuf_*.pas`). Codegen forms aggregate layout
+  sums, alignment rounding, array element counts and INITCK leaf counts in
+  INTEGER64 and rejects a layout above 2147483647 bytes with a located
+  diagnostic (`LayoutBytes`; `tests/corpus/checklit/layout_limits/`).
+- `pretty81:IntToStr` already formats the full signed INTEGER64 domain using negative-domain
   digit extraction (including MIN64), and IntLiteral reads `GetInt64` so
   exact JSON companions survive formatting. `tests/contract/pretty81_integers.sh`
   pins parsed/typed round-trips, idempotence and O0–O3 runtime values. This does
-  not repair REAL precision/spelling or admit new WORD64 literal syntax.
+  not admit new WORD64 literal syntax. `pretty81:RealToStr` prints the shortest
+  exact REAL literal (`pas_real_literal_text`), pinned by
+  `tests/contract/pretty81_reals.sh`.
 
 ## How the C is organized
 
