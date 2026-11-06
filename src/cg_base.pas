@@ -21,6 +21,10 @@ VAR
                    checked by the typechecker. This tid is only a valid
                    registered TK_SET entry for representation/bounds; it
                    cannot identify the host of a constructor or binop. }
+  text_tid: INTEGER; { lazily registered the first time TEXT is named (a
+                   declaration, a formal, or the predeclared INPUT/OUTPUT)
+                   -- see EnsureTextType. TEXT is one predeclared type, so
+                   every occurrence must share one tid, as INTEGER does. }
   main_fnty, main_fn, entry_bb: ADRMEM;
   printf_fnty, printf_fn: ADRMEM;
   malloc_fnty, malloc_fn, free_fnty, free_fn: ADRMEM; { the *target program's*

@@ -315,6 +315,7 @@ BEGIN
   voidty := LLVMVoidTypeInContext(ctx);
   setty := LLVMArrayType(i64ty, 4);
   generic_set_tid := 0;
+  text_tid := 0;
   param_arr := AllocPtrArray(12);
   SetPtrArrayElem(param_arr, 0, i32ty);
   SetPtrArrayElem(param_arr, 1, i32ty);

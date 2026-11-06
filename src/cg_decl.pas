@@ -535,19 +535,15 @@ PROCEDURE RegisterPredeclaredFiles;
   2-argument implicit-INPUT form needs to cover. A no-op if the program
   already declared its own INPUT/OUTPUT (e.g. as an explicit heading
   parameter with its own VAR). }
-VAR
-  text_tid: INTEGER;
 BEGIN
   IF LookupSym('INPUT') = 0 THEN
   BEGIN
-    text_tid := RegisterType(TK_FILE, TK_CHAR, 0, 1, i8ptrty);
-    DeclareVar('INPUT', text_tid);
+    DeclareVar('INPUT', EnsureTextType);
     InitFileStorage(symbols[nsymbols].llvm_val, TK_CHAR, 1, 'INPUT');
   END;
   IF LookupSym('OUTPUT') = 0 THEN
   BEGIN
-    text_tid := RegisterType(TK_FILE, TK_CHAR, 0, 1, i8ptrty);
-    DeclareVar('OUTPUT', text_tid);
+    DeclareVar('OUTPUT', EnsureTextType);
     InitFileStorage(symbols[nsymbols].llvm_val, TK_CHAR, 1, 'OUTPUT');
   END;
 END;

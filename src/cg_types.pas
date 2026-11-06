@@ -163,6 +163,18 @@ BEGIN
   EnsureGenericSetType := generic_set_tid;
 END;
 
+FUNCTION EnsureTextType: INTEGER;
+{ Lazily registers (once) the predeclared TEXT file type. A fresh entry per
+  occurrence of the name would give `VAR t: TEXT` a different tid from a
+  `TEXT` actual and fail the VAR identity check, which a `TYPE Txt = TEXT`
+  alias only escaped by resolving once. FILE OF T stays one entry per
+  declaration: distinct typed files are distinct types. }
+BEGIN
+  IF text_tid = 0 THEN
+    text_tid := RegisterType(TK_FILE, TK_CHAR, 0, 1, i8ptrty);
+  EnsureTextType := text_tid;
+END;
+
 PROCEDURE RejectNvptxVector;
 BEGIN
   IF is_nvptx_device THEN
@@ -2084,8 +2096,7 @@ BEGIN
       ELSE IF (unm = 'CLONG') OR (unm = 'CSIZE_T') THEN tid := TK_INTEGER64
       ELSE tid := TK_REAL;
     END
-    ELSE IF unm = 'TEXT' THEN
-      tid := RegisterType(TK_FILE, TK_CHAR, 0, 1, i8ptrty)
+    ELSE IF unm = 'TEXT' THEN tid := EnsureTextType
     ELSE IF unm = 'LSTRING' THEN
     BEGIN
       { A bare LSTRING is LSTRING(256), the same default STRING takes below --

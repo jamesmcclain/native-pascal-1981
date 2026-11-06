@@ -30,6 +30,7 @@ FUNCTION LookupField(rec_tid: INTEGER; fname: Str255): INTEGER;
 FUNCTION FileControlField(fname: Str255; VAR fcb_index: INTEGER32): INTEGER;
 FUNCTION RegisterType(tk, elem_tid: INTEGER; lo, hi: INTEGER32; llvm_ty: ADRMEM): INTEGER;
 FUNCTION EnsureGenericSetType: INTEGER;
+FUNCTION EnsureTextType: INTEGER;
 FUNCTION DeclaredSetBasesConflict(a, b: INTEGER): BOOLEAN;
 FUNCTION EnsureBoolVectorType(n: INTEGER32): INTEGER;
 FUNCTION IsHostDescriptor(tid: INTEGER): BOOLEAN;

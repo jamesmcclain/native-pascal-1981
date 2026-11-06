@@ -8,7 +8,7 @@ PROGRAM FileTrapRead(OUTPUT);
   read mode (2) and a GET past its end (3). }
 TYPE
   Colour = (RED, GREEN, BLUE);
-  Txt = TEXT; { a VAR formal needs the actual's named file type }
+  Txt = TEXT; { an alias of TEXT is TEXT itself }
 VAR
   f: Txt;
   g: FILE OF INTEGER;
