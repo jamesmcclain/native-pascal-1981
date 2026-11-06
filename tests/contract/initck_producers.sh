@@ -210,10 +210,21 @@ test ! -s "$work/err"
 # --- Producers through formals (routine-boundary bindings). ---
 # READ into a VAR formal initializes the caller's local; READ into a value
 # formal overwrites an unset transported state. FOR over a value formal is
-# an ordinary producer; FOR over a VAR formal leaves the CALLER's storage
-# undefined after natural termination, so the caller's checked read fails.
+# an ordinary producer. FOR over a VAR formal is not a producer at all: the
+# IBM manual forbids a reference parameter as a FOR control variable, so it
+# is a typecheck error in both dialects and never reaches the caller's
+# storage.
 cp tests/contract/fixtures/initck_producers/formal-ok.pas "$work/formal-ok.pas"
 expect_ok formal-ok '7z\n9\n-32768-32767\n' '7z\n9\n'
 cp tests/contract/fixtures/initck_producers/formal-bad.pas "$work/formal-bad.pas"
-expect_fail formal-bad '1\n2\n' 'runtime error: INITCK uninitialized local x at line 7 column 22'
+printf '%s\n' 'Type checking failed:' \
+  'FOR control variable cannot be a reference parameter: v at line 2 column 39' \
+  > "$work/formal-bad.expected-err"
+for dialect in vintage extended; do
+  status=0
+  bin/pascal1981 --dialect "$dialect" "$work/formal-bad.pas" -o "$work/formal-bad" 2> "$work/err" || status=$?
+  test "$status" -eq 1
+  test ! -e "$work/formal-bad"
+  diff -u "$work/formal-bad.expected-err" "$work/err"
+done
 echo 'PASS: INITCK scalar producers: unchecked copies, READ/READLN, FOR control, through formals'

@@ -68,6 +68,7 @@ TYPE
                            knows, of any ordinal type (CHAR and BOOLEAN
                            too); a consumer that needs an integer checks tk }
     const_int: INTEGER64;
+    is_ref_param: BOOLEAN; { a formal declared VAR, VARS, CONST or CONSTS }
   END;
 
   TypeRec = RECORD

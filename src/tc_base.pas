@@ -92,6 +92,7 @@ TYPE
                            knows, of any ordinal type (CHAR and BOOLEAN
                            too); a consumer that needs an integer checks tk }
     const_int: INTEGER64;
+    is_ref_param: BOOLEAN; { a formal declared VAR, VARS, CONST or CONSTS }
   END;
 
   TypeRec = RECORD
@@ -410,6 +411,7 @@ BEGIN
   symbols[nsymbols].is_extern := FALSE;
   symbols[nsymbols].has_const_int := FALSE;
   symbols[nsymbols].const_int := 0;
+  symbols[nsymbols].is_ref_param := FALSE;
   DefineSymbol := nsymbols;
 END;
 

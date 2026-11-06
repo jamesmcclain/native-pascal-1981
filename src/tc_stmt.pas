@@ -519,6 +519,9 @@ BEGIN
       AddError2('Undefined identifier: ', varname)
     ELSE BEGIN
       vi := symbols[si].tk;
+      IF symbols[si].is_ref_param THEN
+        AddError2('FOR control variable cannot be a reference parameter: ',
+                  varname);
       IF NOT IsOrdinal(vi) THEN
         AddError('FOR loop variable must be an ordinal type');
     END;

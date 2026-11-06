@@ -524,8 +524,7 @@ converted from such an address locates no registered allocation, so reads
 through it are untracked. An address-taken control variable is not unset by
 natural FOR termination. The same residual as for releases above remains: an
 unchecked copy of unset data into the variable after its `ADR` can make it
-unset again before a raw write (as can a FOR over a VAR formal bound to
-address-taken caller storage). The `ADR` of a WITH-bound field still
+unset again before a raw write. The `ADR` of a WITH-bound field still
 disqualifies its whole object, because raw writes from it may run into the
 field's siblings.
 
@@ -1308,6 +1307,9 @@ The check covers:
   control variable assigned: a final expression that names the control
   variable, or a function it calls, sees the variable's prior value, never
   an unchecked initial value.
+
+A `FOR` control variable cannot be a reference parameter (`VAR`, `VARS`,
+`CONST` or `CONSTS`), as in the IBM manual, so the typechecker rejects it.
 
 The check is made on the value before it is narrowed to the subrange's
 storage width, so a wide value cannot wrap into range. A constant that is
