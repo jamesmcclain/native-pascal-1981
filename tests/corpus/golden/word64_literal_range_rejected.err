@@ -1,0 +1,5 @@
+Type checking failed:
+Negative integer constant out of range for INTEGER64 at line 5 column 7
+Positive integer constant out of range for INTEGER64 at line 8 column 8
+Positive integer constant out of range for WORD32 at line 9 column 8
+Negative integer constant out of range for INTEGER64 at line 10 column 8

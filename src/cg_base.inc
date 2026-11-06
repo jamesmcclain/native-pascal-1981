@@ -253,7 +253,9 @@ CONST
     ResolveTypeExpr), lo/hi are 0/lanes-1 so LOWER/UPPER read the table
     unchanged, and llvm_ty is the <n x T> vector type. }
 
-  MAX_SYMBOLS = 500;
+  MAX_SYMBOLS = 4000; { Twice the typechecker's 2000, which reports overflow
+    with a source location; codegen's few internal and WITH/alias entries
+    must never exhaust this table first. }
   MAX_SCOPES = 64;
   MAX_PARAMS = 16;
   MAX_SYSV_LEAVES = 32; { Upper bound on the scalar leaves of an aggregate the
@@ -432,6 +434,13 @@ TYPE
     nparams: INTEGER32;
     param_tk: ParamTkArr;
     param_is_var: ParamVarArr;
+    param_is_const: ParamVarArr; { TRUE for a CONST/CONSTS formal: a
+                                   reference-mode (param_is_var) formal the
+                                   callee never writes, so an actual without
+                                   storage of its own (a constant, a function
+                                   result, an expression) is passed as the
+                                   address of a private temporary holding its
+                                   value. A VAR formal still needs an lvalue. }
     param_needs_copy: ParamVarArr; { TRUE for a value-mode (no VAR/CONST)
                                      ARRAY/RECORD/LSTRING/STRING param: still
                                      passed as a pointer at the ABI level
@@ -500,6 +509,10 @@ VAR
                    below is what actually allows that, this tid just needs
                    to be *some* valid registered TK_SET entry to satisfy
                    TypeKind's table lookup. }
+  text_tid: INTEGER; { lazily registered the first time TEXT is named (a
+                   declaration, a formal, or the predeclared INPUT/OUTPUT)
+                   -- see EnsureTextType. TEXT is one predeclared type, so
+                   every occurrence must share one tid, as INTEGER does. }
   main_fnty, main_fn, entry_bb: ADRMEM;
   printf_fnty, printf_fn: ADRMEM;
   malloc_fnty, malloc_fn, free_fnty, free_fn: ADRMEM; { the *target program's*
@@ -576,6 +589,7 @@ VAR
   read_lstring_fnty, read_lstring_fn: ADRMEM;
   read_string_fnty, read_string_fn: ADRMEM;
   readln_skip_fnty, readln_skip_fn: ADRMEM;
+  read_eof_fnty, read_eof_fn, read_eoln_fn: ADRMEM; { niladic EOF/EOLN }
   byval_kind_id, align_kind_id: CINT; { LLVM enum attribute kind ids for the
     [C] FOREIGN MEMORY-class byval call marshalling below, resolved once at
     init time (see byval_align_kinds_init) rather than re-resolving by name
@@ -634,10 +648,14 @@ VAR
   scaneq_fnty, scaneq_fn: ADRMEM;
   scanne_fnty, scanne_fn: ADRMEM;
   encode_fnty, encode_fn: ADRMEM;
-  decode_fnty, decode_fn: ADRMEM; { the target program's runtime-library
-    string builtins (INSERT/DELETE via libc's memmove; POSITN/SCANEQ/SCANNE/
-    ENCODE/DECODE via libpascalrt's positn/scaneq/scanne/encode_value/
-    decode_value, declared+called exactly like malloc/free/printf above --
+  decode_int_fnty, decode_int_fn: ADRMEM;
+  decode_enum_fnty, decode_enum_fn: ADRMEM;
+  decode_char_fnty, decode_char_fn: ADRMEM;
+  decode_real_fnty, decode_real_fn: ADRMEM; { the target program's
+    runtime-library string builtins (INSERT/DELETE via libc's memmove;
+    POSITN/SCANEQ/SCANNE/ENCODE/DECODE via libpascalrt's positn/scaneq/
+    scanne/pas_encode_fmt/pas_decode_*, declared+called exactly like
+    malloc/free/printf above --
     a program built from this file's output must link libpascalrt.a, same
     as one built from the Python reference's output already must. }
   sqrt_fnty, sqrt_fn, sin_fnty, sin_fn, cos_fnty, cos_fn: ADRMEM;

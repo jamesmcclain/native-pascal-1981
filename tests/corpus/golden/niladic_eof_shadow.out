@@ -1,0 +1,3 @@
+local eof = 7
+user EOLN
+builtin EOF

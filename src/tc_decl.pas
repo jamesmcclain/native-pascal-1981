@@ -586,6 +586,11 @@ BEGIN
           nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(pnames, pj)));
           si := DefineSymbol(nm, 'VAR', ptk, paux, paux2, paux3, pidx);
           symbols[si].type_node := GetObj(param, 'type_expr');
+          symbols[si].is_ref_param :=
+            (GetStr(param, 'mode') = 'VAR') OR
+            (GetStr(param, 'mode') = 'VARS') OR
+            (GetStr(param, 'mode') = 'CONST') OR
+            (GetStr(param, 'mode') = 'CONSTS');
           IF ptk = TK_SET THEN
             symbols[si].set_sem_base := SemanticSetBaseType(symbols[si].type_node);
           IF IsOrdinal(ptk) THEN
@@ -923,10 +928,10 @@ PROCEDURE ValidateRoutineExport(iface_decl, impl_decls: ADRMEM; name: Str255);
   parameter count/type, return type, or VARARGS-ness, both compile clean
   through every earlier native stage and previously only surfaced (if at
   all) as a clang/linker error or a silently wrong ABI. Parameter *mode*
-  (VAR/CONST/value) is deliberately not compared: this typechecker's own
-  symbol table has never tracked per-parameter mode (see CheckDecl's
-  ProcDecl/FuncDecl case), so there is nothing here to compare it against
-  without extending SymRec for a dimension nothing else needs yet. }
+  (VAR/CONST/value) is deliberately not compared: the symbol table records
+  only whether a formal is a reference parameter (SymRec.is_ref_param, for
+  the FOR control variable check), not its full mode, so there is nothing
+  here to compare it against. }
 VAR
   a_is_func, b_is_vararg: BOOLEAN;
   a_nparams: INTEGER32;

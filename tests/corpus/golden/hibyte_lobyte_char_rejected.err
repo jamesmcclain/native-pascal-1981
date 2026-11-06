@@ -1,0 +1,2 @@
+Type checking failed:
+HIBYTE/LOBYTE argument must be INTEGER or WORD at line 5 column 25

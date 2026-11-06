@@ -240,26 +240,6 @@ BEGIN
     CheckCompoundOrStmt(otherwise_stmt);
 END;
 
-FUNCTION ShadowedWriteArg(arg: ADRMEM; pname: Str255): ADRMEM;
-{ ps_stmt.pas's ParseAssignOrCallStmt wraps the actual arguments of anything
-  spelled WRITE/WRITELN in WriteArg nodes, case-insensitively and without
-  consulting any declaration -- it has no symbol table to consult. So a call
-  to a *user-declared* WRITELN arrives WriteArg-wrapped too, and the generic
-  argument path has to see through the wrapper: CheckExpr has no WriteArg
-  case and would return silently, leaving codegen to abort on a node the
-  typechecker had waved through. A `:width:precision' suffix has no meaning
-  for a user routine, so it is rejected rather than dropped. }
-BEGIN
-  IF NodeType(arg) = 'WriteArg' THEN
-  BEGIN
-    IF (GetObjOrNil(arg, 'width') <> NIL) OR (GetObjOrNil(arg, 'precision') <> NIL) THEN
-      AddError2('Field width specifier is not allowed in a call to the user-declared ', pname);
-    ShadowedWriteArg := GetObj(arg, 'expr');
-  END
-  ELSE
-    ShadowedWriteArg := arg;
-END;
-
 PROCEDURE CheckNewDispose(args_arr: ADRMEM; pname: Str255);
 { Kept out of CheckStmt so its recursive frame stays small (tests/corpus/depth.sh). }
 VAR
@@ -302,6 +282,141 @@ BEGIN
     END;
     IF nargs = 2 THEN
       cond_tk := CheckExpr(cJSON_GetArrayItem(args_arr, 1));
+  END;
+END;
+
+PROCEDURE CheckCopystr(args_arr: ADRMEM);
+{ COPYSTR(CONST S: STRING; VAR D: STRING) into a bare fixed STRING variable,
+  including type aliases and formals; aux2 = 0 excludes LSTRING. One-character
+  literals adapt as strings, not arbitrary CHARs. }
+VAR
+  arg: ADRMEM;
+  tk: INTEGER;
+  si: INTEGER32;
+BEGIN
+  IF cJSON_GetArraySize(args_arr) <> 2 THEN
+    AddError('COPYSTR expects exactly two arguments (S, D)')
+  ELSE
+  BEGIN
+    arg := cJSON_GetArrayItem(args_arr, 0);
+    tk := CheckExpr(arg);
+    IF (tk <> TK_STRING) AND (tk <> TK_UNKNOWN) AND
+       (NodeType(arg) <> 'CharLiteral') THEN
+      AddError('COPYSTR source must be STRING or LSTRING');
+    arg := cJSON_GetArrayItem(args_arr, 1);
+    IF NodeType(arg) <> 'Identifier' THEN
+      AddError('COPYSTR destination must be a bare STRING variable')
+    ELSE
+    BEGIN
+      si := LookupSymbol(GetStr(arg, 'name'));
+      IF si = 0 THEN
+        AddUndefinedIdentifier(arg)
+      ELSE IF (symbols[si].kind <> 'VAR') OR
+              (symbols[si].tk <> TK_STRING) OR (symbols[si].aux2 <> 0) THEN
+        AddError('COPYSTR destination must be a bare STRING variable');
+    END;
+  END;
+END;
+
+PROCEDURE CheckInsert(args_arr: ADRMEM);
+{ INSERT(CONST S: STRING; VAR D: LSTRING; I: INTEGER) into a bare LSTRING
+  variable, including type aliases and formals; aux2 = 1 marks LSTRING.
+  One-character literals adapt as strings, not arbitrary CHARs. }
+VAR
+  arg: ADRMEM;
+  tk: INTEGER;
+  si: INTEGER32;
+BEGIN
+  IF cJSON_GetArraySize(args_arr) <> 3 THEN
+    AddError('INSERT expects exactly three arguments (S, D, I)')
+  ELSE
+  BEGIN
+    arg := cJSON_GetArrayItem(args_arr, 0);
+    tk := CheckExpr(arg);
+    IF (tk <> TK_STRING) AND (tk <> TK_UNKNOWN) AND
+       (NodeType(arg) <> 'CharLiteral') THEN
+      AddError('INSERT source must be STRING or LSTRING');
+    arg := cJSON_GetArrayItem(args_arr, 1);
+    IF NodeType(arg) <> 'Identifier' THEN
+      AddError('INSERT destination must be a bare LSTRING variable')
+    ELSE
+    BEGIN
+      si := LookupSymbol(GetStr(arg, 'name'));
+      IF si = 0 THEN
+        AddUndefinedIdentifier(arg)
+      ELSE IF (symbols[si].kind <> 'VAR') OR
+              (symbols[si].tk <> TK_STRING) OR (symbols[si].aux2 <> 1) THEN
+        AddError('INSERT destination must be a bare LSTRING variable');
+    END;
+    tk := CheckExprForTarget(cJSON_GetArrayItem(args_arr, 2), TK_INTEGER);
+    IF NOT CanAssign(TK_INTEGER, tk) THEN
+      AddError('INSERT position must be INTEGER');
+  END;
+END;
+
+PROCEDURE CheckDelete(args_arr: ADRMEM);
+{ DELETE(VAR D: LSTRING; I, L: INTEGER) on a bare LSTRING variable, including
+  type aliases and formals; aux2 = 1 marks LSTRING. }
+VAR
+  arg: ADRMEM;
+  tk: INTEGER;
+  si: INTEGER32;
+BEGIN
+  IF cJSON_GetArraySize(args_arr) <> 3 THEN
+    AddError('DELETE expects exactly three arguments (D, I, L)')
+  ELSE
+  BEGIN
+    arg := cJSON_GetArrayItem(args_arr, 0);
+    IF NodeType(arg) <> 'Identifier' THEN
+      AddError('DELETE destination must be a bare LSTRING variable')
+    ELSE
+    BEGIN
+      si := LookupSymbol(GetStr(arg, 'name'));
+      IF si = 0 THEN
+        AddUndefinedIdentifier(arg)
+      ELSE IF (symbols[si].kind <> 'VAR') OR
+              (symbols[si].tk <> TK_STRING) OR (symbols[si].aux2 <> 1) THEN
+        AddError('DELETE destination must be a bare LSTRING variable');
+    END;
+    tk := CheckExprForTarget(cJSON_GetArrayItem(args_arr, 1), TK_INTEGER);
+    IF NOT CanAssign(TK_INTEGER, tk) THEN
+      AddError('DELETE position must be INTEGER');
+    tk := CheckExprForTarget(cJSON_GetArrayItem(args_arr, 2), TK_INTEGER);
+    IF NOT CanAssign(TK_INTEGER, tk) THEN
+      AddError('DELETE count must be INTEGER');
+  END;
+END;
+
+PROCEDURE CheckCopylst(args_arr: ADRMEM);
+{ Native COPYLST initially supports the backend's bare destination seam.
+  aux2 distinguishes LSTRING from fixed STRING, including type aliases and
+  formals. One-character literals adapt as strings, not arbitrary CHARs. }
+VAR
+  arg: ADRMEM;
+  tk: INTEGER;
+  si: INTEGER32;
+BEGIN
+  IF cJSON_GetArraySize(args_arr) <> 2 THEN
+    AddError('COPYLST expects exactly two arguments (S, D)')
+  ELSE
+  BEGIN
+    arg := cJSON_GetArrayItem(args_arr, 0);
+    tk := CheckExpr(arg);
+    IF (tk <> TK_STRING) AND (tk <> TK_UNKNOWN) AND
+       (NodeType(arg) <> 'CharLiteral') THEN
+      AddError('COPYLST source must be STRING or LSTRING');
+    arg := cJSON_GetArrayItem(args_arr, 1);
+    IF NodeType(arg) <> 'Identifier' THEN
+      AddError('COPYLST destination must be a bare LSTRING variable')
+    ELSE
+    BEGIN
+      si := LookupSymbol(GetStr(arg, 'name'));
+      IF si = 0 THEN
+        AddUndefinedIdentifier(arg)
+      ELSE IF (symbols[si].kind <> 'VAR') OR
+              (symbols[si].tk <> TK_STRING) OR (symbols[si].aux2 <> 1) THEN
+        AddError('COPYLST destination must be a bare LSTRING variable');
+    END;
   END;
 END;
 
@@ -384,6 +499,9 @@ BEGIN
       AddError2('Undefined identifier: ', varname)
     ELSE BEGIN
       vi := symbols[si].tk;
+      IF symbols[si].is_ref_param THEN
+        AddError2('FOR control variable cannot be a reference parameter: ',
+                  varname);
       IF NOT IsOrdinal(vi) THEN
         AddError('FOR loop variable must be an ordinal type');
     END;
@@ -562,6 +680,14 @@ BEGIN
     END
     ELSE IF (pname = 'NEW') OR (pname = 'DISPOSE') THEN
       CheckNewDispose(args_arr, pname)
+    ELSE IF pname = 'COPYLST' THEN
+      CheckCopylst(args_arr)
+    ELSE IF pname = 'COPYSTR' THEN
+      CheckCopystr(args_arr)
+    ELSE IF pname = 'DELETE' THEN
+      CheckDelete(args_arr)
+    ELSE IF pname = 'INSERT' THEN
+      CheckInsert(args_arr)
     ELSE IF pname = 'CONCAT' THEN
     BEGIN
       { CONCAT(VAR d: LSTRING-or-STRING-or-Str255; CONST s: STRING-or-

@@ -219,6 +219,35 @@ BEGIN
   IsConversionBuiltin := StringEqual(up, 'TRUNC') OR StringEqual(up, 'ROUND');
 END;
 
+FUNCTION IsFormattedArgCall(name: Str255): BOOLEAN;
+{ Calls whose actuals take WRITE's `X:M:N` field-width form and are parsed
+  into WriteArg nodes: WRITE/WRITELN themselves and the ENCODE/DECODE
+  intrinsics, which the manual defines as working exactly like WRITE and
+  READ, M and N parameters included (11-14, 11-15). Spelling-based, like
+  WRITE: a user routine of the same name receives wrapped actuals, which the
+  typechecker and codegen unwrap (ShadowedWriteArg). }
+VAR
+  up: Str255;
+BEGIN
+  up := UpperStr(name);
+  IsFormattedArgCall := StringEqual(up, 'WRITE') OR StringEqual(up, 'WRITELN') OR
+    StringEqual(up, 'ENCODE') OR StringEqual(up, 'DECODE');
+END;
+
+FUNCTION IsConstantCallName(name: Str255): BOOLEAN;
+{ The function-shaped forms of a constant expression: ParseConstant admits
+  exactly these names followed by `(`, and a type clause recognizes one as
+  the start of a subrange (CHR(250)..CHR(255)) rather than a parameterized
+  type name (LSTRING(10)). }
+VAR
+  up: Str255;
+BEGIN
+  up := UpperStr(name);
+  IsConstantCallName := StringEqual(up, 'WRD') OR StringEqual(up, 'BYWORD') OR
+    StringEqual(up, 'ORD') OR StringEqual(up, 'CHR') OR
+    StringEqual(up, 'SUCC') OR StringEqual(up, 'PRED');
+END;
+
 PROCEDURE AddOpLocation(node: ADRMEM; tok: PToken);
 VAR
   location: ADRMEM;
@@ -269,6 +298,48 @@ BEGIN
   ParseActualParameterList := args_arr;
 END;
 
+FUNCTION ParseWriteArg: ADRMEM;
+VAR
+  node: ADRMEM;
+BEGIN
+  node := CreateTriviaNode('WriteArg');
+  AddField(node, 'expr', ParseExpression);
+  IF Match('COLON') THEN
+  BEGIN
+    IF CurKind = 'COLON' THEN
+    BEGIN
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
+      AddNullField(node, 'width');
+      AddField(node, 'precision', ParseExpression);
+    END
+    ELSE
+    BEGIN
+      AddField(node, 'width', ParseExpression);
+      IF Match('COLON') THEN
+        AddField(node, 'precision', ParseExpression)
+      ELSE
+        AddNullField(node, 'precision');
+    END;
+  END
+  ELSE
+  BEGIN
+    AddNullField(node, 'width');
+    AddNullField(node, 'precision');
+  END;
+  ParseWriteArg := node;
+END;
+
+FUNCTION ParseWriteArgList: ADRMEM;
+VAR
+  arr: ADRMEM;
+BEGIN
+  arr := cJSON_CreateArray;
+  cJSON_AddItemToArray(arr, ParseWriteArg);
+  WHILE Match('COMMA') DO
+    cJSON_AddItemToArray(arr, ParseWriteArg);
+  ParseWriteArgList := arr;
+END;
+
 FUNCTION ParseIdentListArr: ADRMEM;
 VAR
   arr: ADRMEM;
@@ -284,9 +355,18 @@ BEGIN
   ParseIdentListArr := arr;
 END;
 
+PROCEDURE AddIntLiteralValue(node: ADRMEM);
+{ The current INTEGER_LITERAL token's value. A literal of 2^63 or more is
+  stored as its WORD64 bit pattern and marked word64, which every later
+  stage reads before the value. }
+BEGIN
+  AddIntField(node, 'value', CurValueInt());
+  IF CurValueWord64 THEN AddBoolField(node, 'word64', TRUE);
+END;
+
 FUNCTION ParseConstant: ADRMEM;
 VAR
-  node, args_arr_const: ADRMEM;
+  node, args_arr_const, literal: ADRMEM;
   val_str: Str255;
   sign_neg: BOOLEAN;
   res_c: CINT;
@@ -299,7 +379,7 @@ BEGIN
   IF CurKind = 'INTEGER_LITERAL' THEN
   BEGIN
     node := CreateTriviaNode('IntLiteral');
-    AddIntField(node, 'value', CurValueInt());
+    AddIntLiteralValue(node);
     Expect('INTEGER_LITERAL');
     ParseConstant := node;
   END
@@ -345,10 +425,7 @@ BEGIN
     val_str := CurLex;
     name_tok := GetTok(0);
     Expect('IDENTIFIER');
-    IF (StringEqual(UpperStr(val_str), 'WRD') OR StringEqual(UpperStr(val_str), 'BYWORD') OR
-        StringEqual(UpperStr(val_str), 'ORD') OR StringEqual(UpperStr(val_str), 'CHR') OR
-        StringEqual(UpperStr(val_str), 'SUCC') OR StringEqual(UpperStr(val_str), 'PRED')) AND
-       (CurKind = 'LPAREN') THEN
+    IF IsConstantCallName(val_str) AND (CurKind = 'LPAREN') THEN
     BEGIN
       BEGIN RelayTokenTrivia; pos := pos + 1; END;
       node := CreateTriviaNode('FuncCall');
@@ -382,10 +459,21 @@ BEGIN
     IF CurKind = 'INTEGER_LITERAL' THEN
     BEGIN
       node := CreateTriviaNode('IntLiteral');
-      IF sign_neg THEN
+      IF sign_neg AND CurValueWord64 THEN
+      BEGIN
+        { -(2^63 or more) has no negated INTEGER64 value to store; keep the
+          sign as an operator so the typechecker folds -2^63 and reports
+          the rest at their own location. }
+        AddIntLiteralValue(node);
+        literal := node;
+        node := CreateTriviaNode('UnaryOp');
+        AddStringField(node, 'op', 'MINUS');
+        AddField(node, 'operand', literal);
+      END
+      ELSE IF sign_neg THEN
         AddIntField(node, 'value', -CurValueInt())
       ELSE
-        AddIntField(node, 'value', CurValueInt());
+        AddIntLiteralValue(node);
       Expect('INTEGER_LITERAL');
       ParseConstant := node;
     END
@@ -474,7 +562,7 @@ BEGIN
   ELSE IF CurKind = 'INTEGER_LITERAL' THEN
   BEGIN
     node := CreateTriviaNode('IntLiteral');
-    AddIntField(node, 'value', CurValueInt());
+    AddIntLiteralValue(node);
     Expect('INTEGER_LITERAL');
     ParseFactorBody := node;
   END
@@ -537,17 +625,20 @@ BEGIN
     BEGIN
       name_tok := GetTok(0);
       pos := pos + 2;
-      IF CurKind <> 'RPAREN' THEN
-        args_arr := ParseActualParameterList
+      IF CurKind = 'RPAREN' THEN
+        args_arr := cJSON_CreateArray
+      ELSE IF IsFormattedArgCall(name) THEN
+        args_arr := ParseWriteArgList
       ELSE
-        args_arr := cJSON_CreateArray;
+        args_arr := ParseActualParameterList;
       Expect('RPAREN');
       node := CreateTriviaNode('FuncCall');
       AddStringField(node, 'name', name);
       IF IsMathckBuiltin(name) THEN AddMathckSnapshot(node, name_tok)
       ELSE IF StringEqual(UpperStr(name), 'CHR') OR StringEqual(UpperStr(name), 'BYWORD') THEN
         AddByteDomainSnapshot(node, name_tok)
-      ELSE IF IsConversionBuiltin(name) THEN AddOpLocation(node, name_tok);
+      ELSE IF IsConversionBuiltin(name) OR IsFormattedArgCall(name) THEN
+        AddOpLocation(node, name_tok);
       AddField(node, 'args', args_arr);
       IF (bound_expr_depth > 0) AND
          ((CurKind = 'LBRACKET') OR (CurKind = 'DOT') OR (CurKind = 'POINTER')) THEN
@@ -848,7 +939,11 @@ VAR
 BEGIN
   IF CurKind = 'IDENTIFIER' THEN
   BEGIN
-    IF NextKind = 'RANGE' THEN
+    { A constant call (CHR(250)..CHR(255)) begins a subrange, as a named
+      constant does; a type name never takes `(` except as the capacity
+      of STRING/LSTRING, which are not constant call names. }
+    IF (NextKind = 'RANGE') OR
+       (IsConstantCallName(CurLex) AND (NextKind = 'LPAREN')) THEN
     BEGIN
       low_e := ParseConstant;
       Expect('RANGE');
@@ -1133,7 +1228,9 @@ BEGIN
     AddStringField(node, 'flavor', 'ADS');
     ParseType := node;
   END
-  ELSE IF (CurKind = 'IDENTIFIER') AND (NextKind = 'RANGE') THEN
+  ELSE IF (CurKind = 'IDENTIFIER') AND
+          ((NextKind = 'RANGE') OR
+           (IsConstantCallName(CurLex) AND (NextKind = 'LPAREN'))) THEN
   BEGIN
     node := ParseSetBase;
     ParseType := node;

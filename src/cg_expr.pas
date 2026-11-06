@@ -1479,12 +1479,61 @@ BEGIN
     ShadowedWriteArg := arg;
 END;
 
+FUNCTION ActualNamesStorage(arg_node: ADRMEM): BOOLEAN;
+{ Does a call actual have storage of its own for a reference formal to
+  bind: a variable or formal, a bare niladic FUNCTION call (which
+  CodegenCallCommon materializes itself) or a Designator. A named
+  constant, a literal, a parenthesized call or any other expression does
+  not. }
+VAR
+  nm: Str255;
+BEGIN
+  IF NodeType(arg_node) = 'Designator' THEN
+    ActualNamesStorage := TRUE
+  ELSE IF NodeType(arg_node) = 'Identifier' THEN
+  BEGIN
+    nm := GetStr(arg_node, 'name');
+    ActualNamesStorage := (LookupSym(nm) <> 0) OR RoutineIsFunc(LookupRoutine(nm));
+  END
+  ELSE
+    ActualNamesStorage := FALSE;
+END;
+
+FUNCTION MaterializeConstActual(arg_node: ADRMEM; tk: INTEGER; name: Str255): ADRMEM;
+{ The address of a fresh entry-block temporary of the formal's type holding
+  the actual's value, for a CONST formal whose actual has no storage of its
+  own. The IBM manual (10-10) passes a constant identifier, a structured
+  constant or a function result by CONST reference this way; any
+  expression assignable to the formal is accepted here, as for a value
+  formal. The actual is a checked value read like an assignment source and
+  the temporary is initialized by construction, so nothing is published to
+  a tracked callee formal (it binds private initialized state). }
+VAR
+  v, tmp: ADRMEM;
+BEGIN
+  tmp := EntryAlloca(LLVMTypeForTk(tk), '');
+  IF (NodeType(arg_node) = 'StringLiteral') AND (TypeKind(tk) = TK_LSTRING) THEN
+    CodegenLStringLiteralAssign(tmp, tk, DecodeStringLiteral(GetStr(arg_node, 'value')))
+  ELSE IF (NodeType(arg_node) = 'StringLiteral') AND (TypeKind(tk) = TK_STRING) THEN
+    CodegenStringLiteralAssign(tmp, tk, DecodeStringLiteral(GetStr(arg_node, 'value')))
+  ELSE
+  BEGIN
+    v := CodegenExpr(arg_node);
+    v := CoerceCheckedForAssign(v, last_val_tk, tk, arg_node, name);
+    LLVMBuildStore(builder, v, tmp);
+  END;
+  last_val_tk := tk;
+  MaterializeConstActual := tmp;
+END;
+
 FUNCTION CodegenCallCommon(name: Str255; args_arr: ADRMEM): ADRMEM;
 { Shared by a FuncCall expression and a bare ProcCallStmt that isn't
   WRITE/WRITELN: look up a user-declared routine, marshal its arguments
   (VAR-mode: the callee needs the callee's storage address directly, so the
-  actual argument must be a bare Identifier and is passed unloaded; value
-  mode: CodegenExpr as usual), and build the call. Sets last_val_tk to the
+  actual argument must be a bare Identifier or Designator and is passed
+  unloaded; CONST-mode: the same, except that an actual without storage is
+  spilled to a private temporary whose address is passed; value mode:
+  CodegenExpr as usual), and build the call. Sets last_val_tk to the
   routine's return type kind (TK_UNKNOWN for a PROCEDURE, meaningless to
   the caller in that case). }
 VAR
@@ -1598,7 +1647,12 @@ BEGIN
       ELSE IF routines[ri].param_is_var[i + 1] THEN
       BEGIN
         var_shadow := NIL;
-        IF NodeType(arg_node) = 'Identifier' THEN
+        IF routines[ri].param_is_const[i + 1] AND NOT ActualNamesStorage(arg_node) THEN
+          { A CONST formal is a read-only reference: an actual without
+            storage of its own travels as the address of a private
+            temporary. A VAR formal still needs an lvalue (below). }
+          v := MaterializeConstActual(arg_node, routines[ri].param_tk[i + 1], name)
+        ELSE IF NodeType(arg_node) = 'Identifier' THEN
         BEGIN
           arg_nm := GetStr(arg_node, 'name');
           symi := LookupSym(arg_nm);
@@ -2078,6 +2132,67 @@ BEGIN
   discard := LLVMBuildUnreachable(builder);
 END;
 
+PROCEDURE GuardNilckValue(p, ptr_ty, flags, location: ADRMEM; disposing: BOOLEAN);
+{ Check an already-loaded pointer without re-evaluating its designator.
+  Missing/malformed boolean snapshots opt out, as for INITCK. }
+VAR
+  bad_bb, ok_bb, ps, args, fnty, fn, discard: ADRMEM;
+  msg, failure_name: Str255;
+  line, column: INTEGER32;
+BEGIN
+  IF NOT GetBool(flags, 'NILCK') THEN RETURN;
+  line := GetInt(location, 'line');
+  column := GetInt(location, 'column');
+  IF is_device_compiland THEN
+  BEGIN
+    msg := 'NILCK unsupported boundary: DEVICE pointer dereference';
+    IF (line > 0) AND (column > 0) THEN
+    BEGIN
+      CONCAT(msg, ' at line ');
+      CONCAT(msg, InitckIntText(line));
+      CONCAT(msg, ' column ');
+      CONCAT(msg, InitckIntText(column));
+    END;
+    AbortWith(msg);
+  END;
+  bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('nilck.bad'));
+  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('nilck.ok'));
+  LLVMBuildCondBr(builder, LLVMBuildICmp(builder, LLVMIntEQ, p,
+    LLVMConstNull(ptr_ty), MakeCStr('nilck.isnil')), bad_bb, ok_bb);
+  LLVMPositionBuilderAtEnd(builder, bad_bb);
+  ps := AllocPtrArray(2);
+  SetPtrArrayElem(ps, 0, i32ty);
+  SetPtrArrayElem(ps, 1, i32ty);
+  fnty := LLVMFunctionType(voidty, ps, 2, 0);
+  failure_name := 'pas_nilck_error';
+  IF disposing THEN failure_name := 'pas_nilck_dispose_error';
+  fn := LLVMGetNamedFunction(modl, MakeCStr(failure_name));
+  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr(failure_name), fnty);
+  args := AllocPtrArray(2);
+  SetPtrArrayElem(args, 0, LLVMConstInt(i32ty, line, 0));
+  SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, column, 0));
+  discard := LLVMBuildCall2(builder, fnty, fn, args, 2, MakeCStr(''));
+  discard := LLVMBuildUnreachable(builder);
+  LLVMPositionBuilderAtEnd(builder, ok_bb);
+END;
+
+PROCEDURE GuardNilckPointer(p, ptr_ty, site: ADRMEM);
+{ Ordinary ^ owns its read snapshot. Descriptor dereferences retain their
+  independent specialized checks. }
+BEGIN
+  GuardNilckValue(p, ptr_ty, GetObjOrNil(site, 'read_flags'),
+    GetObjOrNil(site, 'read_location'), FALSE);
+END;
+
+PROCEDURE GuardNilckDispose(p, stmt: ADRMEM);
+{ DISPOSE owns the name-token flags/location, not its actual's flags. Both
+  ordinary pointers and descriptor data pointers reach this after INITCK
+  and the sole pointer load, before metadata retirement or free. }
+BEGIN
+  GuardNilckValue(p, i8ptrty, GetObjOrNil(stmt, 'meta_flags'),
+    GetObjOrNil(stmt, 'location'), TRUE);
+END;
+
 FUNCTION ComputeDesignatorAddress(node: ADRMEM): ADRMEM;
 { Shared by a Designator read (CodegenExpr) and a Designator write
   (CodegenAssignStmt): walk `name` plus zero or more INDEX/FIELD selectors,
@@ -2096,6 +2211,7 @@ VAR
   idx_val, offset, offset_ty: ADRMEM;
   fi: INTEGER;
   file_handle, file_fcb, file_call_args, file_raw_buf, discard: ADRMEM;
+  fcb_field: INTEGER32; { filefcbty index of an F.TRAP/F.ERRS selector }
   folded: INTEGER64;
   indexck, unsigned_idx, super_checked: BOOLEAN;
   idx128, i128ty, in_bounds, upper_ok, bad_bb, ok_bb: ADRMEM;
@@ -2137,14 +2253,26 @@ BEGIN
     base_ptr := EntryAlloca(LLVMTypeForTk(cur_tid), '');
     LLVMBuildStore(builder, file_handle, base_ptr);
   END
-  ELSE IF (symi = 0) AND (nsel = 0) AND RoutineIsFunc(LookupRoutine(nm)) THEN
+  ELSE IF (symi = 0) AND (nsel > 0) AND (cur_func_name <> '') AND
+          (nm = cur_func_name) AND (cur_func_ret_state = NIL) THEN
+  BEGIN
+    { `F.f` / `F[i]` inside F's own body selects from F's result variable
+      (the return-value slot, see cur_func_name), for both stores and
+      reads, so `F.f := F.f + 1` builds the result in place. Only an
+      aggregate result takes such selectors, and those never carry a
+      cur_func_ret_state; a tracked scalar (pointer) result falls through
+      to the call below like the bare name does. }
+    base_ptr := cur_func_ret_slot;
+    cur_tid := cur_func_ret_tk;
+  END
+  ELSE IF (symi = 0) AND RoutineIsFunc(LookupRoutine(nm)) THEN
   BEGIN
     { A bare niladic-call Designator (e.g. `CurKind = 'X'`, an aggregate
       Str255-returning FUNCTION called without parens) has no symbol-table
       entry of its own -- materialize the call's result into a fresh
       temporary and hand back that temporary's address, mirroring the
-      reference's get_string_chars_and_len is_bare_func_ref handling. The
-      selector loop below is a no-op since nsel = 0 here. }
+      reference's get_string_chars_and_len is_bare_func_ref handling. Any
+      selectors (`mk.f`, `g[2]`, `mk.inn.g`) then walk that temporary. }
     cur_tid := routines[LookupRoutine(nm)].ret_tk;
     base_ptr := EntryAlloca(LLVMTypeForTk(cur_tid), '');
     LLVMBuildStore(builder, CodegenCallCommon(nm, NIL), base_ptr);
@@ -2440,6 +2568,8 @@ BEGIN
         super_leaves := NIL;
         base_ptr := LLVMBuildLoad2(builder, LLVMTypeForTk(cur_tid), base_ptr, MakeCStr(''));
         selected_upper := NIL;
+        IF NOT IsHostDescriptor(cur_tid) THEN
+          GuardNilckPointer(base_ptr, LLVMTypeForTk(cur_tid), sel);
         IF IsHostDescriptor(cur_tid) THEN
         BEGIN
           descriptor := base_ptr;
@@ -2493,6 +2623,29 @@ BEGIN
         IF lstring_capacity > 255 THEN lstring_capacity := 255;
         lstring_is_length := LLVMConstInt(i1ty, 1, 0);
         cur_tid := types[cur_tid].elem_tid;
+      END
+      ELSE IF TypeKind(cur_tid) = TK_FILE THEN
+      BEGIN
+        { F.TRAP / F.ERRS: the field's address inside the FCB the file
+          variable's handle locates (InitFileStorage), so reads, stores
+          and VAR actuals all reach the runtime's own copy. FCB fields
+          have no INITCK state: InitFileStorage initializes them. }
+        shadow := NIL;
+        heap_data := NIL;
+        file_state := NIL;
+        super_leaves := NIL;
+        fname := GetStr(sel, 'index_or_field');
+        fi := FileControlField(fname, fcb_field);
+        IF fi = 0 THEN
+          AbortWith2('codegen: unknown file field: ', fname);
+        file_handle := LLVMBuildLoad2(builder, i8ptrty, base_ptr, MakeCStr(''));
+        file_fcb := LLVMBuildBitCast(builder, file_handle, LLVMPointerType(filefcbty, 0), MakeCStr(''));
+        gep_idx := AllocPtrArray(2);
+        SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+        SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, fcb_field, 0));
+        base_ptr := LLVMBuildGEP2(builder, filefcbty, file_fcb, gep_idx, 2, MakeCStr('file.ctl'));
+        cur_tid := fi;
+        base_ptr := LLVMBuildBitCast(builder, base_ptr, LLVMPointerType(LLVMTypeForTk(cur_tid), 0), MakeCStr(''));
       END
       ELSE BEGIN
         IF TypeKind(cur_tid) <> TK_RECORD THEN
@@ -2868,17 +3021,13 @@ BEGIN
   END
   ELSE IF (nm = 'HIBYTE') OR (nm = 'LOBYTE') THEN
   BEGIN
-    { The reference (typecheck/exprs.py) restricts these to INTEGER/WORD
-      arguments only -- not INTEGER8/CHAR/BOOLEAN, despite the codegen
-      truncation working for any i16-or-narrower value -- and returns
-      CHAR, not a byte-integer type, since HIBYTE/LOBYTE is "the faithful
-      dialect pair" that predates the wide-integer extension family. }
+    { INTEGER/WORD arguments only, as in the IBM manual; the result is
+      the byte value 0..255 with the argument's own type. }
     IF (argtk <> TK_INTEGER) AND (argtk <> TK_WORD) THEN
       AbortWith2('codegen: HIBYTE/LOBYTE require an INTEGER/WORD argument: ', nm);
     IF nm = 'HIBYTE' THEN res := LLVMBuildLShr(builder, v, LLVMConstInt(i16ty, 8, 0), MakeCStr(''))
-    ELSE res := v;
-    res := LLVMBuildTrunc(builder, res, i8ty, MakeCStr(''));
-    last_val_tk := TK_CHAR;
+    ELSE res := LLVMBuildAnd(builder, v, LLVMConstInt(i16ty, 255, 0), MakeCStr(''));
+    last_val_tk := argtk;
   END
   ELSE IF nm = 'WRD8' THEN
   BEGIN
@@ -3144,9 +3293,17 @@ BEGIN
       building every literal at i16 wrapped those. A literal tagged INTEGER,
       or untagged legacy input, stays plain INTEGER and still adapts to a
       sibling operand in CodegenBinOp. }
-    last_val_tk := FoldedOperationTk(node);
-    IF last_val_tk = TK_UNKNOWN THEN last_val_tk := TK_INTEGER;
-    res := LLVMConstInt(LLVMTypeForTk(last_val_tk), IntLiteralValue(node), 1);
+    IF GetBool(node, 'word64') THEN
+    BEGIN
+      { 2^63..2^64-1: the value field is already the WORD64 bit pattern. }
+      last_val_tk := TK_WORD64;
+      res := LLVMConstInt(i64ty, GetInt64(node, 'value'), 0);
+    END
+    ELSE BEGIN
+      last_val_tk := FoldedOperationTk(node);
+      IF last_val_tk = TK_UNKNOWN THEN last_val_tk := TK_INTEGER;
+      res := LLVMConstInt(LLVMTypeForTk(last_val_tk), IntLiteralValue(node), 1);
+    END;
   END
   ELSE IF nt = 'RealLiteral' THEN
   BEGIN
@@ -3309,6 +3466,19 @@ BEGIN
           fall through to the shared call path instead of treating it as an
           undefined variable. }
         res := CodegenCallCommon(nm, NIL)
+      ELSE IF (routi = 0) AND ((nmu = 'EOF') OR (nmu = 'EOLN')) THEN
+      BEGIN
+        { Niladic EOF/EOLN mean EOF(INPUT)/EOLN(INPUT) (manual 12-10/11),
+          reached only when no user declaration shadows the name. They
+          peek at stdin, the stream the bare READ/READLN readers consume,
+          so they agree with what those readers will see next. }
+        IF nmu = 'EOF' THEN
+          res := LLVMBuildCall2(builder, read_eof_fnty, read_eof_fn, NIL, 0, MakeCStr(''))
+        ELSE
+          res := LLVMBuildCall2(builder, read_eof_fnty, read_eoln_fn, NIL, 0, MakeCStr(''));
+        res := LLVMBuildICmp(builder, LLVMIntNE, res, LLVMConstInt(i32ty, 0, 0), MakeCStr(''));
+        last_val_tk := TK_BOOLEAN;
+      END
       ELSE
       BEGIN
         AbortWith2('codegen: undefined variable: ', nm);
@@ -3932,25 +4102,54 @@ BEGIN
   CodegenScan := LLVMBuildTrunc(builder, res32, i16ty, MakeCStr(''));
 END;
 
-FUNCTION CodegenEncode(args: ADRMEM): ADRMEM;
-{ ENCODE(VAR D: LSTRING; value: INTEGER): BOOLEAN -- formats `value` as
-  decimal text into D via libpascalrt's runtime `encode_value`
-  (encode_decode.c), which also sets D's length-prefix byte on success.
-  WRITE-style `value:width` is supported (the width becomes encode_value's
-  minimum field width); `:precision` is accepted syntactically but ignored,
-  matching the runtime (REAL formatting is not implemented there either).
-  Scoped to an LSTRING destination and an INTEGER value, matching every
-  test/usage this file has verified against; the reference's own signature
-  is looser (dest could in principle be any string kind) but ENCODE always
-  needs to write a length-prefix byte in every real usage, so LSTRING-only
-  is not a meaningful narrowing in practice. }
+FUNCTION CodegenFormatValue(node: ADRMEM): ADRMEM;
+{ An M or N value of ENCODE/DECODE, coerced to the C int that printf's `*`
+  specifier expects, as cg_io's EvalPrintfIntArg does for WRITE: native
+  INTEGER is 16-bit, so it is extended to i32. }
 VAR
-  dest_expr, value_expr: ADRMEM;
+  v: ADRMEM;
+BEGIN
+  v := CodegenExpr(node);
+  IF IntFamilyWidth(last_val_tk) < 32 THEN
+  BEGIN
+    IF IsUnsignedWordTk(last_val_tk) THEN
+      v := LLVMBuildZExt(builder, v, i32ty, MakeCStr(''))
+    ELSE
+      v := LLVMBuildSExt(builder, v, i32ty, MakeCStr(''));
+  END
+  ELSE IF IntFamilyWidth(last_val_tk) > 32 THEN
+    v := LLVMBuildTrunc(builder, v, i32ty, MakeCStr(''));
+  CodegenFormatValue := v;
+END;
+
+FUNCTION IsEncodeValueTk(tid: INTEGER): BOOLEAN;
+{ The value types ENCODE formats: the manual's INTEGER, WORD, enumerations,
+  their subranges, BOOLEAN and REAL (11-14), the wide integers and REAL32
+  that WRITE also formats, and CHAR. Pointers are not supported. }
+BEGIN
+  IsEncodeValueTk := IsIntegerFamilyTk(tid) OR (tid = TK_REAL) OR (tid = TK_REAL32) OR
+    (TypeKind(tid) = TK_CHAR) OR (TypeKind(tid) = TK_BOOLEAN) OR (TypeKind(tid) = TK_ENUM);
+END;
+
+FUNCTION CodegenEncode(args: ADRMEM): ADRMEM;
+{ ENCODE(VAR D: LSTRING; X:M:N): BOOLEAN (manual 11-14) formats X exactly
+  as WRITE(X:M:N) would: EmitScalarWriteArg builds the same printf format
+  and argument list, so every scalar WRITE prints -- INTEGER, WORD, the
+  wide integers, CHAR, BOOLEAN, REAL and enumerations (symbolic in the
+  extended dialect, ordinal in vintage) -- encodes identically. The text
+  goes to libpascalrt's pas_encode_fmt, which publishes D's length byte
+  only when the text fits D's capacity and returns 0 otherwise, leaving D
+  unchanged. The parser wrapped both actuals as WriteArg nodes; the
+  typechecker admitted a bare LSTRING destination and a scalar value. X, M
+  and N evaluate once, in that order. }
+VAR
+  dest_expr, value_node, width_node, prec_node: ADRMEM;
   d_symi: INTEGER32;
-  d_tid: INTEGER;
+  d_tid, v_tid: INTEGER;
   d_addr, dest_chars, dest_len_unused: ADRMEM;
-  val, width_val: ADRMEM;
-  call_args: ADRMEM;
+  val, width_val, prec_val, vals: ADRMEM;
+  fmt: Str255;
+  vi: INTEGER32;
 BEGIN
   IF ArrSize(args) <> 2 THEN
     AbortWith('codegen: ENCODE expects exactly 2 arguments');
@@ -3959,32 +4158,31 @@ BEGIN
   IF TypeKind(d_tid) <> TK_LSTRING THEN
     AbortWith('codegen: ENCODE''s destination must be an LSTRING variable');
 
-  value_expr := GetObj(ArrItem(args, 1), 'expr');
-  val := CodegenExpr(value_expr);
-  IF last_val_tk <> TK_INTEGER THEN
-    AbortWith('codegen: ENCODE''s value argument must be INTEGER');
-  val := LLVMBuildSExt(builder, val, i32ty, MakeCStr(''));
+  value_node := ArrItem(args, 1);
+  val := CodegenExpr(GetObj(value_node, 'expr'));
+  v_tid := last_val_tk;
+  IF NOT IsEncodeValueTk(v_tid) THEN
+    AbortWith('codegen: ENCODE''s value must be INTEGER, WORD, CHAR, BOOLEAN, REAL or an enumeration');
+  width_node := GetObjOrNil(value_node, 'width');
+  prec_node := GetObjOrNil(value_node, 'precision');
+  width_val := NIL;
+  prec_val := NIL;
+  IF width_node <> NIL THEN width_val := CodegenFormatValue(width_node);
+  IF prec_node <> NIL THEN prec_val := CodegenFormatValue(prec_node);
 
-  IF GetObjOrNil(ArrItem(args, 1), 'width') <> NIL THEN
-  BEGIN
-    width_val := CodegenExpr(GetObj(ArrItem(args, 1), 'width'));
-    IF last_val_tk <> TK_INTEGER THEN
-      AbortWith('codegen: ENCODE''s width argument must be INTEGER');
-    width_val := LLVMBuildSExt(builder, width_val, i32ty, MakeCStr(''));
-  END
-  ELSE
-    width_val := LLVMConstInt(i32ty, 0, 0);
-
-  call_args := AllocPtrArray(7);
-  SetPtrArrayElem(call_args, 0, dest_chars);
-  SetPtrArrayElem(call_args, 1, LLVMConstInt(i32ty, types[d_tid].hi, 0));
-  SetPtrArrayElem(call_args, 2, LLVMBuildBitCast(builder, d_addr, i8ptrty, MakeCStr('')));
-  SetPtrArrayElem(call_args, 3, val);
-  SetPtrArrayElem(call_args, 4, width_val);
-  SetPtrArrayElem(call_args, 5, LLVMConstInt(i32ty, 0, 0));
-  SetPtrArrayElem(call_args, 6, LLVMConstInt(i32ty, 0, 0));
+  { pas_encode_fmt(chars, capacity, raw, fmt, ...): the data arguments
+    follow the four fixed ones, as WRITE's follow pas_write_fmt's two. }
+  fmt := '';
+  vals := AllocPtrArray(8);
+  vi := 4;
+  EmitScalarWriteArg(val, v_tid, width_node <> NIL, prec_node <> NIL,
+                     width_val, prec_val, fmt, vals, vi);
+  SetPtrArrayElem(vals, 0, dest_chars);
+  SetPtrArrayElem(vals, 1, LLVMConstInt(i32ty, types[d_tid].hi, 0));
+  SetPtrArrayElem(vals, 2, LLVMBuildBitCast(builder, d_addr, i8ptrty, MakeCStr('')));
+  SetPtrArrayElem(vals, 3, LLVMBuildGlobalStringPtr(builder, MakeCStr(fmt), MakeCStr('encfmt')));
   CodegenEncode := LLVMBuildICmp(builder, LLVMIntNE,
-    LLVMBuildCall2(builder, encode_fnty, encode_fn, call_args, 7, MakeCStr('')),
+    LLVMBuildCall2(builder, encode_fnty, encode_fn, vals, vi, MakeCStr('')),
     LLVMConstInt(i32ty, 0, 0), MakeCStr(''));
 END;
 
@@ -4031,52 +4229,162 @@ BEGIN
 END;
 
 FUNCTION CodegenDecode(args: ADRMEM): ADRMEM;
-{ DECODE(src: STRING-or-LSTRING-or-literal; VAR dest: INTEGER-or-CHAR):
-  BOOLEAN -- parses a decimal integer out of `src` and stores it into
-  `dest`, via libpascalrt's runtime `decode_value`. dest_size (the write's
-  byte width) is derived from dest's own declared scalar type -- scoped to
-  INTEGER (2 bytes) and CHAR (1 byte), the two dest_size cases
-  decode_value's own manual documents by name; anything else is rejected
-  rather than guessing a width. }
+{ DECODE(CONST S: STRING; VAR X:M:N): BOOLEAN (manual 11-15) converts the
+  text of S to X as READ(X) would, dispatching on X's type to one of
+  libpascalrt's pas_decode_* converters: the integer family (bounded by
+  the type's width or X's declared subrange), enumerations (by name in the
+  extended dialect's symbolic I/O, by ordinal always) and BOOLEAN
+  (TRUE/FALSE or 0/1), CHAR and REAL. Unlike the READ runtime, none of
+  them traps: a malformed or out-of-range text is the FALSE result,
+  whatever RANGECK says, and X keeps its old value -- the converter writes
+  a scratch slot, which is moved into X only on success. M and N are
+  evaluated and ignored, as READ ignores them. The parser wrapped both
+  actuals as WriteArg nodes; the typechecker admitted a string source, a
+  bare or selected variable destination of ENCODE's value family and
+  INTEGER M and N. }
 VAR
-  src_expr, dest_expr: ADRMEM;
+  src_expr, dest_node, dest_expr: ADRMEM;
   src_chars, src_len: ADRMEM;
   d_symi: INTEGER32;
-  d_addr: ADRMEM;
-  dest_size: INTEGER;
-  call_args: ADRMEM;
+  d_tid, base_tid, kind: INTEGER;
+  d_addr, scratch, scratch_ty, call_args, status, ok, ok_bb, cont_bb, v, discard: ADRMEM;
+  lo, hi: INTEGER32;
+  has_bounds: BOOLEAN;
 BEGIN
   IF ArrSize(args) <> 2 THEN
     AbortWith('codegen: DECODE expects exactly 2 arguments');
   src_expr := GetObj(ArrItem(args, 0), 'expr');
   ResolveStringExprCharsLen(src_expr, src_chars, src_len);
 
-  dest_expr := GetObj(ArrItem(args, 1), 'expr');
-  IF NodeType(dest_expr) <> 'Identifier' THEN
-    AbortWith('codegen: DECODE''s destination must be a bare INTEGER/CHAR variable');
-  d_symi := LookupSym(GetStr(dest_expr, 'name'));
-  IF d_symi = 0 THEN
-    AbortWith2('codegen: undefined variable: ', GetStr(dest_expr, 'name'));
-  d_addr := symbols[d_symi].llvm_val;
-  IF symbols[d_symi].tk = TK_INTEGER THEN dest_size := 2
-  ELSE IF symbols[d_symi].tk = TK_CHAR THEN dest_size := 1
+  dest_node := ArrItem(args, 1);
+  dest_expr := GetObj(dest_node, 'expr');
+  IF NodeType(dest_expr) = 'Identifier' THEN
+  BEGIN
+    d_symi := LookupSym(GetStr(dest_expr, 'name'));
+    IF d_symi = 0 THEN
+      AbortWith2('codegen: undefined variable: ', GetStr(dest_expr, 'name'));
+    d_addr := symbols[d_symi].llvm_val;
+    d_tid := symbols[d_symi].tk;
+  END
+  ELSE IF NodeType(dest_expr) = 'Designator' THEN
+  BEGIN
+    d_addr := ComputeDesignatorAddress(dest_expr);
+    d_tid := last_val_tk;
+  END
   ELSE
   BEGIN
-    AbortWith('codegen: DECODE''s destination must be INTEGER or CHAR');
-    dest_size := 0;
+    AbortWith('codegen: DECODE''s destination must be a variable');
+    d_addr := NIL;
+    d_tid := TK_UNKNOWN;
+  END;
+  IF GetObjOrNil(dest_node, 'width') <> NIL THEN
+    discard := CodegenFormatValue(GetObj(dest_node, 'width'));
+  IF GetObjOrNil(dest_node, 'precision') <> NIL THEN
+    discard := CodegenFormatValue(GetObj(dest_node, 'precision'));
+
+  { A subrange keeps its own tid for the bounds; its storage is the host's. }
+  base_tid := SubrangeBaseTid(d_tid);
+  kind := TypeKind(base_tid);
+  has_bounds := FALSE;
+  lo := 0;
+  hi := 0;
+  IF d_tid >= 14 THEN
+    IF types[d_tid].is_subrange THEN
+    BEGIN
+      has_bounds := TRUE;
+      lo := types[d_tid].lo;
+      hi := types[d_tid].hi;
+    END;
+  IF IsIntegerFamilyTk(base_tid) THEN
+  BEGIN
+    scratch_ty := i64ty;
+    scratch := EntryAlloca(i64ty, 'decodeint');
+    call_args := AllocPtrArray(8);
+    SetPtrArrayElem(call_args, 0, src_chars);
+    SetPtrArrayElem(call_args, 1, src_len);
+    SetPtrArrayElem(call_args, 2, LLVMConstInt(i32ty, IntFamilyWidth(base_tid), 0));
+    IF IsUnsignedWordTk(base_tid) THEN
+      SetPtrArrayElem(call_args, 3, LLVMConstInt(i32ty, 1, 0))
+    ELSE
+      SetPtrArrayElem(call_args, 3, LLVMConstInt(i32ty, 0, 0));
+    IF has_bounds THEN
+      SetPtrArrayElem(call_args, 4, LLVMConstInt(i32ty, 1, 0))
+    ELSE
+      SetPtrArrayElem(call_args, 4, LLVMConstInt(i32ty, 0, 0));
+    SetPtrArrayElem(call_args, 5, LLVMConstInt(i64ty, lo, 1));
+    SetPtrArrayElem(call_args, 6, LLVMConstInt(i64ty, hi, 1));
+    SetPtrArrayElem(call_args, 7, scratch);
+    status := LLVMBuildCall2(builder, decode_int_fnty, decode_int_fn, call_args, 8, MakeCStr(''));
+  END
+  ELSE IF (kind = TK_ENUM) OR (kind = TK_BOOLEAN) THEN
+  BEGIN
+    { The readers' i32 ordinal; names only where READ accepts them. }
+    scratch_ty := i32ty;
+    scratch := EntryAlloca(i32ty, 'decodeord');
+    call_args := AllocPtrArray(6);
+    SetPtrArrayElem(call_args, 0, src_chars);
+    SetPtrArrayElem(call_args, 1, src_len);
+    IF kind = TK_BOOLEAN THEN
+      SetPtrArrayElem(call_args, 2, BoolNameTable)
+    ELSE IF active_features.symbolic_enum_io THEN
+      SetPtrArrayElem(call_args, 2, EnumNameTable(base_tid))
+    ELSE
+      SetPtrArrayElem(call_args, 2, LLVMConstPointerNull(LLVMPointerType(i8ptrty, 0)));
+    SetOrdinalBoundArgs(call_args, 3, d_tid);
+    SetPtrArrayElem(call_args, 5, scratch);
+    status := LLVMBuildCall2(builder, decode_enum_fnty, decode_enum_fn, call_args, 6, MakeCStr(''));
+  END
+  ELSE IF kind = TK_CHAR THEN
+  BEGIN
+    scratch_ty := i8ty;
+    scratch := EntryAlloca(i8ty, 'decodechar');
+    IF NOT has_bounds THEN hi := 255;
+    call_args := AllocPtrArray(5);
+    SetPtrArrayElem(call_args, 0, src_chars);
+    SetPtrArrayElem(call_args, 1, src_len);
+    SetPtrArrayElem(call_args, 2, LLVMConstInt(i32ty, lo, 0));
+    SetPtrArrayElem(call_args, 3, LLVMConstInt(i32ty, hi, 0));
+    SetPtrArrayElem(call_args, 4, scratch);
+    status := LLVMBuildCall2(builder, decode_char_fnty, decode_char_fn, call_args, 5, MakeCStr(''));
+  END
+  ELSE IF (kind = TK_REAL) OR (kind = TK_REAL32) THEN
+  BEGIN
+    scratch_ty := dblty;
+    scratch := EntryAlloca(dblty, 'decodereal');
+    call_args := AllocPtrArray(3);
+    SetPtrArrayElem(call_args, 0, src_chars);
+    SetPtrArrayElem(call_args, 1, src_len);
+    SetPtrArrayElem(call_args, 2, scratch);
+    status := LLVMBuildCall2(builder, decode_real_fnty, decode_real_fn, call_args, 3, MakeCStr(''));
+  END
+  ELSE
+  BEGIN
+    AbortWith('codegen: DECODE''s destination must be INTEGER, WORD, CHAR, BOOLEAN, REAL or an enumeration');
+    scratch_ty := NIL;
+    scratch := NIL;
+    status := NIL;
   END;
 
-  call_args := AllocPtrArray(7);
-  SetPtrArrayElem(call_args, 0, src_chars);
-  SetPtrArrayElem(call_args, 1, src_len);
-  SetPtrArrayElem(call_args, 2, LLVMBuildBitCast(builder, d_addr, i8ptrty, MakeCStr('')));
-  SetPtrArrayElem(call_args, 3, LLVMConstInt(i32ty, dest_size, 0));
-  SetPtrArrayElem(call_args, 4, LLVMConstInt(i32ty, 0, 0));
-  SetPtrArrayElem(call_args, 5, LLVMConstInt(i32ty, 0, 0));
-  SetPtrArrayElem(call_args, 6, LLVMConstInt(i32ty, 0, 0));
-  CodegenDecode := LLVMBuildICmp(builder, LLVMIntNE,
-    LLVMBuildCall2(builder, decode_fnty, decode_fn, call_args, 7, MakeCStr('')),
-    LLVMConstInt(i32ty, 0, 0), MakeCStr(''));
+  { Move the scratch value into X only once the conversion succeeded. }
+  ok := LLVMBuildICmp(builder, LLVMIntNE, status, LLVMConstInt(i32ty, 0, 0), MakeCStr(''));
+  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('decode_ok'));
+  cont_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('decode_cont'));
+  LLVMBuildCondBr(builder, ok, ok_bb, cont_bb);
+  LLVMPositionBuilderAtEnd(builder, ok_bb);
+  v := LLVMBuildLoad2(builder, scratch_ty, scratch, MakeCStr(''));
+  IF IsIntegerFamilyTk(base_tid) THEN
+  BEGIN
+    IF IntFamilyWidth(base_tid) < 64 THEN
+      v := LLVMBuildTrunc(builder, v, LLVMTypeForTk(base_tid), MakeCStr(''));
+  END
+  ELSE IF kind = TK_BOOLEAN THEN
+    v := LLVMBuildTrunc(builder, v, i1ty, MakeCStr(''))
+  ELSE IF kind = TK_REAL32 THEN
+    v := LLVMBuildFPTrunc(builder, v, f32ty, MakeCStr(''));
+  LLVMBuildStore(builder, v, d_addr);
+  LLVMBuildBr(builder, cont_bb);
+  LLVMPositionBuilderAtEnd(builder, cont_bb);
+  CodegenDecode := ok;
 END;
 
 BEGIN

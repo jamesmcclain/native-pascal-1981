@@ -29,8 +29,13 @@ its [unsafe raw boundary](#descriptor-unsafe-raw-boundary) and ownership limits.
 - [There are two command-line dialects](#there-are-two-command-line-dialects)
 - [Initialization checking: host storage](#initialization-checking-host-storage-native)
 - [Enumerated and BOOLEAN I/O](#enumerated-and-boolean-io)
+- [Niladic EOF and EOLN](#niladic-eof-and-eoln-both)
+- [Selecting from a niladic function result](#selecting-from-a-niladic-function-result-both)
+- [File control fields F.TRAP and F.ERRS](#file-control-fields-ftrap-and-ferrs-both)
 - [Wide signed integer input](#wide-signed-integer-input-extended)
 - [String precision](#string-precision)
+- [WRITE of a CHAR array](#write-of-a-char-array-both)
+- [CONST formal actuals](#const-formal-actuals-both)
 - [READSET and tuning hints](#readset-and-tuning-hints)
 - [GPU (NVPTX) kernels need `{$MATHCK-}` for integer arithmetic](#gpu-nvptx-kernels-need-mathck--for-integer-arithmetic-extended)
 - [Vectors (SIMD)](#vectors-simd-extended)
@@ -42,6 +47,7 @@ its [unsafe raw boundary](#descriptor-unsafe-raw-boundary) and ownership limits.
 - [Host SUPER ARRAY descriptor ABI](#host-super-array-descriptor-abi-native)
 - [Bound expressions](#bound-expressions-native)
 - [Subrange range checks](#subrange-range-checks-native)
+- [Constant calls in subrange bounds](#constant-calls-in-subrange-bounds-both)
 - [Named ordinal array index types](#named-ordinal-array-index-types-native)
 - [MATHCK: integer overflow and division checks](#mathck-integer-overflow-and-division-checks-both)
 - [Integer widths](#integer-widths)
@@ -154,6 +160,37 @@ limitation of this repository's implementation. A native limitation applies
 to every program compiled by the native pipeline unless the text says
 otherwise.
 
+## Null pointer checking: ordinary host dereferences [native]
+
+`{$NILCK+}` (the default) checks ordinary host typed-pointer `^` uses for
+NIL, including selected writes, WITH and VAR targets. The flag and diagnostic
+coordinates belong to the consuming `^` token. Supported INITCK checks run
+before pointer bits are loaded; NILCK then checks the single loaded pointer
+before pointer-derived address formation or pointee access. Failure flushes
+stdout and stderr, reports `runtime error: NILCK NIL pointer dereference at
+line L column C`, and aborts. Initialized NIL copies/comparisons are legal.
+Legacy/malformed snapshots without boolean enablement are unchecked; enabled
+snapshots without coordinates report 0:0. As with INITCK, include-file identity
+is not available and is not claimed by the diagnostic.
+
+Builtin DISPOSE uses the NILCK snapshot and location at the procedure name,
+not in its actual. After any supported INITCK check and one pointer/descriptor
+load, it null-checks the ordinary pointer or descriptor data pointer before
+INITCK metadata retirement and `free`. Failure reports `runtime error: NILCK
+NIL pointer passed to DISPOSE at line L column C` and aborts after flushing.
+NILCK- omits the disposal check, consistent with the manual's p. 11-5 wording
+“these are checked if $NILCK is on.” Successful disposal does not clear pointer
+bits or initializedness. DEVICE NEW/DISPOSE retain their unconditional existing
+rejection. Long-form DISPOSE admission is unchanged (one argument only).
+
+This is null-only, not arbitrary-address, provenance or lifetime validation.
+Descriptor dereferences and file-buffer `^` are not part of this slice;
+existing descriptor/INDEXCK/vector checks remain independent. CPU DEVICE and
+NVPTX ordinary dereferences reject when NILCK is enabled, with a located
+unsupported-boundary diagnostic and no published IR. `{$NILCK-}` explicitly
+retains legacy unchecked lowering, not a promise that invalid accesses are
+safe. See [NILCK tests and completion checklist](testing/nilck.md).
+
 ## Initialization checking: host storage [native]
 
 INITCK is runtime enforcement, not metadata-only. It is default-off and
@@ -199,7 +236,8 @@ diagnostic; missing coordinates never suppress an enabled guard. Tokens do not
 currently carry filenames: include coordinates are local to the included token
 run, so this diagnostic does not claim a source-file identity or include stack.
 INITCK errors are distinct from existing NIL-pointer and array-bounds runtime
-errors; this does not implement the NILCK directive. Zero, FALSE, and `-32768`
+errors; INITCK does not substitute for the separate null-only NILCK checks
+above. Zero, FALSE, and `-32768`
 are ordinary initialized values, not sentinels.
 
 Guard elimination runs even at O0, after unsupported-boundary validation. It
@@ -229,8 +267,9 @@ call result, ...) is outside coverage and contributes initialized. Implicit cont
 unset value does not taint what the branch assigns. A READ/READLN destination
 becomes initialized only after its conversion returns success; a trapped file
 error keeps the prior state (stdin errors abort). A FOR control variable takes
-the initial value's state when it is assigned and keeps it through the
-iterations. After **natural** termination it is unset (the manual leaves its
+the initial value's state when it is assigned, after both bounds are
+evaluated, and keeps it through the iterations; a final expression naming an
+unset control variable is therefore an uninitialized read. After **natural** termination it is unset (the manual leaves its
 value undefined, 9-17); BREAK and GOTO exits keep the value of the iteration
 they left. The FOR statement's own bound comparisons are never INITCK consumers,
 so FOR over excluded storage is not a boundary. `ADR` of the slot releases it
@@ -486,8 +525,7 @@ converted from such an address locates no registered allocation, so reads
 through it are untracked. An address-taken control variable is not unset by
 natural FOR termination. The same residual as for releases above remains: an
 unchecked copy of unset data into the variable after its `ADR` can make it
-unset again before a raw write (as can a FOR over a VAR formal bound to
-address-taken caller storage). The `ADR` of a WITH-bound field still
+unset again before a raw write. The `ADR` of a WITH-bound field still
 disqualifies its whole object, because raw writes from it may run into the
 field's siblings.
 
@@ -529,8 +567,10 @@ the `file buffer` boundary for enabled reads and PUTs. There is no other
 aggregate I/O: the typechecker rejects READ/WRITE of typed files ("file
 selector must be a TEXT file") and selecting a field of a file buffer
 (`g^.a`), so record buffers are written and read whole; codegen rejects WRITE
-of an array; strings and sets read or written by READ/WRITE/READSET stay
-untracked storage. INPUT and OUTPUT are not identifiers the typechecker
+of an array other than a one-dimensional CHAR array, which is read whole
+like a copy source (see
+[WRITE of a CHAR array](#write-of-a-char-array-both)); strings and sets read
+or written by READ/WRITE/READSET stay untracked storage. INPUT and OUTPUT are not identifiers the typechecker
 knows, so `INPUT^` is not reachable.
 
 DEVICE code. INITCK is host-only. A DEVICE compiland, CPU-targeted or
@@ -633,6 +673,82 @@ and to explicit text files.
 `TRUE` or `FALSE`. Input accepts those names without regard to letter case and
 also accepts the numeric ordinals `1` and `0`.
 
+## Niladic EOF and EOLN **[both]**
+
+`EOF` and `EOLN` without an argument mean `EOF(INPUT)` and `EOLN(INPUT)`
+(manual 12-10, 12-11). They test standard input, the stream that a bare
+`READ` or `READLN` reads. They look at the next character and do not
+consume it. `EOLN` is true at a line marker (`'\n'`). `EOLN` at end of file
+aborts with `runtime error: EOLN at end of file`. A user declaration named
+`EOF` or `EOLN` (a variable, constant or function, in any scope that is
+visible) hides the builtin. DEVICE code cannot use them.
+
+Deliberate difference: the IBM manual warns when a program uses INPUT or
+OUTPUT and does not name them in the program heading (6-27, 13-5). Native
+gives no warning for niladic `EOF` or `EOLN`, as for a bare `READ` or
+`WRITE`. It does not require INPUT in the heading. Fixtures:
+`tests/corpus/golden/niladic_eof_eoln.pas`, `niladic_eof_shadow.pas`,
+`niladic_eoln_at_eof.pas` and `niladic_eof_no_input_param.pas`.
+
+## Selecting from a niladic function result **[both]**
+
+A field, index or pointer selector can follow the name of a function
+without parameters: `mk.f`, `g[2]`, `mk.inner.g`, `p^.k`. Each
+occurrence calls the function once, keeps the result in a temporary and
+selects from it. Inside the body of a function with a record, array or
+string result, the same selected name is the result variable instead.
+Both stores and reads then use the result (`mk.f := mk.f + 1`). A bare
+name read in the body is still a recursive call. A selector after an
+argument list (`mk(1).f`) is not accepted. Fixture:
+`tests/corpus/golden/niladic_result_select.pas`.
+
+## File control fields F.TRAP and F.ERRS **[both]**
+
+A file variable of any file type (`TEXT` or `FILE OF T`), including a
+`VAR` formal, has two selectable control fields (manual 12-32, 12-33).
+Each one names the runtime's own field in the file control block. A
+program can read it, assign it, or pass it as a `VAR` actual.
+
+- `F.TRAP: BOOLEAN` is initially `FALSE`. When it is `TRUE`, an I/O
+  error that the runtime can trap records a code in `F.ERRS` and
+  abandons the operation. The program does not end. A trapped `READ`
+  leaves its destination unchanged.
+- `F.ERRS` is a `WORD`, initially `0`. It holds the code of the last
+  trapped error. `14` is a malformed or out-of-range formatted `READ`
+  (`INTEGER`, `INTEGER32`, `INTEGER64`, `REAL`, `BOOLEAN`, enumeration,
+  pointer, and a malformed `WORD`; a `WORD` out of range still aborts),
+  `10` a failed `RESET` open, `1` a failed `REWRITE` create, `2` a
+  `GET` or `PUT` in the wrong mode, `3` a `GET` past end of file, `4`
+  and `5` a failed component read or write. A program clears it by
+  assignment (`F.ERRS := 0`).
+
+With `F.TRAP` set to `FALSE`, the same errors abort with their usual
+`runtime error:` or `file runtime:` messages. End of file during a
+formatted `READ` aborts in both cases.
+
+Differences from the IBM manual:
+
+- The manual types `F.ERRS` as `0..15`. Native types it `WORD`, and an
+  assignment is not range-checked against `0..15`.
+- The manual ignores every file operation except `CLOSE` and `DISCARD`
+  while `F.ERRS` is nonzero, and ends the program if `F.TRAP` is
+  `FALSE`. Native does not examine `F.ERRS` before an operation. Each
+  operation runs, and a new trapped error overwrites the code.
+- The manual says that closing a file (also by `RESET` or `REWRITE`)
+  sets `F.TRAP` to `FALSE`. Native keeps `F.TRAP` until the program
+  assigns it.
+- `F.MODE` is not supported. It needs the predeclared `FILEMODES` type,
+  which does not exist. Using it is a typecheck error
+  (`File field MODE is not supported`). Any other field name is
+  `Unknown file field: NAME`. The record type `FCBFQQ` is not
+  predeclared, and `WITH F DO` does not open a file's fields.
+
+Fixtures: `tests/corpus/golden/file_trap_read.pas` (trapped `INTEGER`,
+`BOOLEAN` and enumeration `READ`, a typed-file `PUT` and `GET`, both
+dialects at -O0 and -O2), `file_trap_untrapped.pas` (the abort after
+`F.TRAP := FALSE`) and `file_field_unknown.pas`. The pointer `READ` is in
+`tests/contract/initck_producers.sh`.
+
 ## Wide signed integer input **[extended]**
 
 `READ` and `READLN` accept `INTEGER32` and `INTEGER64` destinations from
@@ -661,7 +777,9 @@ existing formatted numeric readers.
 ## String precision
 
 In vintage mode, `::precision` does not limit string output. A string literal,
-`STRING` value, or `LSTRING` value writes its full contents. In
+`STRING` value, or `LSTRING` value writes its full contents. A value here may
+be a variable, a selected component, or a function result (the call runs
+once; regression: `tests/corpus/golden/write_string_funcs*.pas`). In
 `value:width:precision`, the width still pads the full value. The compiler
 ignores the precision.
 
@@ -669,6 +787,57 @@ Extended mode uses string precision as the maximum number of characters to
 write. The width continues to specify the minimum field width. This rule does
 not change numeric formatting. Numeric width and precision have the same
 behavior in both dialects.
+
+## WRITE of a CHAR array **[both]**
+
+The IBM manual writes CHAR, STRING and LSTRING values, and a `STRING(n)` is
+identical to `PACKED ARRAY [1..n] OF CHAR` (6-16, 12-26). An unpacked array
+of CHAR is not a STRING, so the manual rejects writing it (error 234). This
+compiler does not support `PACKED` arrays at all (`codegen: PACKED arrays are
+not supported`), so an unpacked array is the only array of CHAR a program can
+declare. As a deliberate difference, `WRITE`/`WRITELN` therefore accept a
+one-dimensional `ARRAY [lo..hi] OF CHAR` (or of a CHAR subrange) at any
+bounds and with any index type. It is written exactly like a `STRING` of its
+`hi - lo + 1` characters: all of them by default, `:width` padding on the
+left (on the right when negative), and the extended `::precision` limit. The
+array may be a variable, a selected component (`r.tag`, `m[k]`), a formal or
+a function result.
+
+- An array of CHAR arrays (`ARRAY [1..2] OF Row`) is not a string; writing it
+  whole still fails with `codegen: unsupported WRITE argument type`. Write
+  its rows instead.
+- Under INITCK a tracked CHAR array is read whole, by the strict copy rule:
+  every component must be set (`uninitialized part of a`). A heap or global
+  array is the usual INITCK boundary.
+- As for `STRING`, output is formatted with C's `%.*s`, so a `CHR(0)`
+  component ends the written text early, and the field width counts only the
+  characters before it.
+
+Regression: `tests/corpus/golden/write_char_array*.pas` and
+`write_char_matrix_rejected.pas`.
+
+## CONST formal actuals **[both]**
+
+A `CONST` (or `CONSTS`) formal is a read-only reference parameter. The IBM
+manual (10-10) binds it to a variable, a function result or a constant value
+(a literal, a constant identifier or a structured constant), but not to an
+expression with operators and non-constant operands, which has no address
+(error 229). This compiler accepts any actual assignable to the formal, as
+for a value formal: an actual that names storage (a variable, a formal, a
+selected component, a bare niladic function call) is passed by address, and
+any other actual (`V('z')`, `V(K)`, `P(i + 1)`, `V(CHR(ORD('a') + 1))`,
+`Q(Half)`, a STRING or LSTRING literal) is evaluated, range-checked against
+the formal's type like an assignment, and spilled to a private temporary
+whose address is passed. The callee cannot tell the two apart. A `VAR`
+formal still needs an lvalue (`codegen: a VAR argument must be an lvalue`).
+
+- A spilled actual is a checked value read; under INITCK the callee's
+  formal binds private initialized state, as for any untracked actual.
+- The temporary is private to one call: a CONST formal bound to a spilled
+  actual never aliases caller storage.
+
+Regression: `tests/corpus/golden/const_actual_expr.pas` and
+`var_actual_expr_rejected.pas`.
 
 ## READSET and tuning hints
 
@@ -1181,7 +1350,14 @@ The check covers:
 - a `FOR` loop over a subrange control variable: if the loop runs at all,
   its initial and final values must both be in range, and the check is made
   once, before the first iteration. A loop that runs zero times is not
-  checked.
+  checked. As the manual requires (9-17), the initial value is evaluated
+  first, then the final value, and only then, after the check, is the
+  control variable assigned: a final expression that names the control
+  variable, or a function it calls, sees the variable's prior value, never
+  an unchecked initial value.
+
+A `FOR` control variable cannot be a reference parameter (`VAR`, `VARS`,
+`CONST` or `CONSTS`), as in the IBM manual, so the typechecker rejects it.
 
 The check is made on the value before it is narrowed to the subrange's
 storage width, so a wide value cannot wrap into range. A constant that is
@@ -1204,10 +1380,10 @@ snapshot inherit the enclosing scoped context; the root defaults to on.
 CASE's enabled no-match trap is implemented;
 FOR's existing nonempty-loop endpoint/publication policy is unchanged.
 Regression: `tests/contract/rangeck_scope.sh`. Array
-indexes are not checked by `$RANGECK` (see `$INDEXCK` below). Host `CONCAT`
-capacity and direct LSTRING length-byte assignment checking are described
+indexes are not checked by `$RANGECK` (see `$INDEXCK` below). Host `CONCAT`,
+`COPYLST` and direct LSTRING length-byte assignment checks are described
 below; other string-capacity paths remain outside these slices. NVPTX
-`DEVICE` code has no host-runtime subrange, CONCAT or length-byte check;
+`DEVICE` code has no host-runtime subrange, CONCAT/COPYLST or length-byte check;
 a `DEVICE` compiland targeting the CPU follows the host `$RANGECK` path.
 
 #### CONCAT capacity checks **[native]**
@@ -1231,10 +1407,150 @@ inside its source expression. Legacy statements inherit scoped RANGECK and
 report 0/0 if location is absent. `$RANGECK-` emits no capacity guard: invalid
 unchecked appends may corrupt memory or wrap the length byte. This is not
 unconditional memory safety, does not affect MATHCK, and does not add checks
-to whole-string assignment, value parameters or COPYLST/COPYSTR/INSERT.
+to whole-string assignment or value parameters.
+COPYLST, COPYSTR, DELETE and INSERT have their own checks below.
 Direct length-byte assignment has a separate check below. CPU DEVICE uses
 the host check; NVPTX retains its existing unchecked boundary without
 calling host diagnostics. Regression: `tests/contract/rangeck_concat.sh`.
+
+#### COPYLST admission and capacity checks **[native]**
+
+`COPYLST(s, t)` replaces `t`'s characters with `s` and publishes the source
+length. The source may be a fixed STRING, an LSTRING, a quoted literal
+(including empty and one-character literals), a selected string or a
+string-valued function call. An arbitrary CHAR expression is not a string.
+The destination must be a bare LSTRING variable, including type aliases,
+VAR formals and WITH-bound names; selected destinations such as `a[i]` are
+rejected at typechecking. User routines named COPYLST retain precedence.
+
+Under host/CPU `$RANGECK+`, the source is evaluated once and its full length
+is checked against `min(destination capacity, 255)` before copying any
+characters or publishing the length byte. For a fixed STRING, its whole
+capacity is copied; for an LSTRING, its current length is used. Empty,
+exact-capacity and self copies are valid. An oversized source flushes stdout,
+reports the following on stderr, flushes stderr and aborts:
+
+    runtime error: RANGECK COPYLST length V exceeds capacity CAP at line L column COL
+
+Compiler-generated destination bytes remain unchanged on failure; source
+side effects are retained. Policy/location belong to the statement's first
+token, not directives inside its actuals. Legacy ASTs inherit scoped policy
+and use coordinates 0/0 if absent. MATHCK does not control this guard.
+`$RANGECK-` and NVPTX preserve unchecked copying, which may corrupt memory
+or wrap the length byte; this is not unconditional memory safety. No new
+source-capacity/provenance or string-subscript validation is claimed.
+
+Strings remain outside INITCK's tracked representations: enabled reads of
+nonliteral sources are explicit unsupported boundaries, including function
+results. Literal sources need no shadow. The destination is write-only and
+is not treated as a read of its previous contents; this does not establish
+tracked initialization state for later string reads.
+
+Completed COPYLST punchlist:
+
+- [x] Admit and typecheck COPYLST's bounded source/destination forms, retaining user shadowing.
+- [x] Check capacity and byte representability before copy/length publication, with located diagnostics and first-token policy.
+- [x] Pin valid/invalid, once-only source, failed-publication, INITCK, independent MATHCK and CPU/NVPTX behavior.
+- [x] Pass clean no-Python bootstrap/gen3–gen4 fixed point and full regression suite; update contract/test documentation and generated index.
+
+Regression: `tests/contract/rangeck_copylst.sh`; coverage and boundaries:
+[`docs/testing/rangeck_copylst.md`](testing/rangeck_copylst.md).
+
+#### COPYSTR admission and always-caught capacity check **[native]**
+
+`COPYSTR(s, t)` copies `s` into the fixed STRING `t` and sets the remaining
+characters of `t` to blanks (manual 11-21). The source has the same forms as
+COPYLST's. The destination must be a bare fixed STRING variable, including
+type aliases, VAR formals and WITH-bound names; an LSTRING, a selected
+destination such as `a[i]`, a constant or a function is rejected at
+typechecking. User routines named COPYSTR retain precedence.
+
+A source longer than the destination is IBM error 2150, which the manual
+says is **always caught** (A-46). Unlike CONCAT and COPYLST, no switch
+controls the check: it runs under `$RANGECK+` and `$RANGECK-` alike, on the
+host and in CPU DEVICE code, and MATHCK does not affect it. The source is
+evaluated once, and its length (the whole capacity of a fixed STRING, the
+current length of an LSTRING) is checked before any character is copied or
+blank-filled. An oversized source flushes stdout and reports:
+
+    runtime error: COPYSTR length V exceeds capacity CAP at line L column COL
+
+The destination is unchanged on failure; source side effects are retained.
+A legacy AST without a location reports 0/0. NVPTX code has no host
+diagnostics and keeps its unchecked copy. INITCK treats string operands as
+COPYLST does: nonliteral sources are explicit unsupported boundaries, and the
+destination is write-only.
+
+The manual states the error as upper(D) < upper(S). For an LSTRING source,
+the native check uses its current length rather than its declared capacity,
+like COPYLST: a copy fails only when the characters copied would not fit.
+
+Regression: `tests/contract/copystr.sh`.
+
+#### DELETE admission and always-caught span check **[native]**
+
+`DELETE(d, i, l)` removes `l` characters from the LSTRING `d`, starting with
+`d[i]`, and shortens its length by `l` (manual 11-20). The destination must
+be a bare LSTRING variable, including type aliases, VAR formals and
+WITH-bound names; a fixed STRING, a selected destination, a constant or a
+function is rejected at typechecking. `i` and `l` must be INTEGER-compatible.
+User routines named DELETE retain precedence.
+
+`i` and `l` are evaluated once, in that order, and only then is the length
+of `d` read, so a call in either argument that changes `d` is seen. A span
+past the length is IBM error 2151, which the manual says is **always
+caught** (A-46): the check runs under `$RANGECK+` and `$RANGECK-` alike, on
+the host and in CPU DEVICE code, and MATHCK does not affect it. The manual
+states the error as length(d) < i + l - 1; the native check also fails a
+position below 1 or a negative count, which the manual does not mention and
+which would otherwise move bytes outside the string. `DELETE(d, length + 1,
+0)` deletes nothing and is valid. A failure flushes stdout and reports:
+
+    runtime error: DELETE position I count L is outside length N at line L column COL
+
+The destination and its length are unchanged on failure. A legacy AST
+without a location reports 0/0. NVPTX code has no host diagnostics and keeps
+its unchecked move. Under INITCK+, reading the string destination is an
+explicit unsupported boundary, as for other string operands.
+
+Regression: `tests/contract/delete.sh`.
+
+#### INSERT admission and always-caught position and capacity checks **[native]**
+
+`INSERT(s, d, i)` inserts the characters of `s` just before `d[i]` and
+lengthens the LSTRING `d` by the length of `s` (manual 11-20). The source has
+the same forms as COPYLST's; the destination must be a bare LSTRING
+variable, including type aliases, VAR formals and WITH-bound names; `i` must
+be INTEGER-compatible. A fixed STRING, selected, constant or function
+destination is rejected at typechecking. User routines named INSERT retain
+precedence.
+
+`s` is evaluated first, then `i`, and only then is the length of `d` read.
+Two checks run before any byte moves or the length changes. Both are IBM
+error 2151, which the manual says is **always caught** (A-46): they run under
+`$RANGECK+` and `$RANGECK-` alike, on the host and in CPU DEVICE code, and
+MATHCK does not affect them.
+
+- The position must be in `1..length(d) + 1`. The manual's text,
+  "length (D) < I", also rejects `length(d) + 1`, which would make it
+  impossible to append or to insert into an empty string. Native INSERT
+  accepts that position and appends: a deliberate difference.
+- The new length must fit `min(capacity, 255)`. As for COPYLST, the
+  source's current length is used, not its declared capacity.
+
+Failures flush stdout and report one of:
+
+    runtime error: INSERT position I is outside 1..N at line L column COL
+    runtime error: INSERT length V exceeds capacity CAP at line L column COL
+
+The destination and its length are unchanged on failure. Inserting `d` into
+itself is valid: it can only alias the whole destination, and the shift
+never overwrites the bytes still to be copied. A legacy AST without a
+location reports 0/0. NVPTX code has no host diagnostics and keeps its
+unchecked insertion. Under INITCK+, nonliteral string sources and the string
+destination, which INSERT reads, are explicit unsupported boundaries.
+
+Regression: `tests/contract/insert.sh`.
 
 #### LSTRING length-byte stores **[native]**
 
@@ -1318,8 +1634,9 @@ correct addresses without guards. This also applies to DEVICE address arithmetic
 without adding host diagnostics there.
 
 This INDEXCK slice does **not** add checks to `STRING`/`LSTRING` subscripts,
-or the capacities of `COPYLST`, `COPYSTR` and `INSERT`. `CONCAT` has the
-separate RANGECK capacity contract above. Nor does INDEXCK
+or the capacities of `COPYLST`, `COPYSTR` and `INSERT`. `CONCAT` and
+`COPYLST` have the separate RANGECK capacity contracts above, and `COPYSTR`,
+`DELETE` and `INSERT` their always-caught ones. Nor does INDEXCK
 change `VECTOR` lane indexing or the super-array guard's interaction with
 `VLOAD`/`VSTORE`: constant out-of-range vector
 lanes and fixed-array vector transfers retain their compile-time diagnostics;
@@ -1336,6 +1653,52 @@ uses `$INDEXCK` for super arrays too and diagnoses a constant out-of-range
 array index at compile time (error 198). [Pascal/VS](https://www.bitsavers.org/pdf/ibm/370/pascal/SH20-6168-1_Pascal_VS_198112.pdf)
 uses `%CHECK SUBSCRIPT` instead and includes string subscripts. Neither
 historical contract implies that the unchecked cases above are safe.
+
+## Constant calls in subrange bounds **[both]**
+
+The manual lets a subrange bound be a constant expression (6-8) and lists
+`CHR`, `ORD`, `WRD`, `BYWORD`, `SUCC` and `PRED` among the constant
+functions (5-9). Both dialects accept those calls, with constant arguments,
+as the bounds of a subrange type, an explicit array index range and a `SET`
+base; this is the only way to name the non-printable `CHAR` tail:
+
+```pascal
+CONST K = 250;
+TYPE Tail = CHR(250)..CHR(255);      { the non-printable CHAR tail }
+     FromK = CHR(K)..CHR(255);       { a CONST argument }
+     Wide = 'a'..CHR(255);           { a literal and a call }
+VAR a: ARRAY [CHR(250)..CHR(255)] OF INTEGER;
+    n: ARRAY [Tail] OF INTEGER;
+    s: SET OF CHR(250)..CHR(252);
+```
+
+A bound folds to its converted ordinal exactly as a `CONST` value does
+(`CHR(250)` is 250; under `$RANGECK-`, `CHR(300)` is 44), and its host type
+is `CHAR` for `CHR`, the argument's type for `SUCC`/`PRED`, and `INTEGER`
+for `ORD`, `WRD` and `BYWORD`; both ends must still agree (`Subrange bounds
+must be of the same ordinal type`). The typechecker and codegen fold the
+same bounds, so `LOWER`/`UPPER`, a `FOR` over the subrange, the `$RANGECK`
+store check (`runtime error: value 249 is outside subrange 250..255`) and
+the `$INDEXCK` guard (`runtime error: array index 249 is outside bounds
+250..255 at line L column C`) all use them. An enabled out-of-domain `CHR`
+(or `BYWORD`) in a bound is rejected where a `CONST` value would be, at type
+checking, with `RANGECK constant CHR argument outside 0..255 at line L
+column C` located at the call's name; it is never folded into a bound.
+
+In the parser a constant-call name followed by `(` begins a subrange in type
+position; `STRING(n)` and `LSTRING(n)` are not constant-call names, so a
+parameterized type name still parses as before. The vintage `CONST` section
+is unchanged: it still rejects `ORD`, `CHR`, `SUCC` and `PRED` values
+(`CONST intrinsic calls require the extended-const-intrinsics feature`,
+a gate ported from the reference compiler rather than from the manual), so
+a vintage program writes `CHR(250)` in the bound itself, not through a
+named constant. Admitting the calls in vintage bounds was decided without
+the operator: the manual's constant-expression feature is not dialect
+specific, and gating the bounds would leave the `CHAR` tail unnameable.
+Fixtures: `tests/corpus/golden/chr_subrange_bounds.pas`,
+`chr_subrange_rangeck_bad.pas`, `chr_subrange_indexck_bad.pas` and
+`chr_subrange_bound_domain.pas`; `tests/contract/chr_constant_folding.sh`
+pins the `$RANGECK-` bound value.
 
 ## Named ordinal array index types **[native]**
 
@@ -1373,12 +1736,19 @@ knowable bounds) and are rejected by codegen as
 2^32-element fixed array. A `SUPER ARRAY` still requires the explicit
 `lo..*` form, and `PACKED` arrays remain unsupported.
 
-The index **expression** contract is unchanged from explicit ranges: the
-expression must be ordinal (a `REAL` or string index fails
-`Array index must be an ordinal type`), but kind identity is not enforced —
-`e[1]` into the BOOLEAN array above compiles exactly as `ARRAY
-[FALSE..TRUE]` indexed by `1` does, and the `$INDEXCK` runtime guard holds
-the domain.
+The index **expression** contract is the same as for explicit ranges
+(and inner and `SUPER` arrays): the expression must be ordinal (a `REAL`
+or string index fails `Array index must be an ordinal type`) and, as the
+manual's "Indexed Variables and Values" requires, assignment compatible
+with the index type. A CHAR, BOOLEAN, enumeration or integer index into
+an array of another of those kinds is a located typecheck error such as
+`Array index type mismatch: expected BOOLEAN, got INTEGER` (so `e[1]`
+above is rejected), and a value of a different enumeration fails
+`Array index type mismatch: different enumeration types` when both
+enumerations are known to the checker. Integer widths mix freely
+(`INTEGER`, `WORD`, `INTEGER32` into `1..4`): a constant is held to the
+index kind's range at compile time, and the `$INDEXCK` runtime guard
+holds the declared domain.
 
 ## MATHCK: integer overflow and division checks **[both]**
 
@@ -1754,7 +2124,7 @@ under RANGECK-, `ORD(CHR(300)) + 1` is 45, not 301, and
 converted ordinal, including negative and MIN64 arguments, without negating
 their magnitude; the backend checks the original domain before normalizing.
 This applies to CONST
-transport, admitted CASE labels and array-bound consumers as well as arithmetic;
+transport, admitted CASE labels, subrange and array-bound consumers as well as arithmetic;
 it does not erase an enabled bad-argument check or broaden constant syntax.
 `tests/contract/chr_constant_folding.sh` pins constant/runtime twins in both
 dialects at O0–O3 and the CONST/label/bound consumers.
@@ -1791,13 +2161,18 @@ is an ordinary call, outside this classification.
 | Separate contract | `TRUNC`, `ROUND` | Always-on range check, independent of MATHCK and RANGECK (G26, [TRUNC section](#trunc-and-round-return-integer-so-they-narrow-to-16-bits-both)). |
 | RANGECK | `CONCAT` (LSTRING length byte) | Host RANGECK+ checks combined length against `min(capacity, 255)` before copying or publishing; failure leaves compiler-written destination bytes unchanged. RANGECK- and NVPTX remain unchecked; this is not MATHCK arithmetic. |
 | Separate contract | `POSITN` | Host pattern search with an explicit starting position ([below](#positn-both)); no MATHCK arithmetic or string writes. |
-| Separate contract | `INSERT`, `DELETE`, `COPYLST`, `COPYSTR`, `ENCODE`, `DECODE` | **Unreachable:** codegen lowers them, but the typechecker rejects every call as an undefined procedure or function. When enabled, their internal length and position arithmetic (`pos - 1`, `len - pos`) needs capacity and position checks, not MATHCK; DECODE is a text-to-number conversion. |
+| RANGECK | `COPYLST` | Admitted string source and bare LSTRING destination; host/CPU RANGECK+ checks source length against `min(capacity, 255)` before any copy or length publication. RANGECK- and NVPTX remain unchecked. |
+| Separate contract | `COPYSTR` | Admitted string source and bare fixed STRING destination; the source length is checked against the destination's capacity before any copy or blank fill, always (IBM error 2150), whatever the RANGECK setting. NVPTX remains unchecked ([above](#copystr-admission-and-always-caught-capacity-check-native)). |
+| Separate contract | `DELETE` | Admitted bare LSTRING destination; the span is checked against the current length before any move or length publication, always (IBM error 2151), whatever the RANGECK setting. A position below 1 or a negative count also fails. NVPTX remains unchecked ([above](#delete-admission-and-always-caught-span-check-native)). |
+| Separate contract | `INSERT` | Admitted string source and bare LSTRING destination; the position (1..length + 1) and the new length are checked before any move or length publication, always (IBM error 2151), whatever the RANGECK setting. NVPTX remains unchecked ([above](#insert-admission-and-always-caught-position-and-capacity-checks-native)). |
+| Separate contract | `ENCODE` | WRITE-style formatting into a bare LSTRING ([below](#encode-both)); the capacity check is the FALSE result, never a trap, whatever RANGECK says. |
+| Separate contract | `DECODE` | READ-style conversion from a string ([below](#decode-both)); a malformed or out-of-range text, a subrange's bounds included, is the FALSE result, never a trap, whatever RANGECK says. |
 | Separate contract | `NEW` bounds, `DEVALLOC`, `SIZEOF`, `LOWER`, `UPPER` | Descriptor and layout arithmetic; layouts above 2147483647 bytes are rejected (`TypeSizeBytes`). |
 | Separate contract | `READ`/`READLN` of integers | Text conversion, checked independently of MATHCK (G29). |
 | No check | `ORD` | Same value and width; an enumeration gives its ordinal as INTEGER, so `ORD(e) * 20000` is checked 16-bit arithmetic. [`ORD(WORD)`](#deferred-ordword-conversion-gap-g25) stays WORD (G25). |
 | No check | `WRD`, `WRD8` | Bit-pattern conversion: `WRD(-2)` is 65534 (IBM 11-8). |
 | No check | `ODD` | Low-bit test. |
-| No check | `HIBYTE`, `LOBYTE` | Byte extraction, never above 255. They return CHAR; IBM returns the argument's type, a typing difference, not a MATHCK question. |
+| No check | `HIBYTE`, `LOBYTE` | Byte extraction, never above 255. As in IBM, they return the argument's type (INTEGER or WORD). |
 | RANGECK | `BYWORD` | Both original ordinal operands must be in 0..255 before packing under host/CPU RANGECK+. Disabled checking and NVPTX retain low-byte packing. Domain checking is not MATHCK overflow. |
 | No check | `FLOAT` | Exact for every INTEGER-family value up to 2^53; WORD-family values convert unsigned ([WORD to REAL](#word-to-real-conversion)). |
 | No check | `RETYPE`, `ADR`, `ADS`, pointer `+` | Reinterpretation and [address arithmetic](#outside-mathck). |
@@ -1877,6 +2252,80 @@ string initialization tracking is not implemented. These scans neither write
 the string nor add MATHCK instrumentation. Tests: `tests/corpus/golden/scan_builtins.pas`
 and `scan_shadow.pas`, `tests/corpus/checklit/scan/`, and
 `tests/unit/runtime_scan.c`.
+
+### ENCODE **[both]**
+
+`ENCODE(D, X:M:N): BOOLEAN` converts `X` to the text that `WRITE(X:M:N)`
+would print and stores it in the LSTRING `D`, setting `D`'s length (manual
+11-14). It returns TRUE when the text fits `D`'s capacity (at most 255
+characters, whatever the declared capacity) and FALSE otherwise, in which
+case `D` is unchanged. The manual leaves a failed destination undefined;
+the native compiler keeps the old value. The formatting is WRITE's own: the
+lowering builds the same printf format and argument list as a WRITE
+argument (`cg_expr_support.pas`'s `EmitScalarWriteArg`) and the runtime
+`pas_encode_fmt` prints it into the string, so every field width, REAL
+form and enumeration spelling agrees with WRITE in the same dialect: an
+enumeration encodes as its member name in the extended dialect and as its
+ordinal in vintage; BOOLEAN is `TRUE`/`FALSE` in both. `M` and `N` are
+INTEGER values; a width smaller than the text does not truncate, and `N`
+only affects REAL, as for WRITE. `X`, `M` and `N` evaluate once each, in
+that order.
+
+`X` may be INTEGER, WORD, an enumeration, a subrange of those, BOOLEAN or
+REAL, as the manual lists, and also CHAR, the wide integers and REAL32,
+which WRITE formats the same way. A pointer value, which the manual
+allows, is rejected at typechecking: the native compiler has no `.R`/`.S`
+address notation. `D` must be a bare LSTRING variable, including type
+aliases, VAR formals and WITH-bound names; a fixed STRING, a selected
+destination such as `a[i]`, a constant or a function is rejected, as is a
+field width on `D`. A user declaration named ENCODE shadows the builtin; a
+`:M:N` suffix in a call to it is an error. DEVICE code rejects ENCODE as
+host-only. Under INITCK+ a call to ENCODE is an explicit `call consumer`
+unsupported boundary, like SCANEQ. Calling ENCODE as a statement is an
+undefined procedure, as for every builtin function.
+
+The parser gives ENCODE and DECODE actuals WRITE's `X:M:N` grammar (the
+same WriteArg nodes), so `P::N` is also accepted. Tests:
+`tests/corpus/golden/encode_*.pas`, `tests/corpus/checklit/encode/` and
+`tests/unit/runtime_encode.c`.
+
+### DECODE **[both]**
+
+`DECODE(S, X:M:N): BOOLEAN` converts the text of the STRING or LSTRING `S`
+to a value of `X`'s type, as `READ(X)` would from that text, and assigns
+it (manual 11-15). Blanks and tabs at either end of `S` are ignored; every
+other character must belong to one representation. It returns TRUE on
+success and FALSE when the text is not a valid representation of a value
+assignable to `X`, in which case `X` is unchanged (the manual leaves it
+undefined). A subrange destination makes an out-of-range value FALSE too,
+regardless of `$RANGECK`, as the manual requires. Unlike READ, nothing in
+DECODE traps: the runtime converters (`pas_decode_integer`, `pas_decode_enum`,
+`pas_decode_char`, `pas_decode_real`) answer FALSE where the stdin readers
+would abort. `M` and `N` are INTEGER values, evaluated once and ignored,
+as READ ignores them.
+
+The accepted texts follow the native READ: an integer is an optional sign
+and decimal digits (no `16#` notation), checked against the type's width
+(INTEGER, WORD, INTEGER8/32/64, WORD8/32/64) or the declared subrange; a
+REAL is what C's `strtod` accepts as one whole token, so a leading or
+trailing decimal point is fine and an overflowing exponent is not; a CHAR
+is exactly one character once the surrounding blanks are dropped, so a
+blank alone is FALSE, and a CHAR subrange bounds it; BOOLEAN accepts
+`TRUE`/`FALSE` without regard to letter case or the ordinals `0`/`1` in
+both dialects; an enumeration accepts its ordinal in both dialects and its
+member identifier, without regard to case, in the extended dialect only,
+matching the dialects' READ. The source may be a string literal, a
+one-character literal, a variable, selected storage or a string-valued
+function; a field width on `S` is an error. The destination must be a
+variable of the ENCODE value family: a bare name, a selected variable such
+as `a[i]`, `r.f` or `p^`, or a VAR formal; constants, expressions, function
+calls, strings and pointers are rejected at typechecking. A user
+declaration named DECODE shadows the builtin; a `:M:N` suffix in a call to
+it is an error. DEVICE code rejects DECODE as host-only. Under INITCK+ a
+call is an explicit `call consumer` unsupported boundary, like ENCODE.
+Calling DECODE as a statement is an undefined procedure, as for every
+builtin function. Tests: `tests/corpus/golden/decode_*.pas`,
+`tests/corpus/checklit/decode/` and `tests/unit/runtime_decode.c`.
 
 ### MATHCK VECTOR, DEVICE and unsupported boundaries
 
@@ -2093,9 +2542,11 @@ is a deliberate modern divergence from IBM: compatibility is for fun, not
 pathology, and INTEGER has no reserved INITCK sentinel. A minus sign applied
 to the `WORD` constant `32768` folds to INTEGER `-32768`, so `-32768`,
 `- 32768`, `-(32768)` and `-W` (with `CONST W = 32768`) all give `-32768`.
-Negating a constant that is already `-32768` is a compile-time error, and so
-is `0 - 32768`: a binary operation mixes a `WORD` constant with an `INTEGER`
-operand only if the constant fits INTEGER.
+Negating a constant that is already `-32768` is a compile-time error. A
+constant `+ - * DIV MOD` whose value fits its integer context is checked as
+one constant, so `i := 0 - 32768` is also `-32768`, and `40000 - 10000` is
+the INTEGER `30000`; every intermediate value must still fit its own type,
+and a value outside the context is an error.
 
 An `INTEGER` constant can adapt to a `WORD` context. This includes negative
 constants. The conversion keeps the 16-bit pattern, so `-1` becomes `65535`.
@@ -2171,6 +2622,23 @@ adapts to the other operand of a binary operation. `tests/corpus/golden/literal_
 and `tests/corpus/golden/literal_wide_range.pas` pin this. Literals of more than 15 digits
 (beyond the precision of a printed JSON double) are preserved exactly across compiler
 stages via companion decimal representation (`tests/corpus/golden/literal_int64_exact.pas`).
+
+A literal from 2^63 (9223372036854775808) to 2^64 - 1
+(18446744073709551615), in decimal or radix form, is a WORD64 operand:
+`w := 18446744073709551615` and `CASE w OF 9223372036854775808: ...` are
+valid. It is out of range for every other integer type. The compiler
+folds constants in INTEGER64, which cannot hold these values, so such a
+literal is not folded: a `CONST` may name it (`CONST BIG = 18446744073709551615;
+SAME = BIG;`), and `BIG DIV 10` is computed as WORD64 arithmetic at run
+time, under MATHCK like any other WORD64 operation. `-9223372036854775808`
+is the INTEGER64 minimum; a negated literal below it is an error. A
+literal above 2^64 - 1 is a located lexer error (`Lexer Error: integer
+literal exceeds 18446744073709551615 at line L column C`), and a `REAL`
+literal's integer part may be larger than any integer type
+(`tests/corpus/golden/real_literal_wide_integer_part.pas`). In the vintage
+dialect these literals are outside the native range like any literal above
+65535. `tests/corpus/golden/word64_literal_*.pas` pin this, and
+`tests/contract/pretty81_integers.sh` pins their pretty81 spelling.
 
 A literal too large for its target type is an error:
 
@@ -2321,14 +2789,15 @@ These are implementation limitations, not vintage-language restrictions.
 - **Array allocation size [both].** Vintage `WORD` bounds through `65535` are
   retained. A large valid range can still request a correspondingly large
   object from LLVM and the linker.
-- **At most about 500 names in scope at once [both].** Codegen keeps one
-  symbol table of `MAX_SYMBOLS = 500` entries (`src/cg_base.inc`); a few are
-  used internally, so a program can declare 498 global variables but not 499,
-  which fails with `codegen: too many symbols` and no source location. A
-  routine's locals are released when the routine ends, so the limit is on the
-  names visible at one point (globals plus the enclosing routines' locals),
-  not on a program's total. Generated test programs should reuse a few
-  variables rather than declaring one per case.
+- **At most 2000 names in scope at once [both].** The typechecker keeps one
+  symbol table of `MAX_SYMBOLS = 2000` entries (`src/tc_base.inc`). Types,
+  constants, enumeration values, variables, parameters and WITH-bound fields
+  all use entries, and a few are predeclared. Overflow fails with
+  `Too many names in scope (limit 2000) at line L column C`, at the
+  declaration that did not fit. Codegen's table holds 4000 entries, so it is
+  never the first limit. A routine's locals are released when the routine
+  ends, so the limit is on the names visible at one point (globals plus the
+  enclosing routines' locals), not on a program's total.
 
 ## Other things that cost time **[both, unless marked otherwise]**
 
@@ -2379,8 +2848,10 @@ least once:
 - **`CONST` accepts literals, named constants, and `WRD`/`BYWORD` constant
   constructors.** Multi-character string constants are supported. `WRD(x)`
   and `BYWORD(hi, lo)` are the only function-shaped forms in the vintage
-  `constant` grammar; ordinary calls, including `ORD`, `CHR`, `SUCC`, and
-  `PRED`, are not valid `CONST` values.
+  `CONST` section; ordinary calls, including `ORD`, `CHR`, `SUCC`, and
+  `PRED`, are not valid vintage `CONST` values. Subrange and array index
+  bounds do take them in both dialects (see
+  [Constant calls in subrange bounds](#constant-calls-in-subrange-bounds-both)).
 - **A `CASE` label range (`1 .. 3:`) is not lowered [both].** The selector
   itself may be any ordinal — every integer width, `CHAR`, `BOOLEAN`, an
   enumerated type — and labels of a narrower type than the selector are

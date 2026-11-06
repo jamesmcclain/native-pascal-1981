@@ -23,8 +23,6 @@ VAR
   last_set_base_tk: INTEGER; { bounds-only base; see SetBoundsBaseAfterCheck. }
   expr_context_set_base: INTEGER; { expected SET base, independent of bounds }
   last_sem_set_base, last_sem_scalar_base: INTEGER;
-  fold_overflowed: BOOLEAN; { set by FoldArith; see CheckFoldedOperation }
-  fold_overflow_negative: BOOLEAN;
 
 FUNCTION IsDeviceIndexName(name: Str255): BOOLEAN;
 VAR
@@ -51,179 +49,6 @@ BEGIN
   AddField(node, 'resolved_type', tobj);
 END;
 
-FUNCTION JsonIntegerValue(node: ADRMEM): INTEGER64;
-BEGIN
-  { Exact, not through GetReal: a JSON number keeps 15 digits. }
-  JsonIntegerValue := GetInt64(node, 'value');
-END;
-
-FUNCTION FoldArith(op: Str255; left, right: INTEGER64;
-  VAR folded: INTEGER64): BOOLEAN;
-{ The exact constant left + - * right, or FALSE when it leaves INTEGER64.
-  The folder runs inside a MATHCK-checked compiler, so a constant from the
-  program must not trap it: the operation wraps and the overflow is tested
-  explicitly. A failure sets fold_overflowed and records the sign of the
-  exact value in fold_overflow_negative for CheckFoldedOperation. }
-VAR
-  r, neg_right: INTEGER64;
-  fits: BOOLEAN;
-BEGIN
-  (*$MATHCK-*)
-  IF op = 'PLUS' THEN r := left + right
-  ELSE IF op = 'MINUS' THEN r := left - right
-  ELSE r := left * right;
-  neg_right := 0 - right;
-  (*$MATHCK+*)
-  IF op = 'PLUS' THEN
-    fits := ((left >= 0) <> (right >= 0)) OR ((r >= 0) = (left >= 0))
-  ELSE IF op = 'MINUS' THEN
-    fits := ((left >= 0) = (right >= 0)) OR ((r >= 0) = (left >= 0))
-  ELSE IF (left = 0) OR (right = 0) THEN
-    fits := TRUE
-  ELSE IF left = -1 THEN
-    fits := neg_right <> right { only the minimum negates to itself }
-  ELSE
-    fits := r DIV left = right;
-  IF NOT fits THEN
-  BEGIN
-    fold_overflowed := TRUE;
-    IF op = 'MUL' THEN fold_overflow_negative := (left < 0) <> (right < 0)
-    ELSE fold_overflow_negative := left < 0;
-  END;
-  folded := r;
-  FoldArith := fits;
-END;
-
-FUNCTION LowByte(x: INTEGER64): INTEGER64;
-{ The low eight bits of x, 0..255, as CHR and BYWORD convert an ordinal.
-  MOD is dividend-signed; never negate MIN64 to get its low byte. }
-VAR
-  b: INTEGER64;
-BEGIN
-  b := x MOD 256;
-  IF b < 0 THEN b := b + 256;
-  LowByte := b;
-END;
-
-FUNCTION FoldConstInt(node: ADRMEM; VAR folded_value: INTEGER64): BOOLEAN;
-VAR
-  nt, op, name, ch: Str255;
-  left, right: INTEGER64;
-  si: INTEGER32;
-  args: ADRMEM;
-BEGIN
-  nt := NodeType(node);
-  FoldConstInt := FALSE;
-  IF nt = 'IntLiteral' THEN
-  BEGIN
-    folded_value := JsonIntegerValue(node);
-    FoldConstInt := TRUE;
-  END
-  ELSE IF nt = 'BoolLiteral' THEN
-  BEGIN
-    IF GetBool(node, 'value') THEN folded_value := 1 ELSE folded_value := 0;
-    FoldConstInt := TRUE;
-  END
-  ELSE IF nt = 'CharLiteral' THEN
-  BEGIN
-    ch := GetStr(node, 'value');
-    folded_value := ORD(ch[1]);
-    FoldConstInt := TRUE;
-  END
-  ELSE IF nt = 'UnaryOp' THEN
-  BEGIN
-    op := GetStr(node, 'op');
-    IF ((op = 'PLUS') OR (op = 'MINUS')) AND FoldConstInt(GetObj(node, 'operand'), folded_value) THEN
-    BEGIN
-      IF op = 'MINUS' THEN
-        FoldConstInt := FoldArith('MINUS', 0, folded_value, folded_value)
-      ELSE
-        FoldConstInt := TRUE;
-    END;
-  END
-  ELSE IF nt = 'BinOp' THEN
-  BEGIN
-    op := GetStr(node, 'op');
-    IF ((op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') OR
-        (op = 'DIV') OR (op = 'MOD')) AND
-       FoldConstInt(GetObj(node, 'left'), left) AND
-       FoldConstInt(GetObj(node, 'right'), right) THEN
-    BEGIN
-      IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') THEN
-        FoldConstInt := FoldArith(op, left, right, folded_value)
-      ELSE IF right = -1 THEN
-      BEGIN
-        { x DIV -1 is -x, which overflows only for the minimum; x MOD -1
-          is 0. }
-        IF op = 'DIV' THEN FoldConstInt := FoldArith('MINUS', 0, left, folded_value)
-        ELSE
-        BEGIN
-          folded_value := 0;
-          FoldConstInt := TRUE;
-        END;
-      END
-      ELSE IF right <> 0 THEN
-      BEGIN
-        { Truncate toward zero; MOD has the dividend's sign, like runtime. }
-        IF op = 'DIV' THEN folded_value := left DIV right
-        ELSE folded_value := left MOD right;
-        FoldConstInt := TRUE;
-      END;
-      { A zero divisor does not fold. The BinOp check in CheckExpr reports
-        it once; this folder also answers "is it constant?" for callers. }
-    END;
-  END
-  ELSE IF (nt = 'Identifier') OR (nt = 'Designator') THEN
-  BEGIN
-    IF (nt = 'Identifier') OR (cJSON_GetArraySize(GetObj(node, 'selectors')) = 0) THEN
-    BEGIN
-      name := GetStr(node, 'name');
-      si := LookupSymbol(name);
-      IF si <> 0 THEN
-        IF symbols[si].has_const_int THEN
-        BEGIN
-          folded_value := symbols[si].const_int;
-          FoldConstInt := TRUE;
-        END;
-    END;
-  END
-  ELSE IF nt = 'FuncCall' THEN
-  BEGIN
-    name := UpperStr(GetStr(node, 'name'));
-    args := GetObj(node, 'args');
-    IF (name = 'BYWORD') AND NOT UserDeclarationShadows(name) AND
-       (cJSON_GetArraySize(args) = 2) AND
-       FoldConstInt(cJSON_GetArrayItem(args, 0), left) AND
-       FoldConstInt(cJSON_GetArrayItem(args, 1), right) THEN
-    BEGIN
-      { The backend checks the original enabled domain; this folder keeps
-        the converted WORD ordinal, as with CHR's low-byte normalization. }
-      folded_value := LowByte(left) * 256 + LowByte(right);
-      FoldConstInt := TRUE;
-    END
-    ELSE IF NOT UserDeclarationShadows(name) AND
-       ((name = 'ORD') OR (name = 'CHR') OR (name = 'SUCC') OR (name = 'PRED') OR
-        (name = 'ABS') OR (name = 'SQR')) AND
-       (cJSON_GetArraySize(args) = 1) AND
-       FoldConstInt(cJSON_GetArrayItem(args, 0), folded_value) THEN
-    BEGIN
-      IF name = 'CHR' THEN
-      BEGIN
-        { CHR's value is its low eight bits, not its original argument.
-          The backend independently enforces enabled CHR's original domain. }
-        folded_value := LowByte(folded_value);
-        FoldConstInt := TRUE;
-      END
-      ELSE IF name = 'SUCC' THEN FoldConstInt := FoldArith('PLUS', folded_value, 1, folded_value)
-      ELSE IF name = 'PRED' THEN FoldConstInt := FoldArith('MINUS', folded_value, 1, folded_value)
-      ELSE IF name = 'SQR' THEN FoldConstInt := FoldArith('MUL', folded_value, folded_value, folded_value)
-      ELSE IF (name = 'ABS') AND (folded_value < 0) THEN
-        FoldConstInt := FoldArith('MINUS', 0, folded_value, folded_value)
-      ELSE FoldConstInt := TRUE;
-    END;
-  END;
-END;
-
 FUNCTION IntegerTypeName(tk: INTEGER): Str255;
 BEGIN
   IF tk = TK_INTEGER8 THEN IntegerTypeName := 'INTEGER8'
@@ -235,6 +60,15 @@ BEGIN
   ELSE IF tk = TK_WORD32 THEN IntegerTypeName := 'WORD32'
   ELSE IF tk = TK_WORD64 THEN IntegerTypeName := 'WORD64'
   ELSE IntegerTypeName := 'integer type';
+END;
+
+FUNCTION OrdinalKindName(tk: INTEGER): Str255;
+{ A coarse ordinal kind for diagnostics; enum kinds carry no name here. }
+BEGIN
+  IF tk = TK_CHAR THEN OrdinalKindName := 'CHAR'
+  ELSE IF tk = TK_BOOLEAN THEN OrdinalKindName := 'BOOLEAN'
+  ELSE IF tk = TK_ENUM THEN OrdinalKindName := 'enumeration'
+  ELSE OrdinalKindName := IntegerTypeName(tk);
 END;
 
 FUNCTION MaxWord16Value: INTEGER64;
@@ -449,6 +283,15 @@ BEGIN
       last_sem_scalar_base := SemanticOrdinalBase(target_tk, 0);
     END;
   END;
+  { SIZEOF is a compile-time constant that the IBM manual types as WORD, so
+    like a fitting literal it may flow into a WORD target. This checker
+    types it INTEGER (the compiler's own arithmetic mixes it with INTEGER
+    operands), so the exemption is by node kind. Its value is known only to
+    codegen's layout, so no range check is possible here; the 16-bit
+    pattern passes through unchanged. }
+  IF (target_tk = TK_WORD) AND (result_tk = TK_INTEGER) AND
+     (nerrors = errors_before) AND (NodeType(node) = 'SizeofExpr') THEN
+    result_tk := target_tk;
   CheckExprForSetTarget := result_tk;
 END;
 
@@ -491,6 +334,58 @@ BEGIN
   END;
 END;
 
+FUNCTION ShadowedWriteArg(arg: ADRMEM; pname: Str255): ADRMEM;
+{ The parser wraps the actual arguments of anything spelled WRITE, WRITELN,
+  ENCODE or DECODE in WriteArg nodes (ps_expr.pas's IsFormattedArgCall),
+  case-insensitively and without consulting any declaration -- it has no
+  symbol table to consult. So a call to a *user-declared* WRITELN or ENCODE
+  arrives WriteArg-wrapped too, and the generic argument paths have to see
+  through the wrapper: CheckExpr has no WriteArg case and would return
+  silently, leaving codegen to abort on a node the typechecker had waved
+  through. A `:width:precision' suffix has no meaning for a user routine,
+  so it is rejected rather than dropped. }
+BEGIN
+  IF NodeType(arg) = 'WriteArg' THEN
+  BEGIN
+    IF (GetObjOrNil(arg, 'width') <> NIL) OR (GetObjOrNil(arg, 'precision') <> NIL) THEN
+      AddError2('Field width specifier is not allowed in a call to the user-declared ', pname);
+    ShadowedWriteArg := GetObj(arg, 'expr');
+  END
+  ELSE
+    ShadowedWriteArg := arg;
+END;
+
+FUNCTION IsEncodeValueKind(tk: INTEGER): BOOLEAN;
+{ The value types ENCODE formats and DECODE converts: the manual's INTEGER,
+  WORD, enumerations, their subranges, BOOLEAN and REAL (11-14), plus CHAR,
+  which WRITE and READ already handle. Pointers are not supported. A
+  TK_UNKNOWN operand was already reported. }
+BEGIN
+  IsEncodeValueKind := IsInteger(tk) OR (tk = TK_REAL) OR (tk = TK_REAL32) OR
+    (tk = TK_CHAR) OR (tk = TK_BOOLEAN) OR (tk = TK_ENUM) OR (tk = TK_UNKNOWN);
+END;
+
+PROCEDURE CheckFormatValue(node: ADRMEM; what: Str255);
+{ An M or N value of ENCODE/DECODE: the manual makes them INTEGER value
+  parameters (12-17). Absent values are NIL. }
+VAR
+  tk: INTEGER;
+BEGIN
+  IF node <> NIL THEN
+  BEGIN
+    tk := CheckExprForTarget(node, TK_INTEGER);
+    IF NOT CanAssign(TK_INTEGER, tk) THEN
+      AddError2(what, ' must be INTEGER');
+  END;
+END;
+
+PROCEDURE CheckNoFormatValue(arg: ADRMEM; msg: Str255);
+{ The string operand of ENCODE/DECODE has no field width. }
+BEGIN
+  IF (GetObjOrNil(arg, 'width') <> NIL) OR (GetObjOrNil(arg, 'precision') <> NIL) THEN
+    AddError(msg);
+END;
+
 FUNCTION CheckDesignator(node: ADRMEM): INTEGER;
 { Thread aggregate metadata through selectors. aux3 retains the record id
   through pointer -> array -> record, including pointers stored in fields. }
@@ -507,7 +402,8 @@ VAR
   folded_value: INTEGER64;
   super_value: BOOLEAN;
   sem_node: ADRMEM;
-  sem_set, sem_scalar: INTEGER;
+  sem_set, sem_scalar, idx_sem, expr_sem: INTEGER;
+  msg: Str255;
 BEGIN
   last_designator_set_sem_base := SB_UNKNOWN;
   last_designator_scalar_sem_base := SB_UNKNOWN;
@@ -598,6 +494,28 @@ BEGIN
         aux := 0;
         aux2 := 0;
       END
+      ELSE IF tk = TK_FILE THEN
+      BEGIN
+        { A file's FCB control fields (manual 12-32..12-33): F.TRAP, the
+          trapped-I/O switch, and F.ERRS, the error code (0..15 in the
+          manual; a WORD here). Both are assignable. F.MODE needs the
+          predeclared FILEMODES type, which does not exist yet. }
+        IF fname = 'TRAP' THEN tk := TK_BOOLEAN
+        ELSE IF fname = 'ERRS' THEN tk := TK_WORD
+        ELSE BEGIN
+          IF fname = 'MODE' THEN AddError('File field MODE is not supported')
+          ELSE AddError2('Unknown file field: ',
+            CStrToStr255(cJSON_GetStringValue(GetObj(sel, 'index_or_field'))));
+          tk := TK_UNKNOWN;
+        END;
+        aux := 0;
+        aux2 := 0;
+        aux3 := 0;
+        current_idx_tk := TK_UNKNOWN;
+        sem_node := NIL;
+        sem_set := SB_UNKNOWN;
+        sem_scalar := SB_UNKNOWN;
+      END
       ELSE IF tk <> TK_RECORD THEN
       BEGIN
         AddError('Field selector on non-record value');
@@ -630,6 +548,7 @@ BEGIN
     END
     ELSE IF skind = 'INDEX' THEN
     BEGIN
+      idx_sem := ArrayIndexSemBase(sem_node);
       sem_node := SemanticChildTypeNode(sem_node);
       sem_set := SemanticSetBaseType(sem_node);
       sem_scalar := SemanticBaseOfOrdinalType(sem_node);
@@ -680,8 +599,29 @@ BEGIN
           itk := CheckExpr(idx_expr)
         ELSE
           itk := CheckExprForTarget(idx_expr, current_idx_tk);
+        expr_sem := last_sem_scalar_base;
         IF NOT IsOrdinal(itk) AND (itk <> TK_UNKNOWN) THEN
-          AddError('Array index must be an ordinal type');
+          AddError('Array index must be an ordinal type')
+        ELSE IF IsOrdinal(itk) AND IsOrdinal(current_idx_tk) THEN
+        BEGIN
+          { The index must be assignment compatible with the index type
+            (manual, Indexed Variables and Values). Integer widths mix
+            freely: CheckExprForTarget already held a constant to the
+            index kind's range, and INDEXCK checks the rest at run time.
+            Two enumerations differ only by semantic base, which is
+            known when both the index type and the expression carry one. }
+          IF (itk <> current_idx_tk) AND
+             NOT (IsInteger(itk) AND IsInteger(current_idx_tk)) THEN
+          BEGIN
+            msg := 'Array index type mismatch: expected ';
+            CONCAT(msg, OrdinalKindName(current_idx_tk));
+            CONCAT(msg, ', got ');
+            CONCAT(msg, OrdinalKindName(itk));
+            AddError(msg);
+          END
+          ELSE IF (itk = TK_ENUM) AND SemanticBasesConflict(idx_sem, expr_sem) THEN
+            AddError('Array index type mismatch: different enumeration types');
+        END;
         new_tk := aux;
         new_aux := aux2;
         new_aux2 := aux3;
@@ -697,10 +637,12 @@ BEGIN
           aux2 := new_aux2;
         END;
         aux3 := 0;
-        { The element's own index kind is not kept in this flat type
-          model, so an element that is itself an array has an unknown
-          index kind; codegen, which has the full type, decides it. }
-        current_idx_tk := TK_UNKNOWN;
+        { The flat type model keeps no element index kind; read it from
+          the element's type node, so UPPER/LOWER of an inner array and
+          its index expressions are typed here. TK_UNKNOWN still leaves
+          the decision to codegen, which has the full type. }
+        IF new_tk = TK_ARRAY THEN current_idx_tk := ElementIndexKind(sem_node)
+        ELSE current_idx_tk := TK_UNKNOWN;
       END;
     END
     ELSE IF skind = 'DEREF' THEN
@@ -839,6 +781,88 @@ BEGIN
       ELSE IF ((NodeType(warg) = 'Identifier') AND (symbols[si].aux = -1)) OR
               ((NodeType(warg) = 'Designator') AND (last_designator_aux = -1)) THEN
         AddError2('VAR argument type mismatch in call to ', orig_name);
+    END;
+    CheckFuncCall := TK_BOOLEAN;
+    RETURN;
+  END;
+  IF name = 'ENCODE' THEN
+  BEGIN
+    { ENCODE(VAR D: LSTRING; X:M:N): BOOLEAN (11-14): formats X as WRITE
+      would, into a bare LSTRING variable (aux2 = 1, including type aliases
+      and formals). The parser wrapped both actuals as WriteArg nodes. }
+    IF is_device_compiland THEN
+      AddError('ENCODE is host-only and cannot appear in DEVICE code');
+    IF nargs <> 2 THEN
+      AddError('ENCODE expects exactly two arguments (D, X)')
+    ELSE
+    BEGIN
+      warg := ArrItem(args_arr, 0);
+      CheckNoFormatValue(warg, 'ENCODE destination takes no field width');
+      warg := GetObj(warg, 'expr');
+      IF NodeType(warg) <> 'Identifier' THEN
+        AddError('ENCODE destination must be a bare LSTRING variable')
+      ELSE
+      BEGIN
+        si := LookupSymbol(GetStr(warg, 'name'));
+        IF si = 0 THEN
+          AddUndefinedIdentifier(warg)
+        ELSE IF (symbols[si].kind <> 'VAR') OR
+                (symbols[si].tk <> TK_STRING) OR (symbols[si].aux2 <> 1) THEN
+          AddError('ENCODE destination must be a bare LSTRING variable');
+      END;
+      warg := ArrItem(args_arr, 1);
+      atk := CheckExpr(GetObj(warg, 'expr'));
+      IF NOT IsEncodeValueKind(atk) THEN
+        AddError('ENCODE value must be INTEGER, WORD, CHAR, BOOLEAN, REAL or an enumeration');
+      CheckFormatValue(GetObjOrNil(warg, 'width'), 'ENCODE field width');
+      CheckFormatValue(GetObjOrNil(warg, 'precision'), 'ENCODE precision');
+    END;
+    CheckFuncCall := TK_BOOLEAN;
+    RETURN;
+  END;
+  IF name = 'DECODE' THEN
+  BEGIN
+    { DECODE(CONST S: STRING; VAR X:M:N): BOOLEAN (11-15): converts S as
+      READ would, into a variable of ENCODE's value family: a bare name or
+      a selected variable such as a[i], including subranges. }
+    IF is_device_compiland THEN
+      AddError('DECODE is host-only and cannot appear in DEVICE code');
+    IF nargs <> 2 THEN
+      AddError('DECODE expects exactly two arguments (S, X)')
+    ELSE
+    BEGIN
+      warg := ArrItem(args_arr, 0);
+      CheckNoFormatValue(warg, 'DECODE source takes no field width');
+      warg := GetObj(warg, 'expr');
+      atk := CheckExpr(warg);
+      { A one-character quoted string is parsed as a CharLiteral. Only
+        that literal form adapts here, not arbitrary CHAR expressions. }
+      IF (atk <> TK_STRING) AND (atk <> TK_UNKNOWN) AND (NodeType(warg) <> 'CharLiteral') THEN
+        AddError('DECODE source must be STRING or LSTRING');
+      warg := ArrItem(args_arr, 1);
+      CheckFormatValue(GetObjOrNil(warg, 'width'), 'DECODE field width');
+      CheckFormatValue(GetObjOrNil(warg, 'precision'), 'DECODE precision');
+      warg := GetObj(warg, 'expr');
+      si := 0;
+      IF (NodeType(warg) = 'Identifier') OR (NodeType(warg) = 'Designator') THEN
+      BEGIN
+        si := LookupSymbol(GetStr(warg, 'name'));
+        IF si = 0 THEN
+          AddUndefinedIdentifier(warg)
+        ELSE IF symbols[si].kind <> 'VAR' THEN
+        BEGIN
+          AddError('DECODE destination must be a variable');
+          si := 0;
+        END;
+      END
+      ELSE
+        AddError('DECODE destination must be a variable');
+      IF si <> 0 THEN
+      BEGIN
+        atk := CheckExpr(warg);
+        IF NOT IsEncodeValueKind(atk) THEN
+          AddError('DECODE destination must be INTEGER, WORD, CHAR, BOOLEAN, REAL or an enumeration');
+      END;
     END;
     CheckFuncCall := TK_BOOLEAN;
     RETURN;
@@ -1052,10 +1076,12 @@ BEGIN
       AddError('HIBYTE/LOBYTE requires exactly one argument')
     ELSE BEGIN
       atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
-      IF NOT IsInteger(atk) AND (atk <> TK_UNKNOWN) THEN
-        AddError('HIBYTE/LOBYTE argument must be an integer type');
+      IF (atk <> TK_INTEGER) AND (atk <> TK_WORD) AND (atk <> TK_UNKNOWN) THEN
+        AddError('HIBYTE/LOBYTE argument must be INTEGER or WORD');
     END;
-    CheckFuncCall := TK_CHAR;
+    { IBM returns the byte (0..255) with the argument's own type. }
+    IF (atk = TK_INTEGER) OR (atk = TK_WORD) THEN CheckFuncCall := atk
+    ELSE CheckFuncCall := TK_INTEGER;
     RETURN;
   END;
   IF name = 'WRD8' THEN
@@ -1245,11 +1271,12 @@ BEGIN
   ELSE
     FOR i := 0 TO nargs - 1 DO
     BEGIN
+      warg := ShadowedWriteArg(cJSON_GetArrayItem(args_arr, i), orig_name);
       IF i < symbols[si].nparams THEN
-        atk := CheckExprForSetTarget(cJSON_GetArrayItem(args_arr, i),
+        atk := CheckExprForSetTarget(warg,
           symbols[si].param_tk[i + 1], symbols[si].param_set_sem_base[i + 1])
       ELSE
-        atk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
+        atk := CheckExpr(warg);
       IF i < symbols[si].nparams THEN
         IF NOT CanAssign(symbols[si].param_tk[i + 1], atk) THEN
           AddError2('Argument type mismatch or implicit narrowing in call to ', orig_name);
@@ -1286,57 +1313,6 @@ BEGIN
   END
   ELSE IF nt = 'BinOp' THEN
     SetBoundsBaseAfterCheck := last_set_base_tk;
-END;
-
-PROCEDURE CheckConstByteDomain(node: ADRMEM);
-{ A folded constant expression is never lowered to a call, so the runtime
-  RANGECK guard of a BYWORD or CHR inside it never runs. Report, at the
-  call's name token, an operand outside 0..255 when the call's own RANGECK
-  snapshot is on. Codegen declines to fold such a call, so a fold this
-  check does not cover becomes a guarded runtime call. Only the shapes a
-  constant expression can take are walked; a CONST name was checked at
-  its own declaration. }
-VAR
-  nm: Str255;
-  args: ADRMEM;
-  i: INTEGER32;
-  hi, lo: INTEGER64;
-  saved_line, saved_col: INTEGER32;
-  bad: BOOLEAN;
-BEGIN
-  IF NodeType(node) = 'UnaryOp' THEN
-    CheckConstByteDomain(GetObj(node, 'operand'))
-  ELSE IF NodeType(node) = 'BinOp' THEN
-  BEGIN
-    CheckConstByteDomain(GetObj(node, 'left'));
-    CheckConstByteDomain(GetObj(node, 'right'));
-  END
-  ELSE IF NodeType(node) = 'FuncCall' THEN
-  BEGIN
-    nm := UpperStr(GetStr(node, 'name'));
-    IF UserDeclarationShadows(nm) THEN RETURN;
-    args := GetObj(node, 'args');
-    FOR i := 0 TO cJSON_GetArraySize(args) - 1 DO
-      CheckConstByteDomain(cJSON_GetArrayItem(args, i));
-    IF NOT GetBool(node, 'rangeck') THEN RETURN;
-    bad := FALSE;
-    IF (nm = 'BYWORD') AND (cJSON_GetArraySize(args) = 2) THEN
-    BEGIN
-      IF FoldConstInt(cJSON_GetArrayItem(args, 0), hi) AND
-         FoldConstInt(cJSON_GetArrayItem(args, 1), lo) THEN
-        bad := (hi < 0) OR (hi > 255) OR (lo < 0) OR (lo > 255);
-    END
-    ELSE IF (nm = 'CHR') AND (cJSON_GetArraySize(args) = 1) THEN
-      IF FoldConstInt(cJSON_GetArrayItem(args, 0), lo) THEN
-        bad := (lo < 0) OR (lo > 255);
-    IF bad THEN
-    BEGIN
-      TcEnterLocation(node, saved_line, saved_col);
-      IF nm = 'BYWORD' THEN AddError('RANGECK constant BYWORD argument outside 0..255')
-      ELSE AddError('RANGECK constant CHR argument outside 0..255');
-      TcLeaveLocation(saved_line, saved_col);
-    END;
-  END;
 END;
 
 PROCEDURE CheckFoldedOperation(node: ADRMEM; result_tk: INTEGER;
@@ -1403,6 +1379,8 @@ VAR
   constructor_errors_before, operands_errors_before: INTEGER32;
   folded_value: INTEGER64;
   bound_subrange, bound_super, bound_idx_unknown: BOOLEAN;
+  const_fits_context: BOOLEAN;
+  saved_operand_context: INTEGER;
 BEGIN
   expr_depth := expr_depth + 1;
   IF expr_depth > MAX_EXPR_DEPTH THEN
@@ -1416,7 +1394,29 @@ BEGIN
   nt := NodeType(node);
   last_sem_set_base := SB_UNKNOWN;
   last_sem_scalar_base := SB_UNKNOWN;
-  IF nt = 'IntLiteral' THEN
+  IF IsWord64Literal(node) THEN
+  BEGIN
+    { 2^63..2^64-1 fits only WORD64. It is not folded, so the usual WORD64
+      operand rules apply; a narrower integer context is the constant's
+      own range error, as for any other literal. }
+    IF NOT (active_features.wide_integers OR is_device_compiland) THEN
+    BEGIN
+      AddError('Integer constant is outside the native 16-bit range -32768..65535');
+      ot := TK_UNKNOWN;
+    END
+    ELSE IF IsInteger(expr_context_tk) AND (expr_context_tk <> TK_WORD64) THEN
+    BEGIN
+      AddError2('Positive integer constant out of range for ', IntegerTypeName(expr_context_tk));
+      ot := TK_UNKNOWN;
+    END
+    ELSE BEGIN
+      ot := TK_WORD64;
+      TagIntegerType(node, ot);
+    END;
+    CheckExprBody := ot;
+    last_sem_scalar_base := SemanticOrdinalBase(ot, 0);
+  END
+  ELSE IF nt = 'IntLiteral' THEN
   BEGIN
     ot := CheckIntegerConstant(node, JsonIntegerValue(node));
     CheckExprBody := ot;
@@ -1478,7 +1478,16 @@ BEGIN
     ELSE
     BEGIN
       si := LookupSymbol(name);
-      IF si = 0 THEN
+      IF (si = 0) AND ((UpperStr(name) = 'EOF') OR (UpperStr(name) = 'EOLN')) THEN
+      BEGIN
+        { Niladic EOF/EOLN mean EOF(INPUT)/EOLN(INPUT) (manual 12-10/11).
+          Only reached when no user declaration shadows the name. }
+        IF is_device_compiland THEN
+          AddError2('Standard input is host-only and cannot appear in DEVICE code: ', name);
+        CheckExprBody := TK_BOOLEAN;
+        last_sem_scalar_base := TK_BOOLEAN;
+      END
+      ELSE IF si = 0 THEN
       BEGIN
         AddError2('Undefined identifier: ', name);
         CheckExprBody := TK_UNKNOWN;
@@ -1675,7 +1684,21 @@ BEGIN
     sem_set_l := SB_UNKNOWN;
     sem_set_r := SB_UNKNOWN;
     operands_errors_before := nerrors;
+    { A constant + - * DIV MOD whose value fits the integer context is
+      checked as one constant (CheckFoldedOperation), so its leaf operands
+      take their natural types: `i := 0 - 32768` is -32768, as `-32768` is.
+      A nested operation keeps the context and applies the same rule. }
+    op := GetStr(node, 'op');
+    const_fits_context := FALSE;
+    IF IsInteger(expr_context_tk) AND
+       ((op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') OR (op = 'DIV') OR (op = 'MOD')) THEN
+      IF FoldConstInt(node, folded_value) THEN
+        const_fits_context := IntegerConstantFits(expr_context_tk, folded_value);
+    saved_operand_context := expr_context_tk;
+    IF const_fits_context AND (NodeType(left_node) <> 'BinOp') THEN
+      expr_context_tk := TK_UNKNOWN;
     lt := CheckExpr(left_node);
+    expr_context_tk := saved_operand_context;
     sem_scalar_l := last_sem_scalar_base;
     IF (sem_scalar_l = SB_UNKNOWN) AND IsOrdinal(lt) AND
        (lt <> TK_ENUM) THEN sem_scalar_l := SemanticOrdinalBase(lt, 0);
@@ -1684,7 +1707,10 @@ BEGIN
       set_base_l := SetBoundsBaseAfterCheck(left_node);
       sem_set_l := last_sem_set_base;
     END;
+    IF const_fits_context AND (NodeType(right_node) <> 'BinOp') THEN
+      expr_context_tk := TK_UNKNOWN;
     rt := CheckExpr(right_node);
+    expr_context_tk := saved_operand_context;
     IF rt = TK_SET THEN
     BEGIN
       set_base_r := SetBoundsBaseAfterCheck(right_node);
@@ -1863,6 +1889,11 @@ BEGIN
     BEGIN
       ot := CheckIntegerConstant(node, folded_value);
       IF ot <> TK_UNKNOWN THEN TagIntegerType(operand_node, ot);
+    END
+    ELSE IF (op = 'MINUS') AND IsWord64Literal(operand_node) THEN
+    BEGIN
+      AddError('Negative integer constant out of range for INTEGER64');
+      ot := TK_UNKNOWN;
     END
     ELSE
       ot := CheckExpr(operand_node);

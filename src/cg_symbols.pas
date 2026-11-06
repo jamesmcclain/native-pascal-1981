@@ -346,6 +346,7 @@ VAR
   sel: ADRMEM;
   kind: Str255;
   fi: INTEGER;
+  fcb_field: INTEGER32;
 BEGIN
   FOR si := 0 TO ArrSize(selectors) - 1 DO
     IF tid <> 0 THEN
@@ -354,6 +355,8 @@ BEGIN
       kind := GetStr(sel, 'kind');
       IF (kind = 'INDEX') AND (TypeKind(tid) = TK_ARRAY) THEN tid := types[tid].elem_tid
       ELSE IF (kind = 'DEREF') AND (TypeKind(tid) = TK_POINTER) THEN tid := types[tid].elem_tid
+      ELSE IF (kind = 'FIELD') AND (TypeKind(tid) = TK_FILE) THEN
+        tid := FileControlField(GetStr(sel, 'index_or_field'), fcb_field)
       ELSE IF (kind = 'FIELD') AND (TypeKind(tid) = TK_RECORD) THEN
       BEGIN
         fi := LookupField(tid, GetStr(sel, 'index_or_field'));
@@ -406,6 +409,20 @@ BEGIN
           IF UpperStr(fields[fi].fname) = uname THEN res := 1;
   END;
   WithFieldBinding := res;
+END;
+
+FUNCTION InitckBindsActual(ri, pi: INTEGER32; arg: ADRMEM): BOOLEAN;
+{ Does formal pi of routine ri bind the actual arg by reference? A VAR
+  formal always does. A CONST formal binds a named actual (an Identifier or
+  a Designator); any other actual is a value read into a private temporary
+  that the formal binds instead (MaterializeConstActual). }
+BEGIN
+  InitckBindsActual := FALSE;
+  IF routines[ri].param_is_var[pi] THEN
+    IF routines[ri].param_is_const[pi] THEN
+      InitckBindsActual := (NodeType(arg) = 'Identifier') OR (NodeType(arg) = 'Designator')
+    ELSE
+      InitckBindsActual := TRUE;
 END;
 
 FUNCTION InitckLocalEscapes(node: ADRMEM; name: Str255; tid: INTEGER;
@@ -532,7 +549,7 @@ BEGIN
         arg_unsafe := unsafe;
         arg_whole := FALSE;
         IF i < routines[ri].nparams THEN
-          IF routines[ri].param_is_var[i + 1] THEN
+          IF InitckBindsActual(ri, i + 1, arg) THEN
           BEGIN
             { The binding names the actual's own storage: a direct slot, a
               selected leaf, or a whole or sub-aggregate. }
@@ -557,6 +574,31 @@ BEGIN
       their bound/tag operands are reads. UNSAFERAW reads its descriptor
       and UNSAFESUPER its raw pointer and bounds (its type name is not
       storage). }
+    { WRITE/WRITELN of a whole CHAR array reads every component, a
+      strict whole-value read like a copy source (cg_io), so an output
+      item may name an aggregate whole; its width and precision are
+      ordinary reads. }
+    IF (nm = 'WRITE') OR (nm = 'WRITELN') THEN
+    BEGIN
+      args := GetObj(node, 'args');
+      FOR i := 0 TO ArrSize(args) - 1 DO
+      BEGIN
+        arg := ArrItem(args, i);
+        IF NodeType(arg) = 'WriteArg' THEN
+        BEGIN
+          IF InitckLocalEscapes(GetObj(arg, 'expr'), name, tid, unsafe, opaque, in_with, TRUE) THEN
+            found := TRUE;
+          IF InitckLocalEscapes(GetObj(arg, 'width'), name, tid, unsafe, opaque, in_with, FALSE) THEN
+            found := TRUE;
+          IF InitckLocalEscapes(GetObj(arg, 'precision'), name, tid, unsafe, opaque, in_with, FALSE) THEN
+            found := TRUE;
+        END
+        ELSE IF InitckLocalEscapes(arg, name, tid, unsafe, opaque, in_with, FALSE) THEN
+          found := TRUE;
+      END;
+      InitckLocalEscapes := found;
+      RETURN;
+    END;
     IF (nm <> 'WRITE') AND (nm <> 'WRITELN') AND (nm <> 'ORD') AND
        (nm <> 'CHR') AND (nm <> 'ODD') AND (nm <> 'ABS') AND
        (nm <> 'POSITN') AND (nm <> 'READ') AND (nm <> 'READLN') AND (nm <> 'NEW') AND
@@ -977,7 +1019,7 @@ BEGIN
       IF ri <> 0 THEN
       BEGIN
         IF i < routines[ri].nparams THEN
-          IF routines[ri].param_is_var[i + 1] THEN
+          IF InitckBindsActual(ri, i + 1, ArrItem(args, i)) THEN
           BEGIN
             arg_reads := FALSE;
             { A tracked VAR/CONST formal of a transporting routine shares
@@ -988,6 +1030,10 @@ BEGIN
               arg_ctx := INITCK_CTX_EFFECT;
           END;
       END
+      ELSE IF ((nm = 'COPYLST') OR (nm = 'COPYSTR')) AND (i = 1) THEN
+        { COPYLST and COPYSTR replace their bare destination without reading
+          the old value. Strings remain untracked, not silently initialized. }
+        arg_reads := FALSE
       ELSE IF (nm = 'READ') OR (nm = 'READLN') THEN
       BEGIN
         arg_reads := FALSE;

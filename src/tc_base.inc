@@ -68,6 +68,7 @@ TYPE
                            knows, of any ordinal type (CHAR and BOOLEAN
                            too); a consumer that needs an integer checks tk }
     const_int: INTEGER64;
+    is_ref_param: BOOLEAN; { a formal declared VAR, VARS, CONST or CONSTS }
   END;
 
   TypeRec = RECORD
@@ -141,6 +142,7 @@ VAR
 PROCEDURE TcInit(VAR requested_features: FeatureSet);
 PROCEDURE AddError(msg: Str255);
 PROCEDURE AddError2(msg: Str255; name: Str255);
+PROCEDURE ReportErrorsAndExit;
 PROCEDURE AddUndefinedIdentifier(node: ADRMEM);
 PROCEDURE TcEnterLocation(node: ADRMEM; VAR saved_line, saved_col: INTEGER32);
 PROCEDURE TcLeaveLocation(saved_line, saved_col: INTEGER32);

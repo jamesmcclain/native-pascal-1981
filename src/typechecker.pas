@@ -15,7 +15,6 @@ PROCEDURE exit(code: CINT) [C]; EXTERN;
 
 VAR
   root, out_str: ADRMEM;
-  i: INTEGER32;
   res_c: CINT;
   dialect_arg, arg_error: ArgStr;
   resolved_features: FeatureSet;
@@ -71,13 +70,7 @@ BEGIN
   root := ReadAllStdin;
   CheckRoot(root);
 
-  IF nerrors > 0 THEN
-  BEGIN
-    EPrint('Type checking failed:');
-    FOR i := 1 TO nerrors DO
-      EPrint(errors[i]);
-    exit(1);
-  END;
+  IF nerrors > 0 THEN ReportErrorsAndExit;
 
   out_str := cJSON_Print(root);
   res_c := puts(out_str);

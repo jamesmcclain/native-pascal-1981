@@ -84,32 +84,12 @@ cp tests/contract/fixtures/initck_producers/read-ir.pas "$work/read-ir.pas"
 bin/pascal1981 -O0 -S "$work/read-ir.pas" -o "$work/read-ir.ll"
 python3 tests/contract/fixtures/initck_producers/read-ir.py "$work/read-ir.ll"
 
-# Trapped file READ destination preservation execution contract. Pascal has
-# no F.TRAP selector yet, so a C helper sets it. A FILE variable holds the
-# FCB pointer (LoadFileFcbPtr), so ADR f is a struct pas_file_fcb **. The
-# helper checks that it reached a TEXT FCB open for reading before it
-# writes, so a layout change fails here with a message instead of
-# corrupting memory.
-command -v "${CC:-clang}" > /dev/null || die "${CC:-clang} is needed to build the trap helper"
-cat > "$work/trap_helper.c" << 'C_EOF'
-#include <stdio.h>
-#include <stdlib.h>
-#include "pascalrt.h"
-void set_file_trap(struct pas_file_fcb **f) {
-  if (!f || !*f || (*f)->structure != STRUCT_TEXT
-      || ((*f)->mode & MODE_BITS) != MODE_READ) {
-    fputs("set_file_trap: ADR f is not a pas_file_fcb ** of a TEXT file open for reading\n", stderr);
-    exit(2);
-  }
-  (*f)->trap = 1;
-}
-C_EOF
-"${CC:-clang}" -c -I runtime "$work/trap_helper.c" -o "$work/trap_helper.o"
-
+# Trapped file READ destination preservation execution contract, from
+# source: F.TRAP is an assignable FCB field (tests/corpus/golden/
+# file_trap_read.pas covers F.ERRS); this adds the pointer READ.
 cat > "$work/trapped_read.pas" << 'PAS_EOF'
 PROGRAM traptest(OUTPUT);
 TYPE Color = (RED, GREEN, BLUE);
-PROCEDURE set_file_trap(fcb: ADRMEM); EXTERN;
 VAR
   f: TEXT;
   c: Color;
@@ -123,7 +103,7 @@ BEGIN
   CLOSE(f);
 
   RESET(f);
-  set_file_trap(ADR f);
+  f.TRAP := TRUE;
 
   c := GREEN;
   b := TRUE;
@@ -145,7 +125,7 @@ BEGIN
   WRITELN(f, '7 2 -1');
   CLOSE(f);
   RESET(f);
-  set_file_trap(ADR f);
+  f.TRAP := TRUE;
   READ(f, c);
   READ(f, b);
   IF c <> GREEN THEN WRITELN('FAIL: c range')
@@ -159,8 +139,7 @@ PAS_EOF
 # extended by name or number (pas_fread_enum_name).
 for dialect in vintage extended; do
   for opt in 0 2; do
-    bin/pascal1981 --dialect "$dialect" -O"$opt" -c "$work/trapped_read.pas" -o "$work/trapped_read.o"
-    "${CC:-clang}" "$work/trapped_read.o" "$work/trap_helper.o" runtime/build/libpascalrt.a -lm -o "$work/trapped_read"
+    bin/pascal1981 --dialect "$dialect" -O"$opt" "$work/trapped_read.pas" -o "$work/trapped_read"
     out=$( (cd "$work" && ./trapped_read) )
     test "$out" = $'trapped-preserved\nout-of-range-preserved' ||
       die "trapped read destination preservation failed ($dialect, -O$opt): $out"
@@ -210,10 +189,21 @@ test ! -s "$work/err"
 # --- Producers through formals (routine-boundary bindings). ---
 # READ into a VAR formal initializes the caller's local; READ into a value
 # formal overwrites an unset transported state. FOR over a value formal is
-# an ordinary producer; FOR over a VAR formal leaves the CALLER's storage
-# undefined after natural termination, so the caller's checked read fails.
+# an ordinary producer. FOR over a VAR formal is not a producer at all: the
+# IBM manual forbids a reference parameter as a FOR control variable, so it
+# is a typecheck error in both dialects and never reaches the caller's
+# storage.
 cp tests/contract/fixtures/initck_producers/formal-ok.pas "$work/formal-ok.pas"
 expect_ok formal-ok '7z\n9\n-32768-32767\n' '7z\n9\n'
 cp tests/contract/fixtures/initck_producers/formal-bad.pas "$work/formal-bad.pas"
-expect_fail formal-bad '1\n2\n' 'runtime error: INITCK uninitialized local x at line 7 column 22'
+printf '%s\n' 'Type checking failed:' \
+  'FOR control variable cannot be a reference parameter: v at line 2 column 39' \
+  > "$work/formal-bad.expected-err"
+for dialect in vintage extended; do
+  status=0
+  bin/pascal1981 --dialect "$dialect" "$work/formal-bad.pas" -o "$work/formal-bad" 2> "$work/err" || status=$?
+  test "$status" -eq 1
+  test ! -e "$work/formal-bad"
+  diff -u "$work/formal-bad.expected-err" "$work/err"
+done
 echo 'PASS: INITCK scalar producers: unchecked copies, READ/READLN, FOR control, through formals'

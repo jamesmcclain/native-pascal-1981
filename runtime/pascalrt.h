@@ -194,6 +194,8 @@ int   pas_read_word(uint16_t *out);
 int   pas_read_ptr(uint64_t *out);
 int   pas_read_real(double *out);
 int   pas_read_char(uint8_t *out);
+int   pas_read_eof(void);
+int   pas_read_eoln(void);
 int   pas_read_lstring(uint8_t *buf, int cap);
 int   pas_read_string(uint8_t *buf, int cap);
 int   pas_read_enum_name(int32_t *out, const char **names, int lo, int hi);
@@ -202,13 +204,20 @@ void  pas_readln_skip(void);
 
 /* ---- ENCODE / DECODE (encode_decode.c) ---- */
 
-int32_t encode_value(char *dest_chars, int32_t dest_cap,
-                     char *dest_raw, int32_t value,
-                     int32_t width, int32_t precision, int32_t reserved);
+/* ENCODE: vsnprintf the WRITE-style format into an LSTRING; 1 when it fits. */
+int32_t pas_encode_fmt(char *dest_chars, int32_t dest_cap,
+                       char *dest_raw, const char *fmt, ...);
 
-int32_t decode_value(char *src_chars, int32_t src_len,
-                     char *dest_raw, int32_t dest_size,
-                     int32_t reserved3, int32_t reserved4, int32_t reserved5);
+/* DECODE: convert the whole trimmed text as READ would; 1 and a store
+ * through `out` on success, 0 and no store otherwise. Never aborts. */
+int32_t pas_decode_integer(const char *src, int32_t len, int32_t bits,
+                           int32_t is_unsigned, int32_t has_bounds,
+                           int64_t lo, int64_t hi, int64_t *out);
+int32_t pas_decode_enum(const char *src, int32_t len, const char **names,
+                        int32_t lo, int32_t hi, int32_t *out);
+int32_t pas_decode_char(const char *src, int32_t len, int32_t lo, int32_t hi,
+                        uint8_t *out);
+int32_t pas_decode_real(const char *src, int32_t len, double *out);
 
 /* ---- SCANEQ / SCANNE (scaneq.c) ---- */
 
@@ -259,6 +268,9 @@ void  pas_vector_range_error(int32_t is_store, int64_t idx, int32_t idx_unsigned
                              int32_t lanes, int64_t lo, int64_t hi) __attribute__((noreturn));
 
 /* ---- $INITCK host locals, formals, results and aggregates (initck.c) ---- */
+/* Null-only ordinary host pointer dereference failure; never returns. */
+void pas_nilck_error(int32_t line, int32_t column);
+void pas_nilck_dispose_error(int32_t line, int32_t column);
 void pas_initck_error(const char *name, int32_t line, int32_t column);
 /* what is "local", "parameter", "result of", "component" or "part of". */
 void pas_initck_fail(const char *what, const char *name, int32_t line, int32_t column);
@@ -322,8 +334,21 @@ _Bool SMULOK(uint32_t a, uint32_t b, int16_t *c);
 _Bool UADDOK(uint32_t a, uint32_t b, uint16_t *c);
 _Bool UMULOK(uint32_t a, uint32_t b, uint16_t *c);
 
-/* ---- $RANGECK subrange stores, CONCAT, LSTRING length, CHR/BYWORD and CASE (subrange.c) ---- */
+/* ---- $RANGECK subrange stores, CONCAT/COPYLST, LSTRING length, CHR/BYWORD and CASE (subrange.c) ---- */
 
+/* COPYSTR overflow is error 2150, always caught: no switch disables it. */
+void  pas_copystr_error(uint64_t length, int32_t capacity,
+                        int32_t line, int32_t column) __attribute__((noreturn));
+/* INSERT and DELETE errors are error 2151, always caught. */
+void  pas_insert_error(uint64_t length, int32_t capacity,
+                       int32_t line, int32_t column) __attribute__((noreturn));
+void  pas_insert_position_error(int32_t position, int32_t count, int32_t length,
+                                int32_t line, int32_t column) __attribute__((noreturn));
+void  pas_delete_error(int32_t position, int32_t count, int32_t length,
+                       int32_t line, int32_t column) __attribute__((noreturn));
+
+void  pas_copylst_error(uint64_t length, int32_t capacity,
+                        int32_t line, int32_t column) __attribute__((noreturn));
 void  pas_concat_error(uint64_t length, int32_t capacity,
                        int32_t line, int32_t column) __attribute__((noreturn));
 

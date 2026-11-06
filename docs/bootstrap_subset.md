@@ -159,6 +159,13 @@ for its constant diagnostic; codegen does not fold an overflowing legacy AST.
 These helpers are explicit overflow detection, not permission to accept a
 wrapped constant as an exact mathematical result.
 
+The lexer accumulates an integer literal as two exact 32-bit halves and
+stops at 2^64 - 1 with a located error. Only `FinishIntegerLiteral`'s
+final `hi * 2^32 + lo` runs under local MATHCK-: for a literal of 2^63 or
+more it deliberately wraps to the WORD64 bit pattern, and the token is
+marked `word64` so later stages never read that pattern as a signed
+value.
+
 No compiler hash/checksum requires arithmetic overflow. Normal counters,
 allocation sizes and numeric values must not use MATHCK- to hide exhaustion.
 There is no unit-wide or program-wide opt-out.

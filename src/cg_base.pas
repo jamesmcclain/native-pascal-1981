@@ -21,6 +21,10 @@ VAR
                    checked by the typechecker. This tid is only a valid
                    registered TK_SET entry for representation/bounds; it
                    cannot identify the host of a constructor or binop. }
+  text_tid: INTEGER; { lazily registered the first time TEXT is named (a
+                   declaration, a formal, or the predeclared INPUT/OUTPUT)
+                   -- see EnsureTextType. TEXT is one predeclared type, so
+                   every occurrence must share one tid, as INTEGER does. }
   main_fnty, main_fn, entry_bb: ADRMEM;
   printf_fnty, printf_fn: ADRMEM;
   malloc_fnty, malloc_fn, free_fnty, free_fn: ADRMEM; { the *target program's*
@@ -97,6 +101,7 @@ VAR
   read_lstring_fnty, read_lstring_fn: ADRMEM;
   read_string_fnty, read_string_fn: ADRMEM;
   readln_skip_fnty, readln_skip_fn: ADRMEM;
+  read_eof_fnty, read_eof_fn, read_eoln_fn: ADRMEM; { niladic EOF/EOLN }
   byval_kind_id, align_kind_id: CINT; { LLVM enum attribute kind ids for the
     [C] FOREIGN MEMORY-class byval call marshalling below, resolved once at
     init time (see byval_align_kinds_init) rather than re-resolving by name
@@ -155,10 +160,14 @@ VAR
   scaneq_fnty, scaneq_fn: ADRMEM;
   scanne_fnty, scanne_fn: ADRMEM;
   encode_fnty, encode_fn: ADRMEM;
-  decode_fnty, decode_fn: ADRMEM; { the target program's runtime-library
-    string builtins (INSERT/DELETE via libc's memmove; POSITN/SCANEQ/SCANNE/
-    ENCODE/DECODE via libpascalrt's positn/scaneq/scanne/encode_value/
-    decode_value, declared+called exactly like malloc/free/printf above --
+  decode_int_fnty, decode_int_fn: ADRMEM;
+  decode_enum_fnty, decode_enum_fn: ADRMEM;
+  decode_char_fnty, decode_char_fn: ADRMEM;
+  decode_real_fnty, decode_real_fn: ADRMEM; { the target program's
+    runtime-library string builtins (INSERT/DELETE via libc's memmove;
+    POSITN/SCANEQ/SCANNE/ENCODE/DECODE via libpascalrt's positn/scaneq/
+    scanne/pas_encode_fmt/pas_decode_*, declared+called exactly like
+    malloc/free/printf above --
     a program built from this file's output must link libpascalrt.a, same
     as one built from the Python reference's output already must. }
   sqrt_fnty, sqrt_fn, sin_fnty, sin_fn, cos_fnty, cos_fn: ADRMEM;

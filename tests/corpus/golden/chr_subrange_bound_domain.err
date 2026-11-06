@@ -1,0 +1,3 @@
+Type checking failed:
+RANGECK constant CHR argument outside 0..255 at line 6 column 23
+RANGECK constant CHR argument outside 0..255 at line 7 column 15

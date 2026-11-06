@@ -6,6 +6,6 @@ BEGIN
 END;
 PROCEDURE ACCUMULATE(cell: ADS(GLOBAL) OF REAL);
 BEGIN
-  cell^ := SQRT(16.0)
+  {$NILCK-} cell^ := SQRT(16.0)
 END;
 .

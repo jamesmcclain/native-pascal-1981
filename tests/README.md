@@ -14,6 +14,7 @@ Longer accounts live in their own documents:
 
 - [MATHCK tests](../docs/testing/mathck.md): the test map and the G1–G29 gap baseline
 - [INITCK tests](../docs/testing/initck.md): the support boundary and its suites
+- [NILCK tests](../docs/testing/nilck.md): null-only host dereferences/DISPOSE and explicit exclusions
 - [Host descriptor contract tests](../docs/testing/descriptors.md)
 - [Opt-in overhead measurements](../docs/testing/overhead.md)
 - [Retained Python test infrastructure](../docs/testing/retained_python.md): what is kept and why
@@ -91,13 +92,16 @@ is its entry here.
 | unit | [`pasboot`](unit/pasboot.sh) | Per-feature fixtures for pasboot, the C bootstrap translator. |
 | unit | [`runtime`](unit/runtime.sh) | C unit tests of the runtime library. |
 | corpus | [`astcompare`](corpus/astcompare.sh) | astcompare, the JSON AST comparator, and the frozen reference ASTs it checks. |
-| corpus | [`depth`](corpus/depth.sh) | Native parser depth and resource-limit tests. |
+| corpus | [`depth`](corpus/depth.sh) | Native parser depth, symbol-table and resource-limit tests. |
 | corpus | [`fixtures`](corpus/fixtures.sh) | Every run and check fixture in the corpus, each against what it declares. |
 | contract | [`array_named_index_parser`](contract/array_named_index_parser.sh) | Named ordinal array index types parse, and pretty81 round-trips them. |
 | contract | [`chr_constant_folding`](contract/chr_constant_folding.sh) | Unchecked CHR folding has the same low-eight-bit value as runtime conversion. |
+| contract | [`copystr`](contract/copystr.sh) | COPYSTR admits fixed-STRING copies and always checks capacity before writing. |
+| contract | [`delete`](contract/delete.sh) | DELETE admits LSTRING deletions and always checks the span before writing. |
 | contract | [`descriptor_contract`](contract/descriptor_contract.sh) | Host descriptor transport ABI and unsupported-boundary contracts. |
 | contract | [`driver_math`](contract/driver_math.sh) | The driver links REAL math builtins at every optimization level without user -lm. |
 | contract | [`driver`](contract/driver.sh) | The driver: option parsing, stage dispatch, outputs and failure cleanup. |
+| contract | [`fixture_negative`](contract/fixture_negative.sh) | The corpus runner's negative-compile checks reject wrong status, stdout and output files. |
 | contract | [`indexck_diagnostics`](contract/indexck_diagnostics.sh) | INDEXCK failures report the first index token, preserving bounds and side effects. |
 | contract | [`indexck_guard_ir`](contract/indexck_guard_ir.sh) | INDEXCK guard IR: only enabled host selectors are guarded, at full ordinal width. |
 | contract | [`indexck_metadata`](contract/indexck_metadata.sh) | Verify native per-index metadata without Python or unchecked bad accesses. |
@@ -112,6 +116,7 @@ is its entry here.
 | contract | [`initck_scalar`](contract/initck_scalar.sh) | INITCK producers and guards for scalar locals. |
 | contract | [`initck_state`](contract/initck_state.sh) | Shadow allocation/reset independently of enabled guards (see initck_scalar.sh). |
 | contract | [`initck_validation`](contract/initck_validation.sh) | INITCK release gate: checked success and failure, values, ABI. |
+| contract | [`insert`](contract/insert.sh) | INSERT admits LSTRING insertions and always checks position and capacity first. |
 | contract | [`mathck_address_arith`](contract/mathck_address_arith.sh) | Address arithmetic and [C] values at MATHCK's boundary. |
 | contract | [`mathck_baseline`](contract/mathck_baseline.sh) | Executable G1-G29 gap inventory, not a claim that MATHCK is implemented. |
 | contract | [`mathck_bootstrap_audit`](contract/mathck_bootstrap_audit.sh) | The arithmetic the self-hosting compiler sources depend on. |
@@ -130,13 +135,16 @@ is its entry here.
 | contract | [`mathck_twins`](contract/mathck_twins.sh) | Programs that never overflow behave identically under MATHCK+ and MATHCK-. |
 | contract | [`mathck_vector`](contract/mathck_vector.sh) | MATHCK on integer VECTOR lanes and the VSUM/VPROD reductions. |
 | contract | [`mathck_word_scalar`](contract/mathck_word_scalar.sh) | Scalar WORD arithmetic against native arithmetic oracles. |
-| contract | [`pretty81_integers`](contract/pretty81_integers.sh) | pretty81 preserves exact signed INTEGER64 literals through parsed and typed ASTs. |
+| contract | [`nilck_dispose`](contract/nilck_dispose.sh) | NILCK-controlled DISPOSE: null checks before retirement/free, snapshots and aliases. |
+| contract | [`nilck`](contract/nilck.sh) | NILCK null-only host dereferences: diagnostics, snapshots, aliases and IR ordering. |
+| contract | [`pretty81_integers`](contract/pretty81_integers.sh) | pretty81 preserves exact INTEGER64 and upper-half WORD64 literals through parsed and typed ASTs. |
 | contract | [`pretty81_sequential`](contract/pretty81_sequential.sh) | pretty81 prints AND THEN/OR ELSE chains without parentheses, which the 1981 manual forbids around them: its output parses again, prints the same text, and the program behaves the same. |
 | contract | [`quoted_literal_limits`](contract/quoted_literal_limits.sh) | Quoted token spellings include both delimiters and doubled quotes. |
 | contract | [`rangeck_byword`](contract/rangeck_byword.sh) | BYWORD checks both original ordinal operands before packing their low bytes. |
 | contract | [`rangeck_case`](contract/rangeck_case.sh) | RANGECK CASE misses fail once, preserving snapshots, OTHERWISE and target boundaries. |
 | contract | [`rangeck_chr`](contract/rangeck_chr.sh) | CHR checks original integer values at its name token, before narrowing. |
 | contract | [`rangeck_concat`](contract/rangeck_concat.sh) | CONCAT checks the wide combined length before copying or publishing it. |
+| contract | [`rangeck_copylst`](contract/rangeck_copylst.sh) | COPYLST admits string copies and checks capacity before copying or publishing length. |
 | contract | [`rangeck_lstring_len`](contract/rangeck_lstring_len.sh) | LSTRING length-byte stores (assignment, READ, VAR CHAR actuals) check capacity. |
 | contract | [`rangeck_scope`](contract/rangeck_scope.sh) | RANGECK settings reach the AST and IR of FOR, CASE and SUCC where they apply. |
 | contract | [`rangeck_succpred`](contract/rangeck_succpred.sh) | SUCC/PRED preserve subrange domains through function results without replaying calls. |
@@ -245,7 +253,10 @@ These are observed host timings, not timing-sensitive correctness oracles.
 - **Description**: one runner, one directive language. A fixture without
   CHECK directives is compiled with the native driver, run, and compared
   with its sidecar files (`.out`, `.err`, `.exitcode`, `.stdin`, `.args`,
-  `.build.sh`). A fixture with CHECK directives (all of `checklit/`) is
+  `.build.sh`). A nonzero `.exitcode` with no `.out` makes it a negative
+  fixture: the compile must exit with exactly that status, write nothing to
+  stdout and leave no executable (`contract/fixture_negative.sh` pins these
+  checks). A fixture with CHECK directives (all of `checklit/`) is
   compiled to LLVM IR or PTX text, or piped through the stages that
   `CHECK-STAGES` names, and checked with literal, unordered substring
   directives (`CHECK`, `CHECK-NOT`, `CHECK-ANY`, `CHECK-COUNT`,
@@ -329,7 +340,7 @@ outputs and `corpus/depth.sh` cover those behaviors natively.
 ### Depth limits (`tests/corpus/depth.sh`)
 
 - **Runner**: [`tests/corpus/depth.sh`](corpus/depth.sh)
-- **Description**: Checks expression, statement, and type nesting boundaries in the native parser. It checks depth unwinding between sibling expressions. It also sends frozen oversized ASTs to the native typechecker and code generator. Bounded tests use a five-second timeout; parser and typechecker tests also use a 128 MiB address-space limit.
+- **Description**: Checks expression, statement, and type nesting boundaries in the native parser. It checks depth unwinding between sibling expressions. It checks that a program near the 2000-name symbol limit compiles and runs, and that overflow is a located typechecker diagnostic. It also sends frozen oversized ASTs to the native typechecker and code generator. Bounded tests use a five-second timeout; parser and typechecker tests also use a 128 MiB address-space limit.
 - **Artifact updates**: Run `PYTHONPATH=. ./scripts/update-reference-depth.py`. Review changes under `tests/corpus/reference/depth/` before you commit them. Routine tests do not run this maintenance command.
 - **Running**:
   ```bash
@@ -403,6 +414,44 @@ per-operand INITCK/DEVICE boundaries without published IR. The `runtime`
 unit suite runs `tests/unit/runtime_positn.c`,
 including nonterminated and binary strings, extreme starts, the retained
 four-argument ABI and exhaustive short binary source/pattern comparisons.
+
+### ENCODE builtin regressions
+
+`tests/corpus/golden/encode_builtins.pas` tests `ENCODE(D, X:M:N)` in both
+dialects at O0-O3 against WRITE's formatting: INTEGER, WORD, REAL (fixed,
+exponent and precision-only forms), BOOLEAN, CHAR, subrange, selected and
+dereferenced values, once-only X and M evaluation, the FALSE result with an
+unchanged destination when the text does not fit, and a VAR LSTRING formal
+destination. `encode_enum_vintage.pas` and `encode_enum_extended.pas` pin
+ordinal versus symbolic enumeration text, and the extended one the wide
+integers and REAL32. `encode_shadow.pas` pins user shadowing.
+`tests/corpus/checklit/encode/` pins bad arity, non-LSTRING and selected
+destinations, a field width on the destination, string and pointer values,
+non-INTEGER M/N, the width suffix on a user-declared ENCODE, the host
+runtime IR call, and the DEVICE and INITCK boundaries. The `runtime` unit
+suite runs `tests/unit/runtime_encode.c` against `pas_encode_fmt`: exact
+fit, overflow leaving the destination untouched, and the 255 clamp.
+
+### DECODE builtin regressions
+
+`tests/corpus/golden/decode_builtins.pas` tests `DECODE(S, X:M:N)` in both
+dialects at O0-O3 under `$RANGECK-`: INTEGER signs, blanks, leading zeros,
+limits and malformed texts, LSTRING, fixed STRING, function-result and
+one-character sources, WORD limits, subrange and CHAR-subrange rejection,
+CHAR, BOOLEAN names and ordinals, REAL forms, selected and dereferenced
+destinations, a VAR formal, once-only ignored M and N, and the unchanged
+destination on FALSE. `decode_enum_vintage.pas` and
+`decode_enum_extended.pas` pin ordinal-only versus symbolic enumeration
+input, enumeration subranges, and the extended one every wide integer
+width's limits and REAL32. `decode_shadow.pas` pins user shadowing.
+`tests/corpus/checklit/decode/` pins bad arity, non-string sources, a
+field width on the source, constant, expression and function destinations,
+string and pointer destinations, non-INTEGER M/N, the width suffix on a
+user-declared DECODE, the four runtime converter calls with subrange
+bounds and no stdin reader, and the DEVICE and INITCK boundaries. The
+`runtime` unit suite runs `tests/unit/runtime_decode.c` against the
+converters: every integer width's limits, embedded NULs, subrange bounds,
+enumeration names and tables, CHAR, REAL and null arguments.
 
 ### Scan builtin and small-string ABI regressions
 

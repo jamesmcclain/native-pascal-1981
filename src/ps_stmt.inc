@@ -4,8 +4,6 @@ INTERFACE;
 UNIT ps_stmt;
 USES jsonutil, ps_base, ps_expr;
 
-FUNCTION ParseWriteArg: ADRMEM;
-FUNCTION ParseWriteArgList: ADRMEM;
 FUNCTION ParseAssignOrCallStmt: ADRMEM;
 FUNCTION ParseCompoundStmt: ADRMEM;
 FUNCTION ParseCompoundStmtList: ADRMEM;

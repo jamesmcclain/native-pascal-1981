@@ -1,4 +1,4 @@
-/* Direct FCB test: Pascal does not currently expose F.TRAP as a selector. */
+/* Direct FCB test of the runtime readers; Pascal sets F.TRAP as a field. */
 #include <stdint.h>
 #include <stdio.h>
 #include "../../runtime/pascalrt.h"

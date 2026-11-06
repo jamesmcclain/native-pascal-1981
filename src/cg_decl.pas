@@ -331,6 +331,7 @@ BEGIN
     BEGIN
       routines[nroutines].param_tk[i] := routines[ri].param_tk[i];
       routines[nroutines].param_is_var[i] := routines[ri].param_is_var[i];
+      routines[nroutines].param_is_const[i] := routines[ri].param_is_const[i];
       routines[nroutines].param_needs_copy[i] := routines[ri].param_needs_copy[i];
     END;
     routines[nroutines].has_body := routines[ri].has_body;
@@ -534,19 +535,15 @@ PROCEDURE RegisterPredeclaredFiles;
   2-argument implicit-INPUT form needs to cover. A no-op if the program
   already declared its own INPUT/OUTPUT (e.g. as an explicit heading
   parameter with its own VAR). }
-VAR
-  text_tid: INTEGER;
 BEGIN
   IF LookupSym('INPUT') = 0 THEN
   BEGIN
-    text_tid := RegisterType(TK_FILE, TK_CHAR, 0, 1, i8ptrty);
-    DeclareVar('INPUT', text_tid);
+    DeclareVar('INPUT', EnsureTextType);
     InitFileStorage(symbols[nsymbols].llvm_val, TK_CHAR, 1, 'INPUT');
   END;
   IF LookupSym('OUTPUT') = 0 THEN
   BEGIN
-    text_tid := RegisterType(TK_FILE, TK_CHAR, 0, 1, i8ptrty);
-    DeclareVar('OUTPUT', text_tid);
+    DeclareVar('OUTPUT', EnsureTextType);
     InitFileStorage(symbols[nsymbols].llvm_val, TK_CHAR, 1, 'OUTPUT');
   END;
 END;
@@ -773,7 +770,8 @@ END;
 
 
 PROCEDURE FlattenParams(params_arr: ADRMEM; VAR n: INTEGER32; VAR names: ParamNameArr;
-                         VAR tks: ParamTkArr; VAR isvar: ParamVarArr; VAR needs_copy: ParamVarArr);
+                         VAR tks: ParamTkArr; VAR isvar: ParamVarArr; VAR isconst: ParamVarArr;
+                         VAR needs_copy: ParamVarArr);
 { A Pascal formal-parameter section groups several names under one type
   (`a, b: INTEGER`); this flattens that grouping into parallel arrays of
   one entry per actual parameter, matching how llvm-c's LLVMFunctionType
@@ -783,7 +781,7 @@ VAR
   np, pi, nn, ni: INTEGER32;
   param, pnames: ADRMEM;
   tk: INTEGER;
-  is_v, needs_c: BOOLEAN;
+  is_v, is_const, needs_c: BOOLEAN;
 BEGIN
   n := 0;
   np := ArrSize(params_arr);
@@ -796,9 +794,10 @@ BEGIN
     { VAR/VARS/CONST/CONSTS are all reference-mode at the ABI level -- CONST
       only additionally forbids mutation, a typechecker-level restriction,
       not a codegen one, so it is passed the same way as VAR here: as a
-      pointer, never copied. }
-    is_v := (GetStr(param, 'mode') = 'VAR') OR (GetStr(param, 'mode') = 'VARS') OR
-            (GetStr(param, 'mode') = 'CONST') OR (GetStr(param, 'mode') = 'CONSTS');
+      pointer, never copied. The call site still tells them apart: only a
+      CONST formal accepts an actual without storage (see param_is_const). }
+    is_const := (GetStr(param, 'mode') = 'CONST') OR (GetStr(param, 'mode') = 'CONSTS');
+    is_v := is_const OR (GetStr(param, 'mode') = 'VAR') OR (GetStr(param, 'mode') = 'VARS');
     { A plain value-mode ARRAY/RECORD/LSTRING/STRING param: too large to
       pass as a raw LLVM value the way a scalar is, so it is passed as a
       pointer too (see needs_copy at the routine-entry/call-site level),
@@ -818,6 +817,7 @@ BEGIN
       names[n] := CStrToStr255(cJSON_GetStringValue(ArrItem(pnames, ni)));
       tks[n] := tk;
       isvar[n] := is_v;
+      isconst[n] := is_const;
       needs_copy[n] := needs_c;
     END;
   END;
@@ -1219,6 +1219,7 @@ VAR
   names: ParamNameArr;
   tks: ParamTkArr;
   isvar: ParamVarArr;
+  isconst: ParamVarArr;
   needs_copy: ParamVarArr;
   param_llvm_types: ADRMEM;
   i: INTEGER32;
@@ -1316,7 +1317,7 @@ BEGIN
       nothing. ret_tk stays the table's; it is compared, not overwritten. }
     prev_n := routines[ridx].nparams;
     params_arr := GetObj(decl, 'params');
-    FlattenParams(params_arr, n, names, tks, isvar, needs_copy);
+    FlattenParams(params_arr, n, names, tks, isvar, isconst, needs_copy);
     sig_ok := n = prev_n;
     IF sig_ok THEN
       FOR i := 1 TO n DO
@@ -1324,6 +1325,7 @@ BEGIN
         IF NOT RoutineTypeMatches(tks[i], routines[ridx].param_tk[i]) THEN
           sig_ok := FALSE;
         IF isvar[i] <> routines[ridx].param_is_var[i] THEN sig_ok := FALSE;
+        IF isconst[i] <> routines[ridx].param_is_const[i] THEN sig_ok := FALSE;
         IF needs_copy[i] <> routines[ridx].param_needs_copy[i] THEN sig_ok := FALSE;
       END;
     IF is_func THEN
@@ -1395,7 +1397,7 @@ BEGIN
   ELSE
   BEGIN
     params_arr := GetObj(decl, 'params');
-    FlattenParams(params_arr, n, names, tks, isvar, needs_copy);
+    FlattenParams(params_arr, n, names, tks, isvar, isconst, needs_copy);
 
     IF is_func THEN
     BEGIN
@@ -1535,8 +1537,11 @@ BEGIN
     ELSE IF name = 'positn_from' THEN BEGIN fn := positn_from_fn; fnty := positn_from_fnty; END
     ELSE IF name = 'scaneq' THEN BEGIN fn := scaneq_fn; fnty := scaneq_fnty; END
     ELSE IF name = 'scanne' THEN BEGIN fn := scanne_fn; fnty := scanne_fnty; END
-    ELSE IF name = 'encode_value' THEN BEGIN fn := encode_fn; fnty := encode_fnty; END
-    ELSE IF name = 'decode_value' THEN BEGIN fn := decode_fn; fnty := decode_fnty; END
+    ELSE IF name = 'pas_encode_fmt' THEN BEGIN fn := encode_fn; fnty := encode_fnty; END
+    ELSE IF name = 'pas_decode_integer' THEN BEGIN fn := decode_int_fn; fnty := decode_int_fnty; END
+    ELSE IF name = 'pas_decode_enum' THEN BEGIN fn := decode_enum_fn; fnty := decode_enum_fnty; END
+    ELSE IF name = 'pas_decode_char' THEN BEGIN fn := decode_char_fn; fnty := decode_char_fnty; END
+    ELSE IF name = 'pas_decode_real' THEN BEGIN fn := decode_real_fn; fnty := decode_real_fnty; END
     ELSE IF name = 'sqrt' THEN BEGIN fn := sqrt_fn; fnty := sqrt_fnty; END
     ELSE IF name = 'sin' THEN BEGIN fn := sin_fn; fnty := sin_fnty; END
     ELSE IF name = 'cos' THEN BEGIN fn := cos_fn; fnty := cos_fnty; END
@@ -1582,6 +1587,7 @@ BEGIN
     BEGIN
       routines[ridx].param_tk[i] := tks[i];
       routines[ridx].param_is_var[i] := isvar[i];
+      routines[ridx].param_is_const[i] := isconst[i];
       routines[ridx].param_needs_copy[i] := needs_copy[i];
     END;
     routines[ridx].has_body := has_block_body;
@@ -2090,6 +2096,15 @@ BEGIN
     BEGIN
       IF GetBool(val_node, 'value') THEN ival := 1 ELSE ival := 0;
       integer_tid := TK_BOOLEAN;
+    END
+    ELSE IF GetBool(val_node, 'word64') OR (integer_tid = TK_WORD64) AND
+            NOT IsIntLiteralLike(val_node) THEN
+    BEGIN
+      { 2^63..2^64-1, a bare literal or the name of one (the typechecker
+        admits nothing else): kept as its WORD64 bit pattern. }
+      IF NodeType(val_node) = 'Identifier' THEN ival := const_tbl[ci].ival
+      ELSE ival := GetInt64(val_node, 'value');
+      integer_tid := TK_WORD64;
     END
     ELSE
     BEGIN

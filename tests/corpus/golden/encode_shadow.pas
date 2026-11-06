@@ -1,0 +1,6 @@
+{ DIALECT: vintage extended }
+{ OPT: 0 1 2 3 }
+PROGRAM encode_shadow;
+FUNCTION ENCODE(x: INTEGER): INTEGER;
+BEGIN ENCODE := x + 1 END;
+BEGIN WRITELN(ENCODE(6)) END.

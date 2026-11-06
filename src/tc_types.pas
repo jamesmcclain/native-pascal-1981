@@ -58,6 +58,280 @@ BEGIN
     FoldVectorLanes := -1;
 END;
 
+{ ============================ constant folding ========================= }
+
+VAR
+  fold_overflowed: BOOLEAN; { set by FoldArith; see CheckFoldedOperation }
+  fold_overflow_negative: BOOLEAN;
+
+FUNCTION JsonIntegerValue(node: ADRMEM): INTEGER64;
+BEGIN
+  { Exact, not through GetReal: a JSON number keeps 15 digits. }
+  JsonIntegerValue := GetInt64(node, 'value');
+END;
+
+FUNCTION IsWord64Literal(node: ADRMEM): BOOLEAN;
+{ An IntLiteral of 2^63 or more: its value field is the WORD64 bit
+  pattern, negative as an INTEGER64. }
+BEGIN
+  IsWord64Literal := FALSE;
+  IF node <> NIL THEN
+    IF NodeType(node) = 'IntLiteral' THEN
+      IsWord64Literal := GetBool(node, 'word64');
+END;
+
+FUNCTION MinInteger64Value: INTEGER64;
+VAR
+  n, low: INTEGER64;
+BEGIN
+  { -2^63 from vintage-sized literals, as MaxInteger32Value in tc_expr. }
+  n := 16384;
+  n := n * 4;                    { 2^16 }
+  low := n * n * 32768;
+  low := -low;                   { -(2^47); Pascal's - binds below * }
+  MinInteger64Value := low * n;
+END;
+
+FUNCTION IsNegatedMinInt64(node: ADRMEM): BOOLEAN;
+{ -9223372036854775808: unary minus of the WORD64 literal 2^63, whose bit
+  pattern is already the INTEGER64 minimum. }
+VAR
+  operand: ADRMEM;
+BEGIN
+  IsNegatedMinInt64 := FALSE;
+  IF GetStr(node, 'op') = 'MINUS' THEN
+  BEGIN
+    operand := GetObj(node, 'operand');
+    IF IsWord64Literal(operand) THEN
+      IsNegatedMinInt64 := JsonIntegerValue(operand) = MinInteger64Value;
+  END;
+END;
+
+FUNCTION FoldArith(op: Str255; left, right: INTEGER64;
+  VAR folded: INTEGER64): BOOLEAN;
+{ The exact constant left + - * right, or FALSE when it leaves INTEGER64.
+  The folder runs inside a MATHCK-checked compiler, so a constant from the
+  program must not trap it: the operation wraps and the overflow is tested
+  explicitly. A failure sets fold_overflowed and records the sign of the
+  exact value in fold_overflow_negative for CheckFoldedOperation. }
+VAR
+  r, neg_right: INTEGER64;
+  fits: BOOLEAN;
+BEGIN
+  (*$MATHCK-*)
+  IF op = 'PLUS' THEN r := left + right
+  ELSE IF op = 'MINUS' THEN r := left - right
+  ELSE r := left * right;
+  neg_right := 0 - right;
+  (*$MATHCK+*)
+  IF op = 'PLUS' THEN
+    fits := ((left >= 0) <> (right >= 0)) OR ((r >= 0) = (left >= 0))
+  ELSE IF op = 'MINUS' THEN
+    fits := ((left >= 0) = (right >= 0)) OR ((r >= 0) = (left >= 0))
+  ELSE IF (left = 0) OR (right = 0) THEN
+    fits := TRUE
+  ELSE IF left = -1 THEN
+    fits := neg_right <> right { only the minimum negates to itself }
+  ELSE
+    fits := r DIV left = right;
+  IF NOT fits THEN
+  BEGIN
+    fold_overflowed := TRUE;
+    IF op = 'MUL' THEN fold_overflow_negative := (left < 0) <> (right < 0)
+    ELSE fold_overflow_negative := left < 0;
+  END;
+  folded := r;
+  FoldArith := fits;
+END;
+
+FUNCTION LowByte(x: INTEGER64): INTEGER64;
+{ The low eight bits of x, 0..255, as CHR and BYWORD convert an ordinal.
+  MOD is dividend-signed; never negate MIN64 to get its low byte. }
+VAR
+  b: INTEGER64;
+BEGIN
+  b := x MOD 256;
+  IF b < 0 THEN b := b + 256;
+  LowByte := b;
+END;
+
+FUNCTION FoldConstInt(node: ADRMEM; VAR folded_value: INTEGER64): BOOLEAN;
+VAR
+  nt, op, name, ch: Str255;
+  left, right: INTEGER64;
+  si: INTEGER32;
+  args: ADRMEM;
+BEGIN
+  nt := NodeType(node);
+  FoldConstInt := FALSE;
+  IF nt = 'IntLiteral' THEN
+  BEGIN
+    { A WORD64 literal of 2^63 or more has no INTEGER64 value to fold; it
+      stays a typed WORD64 operand (CheckExpr). }
+    folded_value := JsonIntegerValue(node);
+    FoldConstInt := NOT IsWord64Literal(node);
+  END
+  ELSE IF nt = 'BoolLiteral' THEN
+  BEGIN
+    IF GetBool(node, 'value') THEN folded_value := 1 ELSE folded_value := 0;
+    FoldConstInt := TRUE;
+  END
+  ELSE IF nt = 'CharLiteral' THEN
+  BEGIN
+    ch := GetStr(node, 'value');
+    folded_value := ORD(ch[1]);
+    FoldConstInt := TRUE;
+  END
+  ELSE IF nt = 'UnaryOp' THEN
+  BEGIN
+    op := GetStr(node, 'op');
+    IF IsNegatedMinInt64(node) THEN
+    BEGIN
+      folded_value := JsonIntegerValue(GetObj(node, 'operand'));
+      FoldConstInt := TRUE;
+    END
+    ELSE IF ((op = 'PLUS') OR (op = 'MINUS')) AND FoldConstInt(GetObj(node, 'operand'), folded_value) THEN
+    BEGIN
+      IF op = 'MINUS' THEN
+        FoldConstInt := FoldArith('MINUS', 0, folded_value, folded_value)
+      ELSE
+        FoldConstInt := TRUE;
+    END;
+  END
+  ELSE IF nt = 'BinOp' THEN
+  BEGIN
+    op := GetStr(node, 'op');
+    IF ((op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') OR
+        (op = 'DIV') OR (op = 'MOD')) AND
+       FoldConstInt(GetObj(node, 'left'), left) AND
+       FoldConstInt(GetObj(node, 'right'), right) THEN
+    BEGIN
+      IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') THEN
+        FoldConstInt := FoldArith(op, left, right, folded_value)
+      ELSE IF right = -1 THEN
+      BEGIN
+        { x DIV -1 is -x, which overflows only for the minimum; x MOD -1
+          is 0. }
+        IF op = 'DIV' THEN FoldConstInt := FoldArith('MINUS', 0, left, folded_value)
+        ELSE
+        BEGIN
+          folded_value := 0;
+          FoldConstInt := TRUE;
+        END;
+      END
+      ELSE IF right <> 0 THEN
+      BEGIN
+        { Truncate toward zero; MOD has the dividend's sign, like runtime. }
+        IF op = 'DIV' THEN folded_value := left DIV right
+        ELSE folded_value := left MOD right;
+        FoldConstInt := TRUE;
+      END;
+      { A zero divisor does not fold. The BinOp check in CheckExpr reports
+        it once; this folder also answers "is it constant?" for callers. }
+    END;
+  END
+  ELSE IF (nt = 'Identifier') OR (nt = 'Designator') THEN
+  BEGIN
+    IF (nt = 'Identifier') OR (cJSON_GetArraySize(GetObj(node, 'selectors')) = 0) THEN
+    BEGIN
+      name := GetStr(node, 'name');
+      si := LookupSymbol(name);
+      IF si <> 0 THEN
+        IF symbols[si].has_const_int THEN
+        BEGIN
+          folded_value := symbols[si].const_int;
+          FoldConstInt := TRUE;
+        END;
+    END;
+  END
+  ELSE IF nt = 'FuncCall' THEN
+  BEGIN
+    name := UpperStr(GetStr(node, 'name'));
+    args := GetObj(node, 'args');
+    IF (name = 'BYWORD') AND NOT UserDeclarationShadows(name) AND
+       (cJSON_GetArraySize(args) = 2) AND
+       FoldConstInt(cJSON_GetArrayItem(args, 0), left) AND
+       FoldConstInt(cJSON_GetArrayItem(args, 1), right) THEN
+    BEGIN
+      { The backend checks the original enabled domain; this folder keeps
+        the converted WORD ordinal, as with CHR's low-byte normalization. }
+      folded_value := LowByte(left) * 256 + LowByte(right);
+      FoldConstInt := TRUE;
+    END
+    ELSE IF NOT UserDeclarationShadows(name) AND
+       ((name = 'ORD') OR (name = 'CHR') OR (name = 'SUCC') OR (name = 'PRED') OR
+        (name = 'ABS') OR (name = 'SQR')) AND
+       (cJSON_GetArraySize(args) = 1) AND
+       FoldConstInt(cJSON_GetArrayItem(args, 0), folded_value) THEN
+    BEGIN
+      IF name = 'CHR' THEN
+      BEGIN
+        { CHR's value is its low eight bits, not its original argument.
+          The backend independently enforces enabled CHR's original domain. }
+        folded_value := LowByte(folded_value);
+        FoldConstInt := TRUE;
+      END
+      ELSE IF name = 'SUCC' THEN FoldConstInt := FoldArith('PLUS', folded_value, 1, folded_value)
+      ELSE IF name = 'PRED' THEN FoldConstInt := FoldArith('MINUS', folded_value, 1, folded_value)
+      ELSE IF name = 'SQR' THEN FoldConstInt := FoldArith('MUL', folded_value, folded_value, folded_value)
+      ELSE IF (name = 'ABS') AND (folded_value < 0) THEN
+        FoldConstInt := FoldArith('MINUS', 0, folded_value, folded_value)
+      ELSE FoldConstInt := TRUE;
+    END;
+  END;
+END;
+
+PROCEDURE CheckConstByteDomain(node: ADRMEM);
+{ A folded constant expression is never lowered to a call, so the runtime
+  RANGECK guard of a BYWORD or CHR inside it never runs. Report, at the
+  call's name token, an operand outside 0..255 when the call's own RANGECK
+  snapshot is on. Codegen declines to fold such a call, so a fold this
+  check does not cover becomes a guarded runtime call. Only the shapes a
+  constant expression can take are walked; a CONST name was checked at
+  its own declaration. }
+VAR
+  nm: Str255;
+  args: ADRMEM;
+  i: INTEGER32;
+  hi, lo: INTEGER64;
+  saved_line, saved_col: INTEGER32;
+  bad: BOOLEAN;
+BEGIN
+  IF NodeType(node) = 'UnaryOp' THEN
+    CheckConstByteDomain(GetObj(node, 'operand'))
+  ELSE IF NodeType(node) = 'BinOp' THEN
+  BEGIN
+    CheckConstByteDomain(GetObj(node, 'left'));
+    CheckConstByteDomain(GetObj(node, 'right'));
+  END
+  ELSE IF NodeType(node) = 'FuncCall' THEN
+  BEGIN
+    nm := UpperStr(GetStr(node, 'name'));
+    IF UserDeclarationShadows(nm) THEN RETURN;
+    args := GetObj(node, 'args');
+    FOR i := 0 TO cJSON_GetArraySize(args) - 1 DO
+      CheckConstByteDomain(cJSON_GetArrayItem(args, i));
+    IF NOT GetBool(node, 'rangeck') THEN RETURN;
+    bad := FALSE;
+    IF (nm = 'BYWORD') AND (cJSON_GetArraySize(args) = 2) THEN
+    BEGIN
+      IF FoldConstInt(cJSON_GetArrayItem(args, 0), hi) AND
+         FoldConstInt(cJSON_GetArrayItem(args, 1), lo) THEN
+        bad := (hi < 0) OR (hi > 255) OR (lo < 0) OR (lo > 255);
+    END
+    ELSE IF (nm = 'CHR') AND (cJSON_GetArraySize(args) = 1) THEN
+      IF FoldConstInt(cJSON_GetArrayItem(args, 0), lo) THEN
+        bad := (lo < 0) OR (lo > 255);
+    IF bad THEN
+    BEGIN
+      TcEnterLocation(node, saved_line, saved_col);
+      IF nm = 'BYWORD' THEN AddError('RANGECK constant BYWORD argument outside 0..255')
+      ELSE AddError('RANGECK constant CHR argument outside 0..255');
+      TcLeaveLocation(saved_line, saved_col);
+    END;
+  END;
+END;
+
 { ========================== type-expr resolution ======================= }
 
 FUNCTION IsSuperTypeExpr(node: ADRMEM): BOOLEAN;
@@ -87,6 +361,40 @@ BEGIN
   ELSE IF IsOrdinal(tk) THEN SemanticOrdinalBase := tk;
 END;
 
+FUNCTION ConstCallBoundKind(node: ADRMEM): INTEGER;
+{ The ordinal kind of a subrange or array index bound written as one of
+  the constant calls ParseConstant admits, as codegen's BoundHostTid
+  classifies it: CHAR for CHR, the argument's kind for SUCC and PRED, and
+  INTEGER for ORD, WRD and BYWORD. Any other node is TK_UNKNOWN; the
+  callers keep their own rules for literals and names. }
+VAR
+  nt, name: Str255;
+  args, arg: ADRMEM;
+  si: INTEGER32;
+BEGIN
+  ConstCallBoundKind := TK_UNKNOWN;
+  IF NodeType(node) <> 'FuncCall' THEN RETURN;
+  name := UpperStr(GetStr(node, 'name'));
+  args := GetObj(node, 'args');
+  IF name = 'CHR' THEN ConstCallBoundKind := TK_CHAR
+  ELSE IF (name = 'ORD') OR (name = 'WRD') OR (name = 'BYWORD') THEN
+    ConstCallBoundKind := TK_INTEGER
+  ELSE IF ((name = 'SUCC') OR (name = 'PRED')) AND (cJSON_GetArraySize(args) = 1) THEN
+  BEGIN
+    arg := cJSON_GetArrayItem(args, 0);
+    nt := NodeType(arg);
+    IF nt = 'IntLiteral' THEN ConstCallBoundKind := TK_INTEGER
+    ELSE IF nt = 'CharLiteral' THEN ConstCallBoundKind := TK_CHAR
+    ELSE IF nt = 'BoolLiteral' THEN ConstCallBoundKind := TK_BOOLEAN
+    ELSE IF nt = 'Identifier' THEN
+    BEGIN
+      si := LookupSymbol(GetStr(arg, 'name'));
+      IF si <> 0 THEN ConstCallBoundKind := symbols[si].tk;
+    END
+    ELSE ConstCallBoundKind := ConstCallBoundKind(arg);
+  END;
+END;
+
 FUNCTION SemanticBaseOfOrdinalType(node: ADRMEM): INTEGER;
 { Resolve the semantic host without re-running ResolveTypeExpr (which can
   emit diagnostics and allocate enum ids). This also handles the SubrangeType
@@ -109,8 +417,10 @@ BEGIN
     ELSE IF name = 'BOOLEAN' THEN SemanticBaseOfOrdinalType := TK_BOOLEAN
     ELSE IF name = 'CHAR' THEN SemanticBaseOfOrdinalType := TK_CHAR;
   END
-  ELSE IF nt = 'SubrangeType' THEN
+  ELSE IF (nt = 'SubrangeType') OR (nt = 'IndexRange') THEN
   BEGIN
+    { An array's explicit index range (IndexRange) has the same `low`
+      field; a SUPER ARRAY's missing high bound does not matter here. }
     low_node := GetObj(node, 'low');
     nt := NodeType(low_node);
     IF nt = 'IntLiteral' THEN SemanticBaseOfOrdinalType := TK_INTEGER
@@ -121,7 +431,9 @@ BEGIN
       ti := LookupSymbol(GetStr(low_node, 'name'));
       IF ti <> 0 THEN
         SemanticBaseOfOrdinalType := symbols[ti].scalar_sem_base;
-    END;
+    END
+    ELSE IF nt = 'FuncCall' THEN
+      SemanticBaseOfOrdinalType := SemanticOrdinalBase(ConstCallBoundKind(low_node), 0);
   END;
 END;
 
@@ -168,13 +480,14 @@ BEGIN
 END;
 
 FUNCTION SubrangeEndpointClass(node: ADRMEM): INTEGER;
-{ The ordinal kind of a subrange endpoint that is a literal or a named
-  constant or enumeration member: TK_INTEGER for any integer, else TK_CHAR,
-  TK_BOOLEAN or TK_ENUM. Anything else (a constant expression) is
+{ The ordinal kind of a subrange endpoint that is a literal, a named
+  constant or enumeration member, or a constant call: TK_INTEGER for any
+  integer, else TK_CHAR, TK_BOOLEAN or TK_ENUM. Anything else is
   TK_UNKNOWN, so it is not compared. }
 VAR
   nt: Str255;
   si: INTEGER32;
+  kind: INTEGER;
 BEGIN
   SubrangeEndpointClass := TK_UNKNOWN;
   nt := NodeType(node);
@@ -189,19 +502,31 @@ BEGIN
       ELSE IF (symbols[si].tk = TK_CHAR) OR (symbols[si].tk = TK_BOOLEAN) OR
               (symbols[si].tk = TK_ENUM) THEN
         SubrangeEndpointClass := symbols[si].tk;
+  END
+  ELSE IF nt = 'FuncCall' THEN
+  BEGIN
+    kind := ConstCallBoundKind(node);
+    IF IsInteger(kind) THEN SubrangeEndpointClass := TK_INTEGER
+    ELSE IF (kind = TK_CHAR) OR (kind = TK_BOOLEAN) OR (kind = TK_ENUM) THEN
+      SubrangeEndpointClass := kind;
   END;
 END;
 
 PROCEDURE CheckSubrangeEndpoints(range_node: ADRMEM);
 { Both ends of a subrange must be the same ordinal type: FALSE..2 or
   'a'..150 used to be accepted, with the type (and storage) taken from the
-  low end alone, so the high bound was silently narrowed. }
+  low end alone, so the high bound was silently narrowed. A bound is a
+  constant consumer like a CONST value: an enabled out-of-domain CHR or
+  BYWORD in it (CHR(300)) is a located error here, since codegen would
+  never fold it into a bound. }
 VAR
   high_node: ADRMEM;
   lo_class, hi_class: INTEGER;
 BEGIN
+  CheckConstByteDomain(GetObj(range_node, 'low'));
   high_node := GetObjOrNil(range_node, 'high');
   IF high_node = NIL THEN RETURN;
+  CheckConstByteDomain(high_node);
   lo_class := SubrangeEndpointClass(GetObj(range_node, 'low'));
   hi_class := SubrangeEndpointClass(high_node);
   IF (lo_class <> TK_UNKNOWN) AND (hi_class <> TK_UNKNOWN) AND (lo_class <> hi_class) THEN
@@ -271,6 +596,10 @@ BEGIN
     END
     ELSE ArrayIndexBound := FALSE;
   END
+  ELSE IF nt = 'FuncCall' THEN
+    { A constant call folds to its converted ordinal (CHR(250) is 250), as
+      codegen's ResolveIntLiteral folds the same bound. }
+    ArrayIndexBound := FoldConstInt(node, ordinal_value)
   ELSE ArrayIndexBound := FALSE;
 END;
 
@@ -452,6 +781,95 @@ BEGIN
   FwdCachedType := found;
 END;
 
+FUNCTION SubrangeIndexKind(index_node: ADRMEM): INTEGER;
+{ The coarse scalar kind of an explicit `low..high` array index range,
+  from its bounds' spelling. No diagnostics: ResolveTypeExpr checks the
+  endpoints itself. }
+VAR
+  bound_node: ADRMEM;
+  bound_si: INTEGER32;
+  kind: INTEGER;
+BEGIN
+  kind := TK_INTEGER;
+  bound_node := GetObj(index_node, 'low');
+  IF NodeType(bound_node) = 'CharLiteral' THEN kind := TK_CHAR
+  ELSE IF NodeType(bound_node) = 'BoolLiteral' THEN kind := TK_BOOLEAN
+  ELSE IF NodeType(bound_node) = 'Identifier' THEN
+  BEGIN
+    bound_si := LookupSymbol(GetStr(bound_node, 'name'));
+    IF bound_si <> 0 THEN kind := symbols[bound_si].tk;
+  END
+  ELSE IF NodeType(bound_node) = 'FuncCall' THEN
+  BEGIN
+    IF ConstCallBoundKind(bound_node) <> TK_UNKNOWN THEN
+      kind := ConstCallBoundKind(bound_node);
+  END
+  ELSE IF (NodeType(bound_node) = 'IntLiteral') AND
+          (GetInt(bound_node, 'value') > 32767) THEN kind := TK_WORD;
+  bound_node := GetObjOrNil(index_node, 'high');
+  IF bound_node <> NIL THEN
+    IF (NodeType(bound_node) = 'IntLiteral') AND
+       (GetInt(bound_node, 'value') > 32767) THEN kind := TK_WORD;
+  SubrangeIndexKind := kind;
+END;
+
+FUNCTION ElementIndexKind(node: ADRMEM): INTEGER;
+{ The index kind of an array type node (an element reached through an
+  INDEX selector), or TK_UNKNOWN when node is not an array or its index
+  cannot be read without resolving the type again. Pure: the declaration
+  was already resolved and diagnosed. }
+VAR
+  nt: Str255;
+  index_node: ADRMEM;
+  ti: INTEGER32;
+BEGIN
+  ElementIndexKind := TK_UNKNOWN;
+  IF node = NIL THEN RETURN;
+  nt := NodeType(node);
+  IF (nt = 'NamedType') OR (nt = 'BuiltinType') THEN
+  BEGIN
+    ti := LookupType(GetStr(node, 'name'));
+    IF ti <> 0 THEN
+      IF types[ti].tk = TK_ARRAY THEN ElementIndexKind := types[ti].idx_tk;
+  END
+  ELSE IF nt = 'ArrayType' THEN
+  BEGIN
+    index_node := GetObj(node, 'index_range');
+    IF (NodeType(index_node) = 'NamedType') OR
+       (NodeType(index_node) = 'BuiltinType') THEN
+    BEGIN
+      ti := LookupType(GetStr(index_node, 'name'));
+      IF ti <> 0 THEN
+        IF IsOrdinal(types[ti].tk) THEN ElementIndexKind := types[ti].tk;
+    END
+    ELSE IF NodeType(index_node) = 'IndexRange' THEN
+      ElementIndexKind := SubrangeIndexKind(index_node);
+  END;
+END;
+
+FUNCTION ArrayIndexSemBase(node: ADRMEM): INTEGER;
+{ The semantic base (SemanticOrdinalBase identity) of an array type node's
+  index, so two enumerations can be told apart where idx_tk only says
+  TK_ENUM. SB_UNKNOWN when node is not an array or the index base cannot
+  be read without resolving the type again. }
+VAR
+  nt: Str255;
+  ti: INTEGER32;
+BEGIN
+  ArrayIndexSemBase := SB_UNKNOWN;
+  IF node = NIL THEN RETURN;
+  nt := NodeType(node);
+  IF (nt = 'NamedType') OR (nt = 'BuiltinType') THEN
+  BEGIN
+    ti := LookupType(GetStr(node, 'name'));
+    IF ti <> 0 THEN
+      IF types[ti].tk = TK_ARRAY THEN
+        ArrayIndexSemBase := ArrayIndexSemBase(types[ti].type_node);
+  END
+  ELSE IF nt = 'ArrayType' THEN
+    ArrayIndexSemBase := SemanticBaseOfOrdinalType(GetObj(node, 'index_range'));
+END;
+
 PROCEDURE ResolveTypeExpr(node: ADRMEM; VAR tk, aux, aux2, aux3, idx_tk: INTEGER);
 VAR
   nt, name, uname: Str255;
@@ -504,9 +922,8 @@ BEGIN
     ELSE IF uname = 'STRING' THEN tk := TK_STRING
     { LSTRING shares TK_STRING with the fixed STRING -- this v1 type-kind
       model does not track a string's capacity or flavor -- but the two are
-      not interchangeable for one construct: .LEN designates an LSTRING's
-      leading length byte and is an error on a STRING. aux2 = 1 is the flag
-      that tells them apart; nothing else reads aux2 for a string. }
+      not interchangeable for .LEN or a COPYLST destination: both require
+      an LSTRING's leading length byte. aux2 = 1 tells them apart. }
     ELSE IF uname = 'LSTRING' THEN
     BEGIN
       tk := TK_STRING;
@@ -670,20 +1087,7 @@ BEGIN
       RETURN;
     END;
     CheckSubrangeEndpoints(index_node);
-    bound_node := GetObj(index_node, 'low');
-    IF NodeType(bound_node) = 'CharLiteral' THEN idx_tk := TK_CHAR
-    ELSE IF NodeType(bound_node) = 'BoolLiteral' THEN idx_tk := TK_BOOLEAN
-    ELSE IF NodeType(bound_node) = 'Identifier' THEN
-    BEGIN
-      bound_si := LookupSymbol(GetStr(bound_node, 'name'));
-      IF bound_si <> 0 THEN idx_tk := symbols[bound_si].tk;
-    END
-    ELSE IF (NodeType(bound_node) = 'IntLiteral') AND
-            (GetInt(bound_node, 'value') > 32767) THEN idx_tk := TK_WORD;
-    bound_node := GetObjOrNil(index_node, 'high');
-    IF bound_node <> NIL THEN
-      IF (NodeType(bound_node) = 'IntLiteral') AND
-         (GetInt(bound_node, 'value') > 32767) THEN idx_tk := TK_WORD;
+    idx_tk := SubrangeIndexKind(index_node);
   END
   ELSE IF nt = 'VectorType' THEN
   BEGIN
@@ -819,7 +1223,8 @@ BEGIN
       output shapes) -- SubrangeType elsewhere (e.g. an ARRAY index range)
       is read directly by its own caller, not through ResolveTypeExpr. A
       SubrangeType base's ordinal kind follows its low bound's literal kind
-      (CharLiteral -> TK_CHAR, BoolLiteral -> TK_BOOLEAN, else TK_INTEGER);
+      (CharLiteral -> TK_CHAR, BoolLiteral -> TK_BOOLEAN, else TK_INTEGER),
+      a named constant's kind, or a constant call's (CHR(250) -> TK_CHAR);
       a BuiltinType base is a reserved-word ordinal type name. }
     IF nt = 'SubrangeType' THEN
     BEGIN
@@ -832,6 +1237,8 @@ BEGIN
         IF ti <> 0 THEN tk := symbols[ti].tk
         ELSE tk := TK_UNKNOWN;
       END
+      ELSE IF NodeType(GetObj(node, 'low')) = 'FuncCall' THEN
+        tk := ConstCallBoundKind(GetObj(node, 'low'))
       ELSE tk := TK_INTEGER;
       { A declared subrange retains its base scalar kind but marks its
         declaration shape for type-only LOWER/UPPER classification. }

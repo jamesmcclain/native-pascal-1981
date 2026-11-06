@@ -31,6 +31,7 @@ VAR
   nsel, si: INTEGER32;
   kind: Str255;
   fi: INTEGER;
+  fcb_field: INTEGER32;
   failed: BOOLEAN;
 BEGIN
   IF NodeType(node) = 'PostfixExpr' THEN
@@ -89,6 +90,12 @@ BEGIN
           cur_tid := types[cur_tid].elem_tid
         ELSE
           failed := TRUE;
+      END
+      ELSE IF TypeKind(cur_tid) = TK_FILE THEN
+      BEGIN
+        { F.TRAP / F.ERRS: an FCB control field (FileControlField). }
+        cur_tid := FileControlField(GetStr(sel, 'index_or_field'), fcb_field);
+        IF cur_tid = 0 THEN failed := TRUE;
       END
       ELSE IF TypeKind(cur_tid) <> TK_RECORD THEN
         failed := TRUE

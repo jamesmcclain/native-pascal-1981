@@ -46,6 +46,9 @@ TYPE
     value_int: INTEGER64;
     value_real: REAL;
     value_type: INTEGER32; { 0=null, 1=int, 2=real, 3=str, 4=bool }
+    { The integer value is at least 2^63, so value_int holds only its
+      WORD64 bit pattern (the lexer's word64 mark). }
+    value_word64: BOOLEAN;
     line: INTEGER32;
     col: INTEGER32;
     f_brave, f_debug, f_entry, f_goto, f_indexck, f_initck, f_line, f_list,
@@ -291,6 +294,7 @@ BEGIN
         number travels as 15 significant digits, so beyond that only the
         lexer's exact decimal companion field still holds the literal. }
       p_tok^.value_int := GetInt64(item, 'value');
+      p_tok^.value_word64 := GetBool(item, 'word64');
       p_tok^.value_str := empty_s;
       p_tok^.value_type := 1;
     END
@@ -298,6 +302,7 @@ BEGIN
     BEGIN
       p_tok^.value_str := CStrToStr255(cJSON_GetStringValue(field));
       p_tok^.value_int := 0;
+      p_tok^.value_word64 := FALSE;
       p_tok^.value_real := 0.0;
       p_tok^.value_type := 3;
     END
@@ -305,6 +310,7 @@ BEGIN
     BEGIN
       p_tok^.value_str := empty_s;
       p_tok^.value_int := 0;
+      p_tok^.value_word64 := FALSE;
       p_tok^.value_real := 0.0;
       p_tok^.value_type := 0;
     END;
@@ -446,6 +452,14 @@ VAR
 BEGIN
   pt := GetTok(0);
   CurValueInt := pt^.value_int;
+END;
+
+FUNCTION CurValueWord64: BOOLEAN;
+VAR
+  pt: PToken;
+BEGIN
+  pt := GetTok(0);
+  CurValueWord64 := pt^.value_word64;
 END;
 
 FUNCTION CurValueReal: REAL;

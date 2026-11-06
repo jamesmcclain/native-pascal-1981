@@ -5,8 +5,6 @@ UNIT tc_expr;
 USES jsonutil, features, tc_base, tc_types;
 
 FUNCTION CanAssign(target_tk, expr_tk: INTEGER): BOOLEAN;
-FUNCTION FoldConstInt(node: ADRMEM; VAR folded_value: INTEGER64): BOOLEAN;
-PROCEDURE CheckConstByteDomain(node: ADRMEM);
 VAR
   { Read immediately after CheckExpr/CheckExprForSetTarget. Recursive checks
     overwrite these channels: callers must snapshot before the next sibling. }
@@ -14,6 +12,7 @@ VAR
 
 FUNCTION CheckExprForTarget(node: ADRMEM; target_tk: INTEGER): INTEGER;
 FUNCTION CheckExprForSetTarget(node: ADRMEM; target_tk, target_set_base: INTEGER): INTEGER;
+FUNCTION ShadowedWriteArg(arg: ADRMEM; pname: Str255): ADRMEM;
 FUNCTION CheckDesignator(node: ADRMEM): INTEGER;
 FUNCTION CheckExpr(node: ADRMEM): INTEGER;
 

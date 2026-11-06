@@ -17,48 +17,6 @@ FUNCTION ParseRepeatStmt: ADRMEM; FORWARD;
 FUNCTION ParseCaseStmt: ADRMEM; FORWARD;
 FUNCTION ParseWithStmt: ADRMEM; FORWARD;
 
-FUNCTION ParseWriteArg: ADRMEM;
-VAR
-  node: ADRMEM;
-BEGIN
-  node := CreateTriviaNode('WriteArg');
-  AddField(node, 'expr', ParseExpression);
-  IF Match('COLON') THEN
-  BEGIN
-    IF CurKind = 'COLON' THEN
-    BEGIN
-      BEGIN RelayTokenTrivia; pos := pos + 1; END;
-      AddNullField(node, 'width');
-      AddField(node, 'precision', ParseExpression);
-    END
-    ELSE
-    BEGIN
-      AddField(node, 'width', ParseExpression);
-      IF Match('COLON') THEN
-        AddField(node, 'precision', ParseExpression)
-      ELSE
-        AddNullField(node, 'precision');
-    END;
-  END
-  ELSE
-  BEGIN
-    AddNullField(node, 'width');
-    AddNullField(node, 'precision');
-  END;
-  ParseWriteArg := node;
-END;
-
-FUNCTION ParseWriteArgList: ADRMEM;
-VAR
-  arr: ADRMEM;
-BEGIN
-  arr := cJSON_CreateArray;
-  cJSON_AddItemToArray(arr, ParseWriteArg);
-  WHILE Match('COMMA') DO
-    cJSON_AddItemToArray(arr, ParseWriteArg);
-  ParseWriteArgList := arr;
-END;
-
 FUNCTION ParseAssignOrCallStmt: ADRMEM;
 VAR
   node, target, args_arr, saved_flags_node: ADRMEM;
@@ -100,7 +58,7 @@ BEGIN
     BEGIN
       IF CurKind <> 'RPAREN' THEN
       BEGIN
-        IF StringEqual(UpperStr(name), 'WRITE') OR StringEqual(UpperStr(name), 'WRITELN') THEN
+        IF IsFormattedArgCall(name) THEN
           args_arr := ParseWriteArgList
         ELSE
         BEGIN

@@ -298,7 +298,7 @@ cat > "$work/kimpl.impl" <<'PAS'
 DEVICE IMPLEMENTATION OF BUMPU;
 PROCEDURE BUMP(cell: ADS(GLOBAL) OF INTEGER);
 BEGIN
-  cell^ := 7
+  {$NILCK-} cell^ := 7
 END;
 .
 PAS

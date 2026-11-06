@@ -2,35 +2,11 @@
 
 This repository contains a native compiler for the 1981 IBM Pascal dialect. It targets LLVM IR, the System V AMD64 ABI, and NVIDIA NVPTX.
 
-**Compatibility rule: fun, not pathology.** Follow the IBM manual where it
-preserves the language's character, not where historical machine constraints
-make modern behavior needlessly pathological. Deliberate differences must be
-documented and tested. For example, native `INTEGER` accepts the full signed
-16-bit range, including `-32768` in both dialects; INITCK uses separate shadow
-state, never a reserved program-data sentinel. Host enforcement covers supported
-scalar locals/formals/results, fixed aggregates, typed pointers and tracked
-NEW/SUPER ARRAY storage, with explicit external/raw/file/DEVICE boundaries.
-It is not whole-program protection: globals, untracked types and aggregate
-results remain outside the checked slice. See the
-[INITCK contract and limits](docs/dialect_notes.md#initialization-checking-host-storage-native).
+Contributors and coding agents: read [AGENTS.md](AGENTS.md) first. It
+states the compatibility rule, what the checking switches cover, and the
+rules for writing Pascal and GPU kernels in this repository.
 
 <img width="1536" height="864" alt="image" src="https://github.com/user-attachments/assets/f59a2d0f-468b-41b2-838c-b76729f15975" />
-
-> **If you write Pascal in this repository,** read
-> [`docs/dialect_notes.md`](docs/dialect_notes.md) first. The notes cover
-> what the vintage and extended dialects each provide. They show the width
-> of each integer type. They list the constructs that fail without an error.
-> For example, `TRUNC` narrows the result to 16 bits.
-
-> **GPU kernels must use `{$MATHCK-}` for integer arithmetic.** Integer
-> overflow checking (`$MATHCK`) is on by default, and NVPTX code has no way to
-> report a run-time error. So in DEVICE code compiled for NVPTX, every integer
-> operation MATHCK would check (`+ - * DIV MOD`, unary `-`, `SUCC`, `PRED`,
-> `ABS`, `SQR`) is a compile-time error,
-> `MATHCK unsupported boundary: DEVICE arithmetic at line L column C`, until
-> the kernel says `{$MATHCK-}`. That arithmetic is then unchecked and wraps.
-> CPU (serial) DEVICE code is checked like host code. See
-> [GPU kernels and `$MATHCK`](docs/dialect_notes.md#gpu-nvptx-kernels-need-mathck--for-integer-arithmetic-extended).
 
 ## System Prerequisites
 

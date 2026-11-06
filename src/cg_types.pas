@@ -105,6 +105,32 @@ BEGIN
   LookupField := found;
 END;
 
+FUNCTION FileControlField(fname: Str255; VAR fcb_index: INTEGER32): INTEGER;
+{ A FIELD selector on a FILE names one of its FCB control fields (manual
+  12-32..12-33): F.TRAP, the i8 trap switch at filefcbty index 8, typed
+  BOOLEAN; F.ERRS, the i32 error code at index 9, typed WORD (the
+  manual's 0..15; little-endian, so a WORD load or store addresses the
+  code's low half, and the runtime never sets the high half). Returns
+  the field's type id and sets fcb_index, or returns 0 for any other
+  name (the typechecker has already reported it). }
+VAR
+  u: Str255;
+BEGIN
+  u := UpperStr(fname);
+  fcb_index := 0;
+  FileControlField := 0;
+  IF u = 'TRAP' THEN
+  BEGIN
+    fcb_index := 8;
+    FileControlField := TK_BOOLEAN;
+  END
+  ELSE IF u = 'ERRS' THEN
+  BEGIN
+    fcb_index := 9;
+    FileControlField := TK_WORD;
+  END;
+END;
+
 FUNCTION RegisterType(tk, elem_tid: INTEGER; lo, hi: INTEGER32; llvm_ty: ADRMEM): INTEGER;
 BEGIN
   IF ntypes >= MAX_TYPES THEN AbortWith('codegen: too many types');
@@ -135,6 +161,18 @@ BEGIN
   IF generic_set_tid = 0 THEN
     generic_set_tid := RegisterType(TK_SET, TK_INTEGER, 0, 255, setty);
   EnsureGenericSetType := generic_set_tid;
+END;
+
+FUNCTION EnsureTextType: INTEGER;
+{ Lazily registers (once) the predeclared TEXT file type. A fresh entry per
+  occurrence of the name would give `VAR t: TEXT` a different tid from a
+  `TEXT` actual and fail the VAR identity check, which a `TYPE Txt = TEXT`
+  alias only escaped by resolving once. FILE OF T stays one entry per
+  declaration: distinct typed files are distinct types. }
+BEGIN
+  IF text_tid = 0 THEN
+    text_tid := RegisterType(TK_FILE, TK_CHAR, 0, 1, i8ptrty);
+  EnsureTextType := text_tid;
 END;
 
 PROCEDURE RejectNvptxVector;
@@ -401,6 +439,26 @@ BEGIN
   LowByte := b;
 END;
 
+FUNCTION IsWord64MinLiteral(node: ADRMEM): BOOLEAN;
+{ The word64-marked IntLiteral 2^63, whose INTEGER64 bit pattern is -2^63.
+  The bound is built from small literals, as the typechecker's is. }
+VAR
+  bits, n, low: INTEGER64;
+BEGIN
+  IsWord64MinLiteral := FALSE;
+  IF node <> NIL THEN
+    IF NodeType(node) = 'IntLiteral' THEN
+      IF GetBool(node, 'word64') THEN
+      BEGIN
+        bits := GetInt64(node, 'value');
+        n := 16384;
+        n := n * 4;                    { 2^16 }
+        low := n * n * 32768;
+        low := -low;                   { -(2^47); Pascal's - binds below * }
+        IsWord64MinLiteral := bits = low * n;
+      END;
+END;
+
 FUNCTION FoldConstInt(expr_node: ADRMEM; VAR folded: INTEGER64): BOOLEAN;
 { Fold the integer-only constant-expression subset used by the reference
   typechecker's _fold_const_int: literals, unary +/-, arithmetic, earlier
@@ -421,7 +479,9 @@ BEGIN
     { Exact, not Real64ToInt64(GetReal(...)): a JSON number keeps 15 digits,
       so 9223372036854775805 used to compile as 9223372036854775807. }
     folded := GetInt64(expr_node, 'value');
-    FoldConstInt := TRUE;
+    { A literal of 2^63 or more holds only its WORD64 bit pattern; it is a
+      WORD64 operand, never an INTEGER64 constant (CodegenExpr). }
+    FoldConstInt := NOT GetBool(expr_node, 'word64');
   END
   ELSE IF nt = 'BoolLiteral' THEN
   BEGIN
@@ -445,6 +505,13 @@ BEGIN
     BEGIN
       IF op = 'MINUS' THEN FoldConstInt := FoldArith('MINUS', 0, folded, folded)
       ELSE FoldConstInt := TRUE;
+    END
+    ELSE IF (op = 'MINUS') AND IsWord64MinLiteral(GetObj(expr_node, 'operand')) THEN
+    BEGIN
+      { -9223372036854775808: the bit pattern of 2^63 is already the
+        INTEGER64 minimum. }
+      folded := GetInt64(GetObj(expr_node, 'operand'), 'value');
+      FoldConstInt := TRUE;
     END;
   END
   ELSE IF nt = 'BinOp' THEN
@@ -483,7 +550,9 @@ BEGIN
     ci := LookupConst(GetStr(expr_node, 'name'));
     IF ci <> 0 THEN
     BEGIN
-      IF NOT const_tbl[ci].is_real THEN
+      { A WORD64 constant of 2^63 or more holds only its bit pattern. }
+      IF NOT const_tbl[ci].is_real AND
+         NOT ((const_tbl[ci].integer_tid = TK_WORD64) AND (const_tbl[ci].ival < 0)) THEN
       BEGIN
         folded := const_tbl[ci].ival;
         FoldConstInt := TRUE;
@@ -1629,8 +1698,10 @@ FUNCTION ResolveIntLiteral(node: ADRMEM): INTEGER32;
   needs to drill into the node's own 'value' field, not treat the node
   itself as a bare JSON number. Also resolves a bare Identifier bound
   through the CONST table (e.g. "ARRAY [1..MAX_SYMBOLS]"), pervasive in
-  this repository's own native sources; any other computed bound expression
-  is still not supported. }
+  this repository's own native sources, and a constant call
+  (CHR(250)..CHR(255), CHR(K)) through FoldConstInt, which yields the
+  converted ordinal; any other computed bound expression is still not
+  supported. }
 VAR
   nm, ch: Str255;
   ci: INTEGER32;
@@ -1663,6 +1734,20 @@ BEGIN
       ResolveIntLiteral := CheckedIndexBound(wide);
     END;
   END
+  ELSE IF NodeType(node) = 'FuncCall' THEN
+  BEGIN
+    { The typechecker has already rejected an enabled out-of-domain CHR or
+      BYWORD here (CheckConstByteDomain); FoldConstInt declines such a call,
+      so a frozen AST that skipped that check still cannot fold it into a
+      bound. }
+    IF FoldConstInt(node, wide) THEN
+      ResolveIntLiteral := CheckedIndexBound(wide)
+    ELSE
+    BEGIN
+      AbortWith2('codegen: array index bound call is not a foldable constant: ', GetStr(node, 'name'));
+      ResolveIntLiteral := 0;
+    END;
+  END
   ELSE
   BEGIN
     AbortWith('codegen: array index bounds must be integer literals or CONST identifiers');
@@ -1672,9 +1757,13 @@ END;
 
 FUNCTION BoundHostTid(node: ADRMEM): INTEGER;
 { The host type of a subrange or array index bound: CHAR, BOOLEAN, an
-  enumeration, or INTEGER. A named constant has the type of its value. }
+  enumeration, or INTEGER. A named constant has the type of its value; a
+  constant call has CHR's CHAR, SUCC/PRED's argument type, or INTEGER
+  (ORD, WRD, BYWORD), as the typechecker's ConstCallBoundKind agrees. }
 VAR
   ci: INTEGER32;
+  nm: Str255;
+  args: ADRMEM;
 BEGIN
   BoundHostTid := TK_INTEGER;
   IF NodeType(node) = 'CharLiteral' THEN BoundHostTid := TK_CHAR
@@ -1686,6 +1775,14 @@ BEGIN
       IF const_tbl[ci].enum_tid <> 0 THEN BoundHostTid := const_tbl[ci].enum_tid
       ELSE IF const_tbl[ci].is_char THEN BoundHostTid := TK_CHAR
       ELSE IF const_tbl[ci].integer_tid <> 0 THEN BoundHostTid := const_tbl[ci].integer_tid;
+  END
+  ELSE IF NodeType(node) = 'FuncCall' THEN
+  BEGIN
+    nm := UpperStr(GetStr(node, 'name'));
+    args := GetObj(node, 'args');
+    IF nm = 'CHR' THEN BoundHostTid := TK_CHAR
+    ELSE IF ((nm = 'SUCC') OR (nm = 'PRED')) AND (ArrSize(args) = 1) THEN
+      BoundHostTid := BoundHostTid(ArrItem(args, 0));
   END;
 END;
 
@@ -1999,8 +2096,7 @@ BEGIN
       ELSE IF (unm = 'CLONG') OR (unm = 'CSIZE_T') THEN tid := TK_INTEGER64
       ELSE tid := TK_REAL;
     END
-    ELSE IF unm = 'TEXT' THEN
-      tid := RegisterType(TK_FILE, TK_CHAR, 0, 1, i8ptrty)
+    ELSE IF unm = 'TEXT' THEN tid := EnsureTextType
     ELSE IF unm = 'LSTRING' THEN
     BEGIN
       { A bare LSTRING is LSTRING(256), the same default STRING takes below --

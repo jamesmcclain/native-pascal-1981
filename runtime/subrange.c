@@ -21,6 +21,49 @@ void pas_concat_error(uint64_t length, int32_t capacity, int32_t line, int32_t c
     abort();
 }
 
+void pas_copylst_error(uint64_t length, int32_t capacity, int32_t line, int32_t column)
+{
+    fflush(stdout);
+    fprintf(stderr, "runtime error: RANGECK COPYLST length %" PRIu64 " exceeds capacity %" PRId32 " at line %" PRId32 " column %" PRId32 "\n", length, capacity, line, column);
+    fflush(stderr);
+    abort();
+}
+
+void pas_copystr_error(uint64_t length, int32_t capacity, int32_t line, int32_t column)
+{
+    fflush(stdout);
+    fprintf(stderr, "runtime error: COPYSTR length %" PRIu64 " exceeds capacity %" PRId32 " at line %" PRId32 " column %" PRId32 "\n", length, capacity, line, column);
+    fflush(stderr);
+    abort();
+}
+
+void pas_insert_error(uint64_t length, int32_t capacity, int32_t line, int32_t column)
+{
+    fflush(stdout);
+    fprintf(stderr, "runtime error: INSERT length %" PRIu64 " exceeds capacity %" PRId32 " at line %" PRId32 " column %" PRId32 "\n", length, capacity, line, column);
+    fflush(stderr);
+    abort();
+}
+
+/* count is always 0 here: an insertion position is valid in 1..length + 1. */
+void pas_insert_position_error(int32_t position, int32_t count, int32_t length, int32_t line, int32_t column)
+{
+    (void) count;
+    fflush(stdout);
+    fprintf(stderr, "runtime error: INSERT position %" PRId32 " is outside 1..%" PRId32 " at line %" PRId32 " column %" PRId32 "\n", position, length + 1, line, column);
+    fflush(stderr);
+    abort();
+}
+
+void pas_delete_error(int32_t position, int32_t count, int32_t length, int32_t line, int32_t column)
+{
+    fflush(stdout);
+    fprintf(stderr, "runtime error: DELETE position %" PRId32 " count %" PRId32 " is outside length %" PRId32 " at line %" PRId32 " column %" PRId32 "\n", position, count, length,
+            line, column);
+    fflush(stderr);
+    abort();
+}
+
 void pas_lstring_length_error(uint64_t length, int32_t capacity, int32_t line, int32_t column)
 {
     fflush(stdout);

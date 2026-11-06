@@ -571,7 +571,7 @@ VAR
   start_node, end_node: ADRMEM;
   start_val, end_val, cur_val, cmp_val, next_val: ADRMEM;
   loop_bb, body_bb, step_bb, inc_bb, end_bb, chk_bb, cont_bb: ADRMEM;
-  done_bb, saved_taint: ADRMEM;
+  done_bb, saved_taint, start_state: ADRMEM;
   down, narrow, unsigned, sub_chk, tracked, unset_at_exit: BOOLEAN;
 BEGIN
   var_name := GetStr(stmt, 'var');
@@ -590,18 +590,18 @@ BEGIN
   unsigned := narrow OR IsUnsignedWordTk(var_tk) OR (TypeKind(var_tk) = TK_ENUM);
   var_llty := LLVMTypeForTk(var_tk);
 
+  { The initial value is evaluated first, then the final value, both before
+    the statement runs (manual 9-17); the control variable is assigned only
+    after both and their range checks, so a final expression naming it reads
+    its prior value and nothing observes an unchecked initial value. }
   start_node := GetObj(stmt, 'start');
   tracked := InitckTracked(symi);
   IF tracked THEN saved_taint := BeginInitckValue(start_node);
   start_val := CodegenExpr(start_node);
   start_val := CoerceForAssign(start_val, last_val_tk, var_tk, start_node, var_name);
-  LLVMBuildStore(builder, start_val, symbols[symi].llvm_val);
   { The initial assignment is a producer carrying the initial value's state;
-    increments only derive from it. Published before the final expression is
-    evaluated because the data store already happened (an end expression
-    naming the control variable reads the initial value). }
-  IF tracked THEN
-    LLVMBuildStore(builder, EndInitckValue(saved_taint), symbols[symi].init_state);
+    increments only derive from it. }
+  IF tracked THEN start_state := EndInitckValue(saved_taint);
 
   end_node := GetObj(stmt, 'end');
   end_val := CodegenExpr(end_node);
@@ -635,6 +635,9 @@ BEGIN
     LLVMBuildBr(builder, cont_bb);
     LLVMPositionBuilderAtEnd(builder, cont_bb);
   END;
+  LLVMBuildStore(builder, start_val, symbols[symi].llvm_val);
+  IF tracked THEN
+    LLVMBuildStore(builder, start_state, symbols[symi].init_state);
 
   loop_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('for_loop'));
   body_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('for_body'));
@@ -787,20 +790,28 @@ BEGIN
   LLVMPositionBuilderAtEnd(builder, end_bb);
 END;
 
-PROCEDURE CodegenCopylst(args: ADRMEM);
+PROCEDURE EmitStringCapacityCheck(new_len: ADRMEM; capacity: INTEGER32;
+  site: ADRMEM; prefix, error_name: Str255); FORWARD;
+PROCEDURE EmitStringCapacityGuard(new_len: ADRMEM; capacity: INTEGER32;
+  site: ADRMEM; prefix, error_name: Str255); FORWARD;
+PROCEDURE EmitStringSpanGuard(pos, count, len: ADRMEM; site: ADRMEM;
+  prefix, error_name: Str255); FORWARD;
+
+PROCEDURE CodegenCopylst(stmt: ADRMEM);
 { COPYLST(CONST S: STRING-or-LSTRING-or-literal; VAR D: LSTRING): copies S's
-  characters into D from scratch (unlike CONCAT, which appends) and sets D's
-  length byte to length(S). No RANGECK-style capacity guard, same documented
-  simplification as CONCAT. }
+  characters into D from scratch and sets D's length byte to length(S).
+  RANGECK+ checks capacity and byte representability before any writes. }
+
 VAR
-  d_arg: ADRMEM;
-  d_symi: INTEGER32;
+  args, d_arg, source: ADRMEM;
+  d_symi, capacity: INTEGER32;
   d_tid: INTEGER;
   d_addr, len_ptr, src_len_byte: ADRMEM;
   dest_chars: ADRMEM;
-  src_chars, src_len: ADRMEM;
+  src_chars, src_len, src_len64: ADRMEM;
   gep_idx: ADRMEM;
 BEGIN
+  args := GetObj(stmt, 'args');
   IF ArrSize(args) <> 2 THEN
     AbortWith('codegen: COPYLST expects exactly 2 arguments');
   d_arg := ArrItem(args, 1);
@@ -814,7 +825,15 @@ BEGIN
     AbortWith('codegen: COPYLST''s destination must be an LSTRING variable');
   d_addr := symbols[d_symi].llvm_val;
 
-  ResolveStringExprCharsLen(ArrItem(args, 0), src_chars, src_len);
+  source := ArrItem(args, 0);
+  IF (NodeType(source) <> 'StringLiteral') AND (NodeType(source) <> 'CharLiteral') THEN
+    IF GetBool(GetObjOrNil(source, 'read_flags'), 'INITCK') THEN
+      InitckBoundaryAt('STRING/LSTRING COPYLST operand', source);
+  ResolveStringExprCharsLen(source, src_chars, src_len);
+  src_len64 := LLVMBuildZExt(builder, src_len, i64ty, MakeCStr('copylst.length'));
+  capacity := types[d_tid].hi;
+  IF capacity > 255 THEN capacity := 255;
+  EmitStringCapacityCheck(src_len64, capacity, stmt, 'copylst', 'pas_copylst_error');
 
   gep_idx := AllocPtrArray(2);
   SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
@@ -830,13 +849,15 @@ BEGIN
   LLVMBuildStore(builder, src_len_byte, len_ptr);
 END;
 
-PROCEDURE CodegenCopystr(args: ADRMEM);
+PROCEDURE CodegenCopystr(stmt: ADRMEM);
 { COPYSTR(CONST S: STRING-or-LSTRING-or-literal; VAR D: STRING): copies S's
   characters into D from byte[0], then blank-pads the remaining bytes (from
   length(S) up to D's fixed capacity) with 0x20 -- STRING has no length
-  byte, so every declared byte always holds a real character. }
+  byte, so every declared byte always holds a real character. A source
+  longer than D is error 2150, always caught (manual A-46): no switch turns
+  the check off, and it runs before any destination byte is written. }
 VAR
-  d_arg: ADRMEM;
+  args, d_arg, source: ADRMEM;
   d_symi: INTEGER32;
   d_tid: INTEGER;
   d_addr: ADRMEM;
@@ -844,6 +865,7 @@ VAR
   src_chars, src_len: ADRMEM;
   gep_idx: ADRMEM;
 BEGIN
+  args := GetObj(stmt, 'args');
   IF ArrSize(args) <> 2 THEN
     AbortWith('codegen: COPYSTR expects exactly 2 arguments');
   d_arg := ArrItem(args, 1);
@@ -857,7 +879,13 @@ BEGIN
     AbortWith('codegen: COPYSTR''s destination must be a STRING variable');
   d_addr := symbols[d_symi].llvm_val;
 
-  ResolveStringExprCharsLen(ArrItem(args, 0), src_chars, src_len);
+  source := ArrItem(args, 0);
+  IF (NodeType(source) <> 'StringLiteral') AND (NodeType(source) <> 'CharLiteral') THEN
+    IF GetBool(GetObjOrNil(source, 'read_flags'), 'INITCK') THEN
+      InitckBoundaryAt('STRING/LSTRING COPYSTR operand', source);
+  ResolveStringExprCharsLen(source, src_chars, src_len);
+  EmitStringCapacityGuard(LLVMBuildZExt(builder, src_len, i64ty, MakeCStr('copystr.length')),
+    types[d_tid].hi, stmt, 'copystr', 'pas_copystr_error');
 
   gep_idx := AllocPtrArray(2);
   SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
@@ -872,38 +900,56 @@ BEGIN
   EmitByteFillLoop(pad_ptr, pad_len, 32);
 END;
 
-PROCEDURE CodegenInsert(args: ADRMEM);
-{ INSERT(CONST S: STRING-or-LSTRING-or-literal; VAR D: LSTRING-or-STRING;
-  pos: INTEGER): shifts D's existing characters from `pos` onward right by
-  length(S) (via memmove, since the shifted range overlaps itself -- a
-  plain byte-by-byte forward copy like EmitByteCopyLoop would corrupt
-  overlapping data here), then writes S into the gap. Only updates the
-  length-prefix byte when D is an LSTRING; a STRING destination has no
-  length byte to update. No RANGECK-style capacity guard, same documented
-  simplification as CONCAT/COPYLST/COPYSTR. }
+PROCEDURE CodegenInsert(stmt: ADRMEM);
+{ INSERT(CONST S: STRING-or-LSTRING-or-literal; VAR D: LSTRING; pos:
+  INTEGER): inserts S just before D[pos] and lengthens D by length(S)
+  (manual 11-20). S is evaluated, then pos, and only then is D's length
+  read. Two checks run before any write: pos must lie in 1..length(D) + 1
+  (the manual's text forbids length(D) + 1; appending is allowed here), and
+  the new length must fit min(capacity, 255). A failure of either is error
+  2151, always caught (manual A-46): no switch turns the checks off. D is a
+  bare variable, so S can alias it only as the whole of D; the shift then
+  writes only at or past length(D), never into S's bytes, and the final
+  memmove allows the overlap. NVPTX has no host diagnostics and keeps the
+  unchecked path. }
 VAR
+  args, source: ADRMEM;
   src_chars, src_len: ADRMEM;
-  d_symi: INTEGER32;
+  d_symi, capacity: INTEGER32;
   d_tid: INTEGER;
   d_addr, dst_chars, dst_len: ADRMEM;
-  pos_val, pos0, new_len, tail_len, shift_offset: ADRMEM;
+  pos_val, pos32, pos0, new_len, tail_len, shift_offset: ADRMEM;
   dst_start, shift_dest, len_ptr, new_len_byte: ADRMEM;
   gep_idx: ADRMEM;
   call_args: ADRMEM;
   discard: ADRMEM;
 BEGIN
+  args := GetObj(stmt, 'args');
   IF ArrSize(args) <> 3 THEN
     AbortWith('codegen: INSERT expects exactly 3 arguments');
-  ResolveStringExprCharsLen(ArrItem(args, 0), src_chars, src_len);
-  ResolveStringDestVar(ArrItem(args, 1), d_symi, d_tid, d_addr, dst_chars, dst_len);
-
+  source := ArrItem(args, 0);
+  IF (NodeType(source) <> 'StringLiteral') AND (NodeType(source) <> 'CharLiteral') THEN
+    IF GetBool(GetObjOrNil(source, 'read_flags'), 'INITCK') THEN
+      InitckBoundaryAt('STRING/LSTRING INSERT operand', source);
+  ResolveStringExprCharsLen(source, src_chars, src_len);
   pos_val := CodegenExpr(ArrItem(args, 2));
-  IF last_val_tk <> TK_INTEGER THEN
-    AbortWith('codegen: INSERT''s position argument must be INTEGER');
-  pos0 := LLVMBuildSExt(builder, pos_val, i32ty, MakeCStr(''));
-  pos0 := LLVMBuildSub(builder, pos0, LLVMConstInt(i32ty, 1, 0), MakeCStr(''));
+  pos_val := CoerceForAssign(pos_val, last_val_tk, TK_INTEGER, ArrItem(args, 2), 'INSERT');
+  ResolveStringDestVar(ArrItem(args, 1), d_symi, d_tid, d_addr, dst_chars, dst_len);
+  IF TypeKind(d_tid) <> TK_LSTRING THEN
+    AbortWith('codegen: INSERT''s destination must be an LSTRING variable');
 
-  new_len := LLVMBuildAdd(builder, dst_len, src_len, MakeCStr(''));
+  pos32 := LLVMBuildSExt(builder, pos_val, i32ty, MakeCStr('insert.position'));
+  EmitStringSpanGuard(pos32, LLVMConstInt(i32ty, 0, 0), dst_len, stmt,
+    'insertpos', 'pas_insert_position_error');
+  { Widen before adding: the length byte's truncation must not wrap an
+    overflowing length back into the accepted range. }
+  new_len := LLVMBuildAdd(builder, LLVMBuildZExt(builder, dst_len, i64ty, MakeCStr('')),
+    LLVMBuildZExt(builder, src_len, i64ty, MakeCStr('')), MakeCStr('insert.length'));
+  capacity := types[d_tid].hi;
+  IF capacity > 255 THEN capacity := 255;
+  EmitStringCapacityGuard(new_len, capacity, stmt, 'insert', 'pas_insert_error');
+
+  pos0 := LLVMBuildSub(builder, pos32, LLVMConstInt(i32ty, 1, 0), MakeCStr(''));
   tail_len := LLVMBuildSub(builder, dst_len, pos0, MakeCStr(''));
 
   gep_idx := AllocPtrArray(1);
@@ -927,22 +973,23 @@ BEGIN
   SetPtrArrayElem(call_args, 2, LLVMBuildZExt(builder, src_len, i64ty, MakeCStr('')));
   discard := LLVMBuildCall2(builder, memmove_fnty, memmove_fn, call_args, 3, MakeCStr(''));
 
-  IF TypeKind(d_tid) = TK_LSTRING THEN
-  BEGIN
-    gep_idx := AllocPtrArray(2);
-    SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-    SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
-    len_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(d_tid), d_addr, gep_idx, 2, MakeCStr(''));
-    new_len_byte := LLVMBuildTrunc(builder, new_len, i8ty, MakeCStr(''));
-    LLVMBuildStore(builder, new_len_byte, len_ptr);
-  END;
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
+  len_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(d_tid), d_addr, gep_idx, 2, MakeCStr(''));
+  new_len_byte := LLVMBuildTrunc(builder, new_len, i8ty, MakeCStr(''));
+  LLVMBuildStore(builder, new_len_byte, len_ptr);
 END;
 
-PROCEDURE CodegenDelete(args: ADRMEM);
-{ DELETE(VAR D: LSTRING-or-STRING; pos, count: INTEGER): removes `count`
-  characters starting at `pos` by memmove-ing the remaining tail left, and
-  (LSTRING only) shrinks the length-prefix byte by `count`. }
+PROCEDURE CodegenDelete(stmt: ADRMEM);
+{ DELETE(VAR D: LSTRING; pos, count: INTEGER): removes `count` characters
+  starting at D[pos] by memmove-ing the remaining tail left, and shrinks the
+  length byte by `count` (manual 11-20). The position and count are evaluated
+  once, before D's length is read. A deletion past D's length is error 2151,
+  always caught (manual A-46): no switch turns the check off. A position
+  below 1 or a negative count fails the same check, before any write. }
 VAR
+  args: ADRMEM;
   d_symi: INTEGER32;
   d_tid: INTEGER;
   d_addr, dst_chars, dst_len: ADRMEM;
@@ -952,20 +999,21 @@ VAR
   gep_idx, call_args: ADRMEM;
   discard: ADRMEM;
 BEGIN
+  args := GetObj(stmt, 'args');
   IF ArrSize(args) <> 3 THEN
     AbortWith('codegen: DELETE expects exactly 3 arguments');
-  ResolveStringDestVar(ArrItem(args, 0), d_symi, d_tid, d_addr, dst_chars, dst_len);
-
   pos_val := CodegenExpr(ArrItem(args, 1));
-  IF last_val_tk <> TK_INTEGER THEN
-    AbortWith('codegen: DELETE''s position argument must be INTEGER');
+  pos_val := CoerceForAssign(pos_val, last_val_tk, TK_INTEGER, ArrItem(args, 1), 'DELETE');
   count_val := CodegenExpr(ArrItem(args, 2));
-  IF last_val_tk <> TK_INTEGER THEN
-    AbortWith('codegen: DELETE''s count argument must be INTEGER');
+  count_val := CoerceForAssign(count_val, last_val_tk, TK_INTEGER, ArrItem(args, 2), 'DELETE');
+  ResolveStringDestVar(ArrItem(args, 0), d_symi, d_tid, d_addr, dst_chars, dst_len);
+  IF TypeKind(d_tid) <> TK_LSTRING THEN
+    AbortWith('codegen: DELETE''s destination must be an LSTRING variable');
 
-  start := LLVMBuildSExt(builder, pos_val, i32ty, MakeCStr(''));
+  start := LLVMBuildSExt(builder, pos_val, i32ty, MakeCStr('delete.position'));
+  count32 := LLVMBuildSExt(builder, count_val, i32ty, MakeCStr('delete.count'));
+  EmitStringSpanGuard(start, count32, dst_len, stmt, 'delete', 'pas_delete_error');
   start := LLVMBuildSub(builder, start, LLVMConstInt(i32ty, 1, 0), MakeCStr(''));
-  count32 := LLVMBuildSExt(builder, count_val, i32ty, MakeCStr(''));
 
   src_off := LLVMBuildAdd(builder, start, count32, MakeCStr(''));
   rem := LLVMBuildSub(builder, dst_len, src_off, MakeCStr(''));
@@ -984,30 +1032,42 @@ BEGIN
   discard := LLVMBuildCall2(builder, memmove_fnty, memmove_fn, call_args, 3, MakeCStr(''));
 
   new_len := LLVMBuildSub(builder, dst_len, count32, MakeCStr(''));
-  IF TypeKind(d_tid) = TK_LSTRING THEN
-  BEGIN
-    gep_idx := AllocPtrArray(2);
-    SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-    SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
-    len_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(d_tid), d_addr, gep_idx, 2, MakeCStr(''));
-    new_len_byte := LLVMBuildTrunc(builder, new_len, i8ty, MakeCStr(''));
-    LLVMBuildStore(builder, new_len_byte, len_ptr);
-  END;
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
+  len_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(d_tid), d_addr, gep_idx, 2, MakeCStr(''));
+  new_len_byte := LLVMBuildTrunc(builder, new_len, i8ty, MakeCStr(''));
+  LLVMBuildStore(builder, new_len_byte, len_ptr);
 END;
 
-PROCEDURE EmitConcatCapacityCheck(new_len: ADRMEM; capacity: INTEGER32; site: ADRMEM);
+PROCEDURE EmitStringCapacityCheck(new_len: ADRMEM; capacity: INTEGER32;
+  site: ADRMEM; prefix, error_name: Str255);
 { RANGECK owns this semantic capacity check, not MATHCK. As with other
   RANGECK guards, unchecked and NVPTX paths retain their existing behavior.
   Check before any destination byte or length publication. }
+BEGIN
+  IF cur_rangeck THEN
+    EmitStringCapacityGuard(new_len, capacity, site, prefix, error_name);
+END;
+
+PROCEDURE EmitStringCapacityGuard(new_len: ADRMEM; capacity: INTEGER32;
+  site: ADRMEM; prefix, error_name: Str255);
+{ Fail through error_name(new_len, capacity, line, column) unless new_len <=
+  capacity. Callers decide whether a switch controls the guard; NVPTX has no
+  host diagnostics and keeps its unchecked boundary. }
 VAR
   ok, bad_bb, ok_bb, ps, fnty, fn, args, discard, location: ADRMEM;
   line, column: INTEGER32;
+  in_name, bad_name, ok_name: Str255;
 BEGIN
-  IF NOT cur_rangeck OR is_nvptx_device THEN RETURN;
+  IF is_nvptx_device THEN RETURN;
+  in_name := prefix; CONCAT(in_name, '.in');
+  bad_name := prefix; CONCAT(bad_name, '.bad');
+  ok_name := prefix; CONCAT(ok_name, '.ok');
   ok := LLVMBuildICmp(builder, LLVMIntULE, new_len,
-    LLVMConstInt(i64ty, capacity, 0), MakeCStr('concat.in'));
-  bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('concat.bad'));
-  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('concat.ok'));
+    LLVMConstInt(i64ty, capacity, 0), MakeCStr(in_name));
+  bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr(bad_name));
+  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr(ok_name));
   LLVMBuildCondBr(builder, ok, ok_bb, bad_bb);
   LLVMPositionBuilderAtEnd(builder, bad_bb);
   ps := AllocPtrArray(4);
@@ -1016,8 +1076,8 @@ BEGIN
   SetPtrArrayElem(ps, 2, i32ty);
   SetPtrArrayElem(ps, 3, i32ty);
   fnty := LLVMFunctionType(voidty, ps, 4, 0);
-  fn := LLVMGetNamedFunction(modl, MakeCStr('pas_concat_error'));
-  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr('pas_concat_error'), fnty);
+  fn := LLVMGetNamedFunction(modl, MakeCStr(error_name));
+  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr(error_name), fnty);
   line := 0; column := 0;
   location := GetObjOrNil(site, 'location');
   IF location <> NIL THEN
@@ -1030,6 +1090,59 @@ BEGIN
   SetPtrArrayElem(args, 2, LLVMConstInt(i32ty, line, 0));
   SetPtrArrayElem(args, 3, LLVMConstInt(i32ty, column, 0));
   discard := LLVMBuildCall2(builder, fnty, fn, args, 4, MakeCStr(''));
+  discard := LLVMBuildUnreachable(builder);
+  LLVMPositionBuilderAtEnd(builder, ok_bb);
+END;
+
+PROCEDURE EmitStringSpanGuard(pos, count, len: ADRMEM; site: ADRMEM;
+  prefix, error_name: Str255);
+{ Fail through error_name(pos, count, len, line, column) unless the i32 span
+  [pos, pos + count - 1] lies in 1..len with count >= 0; an empty span may
+  start at len + 1. Always caught except on NVPTX, which has no host
+  diagnostics. Check before any destination byte or length publication. }
+VAR
+  ok, last, bad_bb, ok_bb, ps, fnty, fn, call_args, discard, location: ADRMEM;
+  line, column: INTEGER32;
+  in_name, bad_name, ok_name: Str255;
+BEGIN
+  IF is_nvptx_device THEN RETURN;
+  in_name := prefix; CONCAT(in_name, '.in');
+  bad_name := prefix; CONCAT(bad_name, '.bad');
+  ok_name := prefix; CONCAT(ok_name, '.ok');
+  last := LLVMBuildAdd(builder, pos, count, MakeCStr(''));
+  last := LLVMBuildSub(builder, last, LLVMConstInt(i32ty, 1, 0), MakeCStr(''));
+  ok := LLVMBuildAnd(builder,
+    LLVMBuildICmp(builder, LLVMIntSGE, pos, LLVMConstInt(i32ty, 1, 0), MakeCStr('')),
+    LLVMBuildICmp(builder, LLVMIntSGE, count, LLVMConstInt(i32ty, 0, 0), MakeCStr('')),
+    MakeCStr(''));
+  ok := LLVMBuildAnd(builder, ok,
+    LLVMBuildICmp(builder, LLVMIntSLE, last, len, MakeCStr('')), MakeCStr(in_name));
+  bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr(bad_name));
+  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr(ok_name));
+  LLVMBuildCondBr(builder, ok, ok_bb, bad_bb);
+  LLVMPositionBuilderAtEnd(builder, bad_bb);
+  ps := AllocPtrArray(5);
+  SetPtrArrayElem(ps, 0, i32ty);
+  SetPtrArrayElem(ps, 1, i32ty);
+  SetPtrArrayElem(ps, 2, i32ty);
+  SetPtrArrayElem(ps, 3, i32ty);
+  SetPtrArrayElem(ps, 4, i32ty);
+  fnty := LLVMFunctionType(voidty, ps, 5, 0);
+  fn := LLVMGetNamedFunction(modl, MakeCStr(error_name));
+  IF fn = NIL THEN fn := LLVMAddFunction(modl, MakeCStr(error_name), fnty);
+  line := 0; column := 0;
+  location := GetObjOrNil(site, 'location');
+  IF location <> NIL THEN
+  BEGIN
+    line := GetInt(location, 'line'); column := GetInt(location, 'column');
+  END;
+  call_args := AllocPtrArray(5);
+  SetPtrArrayElem(call_args, 0, pos);
+  SetPtrArrayElem(call_args, 1, count);
+  SetPtrArrayElem(call_args, 2, len);
+  SetPtrArrayElem(call_args, 3, LLVMConstInt(i32ty, line, 0));
+  SetPtrArrayElem(call_args, 4, LLVMConstInt(i32ty, column, 0));
+  discard := LLVMBuildCall2(builder, fnty, fn, call_args, 5, MakeCStr(''));
   discard := LLVMBuildUnreachable(builder);
   LLVMPositionBuilderAtEnd(builder, ok_bb);
 END;
@@ -1077,7 +1190,7 @@ BEGIN
   new_len := LLVMBuildAdd(builder, dest_len64, src_len64, MakeCStr('concat.length'));
   capacity := types[d_tid].hi;
   IF capacity > 255 THEN capacity := 255;
-  EmitConcatCapacityCheck(new_len, capacity, stmt);
+  EmitStringCapacityCheck(new_len, capacity, stmt, 'concat', 'pas_concat_error');
 
   gep_idx := AllocPtrArray(2);
   SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
@@ -1576,13 +1689,13 @@ BEGIN
   ELSE IF name = 'CONCAT' THEN
     CodegenConcat(stmt)
   ELSE IF name = 'COPYLST' THEN
-    CodegenCopylst(GetObj(stmt, 'args'))
+    CodegenCopylst(stmt)
   ELSE IF name = 'COPYSTR' THEN
-    CodegenCopystr(GetObj(stmt, 'args'))
+    CodegenCopystr(stmt)
   ELSE IF name = 'INSERT' THEN
-    CodegenInsert(GetObj(stmt, 'args'))
+    CodegenInsert(stmt)
   ELSE IF name = 'DELETE' THEN
-    CodegenDelete(GetObj(stmt, 'args'))
+    CodegenDelete(stmt)
   ELSE IF name = 'POSITN' THEN
     discard := CodegenPositn(GetObj(stmt, 'args'))
   ELSE IF name = 'SCANEQ' THEN
@@ -1675,6 +1788,7 @@ BEGIN
       IF IsHostDescriptor(ptr_tid) THEN
         raw := LLVMBuildExtractValue(builder, raw, 0, MakeCStr(''));
       casted := LLVMBuildBitCast(builder, raw, i8ptrty, MakeCStr(''));
+      GuardNilckDispose(casted, stmt);
       { Retire the allocation's INITCK state, whatever this pointer's
         type (a reinterpreted pointer may free a tracked referent), so a
         reuse of the address never inherits it. }

@@ -1,0 +1,2 @@
+Type checking failed:
+Integer constant is outside the native 16-bit range -32768..65535 at line 6 column 11

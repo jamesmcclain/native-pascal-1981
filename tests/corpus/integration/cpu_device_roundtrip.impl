@@ -9,7 +9,7 @@ BEGIN
   stride := BLOCKDIM_X * GRIDDIM_X;
   WHILE i < n DO
   BEGIN
-    c^[i] := a^[i] + b^[i];
+    {$NILCK-} c^[i] := a^[i] + b^[i];
     i := i + stride
   END
 END;
