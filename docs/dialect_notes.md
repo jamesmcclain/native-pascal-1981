@@ -3591,6 +3591,10 @@ Only code inside the enclosing routine can call a nested routine, so the
 extra parameter changes no interface a program uses. RANGECK, INDEXCK and NILCK check
 captured storage like any other; INITCK treats it as described under
 [nested routines and WITH](#initialization-checking-host-storage-native).
+A captured [conformant STRING or LSTRING formal](#conformant-string-and-lstring-formals-both)
+keeps its caller's UPPER: the static link carries the formal's UPPER slot
+as well as its data pointer
+(`tests/corpus/golden/uplevel_super_string.pas`).
 Limits: 32 nested routine levels, and 256 captured variables per routine;
 beyond them compilation fails with a located `codegen:` error. DEVICE
 routines have no static link (see the deviation below). pasboot's

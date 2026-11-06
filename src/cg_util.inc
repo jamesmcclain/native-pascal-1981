@@ -15,6 +15,8 @@ CONST
   ENV_KEY_LINK = -1; { an environment slot holding the frame's static link }
   ENV_KEY_RESULT = -2; { ... a FUNCTION's result slot }
   ENV_KEY_RESULT_STATE = -3; { ... its INITCK result state }
+  ENV_KEY_UPPER_BASE = -1000000; { ... minus symi: the UPPER slot of a
+    captured conformant STRING/LSTRING formal (NEW-29) }
 
 VAR
   expr_depth, stmt_depth: INTEGER;

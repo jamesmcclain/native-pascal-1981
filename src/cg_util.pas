@@ -613,7 +613,7 @@ PROCEDURE CaptureSym(symi: INTEGER32);
   Compiland-level and STATIC storage (LLVM constants) needs no capture. }
 VAR
   d, owner, i: INTEGER32;
-  v, orig, p: ADRMEM;
+  v, orig, p, up: ADRMEM;
   done: BOOLEAN;
   what: Str255;
 BEGIN
@@ -646,6 +646,21 @@ BEGIN
     p := CapturedFramePtr(owner, symi, orig, what);
     capture_old[ncaptures] := v;
     symbols[symi].llvm_val := p;
+    { A conformant STRING/LSTRING formal's UPPER is found through its data
+      pointer, so capture the owner's UPPER slot too and register it for
+      the captured pointer. }
+    up := NIL;
+    FOR i := 1 TO nborrowed DO
+      IF borrowed_data[i] = orig THEN up := borrowed_upper[i];
+    IF up <> NIL THEN
+    BEGIN
+      up := CapturedFramePtr(owner, ENV_KEY_UPPER_BASE - symi, up, what);
+      IF nborrowed >= MAX_BORROWED THEN
+        AbortWith('codegen: too many super-array STRING/LSTRING formals');
+      nborrowed := nborrowed + 1;
+      borrowed_data[nborrowed] := p;
+      borrowed_upper[nborrowed] := up;
+    END;
   END;
 END;
 
