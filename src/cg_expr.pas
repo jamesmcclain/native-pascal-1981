@@ -1479,12 +1479,61 @@ BEGIN
     ShadowedWriteArg := arg;
 END;
 
+FUNCTION ActualNamesStorage(arg_node: ADRMEM): BOOLEAN;
+{ Does a call actual have storage of its own for a reference formal to
+  bind: a variable or formal, a bare niladic FUNCTION call (which
+  CodegenCallCommon materializes itself) or a Designator. A named
+  constant, a literal, a parenthesized call or any other expression does
+  not. }
+VAR
+  nm: Str255;
+BEGIN
+  IF NodeType(arg_node) = 'Designator' THEN
+    ActualNamesStorage := TRUE
+  ELSE IF NodeType(arg_node) = 'Identifier' THEN
+  BEGIN
+    nm := GetStr(arg_node, 'name');
+    ActualNamesStorage := (LookupSym(nm) <> 0) OR RoutineIsFunc(LookupRoutine(nm));
+  END
+  ELSE
+    ActualNamesStorage := FALSE;
+END;
+
+FUNCTION MaterializeConstActual(arg_node: ADRMEM; tk: INTEGER; name: Str255): ADRMEM;
+{ The address of a fresh entry-block temporary of the formal's type holding
+  the actual's value, for a CONST formal whose actual has no storage of its
+  own. The IBM manual (10-10) passes a constant identifier, a structured
+  constant or a function result by CONST reference this way; any
+  expression assignable to the formal is accepted here, as for a value
+  formal. The actual is a checked value read like an assignment source and
+  the temporary is initialized by construction, so nothing is published to
+  a tracked callee formal (it binds private initialized state). }
+VAR
+  v, tmp: ADRMEM;
+BEGIN
+  tmp := EntryAlloca(LLVMTypeForTk(tk), '');
+  IF (NodeType(arg_node) = 'StringLiteral') AND (TypeKind(tk) = TK_LSTRING) THEN
+    CodegenLStringLiteralAssign(tmp, tk, DecodeStringLiteral(GetStr(arg_node, 'value')))
+  ELSE IF (NodeType(arg_node) = 'StringLiteral') AND (TypeKind(tk) = TK_STRING) THEN
+    CodegenStringLiteralAssign(tmp, tk, DecodeStringLiteral(GetStr(arg_node, 'value')))
+  ELSE
+  BEGIN
+    v := CodegenExpr(arg_node);
+    v := CoerceCheckedForAssign(v, last_val_tk, tk, arg_node, name);
+    LLVMBuildStore(builder, v, tmp);
+  END;
+  last_val_tk := tk;
+  MaterializeConstActual := tmp;
+END;
+
 FUNCTION CodegenCallCommon(name: Str255; args_arr: ADRMEM): ADRMEM;
 { Shared by a FuncCall expression and a bare ProcCallStmt that isn't
   WRITE/WRITELN: look up a user-declared routine, marshal its arguments
   (VAR-mode: the callee needs the callee's storage address directly, so the
-  actual argument must be a bare Identifier and is passed unloaded; value
-  mode: CodegenExpr as usual), and build the call. Sets last_val_tk to the
+  actual argument must be a bare Identifier or Designator and is passed
+  unloaded; CONST-mode: the same, except that an actual without storage is
+  spilled to a private temporary whose address is passed; value mode:
+  CodegenExpr as usual), and build the call. Sets last_val_tk to the
   routine's return type kind (TK_UNKNOWN for a PROCEDURE, meaningless to
   the caller in that case). }
 VAR
@@ -1598,7 +1647,12 @@ BEGIN
       ELSE IF routines[ri].param_is_var[i + 1] THEN
       BEGIN
         var_shadow := NIL;
-        IF NodeType(arg_node) = 'Identifier' THEN
+        IF routines[ri].param_is_const[i + 1] AND NOT ActualNamesStorage(arg_node) THEN
+          { A CONST formal is a read-only reference: an actual without
+            storage of its own travels as the address of a private
+            temporary. A VAR formal still needs an lvalue (below). }
+          v := MaterializeConstActual(arg_node, routines[ri].param_tk[i + 1], name)
+        ELSE IF NodeType(arg_node) = 'Identifier' THEN
         BEGIN
           arg_nm := GetStr(arg_node, 'name');
           symi := LookupSym(arg_nm);

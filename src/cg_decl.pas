@@ -331,6 +331,7 @@ BEGIN
     BEGIN
       routines[nroutines].param_tk[i] := routines[ri].param_tk[i];
       routines[nroutines].param_is_var[i] := routines[ri].param_is_var[i];
+      routines[nroutines].param_is_const[i] := routines[ri].param_is_const[i];
       routines[nroutines].param_needs_copy[i] := routines[ri].param_needs_copy[i];
     END;
     routines[nroutines].has_body := routines[ri].has_body;
@@ -773,7 +774,8 @@ END;
 
 
 PROCEDURE FlattenParams(params_arr: ADRMEM; VAR n: INTEGER32; VAR names: ParamNameArr;
-                         VAR tks: ParamTkArr; VAR isvar: ParamVarArr; VAR needs_copy: ParamVarArr);
+                         VAR tks: ParamTkArr; VAR isvar: ParamVarArr; VAR isconst: ParamVarArr;
+                         VAR needs_copy: ParamVarArr);
 { A Pascal formal-parameter section groups several names under one type
   (`a, b: INTEGER`); this flattens that grouping into parallel arrays of
   one entry per actual parameter, matching how llvm-c's LLVMFunctionType
@@ -783,7 +785,7 @@ VAR
   np, pi, nn, ni: INTEGER32;
   param, pnames: ADRMEM;
   tk: INTEGER;
-  is_v, needs_c: BOOLEAN;
+  is_v, is_const, needs_c: BOOLEAN;
 BEGIN
   n := 0;
   np := ArrSize(params_arr);
@@ -796,9 +798,10 @@ BEGIN
     { VAR/VARS/CONST/CONSTS are all reference-mode at the ABI level -- CONST
       only additionally forbids mutation, a typechecker-level restriction,
       not a codegen one, so it is passed the same way as VAR here: as a
-      pointer, never copied. }
-    is_v := (GetStr(param, 'mode') = 'VAR') OR (GetStr(param, 'mode') = 'VARS') OR
-            (GetStr(param, 'mode') = 'CONST') OR (GetStr(param, 'mode') = 'CONSTS');
+      pointer, never copied. The call site still tells them apart: only a
+      CONST formal accepts an actual without storage (see param_is_const). }
+    is_const := (GetStr(param, 'mode') = 'CONST') OR (GetStr(param, 'mode') = 'CONSTS');
+    is_v := is_const OR (GetStr(param, 'mode') = 'VAR') OR (GetStr(param, 'mode') = 'VARS');
     { A plain value-mode ARRAY/RECORD/LSTRING/STRING param: too large to
       pass as a raw LLVM value the way a scalar is, so it is passed as a
       pointer too (see needs_copy at the routine-entry/call-site level),
@@ -818,6 +821,7 @@ BEGIN
       names[n] := CStrToStr255(cJSON_GetStringValue(ArrItem(pnames, ni)));
       tks[n] := tk;
       isvar[n] := is_v;
+      isconst[n] := is_const;
       needs_copy[n] := needs_c;
     END;
   END;
@@ -1219,6 +1223,7 @@ VAR
   names: ParamNameArr;
   tks: ParamTkArr;
   isvar: ParamVarArr;
+  isconst: ParamVarArr;
   needs_copy: ParamVarArr;
   param_llvm_types: ADRMEM;
   i: INTEGER32;
@@ -1316,7 +1321,7 @@ BEGIN
       nothing. ret_tk stays the table's; it is compared, not overwritten. }
     prev_n := routines[ridx].nparams;
     params_arr := GetObj(decl, 'params');
-    FlattenParams(params_arr, n, names, tks, isvar, needs_copy);
+    FlattenParams(params_arr, n, names, tks, isvar, isconst, needs_copy);
     sig_ok := n = prev_n;
     IF sig_ok THEN
       FOR i := 1 TO n DO
@@ -1324,6 +1329,7 @@ BEGIN
         IF NOT RoutineTypeMatches(tks[i], routines[ridx].param_tk[i]) THEN
           sig_ok := FALSE;
         IF isvar[i] <> routines[ridx].param_is_var[i] THEN sig_ok := FALSE;
+        IF isconst[i] <> routines[ridx].param_is_const[i] THEN sig_ok := FALSE;
         IF needs_copy[i] <> routines[ridx].param_needs_copy[i] THEN sig_ok := FALSE;
       END;
     IF is_func THEN
@@ -1395,7 +1401,7 @@ BEGIN
   ELSE
   BEGIN
     params_arr := GetObj(decl, 'params');
-    FlattenParams(params_arr, n, names, tks, isvar, needs_copy);
+    FlattenParams(params_arr, n, names, tks, isvar, isconst, needs_copy);
 
     IF is_func THEN
     BEGIN
@@ -1582,6 +1588,7 @@ BEGIN
     BEGIN
       routines[ridx].param_tk[i] := tks[i];
       routines[ridx].param_is_var[i] := isvar[i];
+      routines[ridx].param_is_const[i] := isconst[i];
       routines[ridx].param_needs_copy[i] := needs_copy[i];
     END;
     routines[ridx].has_body := has_block_body;

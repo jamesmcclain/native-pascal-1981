@@ -33,6 +33,7 @@ its [unsafe raw boundary](#descriptor-unsafe-raw-boundary) and ownership limits.
 - [Wide signed integer input](#wide-signed-integer-input-extended)
 - [String precision](#string-precision)
 - [WRITE of a CHAR array](#write-of-a-char-array-both)
+- [CONST formal actuals](#const-formal-actuals-both)
 - [READSET and tuning hints](#readset-and-tuning-hints)
 - [GPU (NVPTX) kernels need `{$MATHCK-}` for integer arithmetic](#gpu-nvptx-kernels-need-mathck--for-integer-arithmetic-extended)
 - [Vectors (SIMD)](#vectors-simd-extended)
@@ -754,6 +755,29 @@ a function result.
 
 Regression: `tests/corpus/golden/write_char_array*.pas` and
 `write_char_matrix_rejected.pas`.
+
+## CONST formal actuals **[both]**
+
+A `CONST` (or `CONSTS`) formal is a read-only reference parameter. The IBM
+manual (10-10) binds it to a variable, a function result or a constant value
+(a literal, a constant identifier or a structured constant), but not to an
+expression with operators and non-constant operands, which has no address
+(error 229). This compiler accepts any actual assignable to the formal, as
+for a value formal: an actual that names storage (a variable, a formal, a
+selected component, a bare niladic function call) is passed by address, and
+any other actual (`V('z')`, `V(K)`, `P(i + 1)`, `V(CHR(ORD('a') + 1))`,
+`Q(Half)`, a STRING or LSTRING literal) is evaluated, range-checked against
+the formal's type like an assignment, and spilled to a private temporary
+whose address is passed. The callee cannot tell the two apart. A `VAR`
+formal still needs an lvalue (`codegen: a VAR argument must be an lvalue`).
+
+- A spilled actual is a checked value read; under INITCK the callee's
+  formal binds private initialized state, as for any untracked actual.
+- The temporary is private to one call: a CONST formal bound to a spilled
+  actual never aliases caller storage.
+
+Regression: `tests/corpus/golden/const_actual_expr.pas` and
+`var_actual_expr_rejected.pas`.
 
 ## READSET and tuning hints
 

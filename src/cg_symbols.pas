@@ -408,6 +408,20 @@ BEGIN
   WithFieldBinding := res;
 END;
 
+FUNCTION InitckBindsActual(ri, pi: INTEGER32; arg: ADRMEM): BOOLEAN;
+{ Does formal pi of routine ri bind the actual arg by reference? A VAR
+  formal always does. A CONST formal binds a named actual (an Identifier or
+  a Designator); any other actual is a value read into a private temporary
+  that the formal binds instead (MaterializeConstActual). }
+BEGIN
+  InitckBindsActual := FALSE;
+  IF routines[ri].param_is_var[pi] THEN
+    IF routines[ri].param_is_const[pi] THEN
+      InitckBindsActual := (NodeType(arg) = 'Identifier') OR (NodeType(arg) = 'Designator')
+    ELSE
+      InitckBindsActual := TRUE;
+END;
+
 FUNCTION InitckLocalEscapes(node: ADRMEM; name: Str255; tid: INTEGER;
                             unsafe, opaque, in_with, whole_ok: BOOLEAN): BOOLEAN;
 { Can the tracked slot `name` (of type tid) be reached by anything but a
@@ -532,7 +546,7 @@ BEGIN
         arg_unsafe := unsafe;
         arg_whole := FALSE;
         IF i < routines[ri].nparams THEN
-          IF routines[ri].param_is_var[i + 1] THEN
+          IF InitckBindsActual(ri, i + 1, arg) THEN
           BEGIN
             { The binding names the actual's own storage: a direct slot, a
               selected leaf, or a whole or sub-aggregate. }
@@ -1002,7 +1016,7 @@ BEGIN
       IF ri <> 0 THEN
       BEGIN
         IF i < routines[ri].nparams THEN
-          IF routines[ri].param_is_var[i + 1] THEN
+          IF InitckBindsActual(ri, i + 1, ArrItem(args, i)) THEN
           BEGIN
             arg_reads := FALSE;
             { A tracked VAR/CONST formal of a transporting routine shares

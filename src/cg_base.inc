@@ -434,6 +434,13 @@ TYPE
     nparams: INTEGER32;
     param_tk: ParamTkArr;
     param_is_var: ParamVarArr;
+    param_is_const: ParamVarArr; { TRUE for a CONST/CONSTS formal: a
+                                   reference-mode (param_is_var) formal the
+                                   callee never writes, so an actual without
+                                   storage of its own (a constant, a function
+                                   result, an expression) is passed as the
+                                   address of a private temporary holding its
+                                   value. A VAR formal still needs an lvalue. }
     param_needs_copy: ParamVarArr; { TRUE for a value-mode (no VAR/CONST)
                                      ARRAY/RECORD/LSTRING/STRING param: still
                                      passed as a pointer at the ABI level
