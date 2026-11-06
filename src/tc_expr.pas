@@ -531,10 +531,12 @@ BEGIN
           aux2 := new_aux2;
         END;
         aux3 := 0;
-        { The element's own index kind is not kept in this flat type
-          model, so an element that is itself an array has an unknown
-          index kind; codegen, which has the full type, decides it. }
-        current_idx_tk := TK_UNKNOWN;
+        { The flat type model keeps no element index kind; read it from
+          the element's type node, so UPPER/LOWER of an inner array and
+          its index expressions are typed here. TK_UNKNOWN still leaves
+          the decision to codegen, which has the full type. }
+        IF new_tk = TK_ARRAY THEN current_idx_tk := ElementIndexKind(sem_node)
+        ELSE current_idx_tk := TK_UNKNOWN;
       END;
     END
     ELSE IF skind = 'DEREF' THEN

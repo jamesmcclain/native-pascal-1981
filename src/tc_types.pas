@@ -779,6 +779,72 @@ BEGIN
   FwdCachedType := found;
 END;
 
+FUNCTION SubrangeIndexKind(index_node: ADRMEM): INTEGER;
+{ The coarse scalar kind of an explicit `low..high` array index range,
+  from its bounds' spelling. No diagnostics: ResolveTypeExpr checks the
+  endpoints itself. }
+VAR
+  bound_node: ADRMEM;
+  bound_si: INTEGER32;
+  kind: INTEGER;
+BEGIN
+  kind := TK_INTEGER;
+  bound_node := GetObj(index_node, 'low');
+  IF NodeType(bound_node) = 'CharLiteral' THEN kind := TK_CHAR
+  ELSE IF NodeType(bound_node) = 'BoolLiteral' THEN kind := TK_BOOLEAN
+  ELSE IF NodeType(bound_node) = 'Identifier' THEN
+  BEGIN
+    bound_si := LookupSymbol(GetStr(bound_node, 'name'));
+    IF bound_si <> 0 THEN kind := symbols[bound_si].tk;
+  END
+  ELSE IF NodeType(bound_node) = 'FuncCall' THEN
+  BEGIN
+    IF ConstCallBoundKind(bound_node) <> TK_UNKNOWN THEN
+      kind := ConstCallBoundKind(bound_node);
+  END
+  ELSE IF (NodeType(bound_node) = 'IntLiteral') AND
+          (GetInt(bound_node, 'value') > 32767) THEN kind := TK_WORD;
+  bound_node := GetObjOrNil(index_node, 'high');
+  IF bound_node <> NIL THEN
+    IF (NodeType(bound_node) = 'IntLiteral') AND
+       (GetInt(bound_node, 'value') > 32767) THEN kind := TK_WORD;
+  SubrangeIndexKind := kind;
+END;
+
+FUNCTION ElementIndexKind(node: ADRMEM): INTEGER;
+{ The index kind of an array type node (an element reached through an
+  INDEX selector), or TK_UNKNOWN when node is not an array or its index
+  cannot be read without resolving the type again. Pure: the declaration
+  was already resolved and diagnosed. }
+VAR
+  nt: Str255;
+  index_node: ADRMEM;
+  ti: INTEGER32;
+BEGIN
+  ElementIndexKind := TK_UNKNOWN;
+  IF node = NIL THEN RETURN;
+  nt := NodeType(node);
+  IF (nt = 'NamedType') OR (nt = 'BuiltinType') THEN
+  BEGIN
+    ti := LookupType(GetStr(node, 'name'));
+    IF ti <> 0 THEN
+      IF types[ti].tk = TK_ARRAY THEN ElementIndexKind := types[ti].idx_tk;
+  END
+  ELSE IF nt = 'ArrayType' THEN
+  BEGIN
+    index_node := GetObj(node, 'index_range');
+    IF (NodeType(index_node) = 'NamedType') OR
+       (NodeType(index_node) = 'BuiltinType') THEN
+    BEGIN
+      ti := LookupType(GetStr(index_node, 'name'));
+      IF ti <> 0 THEN
+        IF IsOrdinal(types[ti].tk) THEN ElementIndexKind := types[ti].tk;
+    END
+    ELSE IF NodeType(index_node) = 'IndexRange' THEN
+      ElementIndexKind := SubrangeIndexKind(index_node);
+  END;
+END;
+
 PROCEDURE ResolveTypeExpr(node: ADRMEM; VAR tk, aux, aux2, aux3, idx_tk: INTEGER);
 VAR
   nt, name, uname: Str255;
@@ -996,25 +1062,7 @@ BEGIN
       RETURN;
     END;
     CheckSubrangeEndpoints(index_node);
-    bound_node := GetObj(index_node, 'low');
-    IF NodeType(bound_node) = 'CharLiteral' THEN idx_tk := TK_CHAR
-    ELSE IF NodeType(bound_node) = 'BoolLiteral' THEN idx_tk := TK_BOOLEAN
-    ELSE IF NodeType(bound_node) = 'Identifier' THEN
-    BEGIN
-      bound_si := LookupSymbol(GetStr(bound_node, 'name'));
-      IF bound_si <> 0 THEN idx_tk := symbols[bound_si].tk;
-    END
-    ELSE IF NodeType(bound_node) = 'FuncCall' THEN
-    BEGIN
-      IF ConstCallBoundKind(bound_node) <> TK_UNKNOWN THEN
-        idx_tk := ConstCallBoundKind(bound_node);
-    END
-    ELSE IF (NodeType(bound_node) = 'IntLiteral') AND
-            (GetInt(bound_node, 'value') > 32767) THEN idx_tk := TK_WORD;
-    bound_node := GetObjOrNil(index_node, 'high');
-    IF bound_node <> NIL THEN
-      IF (NodeType(bound_node) = 'IntLiteral') AND
-         (GetInt(bound_node, 'value') > 32767) THEN idx_tk := TK_WORD;
+    idx_tk := SubrangeIndexKind(index_node);
   END
   ELSE IF nt = 'VectorType' THEN
   BEGIN
