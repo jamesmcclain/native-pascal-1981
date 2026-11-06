@@ -1542,7 +1542,10 @@ BEGIN
     ELSE IF name = 'scaneq' THEN BEGIN fn := scaneq_fn; fnty := scaneq_fnty; END
     ELSE IF name = 'scanne' THEN BEGIN fn := scanne_fn; fnty := scanne_fnty; END
     ELSE IF name = 'pas_encode_fmt' THEN BEGIN fn := encode_fn; fnty := encode_fnty; END
-    ELSE IF name = 'decode_value' THEN BEGIN fn := decode_fn; fnty := decode_fnty; END
+    ELSE IF name = 'pas_decode_integer' THEN BEGIN fn := decode_int_fn; fnty := decode_int_fnty; END
+    ELSE IF name = 'pas_decode_enum' THEN BEGIN fn := decode_enum_fn; fnty := decode_enum_fnty; END
+    ELSE IF name = 'pas_decode_char' THEN BEGIN fn := decode_char_fn; fnty := decode_char_fnty; END
+    ELSE IF name = 'pas_decode_real' THEN BEGIN fn := decode_real_fn; fnty := decode_real_fnty; END
     ELSE IF name = 'sqrt' THEN BEGIN fn := sqrt_fn; fnty := sqrt_fnty; END
     ELSE IF name = 'sin' THEN BEGIN fn := sin_fn; fnty := sin_fnty; END
     ELSE IF name = 'cos' THEN BEGIN fn := cos_fn; fnty := cos_fnty; END

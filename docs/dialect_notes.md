@@ -2159,7 +2159,7 @@ is an ordinary call, outside this classification.
 | Separate contract | `DELETE` | Admitted bare LSTRING destination; the span is checked against the current length before any move or length publication, always (IBM error 2151), whatever the RANGECK setting. A position below 1 or a negative count also fails. NVPTX remains unchecked ([above](#delete-admission-and-always-caught-span-check-native)). |
 | Separate contract | `INSERT` | Admitted string source and bare LSTRING destination; the position (1..length + 1) and the new length are checked before any move or length publication, always (IBM error 2151), whatever the RANGECK setting. NVPTX remains unchecked ([above](#insert-admission-and-always-caught-position-and-capacity-checks-native)). |
 | Separate contract | `ENCODE` | WRITE-style formatting into a bare LSTRING ([below](#encode-both)); the capacity check is the FALSE result, never a trap, whatever RANGECK says. |
-| Separate contract | `DECODE` | **Unreachable:** codegen lowers it, but the typechecker rejects every call as an undefined function. DECODE is a text-to-number conversion, not MATHCK arithmetic. |
+| Separate contract | `DECODE` | READ-style conversion from a string ([below](#decode-both)); a malformed or out-of-range text, a subrange's bounds included, is the FALSE result, never a trap, whatever RANGECK says. |
 | Separate contract | `NEW` bounds, `DEVALLOC`, `SIZEOF`, `LOWER`, `UPPER` | Descriptor and layout arithmetic; layouts above 2147483647 bytes are rejected (`TypeSizeBytes`). |
 | Separate contract | `READ`/`READLN` of integers | Text conversion, checked independently of MATHCK (G29). |
 | No check | `ORD` | Same value and width; an enumeration gives its ordinal as INTEGER, so `ORD(e) * 20000` is checked 16-bit arithmetic. [`ORD(WORD)`](#deferred-ordword-conversion-gap-g25) stays WORD (G25). |
@@ -2281,6 +2281,44 @@ The parser gives ENCODE and DECODE actuals WRITE's `X:M:N` grammar (the
 same WriteArg nodes), so `P::N` is also accepted. Tests:
 `tests/corpus/golden/encode_*.pas`, `tests/corpus/checklit/encode/` and
 `tests/unit/runtime_encode.c`.
+
+### DECODE **[both]**
+
+`DECODE(S, X:M:N): BOOLEAN` converts the text of the STRING or LSTRING `S`
+to a value of `X`'s type, as `READ(X)` would from that text, and assigns
+it (manual 11-15). Blanks and tabs at either end of `S` are ignored; every
+other character must belong to one representation. It returns TRUE on
+success and FALSE when the text is not a valid representation of a value
+assignable to `X`, in which case `X` is unchanged (the manual leaves it
+undefined). A subrange destination makes an out-of-range value FALSE too,
+regardless of `$RANGECK`, as the manual requires. Unlike READ, nothing in
+DECODE traps: the runtime converters (`pas_decode_integer`, `pas_decode_enum`,
+`pas_decode_char`, `pas_decode_real`) answer FALSE where the stdin readers
+would abort. `M` and `N` are INTEGER values, evaluated once and ignored,
+as READ ignores them.
+
+The accepted texts follow the native READ: an integer is an optional sign
+and decimal digits (no `16#` notation), checked against the type's width
+(INTEGER, WORD, INTEGER8/32/64, WORD8/32/64) or the declared subrange; a
+REAL is what C's `strtod` accepts as one whole token, so a leading or
+trailing decimal point is fine and an overflowing exponent is not; a CHAR
+is exactly one character once the surrounding blanks are dropped, so a
+blank alone is FALSE, and a CHAR subrange bounds it; BOOLEAN accepts
+`TRUE`/`FALSE` without regard to letter case or the ordinals `0`/`1` in
+both dialects; an enumeration accepts its ordinal in both dialects and its
+member identifier, without regard to case, in the extended dialect only,
+matching the dialects' READ. The source may be a string literal, a
+one-character literal, a variable, selected storage or a string-valued
+function; a field width on `S` is an error. The destination must be a
+variable of the ENCODE value family: a bare name, a selected variable such
+as `a[i]`, `r.f` or `p^`, or a VAR formal; constants, expressions, function
+calls, strings and pointers are rejected at typechecking. A user
+declaration named DECODE shadows the builtin; a `:M:N` suffix in a call to
+it is an error. DEVICE code rejects DECODE as host-only. Under INITCK+ a
+call is an explicit `call consumer` unsupported boundary, like ENCODE.
+Calling DECODE as a statement is an undefined procedure, as for every
+builtin function. Tests: `tests/corpus/golden/decode_*.pas`,
+`tests/corpus/checklit/decode/` and `tests/unit/runtime_decode.c`.
 
 ### MATHCK VECTOR, DEVICE and unsupported boundaries
 

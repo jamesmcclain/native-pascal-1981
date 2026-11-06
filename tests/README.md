@@ -432,6 +432,27 @@ runtime IR call, and the DEVICE and INITCK boundaries. The `runtime` unit
 suite runs `tests/unit/runtime_encode.c` against `pas_encode_fmt`: exact
 fit, overflow leaving the destination untouched, and the 255 clamp.
 
+### DECODE builtin regressions
+
+`tests/corpus/golden/decode_builtins.pas` tests `DECODE(S, X:M:N)` in both
+dialects at O0-O3 under `$RANGECK-`: INTEGER signs, blanks, leading zeros,
+limits and malformed texts, LSTRING, fixed STRING, function-result and
+one-character sources, WORD limits, subrange and CHAR-subrange rejection,
+CHAR, BOOLEAN names and ordinals, REAL forms, selected and dereferenced
+destinations, a VAR formal, once-only ignored M and N, and the unchanged
+destination on FALSE. `decode_enum_vintage.pas` and
+`decode_enum_extended.pas` pin ordinal-only versus symbolic enumeration
+input, enumeration subranges, and the extended one every wide integer
+width's limits and REAL32. `decode_shadow.pas` pins user shadowing.
+`tests/corpus/checklit/decode/` pins bad arity, non-string sources, a
+field width on the source, constant, expression and function destinations,
+string and pointer destinations, non-INTEGER M/N, the width suffix on a
+user-declared DECODE, the four runtime converter calls with subrange
+bounds and no stdin reader, and the DEVICE and INITCK boundaries. The
+`runtime` unit suite runs `tests/unit/runtime_decode.c` against the
+converters: every integer width's limits, embedded NULs, subrange bounds,
+enumeration names and tables, CHAR, REAL and null arguments.
+
 ### Scan builtin and small-string ABI regressions
 
 `tests/corpus/golden/scan_builtins.pas` (a fixture with a dialect and O0–O3

@@ -644,10 +644,14 @@ VAR
   scaneq_fnty, scaneq_fn: ADRMEM;
   scanne_fnty, scanne_fn: ADRMEM;
   encode_fnty, encode_fn: ADRMEM;
-  decode_fnty, decode_fn: ADRMEM; { the target program's runtime-library
-    string builtins (INSERT/DELETE via libc's memmove; POSITN/SCANEQ/SCANNE/
-    ENCODE/DECODE via libpascalrt's positn/scaneq/scanne/pas_encode_fmt/
-    decode_value, declared+called exactly like malloc/free/printf above --
+  decode_int_fnty, decode_int_fn: ADRMEM;
+  decode_enum_fnty, decode_enum_fn: ADRMEM;
+  decode_char_fnty, decode_char_fn: ADRMEM;
+  decode_real_fnty, decode_real_fn: ADRMEM; { the target program's
+    runtime-library string builtins (INSERT/DELETE via libc's memmove;
+    POSITN/SCANEQ/SCANNE/ENCODE/DECODE via libpascalrt's positn/scaneq/
+    scanne/pas_encode_fmt/pas_decode_*, declared+called exactly like
+    malloc/free/printf above --
     a program built from this file's output must link libpascalrt.a, same
     as one built from the Python reference's output already must. }
   sqrt_fnty, sqrt_fn, sin_fnty, sin_fn, cos_fnty, cos_fn: ADRMEM;

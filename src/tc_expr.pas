@@ -788,6 +788,53 @@ BEGIN
     CheckFuncCall := TK_BOOLEAN;
     RETURN;
   END;
+  IF name = 'DECODE' THEN
+  BEGIN
+    { DECODE(CONST S: STRING; VAR X:M:N): BOOLEAN (11-15): converts S as
+      READ would, into a variable of ENCODE's value family: a bare name or
+      a selected variable such as a[i], including subranges. }
+    IF is_device_compiland THEN
+      AddError('DECODE is host-only and cannot appear in DEVICE code');
+    IF nargs <> 2 THEN
+      AddError('DECODE expects exactly two arguments (S, X)')
+    ELSE
+    BEGIN
+      warg := ArrItem(args_arr, 0);
+      CheckNoFormatValue(warg, 'DECODE source takes no field width');
+      warg := GetObj(warg, 'expr');
+      atk := CheckExpr(warg);
+      { A one-character quoted string is parsed as a CharLiteral. Only
+        that literal form adapts here, not arbitrary CHAR expressions. }
+      IF (atk <> TK_STRING) AND (atk <> TK_UNKNOWN) AND (NodeType(warg) <> 'CharLiteral') THEN
+        AddError('DECODE source must be STRING or LSTRING');
+      warg := ArrItem(args_arr, 1);
+      CheckFormatValue(GetObjOrNil(warg, 'width'), 'DECODE field width');
+      CheckFormatValue(GetObjOrNil(warg, 'precision'), 'DECODE precision');
+      warg := GetObj(warg, 'expr');
+      si := 0;
+      IF (NodeType(warg) = 'Identifier') OR (NodeType(warg) = 'Designator') THEN
+      BEGIN
+        si := LookupSymbol(GetStr(warg, 'name'));
+        IF si = 0 THEN
+          AddUndefinedIdentifier(warg)
+        ELSE IF symbols[si].kind <> 'VAR' THEN
+        BEGIN
+          AddError('DECODE destination must be a variable');
+          si := 0;
+        END;
+      END
+      ELSE
+        AddError('DECODE destination must be a variable');
+      IF si <> 0 THEN
+      BEGIN
+        atk := CheckExpr(warg);
+        IF NOT IsEncodeValueKind(atk) THEN
+          AddError('DECODE destination must be INTEGER, WORD, CHAR, BOOLEAN, REAL or an enumeration');
+      END;
+    END;
+    CheckFuncCall := TK_BOOLEAN;
+    RETURN;
+  END;
   IF name = 'POSITN' THEN
   BEGIN
     IF is_device_compiland THEN

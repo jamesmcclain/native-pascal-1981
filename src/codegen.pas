@@ -47,9 +47,9 @@
   ENCODE (format a scalar as WRITE would, `X:M:N` included, into an
   LSTRING through pas_encode_fmt: the parser wraps ENCODE/DECODE actuals
   in the WriteArg nodes WRITE's own width:precision arguments use) and
-  DECODE (parse an INTEGER as decimal text out of a string; DECODE's
-  destination is scoped to INTEGER/CHAR, the two byte-widths its own
-  manual documents by name); and, on ordinary WRITE/WRITELN arguments
+  DECODE (convert a string to a scalar as READ would, through the
+  pas_decode_* converters, which answer FALSE instead of trapping); and,
+  on ordinary WRITE/WRITELN arguments
   (StringLiteral/LSTRING/STRING/INTEGER/REAL/CHAR/BOOLEAN alike), a
   `:width` field honored via printf's own `%*` dynamic-width specifier
   (width is an arbitrary expression, evaluated and sign-extended to i32,
@@ -728,16 +728,44 @@ BEGIN
   encode_fnty := LLVMFunctionType(i32ty, param_arr, 4, 1);
   encode_fn := LLVMAddFunction(modl, MakeCStr('pas_encode_fmt'), encode_fnty);
 
-  param_arr := AllocPtrArray(7);
+  { DECODE's four READ-like converters (runtime/encode_decode.c). }
+  param_arr := AllocPtrArray(8);
   SetPtrArrayElem(param_arr, 0, i8ptrty);
   SetPtrArrayElem(param_arr, 1, i32ty);
-  SetPtrArrayElem(param_arr, 2, i8ptrty);
+  SetPtrArrayElem(param_arr, 2, i32ty);
   SetPtrArrayElem(param_arr, 3, i32ty);
   SetPtrArrayElem(param_arr, 4, i32ty);
-  SetPtrArrayElem(param_arr, 5, i32ty);
-  SetPtrArrayElem(param_arr, 6, i32ty);
-  decode_fnty := LLVMFunctionType(i32ty, param_arr, 7, 0);
-  decode_fn := LLVMAddFunction(modl, MakeCStr('decode_value'), decode_fnty);
+  SetPtrArrayElem(param_arr, 5, i64ty);
+  SetPtrArrayElem(param_arr, 6, i64ty);
+  SetPtrArrayElem(param_arr, 7, LLVMPointerType(i64ty, 0));
+  decode_int_fnty := LLVMFunctionType(i32ty, param_arr, 8, 0);
+  decode_int_fn := LLVMAddFunction(modl, MakeCStr('pas_decode_integer'), decode_int_fnty);
+
+  param_arr := AllocPtrArray(6);
+  SetPtrArrayElem(param_arr, 0, i8ptrty);
+  SetPtrArrayElem(param_arr, 1, i32ty);
+  SetPtrArrayElem(param_arr, 2, LLVMPointerType(i8ptrty, 0));
+  SetPtrArrayElem(param_arr, 3, i32ty);
+  SetPtrArrayElem(param_arr, 4, i32ty);
+  SetPtrArrayElem(param_arr, 5, LLVMPointerType(i32ty, 0));
+  decode_enum_fnty := LLVMFunctionType(i32ty, param_arr, 6, 0);
+  decode_enum_fn := LLVMAddFunction(modl, MakeCStr('pas_decode_enum'), decode_enum_fnty);
+
+  param_arr := AllocPtrArray(5);
+  SetPtrArrayElem(param_arr, 0, i8ptrty);
+  SetPtrArrayElem(param_arr, 1, i32ty);
+  SetPtrArrayElem(param_arr, 2, i32ty);
+  SetPtrArrayElem(param_arr, 3, i32ty);
+  SetPtrArrayElem(param_arr, 4, i8ptrty);
+  decode_char_fnty := LLVMFunctionType(i32ty, param_arr, 5, 0);
+  decode_char_fn := LLVMAddFunction(modl, MakeCStr('pas_decode_char'), decode_char_fnty);
+
+  param_arr := AllocPtrArray(3);
+  SetPtrArrayElem(param_arr, 0, i8ptrty);
+  SetPtrArrayElem(param_arr, 1, i32ty);
+  SetPtrArrayElem(param_arr, 2, LLVMPointerType(dblty, 0));
+  decode_real_fnty := LLVMFunctionType(i32ty, param_arr, 3, 0);
+  decode_real_fn := LLVMAddFunction(modl, MakeCStr('pas_decode_real'), decode_real_fnty);
 
   param_arr := AllocPtrArray(1);
   SetPtrArrayElem(param_arr, 0, dblty);

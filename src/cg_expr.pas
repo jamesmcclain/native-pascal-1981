@@ -4229,52 +4229,162 @@ BEGIN
 END;
 
 FUNCTION CodegenDecode(args: ADRMEM): ADRMEM;
-{ DECODE(src: STRING-or-LSTRING-or-literal; VAR dest: INTEGER-or-CHAR):
-  BOOLEAN -- parses a decimal integer out of `src` and stores it into
-  `dest`, via libpascalrt's runtime `decode_value`. dest_size (the write's
-  byte width) is derived from dest's own declared scalar type -- scoped to
-  INTEGER (2 bytes) and CHAR (1 byte), the two dest_size cases
-  decode_value's own manual documents by name; anything else is rejected
-  rather than guessing a width. }
+{ DECODE(CONST S: STRING; VAR X:M:N): BOOLEAN (manual 11-15) converts the
+  text of S to X as READ(X) would, dispatching on X's type to one of
+  libpascalrt's pas_decode_* converters: the integer family (bounded by
+  the type's width or X's declared subrange), enumerations (by name in the
+  extended dialect's symbolic I/O, by ordinal always) and BOOLEAN
+  (TRUE/FALSE or 0/1), CHAR and REAL. Unlike the READ runtime, none of
+  them traps: a malformed or out-of-range text is the FALSE result,
+  whatever RANGECK says, and X keeps its old value -- the converter writes
+  a scratch slot, which is moved into X only on success. M and N are
+  evaluated and ignored, as READ ignores them. The parser wrapped both
+  actuals as WriteArg nodes; the typechecker admitted a string source, a
+  bare or selected variable destination of ENCODE's value family and
+  INTEGER M and N. }
 VAR
-  src_expr, dest_expr: ADRMEM;
+  src_expr, dest_node, dest_expr: ADRMEM;
   src_chars, src_len: ADRMEM;
   d_symi: INTEGER32;
-  d_addr: ADRMEM;
-  dest_size: INTEGER;
-  call_args: ADRMEM;
+  d_tid, base_tid, kind: INTEGER;
+  d_addr, scratch, scratch_ty, call_args, status, ok, ok_bb, cont_bb, v, discard: ADRMEM;
+  lo, hi: INTEGER32;
+  has_bounds: BOOLEAN;
 BEGIN
   IF ArrSize(args) <> 2 THEN
     AbortWith('codegen: DECODE expects exactly 2 arguments');
   src_expr := GetObj(ArrItem(args, 0), 'expr');
   ResolveStringExprCharsLen(src_expr, src_chars, src_len);
 
-  dest_expr := GetObj(ArrItem(args, 1), 'expr');
-  IF NodeType(dest_expr) <> 'Identifier' THEN
-    AbortWith('codegen: DECODE''s destination must be a bare INTEGER/CHAR variable');
-  d_symi := LookupSym(GetStr(dest_expr, 'name'));
-  IF d_symi = 0 THEN
-    AbortWith2('codegen: undefined variable: ', GetStr(dest_expr, 'name'));
-  d_addr := symbols[d_symi].llvm_val;
-  IF symbols[d_symi].tk = TK_INTEGER THEN dest_size := 2
-  ELSE IF symbols[d_symi].tk = TK_CHAR THEN dest_size := 1
+  dest_node := ArrItem(args, 1);
+  dest_expr := GetObj(dest_node, 'expr');
+  IF NodeType(dest_expr) = 'Identifier' THEN
+  BEGIN
+    d_symi := LookupSym(GetStr(dest_expr, 'name'));
+    IF d_symi = 0 THEN
+      AbortWith2('codegen: undefined variable: ', GetStr(dest_expr, 'name'));
+    d_addr := symbols[d_symi].llvm_val;
+    d_tid := symbols[d_symi].tk;
+  END
+  ELSE IF NodeType(dest_expr) = 'Designator' THEN
+  BEGIN
+    d_addr := ComputeDesignatorAddress(dest_expr);
+    d_tid := last_val_tk;
+  END
   ELSE
   BEGIN
-    AbortWith('codegen: DECODE''s destination must be INTEGER or CHAR');
-    dest_size := 0;
+    AbortWith('codegen: DECODE''s destination must be a variable');
+    d_addr := NIL;
+    d_tid := TK_UNKNOWN;
+  END;
+  IF GetObjOrNil(dest_node, 'width') <> NIL THEN
+    discard := CodegenFormatValue(GetObj(dest_node, 'width'));
+  IF GetObjOrNil(dest_node, 'precision') <> NIL THEN
+    discard := CodegenFormatValue(GetObj(dest_node, 'precision'));
+
+  { A subrange keeps its own tid for the bounds; its storage is the host's. }
+  base_tid := SubrangeBaseTid(d_tid);
+  kind := TypeKind(base_tid);
+  has_bounds := FALSE;
+  lo := 0;
+  hi := 0;
+  IF d_tid >= 14 THEN
+    IF types[d_tid].is_subrange THEN
+    BEGIN
+      has_bounds := TRUE;
+      lo := types[d_tid].lo;
+      hi := types[d_tid].hi;
+    END;
+  IF IsIntegerFamilyTk(base_tid) THEN
+  BEGIN
+    scratch_ty := i64ty;
+    scratch := EntryAlloca(i64ty, 'decodeint');
+    call_args := AllocPtrArray(8);
+    SetPtrArrayElem(call_args, 0, src_chars);
+    SetPtrArrayElem(call_args, 1, src_len);
+    SetPtrArrayElem(call_args, 2, LLVMConstInt(i32ty, IntFamilyWidth(base_tid), 0));
+    IF IsUnsignedWordTk(base_tid) THEN
+      SetPtrArrayElem(call_args, 3, LLVMConstInt(i32ty, 1, 0))
+    ELSE
+      SetPtrArrayElem(call_args, 3, LLVMConstInt(i32ty, 0, 0));
+    IF has_bounds THEN
+      SetPtrArrayElem(call_args, 4, LLVMConstInt(i32ty, 1, 0))
+    ELSE
+      SetPtrArrayElem(call_args, 4, LLVMConstInt(i32ty, 0, 0));
+    SetPtrArrayElem(call_args, 5, LLVMConstInt(i64ty, lo, 1));
+    SetPtrArrayElem(call_args, 6, LLVMConstInt(i64ty, hi, 1));
+    SetPtrArrayElem(call_args, 7, scratch);
+    status := LLVMBuildCall2(builder, decode_int_fnty, decode_int_fn, call_args, 8, MakeCStr(''));
+  END
+  ELSE IF (kind = TK_ENUM) OR (kind = TK_BOOLEAN) THEN
+  BEGIN
+    { The readers' i32 ordinal; names only where READ accepts them. }
+    scratch_ty := i32ty;
+    scratch := EntryAlloca(i32ty, 'decodeord');
+    call_args := AllocPtrArray(6);
+    SetPtrArrayElem(call_args, 0, src_chars);
+    SetPtrArrayElem(call_args, 1, src_len);
+    IF kind = TK_BOOLEAN THEN
+      SetPtrArrayElem(call_args, 2, BoolNameTable)
+    ELSE IF active_features.symbolic_enum_io THEN
+      SetPtrArrayElem(call_args, 2, EnumNameTable(base_tid))
+    ELSE
+      SetPtrArrayElem(call_args, 2, LLVMConstPointerNull(LLVMPointerType(i8ptrty, 0)));
+    SetOrdinalBoundArgs(call_args, 3, d_tid);
+    SetPtrArrayElem(call_args, 5, scratch);
+    status := LLVMBuildCall2(builder, decode_enum_fnty, decode_enum_fn, call_args, 6, MakeCStr(''));
+  END
+  ELSE IF kind = TK_CHAR THEN
+  BEGIN
+    scratch_ty := i8ty;
+    scratch := EntryAlloca(i8ty, 'decodechar');
+    IF NOT has_bounds THEN hi := 255;
+    call_args := AllocPtrArray(5);
+    SetPtrArrayElem(call_args, 0, src_chars);
+    SetPtrArrayElem(call_args, 1, src_len);
+    SetPtrArrayElem(call_args, 2, LLVMConstInt(i32ty, lo, 0));
+    SetPtrArrayElem(call_args, 3, LLVMConstInt(i32ty, hi, 0));
+    SetPtrArrayElem(call_args, 4, scratch);
+    status := LLVMBuildCall2(builder, decode_char_fnty, decode_char_fn, call_args, 5, MakeCStr(''));
+  END
+  ELSE IF (kind = TK_REAL) OR (kind = TK_REAL32) THEN
+  BEGIN
+    scratch_ty := dblty;
+    scratch := EntryAlloca(dblty, 'decodereal');
+    call_args := AllocPtrArray(3);
+    SetPtrArrayElem(call_args, 0, src_chars);
+    SetPtrArrayElem(call_args, 1, src_len);
+    SetPtrArrayElem(call_args, 2, scratch);
+    status := LLVMBuildCall2(builder, decode_real_fnty, decode_real_fn, call_args, 3, MakeCStr(''));
+  END
+  ELSE
+  BEGIN
+    AbortWith('codegen: DECODE''s destination must be INTEGER, WORD, CHAR, BOOLEAN, REAL or an enumeration');
+    scratch_ty := NIL;
+    scratch := NIL;
+    status := NIL;
   END;
 
-  call_args := AllocPtrArray(7);
-  SetPtrArrayElem(call_args, 0, src_chars);
-  SetPtrArrayElem(call_args, 1, src_len);
-  SetPtrArrayElem(call_args, 2, LLVMBuildBitCast(builder, d_addr, i8ptrty, MakeCStr('')));
-  SetPtrArrayElem(call_args, 3, LLVMConstInt(i32ty, dest_size, 0));
-  SetPtrArrayElem(call_args, 4, LLVMConstInt(i32ty, 0, 0));
-  SetPtrArrayElem(call_args, 5, LLVMConstInt(i32ty, 0, 0));
-  SetPtrArrayElem(call_args, 6, LLVMConstInt(i32ty, 0, 0));
-  CodegenDecode := LLVMBuildICmp(builder, LLVMIntNE,
-    LLVMBuildCall2(builder, decode_fnty, decode_fn, call_args, 7, MakeCStr('')),
-    LLVMConstInt(i32ty, 0, 0), MakeCStr(''));
+  { Move the scratch value into X only once the conversion succeeded. }
+  ok := LLVMBuildICmp(builder, LLVMIntNE, status, LLVMConstInt(i32ty, 0, 0), MakeCStr(''));
+  ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('decode_ok'));
+  cont_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('decode_cont'));
+  LLVMBuildCondBr(builder, ok, ok_bb, cont_bb);
+  LLVMPositionBuilderAtEnd(builder, ok_bb);
+  v := LLVMBuildLoad2(builder, scratch_ty, scratch, MakeCStr(''));
+  IF IsIntegerFamilyTk(base_tid) THEN
+  BEGIN
+    IF IntFamilyWidth(base_tid) < 64 THEN
+      v := LLVMBuildTrunc(builder, v, LLVMTypeForTk(base_tid), MakeCStr(''));
+  END
+  ELSE IF kind = TK_BOOLEAN THEN
+    v := LLVMBuildTrunc(builder, v, i1ty, MakeCStr(''))
+  ELSE IF kind = TK_REAL32 THEN
+    v := LLVMBuildFPTrunc(builder, v, f32ty, MakeCStr(''));
+  LLVMBuildStore(builder, v, d_addr);
+  LLVMBuildBr(builder, cont_bb);
+  LLVMPositionBuilderAtEnd(builder, cont_bb);
+  CodegenDecode := ok;
 END;
 
 BEGIN

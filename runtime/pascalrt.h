@@ -208,9 +208,16 @@ void  pas_readln_skip(void);
 int32_t pas_encode_fmt(char *dest_chars, int32_t dest_cap,
                        char *dest_raw, const char *fmt, ...);
 
-int32_t decode_value(char *src_chars, int32_t src_len,
-                     char *dest_raw, int32_t dest_size,
-                     int32_t reserved3, int32_t reserved4, int32_t reserved5);
+/* DECODE: convert the whole trimmed text as READ would; 1 and a store
+ * through `out` on success, 0 and no store otherwise. Never aborts. */
+int32_t pas_decode_integer(const char *src, int32_t len, int32_t bits,
+                           int32_t is_unsigned, int32_t has_bounds,
+                           int64_t lo, int64_t hi, int64_t *out);
+int32_t pas_decode_enum(const char *src, int32_t len, const char **names,
+                        int32_t lo, int32_t hi, int32_t *out);
+int32_t pas_decode_char(const char *src, int32_t len, int32_t lo, int32_t hi,
+                        uint8_t *out);
+int32_t pas_decode_real(const char *src, int32_t len, double *out);
 
 /* ---- SCANEQ / SCANNE (scaneq.c) ---- */
 
