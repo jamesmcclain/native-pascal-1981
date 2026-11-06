@@ -40,6 +40,7 @@ its [unsafe raw boundary](#descriptor-unsafe-raw-boundary) and ownership limits.
 - [String precision](#string-precision)
 - [WRITE of a CHAR array](#write-of-a-char-array-both)
 - [CONST formal actuals](#const-formal-actuals-both)
+- [Conformant STRING and LSTRING formals](#conformant-string-and-lstring-formals-both)
 - [READSET and tuning hints](#readset-and-tuning-hints)
 - [GPU (NVPTX) kernels need `{$MATHCK-}` for integer arithmetic](#gpu-nvptx-kernels-need-mathck--for-integer-arithmetic-extended)
 - [Vectors (SIMD)](#vectors-simd-extended)
@@ -995,6 +996,85 @@ formal still needs an lvalue (`codegen: a VAR argument must be an lvalue`).
 Regression: `tests/corpus/golden/const_actual_expr.pas` and
 `var_actual_expr_rejected.pas`.
 
+## Conformant STRING and LSTRING formals **[both]**
+
+A `VAR`, `VARS`, `CONST` or `CONSTS` formal of the predeclared
+super-array type `STRING` or `LSTRING` itself (no capacity) is a
+conformant formal, as in the IBM manual (6-13 to 6-19, 6-38, 10-9,
+10-10). It takes an actual of any capacity, and `UPPER` inside the routine
+is the actual's:
+
+| Formal | Actuals |
+| --- | --- |
+| `VAR s: STRING` | a `STRING(n)` variable (`UPPER` = n); an `LSTRING(n)` variable (its characters; `UPPER` = its current length); a `CHAR` variable or selected `CHAR` (`UPPER` = 1); another conformant `STRING` or `LSTRING` formal |
+| `CONST s: STRING` | all of the above, and a string or `CHAR` literal or `CONST` name (`''` gives `UPPER` 0), or a function result of a `STRING(n)`, `LSTRING(n)` or `CHAR` type |
+| `VAR s: LSTRING` | an `LSTRING(n)` variable (`UPPER` = n); another conformant `LSTRING` formal |
+| `CONST s: LSTRING` | all of the above, a string or `CHAR` literal or `CONST` name (converted to `LSTRING`), or an `LSTRING(n)` function result |
+
+A `VAR` actual must be a variable, and a `CONST` formal is never passed on
+as `VAR`. A `CONST` actual that is not a variable is copied to a private
+temporary. Before this, both formals were `STRING(256)` and `LSTRING(256)`:
+a literal stopped codegen with `string literal length does not match
+STRING capacity`, and any other capacity with `VAR argument type
+mismatch`, even `LSTRING(100)`.
+
+Inside the routine the formal is used by component: `s[i]` (writes go
+back through `VAR`), `LOWER(s)` (1 or 0) and `UPPER(s)` (an `INTEGER`),
+`WRITE` (all `UPPER` characters of a `STRING`, the current length of an
+`LSTRING`), `READ`, `.LEN` and index zero of an `LSTRING`, the string
+procedures (`COPYLST`, `COPYSTR`, `CONCAT`, `INSERT`, `DELETE`, `POSITN`,
+`SCANEQ`, `SCANNE`, `ENCODE`, `DECODE`), comparison of an `LSTRING`
+formal, and passing it on to another conformant formal. These are type
+errors, located at the statement: assigning to or from the formal as a
+whole (`STRING` or `LSTRING`; use `COPYLST` or `COPYSTR`), comparing a
+`STRING` formal, `SIZEOF` of the formal, passing it to any other formal
+(fixed-capacity `VAR` or a value formal), passing a `STRING` formal or a
+`STRING(n)` or `CHAR` variable to an `LSTRING` formal, a non-variable
+`VAR` actual, a `CONST` actual with operators, and a conformant formal in
+a `[C]` routine or DEVICE code.
+
+The checks see the actual's capacity, not the formal type's:
+
+- `$INDEXCK` guards a conformant formal's subscript against 1 (`LSTRING`:
+  0) and `UPPER`, like a SUPER ARRAY's, with the usual `array index V is
+  outside bounds LO..HI` failure. Other string subscripts stay unchecked
+  (see INDEXCK below).
+- `$RANGECK` checks a length stored through `.LEN` or index zero, and the
+  `CONCAT` and `COPYLST` lengths, against min(capacity, 255); `INSERT`,
+  `COPYSTR`, `ENCODE` and `READ` use the actual's capacity too.
+- INITCK: strings carry no state, so reading the formal under `$INITCK+`
+  is the usual untracked-type boundary. A tracked `CHAR` actual is a
+  modeled boundary, not an escape: a `VAR` binding releases it
+  (initialized) at the call, and a `CONST` binding reads it there.
+
+The formal receives the address of a caller-built (data address, `INTEGER`
+upper) pair, so an object compiled before this change, which passed a
+plain `STRING(256)`/`LSTRING(256)` address, must be rebuilt.
+
+Deliberate choices, each a judgment call that fails closed:
+
+- A `STRING(n)` actual to a `STRING` formal, or an `LSTRING(n)` actual to
+  an `LSTRING` formal, needs n <= 32767, since `UPPER` is an `INTEGER`
+  (the manual's own limits are 32766 and 255). A larger one is a type
+  error, `Argument capacity exceeds 32767 for a super-array STRING
+  parameter`.
+- The manual says both that no side of an `LSTRING` assignment may be the
+  super-array type itself (6-19) and that an `LSTRING` formal may be
+  assigned as a whole (10-10). Assignment is rejected both ways.
+- Only the predeclared names are conformant. A value formal, a variable or
+  a field declared with a bare `STRING` or `LSTRING`, and a `TYPE` alias of
+  one, keep the capacity-256 default (`tests/corpus/integration/bare_lstring.pas`);
+  the manual allows none of them.
+- `ARRAY [1..n] OF CHAR` is not a `STRING(n)` here (PACKED arrays are not
+  supported), so it is not an actual for a `STRING` formal.
+
+Regression: `tests/corpus/dialect/super_string_formals.pas` (every actual
+kind, both dialects, O0 and O2), `super_string_formal_misuse.pas`,
+`extended_super_string_c_formal.pas`, `super_string_indexck_bad.pas`,
+`super_string_rangeck_bad.pas`, `super_string_length_rangeck_bad.pas`,
+`super_string_initck.pas`, `super_string_initck_bad.pas`, and
+`tests/corpus/integration/unit_super_string.pas` (a unit's interface).
+
 ## READSET and tuning hints
 
 In vintage mode, the final `READSET` argument must be a declared `SET OF CHAR`
@@ -1468,7 +1548,8 @@ For `record.p^[i]` and `a[j]^[i]`, the shared designator carries the selected
 pointer's descriptor separately from element data, never a declaration-wide
 last allocation. UPPER, scalar indexing and VLOAD/VSTORE consume that actual
 bound source. Vector transfer-check policy remains independent of scalar INDEXCK.
-Borrowed non-pointer SUPER ARRAY formals remain unsupported.
+Borrowed non-pointer SUPER ARRAY formals remain unsupported, except the
+[conformant STRING and LSTRING formals](#conformant-string-and-lstring-formals-both).
 
 DEVICE storage/lowering stays thin, including DEVICE interfaces spliced into
 host modules. Imported host descriptor parameters/results/storage are rejected
@@ -1585,6 +1666,7 @@ set, enumerated and subrange operands, subject to these native ABI limits:
 | host `^SUPER ARRAY` final dereference, including indexed/record designators and pointer-valued function call results such as `f(x)^` | declared lower bound | actual selected descriptor's upper bound | UPPER evaluates selection exactly once; LOWER does not evaluate |
 | fixed array | declared lower | declared upper | type only |
 | `STRING(n)` / `LSTRING(n)` | 1 / 0 | capacity `n` (not current length) | type only |
+| [conformant](#conformant-string-and-lstring-formals-both) `STRING` / `LSTRING` formal | 1 / 0 (`INTEGER`) | the `INTEGER` upper its caller passed | UPPER reads the passed bound |
 | `VECTOR[n] OF T` (local extension) | 0 | `n-1` | type only |
 | set | ordinal base type low | ordinal base type high | type only |
 | enumerated | first member ordinal | last member ordinal | type only |
@@ -1646,8 +1728,10 @@ range-checked as described under
 postfix selectors are supported only inside a bound operand; this does not
 make `f(x)^` a general expression elsewhere. Pointer descriptor formals preserve
 bounds; borrowed non-pointer super-array formals are explicitly rejected until
-their separate view ABI is implemented. The manual does not prescribe this
-implementation's NIL diagnostic or side-effect count.
+their separate view ABI is implemented (a
+[conformant `STRING`/`LSTRING` formal](#conformant-string-and-lstring-formals-both)
+has one). The manual does not prescribe this implementation's NIL
+diagnostic or side-effect count.
 
 The earlier Python parser accepts only `identifier ["^"]` here. Field,
 indexed and call-result selectors, and general expression operands are
@@ -1967,7 +2051,8 @@ legal high-bit unsigned indexes and full-span signed offsets therefore retain
 correct addresses without guards. This also applies to DEVICE address arithmetic,
 without adding host diagnostics there.
 
-This INDEXCK slice does **not** add checks to `STRING`/`LSTRING` subscripts,
+This INDEXCK slice does **not** add checks to `STRING`/`LSTRING` subscripts
+(except a [conformant formal's](#conformant-string-and-lstring-formals-both)),
 or the capacities of `COPYLST`, `COPYSTR` and `INSERT`. `CONCAT` and
 `COPYLST` have the separate RANGECK capacity contracts above, and `COPYSTR`,
 `DELETE` and `INSERT` their always-caught ones. Nor does INDEXCK

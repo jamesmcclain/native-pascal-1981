@@ -395,6 +395,174 @@ BEGIN
     ShadowedWriteArg := arg;
 END;
 
+FUNCTION SuperStringRefSym(node: ADRMEM): INTEGER32;
+{ The symbol of a conformant STRING/LSTRING formal (SymRec.super_str) that
+  node names as a whole -- an Identifier, or a Designator without
+  selectors -- or 0. Such a formal has no capacity of its own: it can be
+  selected, bounded with UPPER, written, read and passed to another
+  super-array STRING/LSTRING formal, but not assigned or (a STRING)
+  compared as a whole (IBM manual 6-16, 6-19, 10-10). }
+VAR
+  si: INTEGER32;
+  nt: Str255;
+BEGIN
+  SuperStringRefSym := 0;
+  IF node = NIL THEN RETURN;
+  nt := NodeType(node);
+  IF nt = 'Designator' THEN
+  BEGIN
+    IF cJSON_GetArraySize(GetObj(node, 'selectors')) <> 0 THEN RETURN;
+  END
+  ELSE IF nt <> 'Identifier' THEN RETURN;
+  si := LookupSymbol(GetStr(node, 'name'));
+  IF si <> 0 THEN
+    IF (symbols[si].kind = 'VAR') AND (symbols[si].super_str <> 0) THEN
+      SuperStringRefSym := si;
+END;
+
+FUNCTION IsSuperStringRef(node: ADRMEM; kind: INTEGER): BOOLEAN;
+{ node names a conformant formal of super-array kind as a whole. }
+VAR
+  si: INTEGER32;
+BEGIN
+  si := SuperStringRefSym(node);
+  IsSuperStringRef := FALSE;
+  IF si <> 0 THEN IsSuperStringRef := symbols[si].super_str = kind;
+END;
+
+PROCEDURE CheckSuperStringArg(arg: ADRMEM; atk, kind, mode: INTEGER; rname: Str255);
+{ An actual for a VAR or CONST formal of the super-array type STRING or
+  LSTRING itself (NEW-29). The IBM manual (6-13, 6-17, 6-38, 10-9) allows,
+  for STRING, a STRING(n) (that is, PACKED ARRAY [1..n] OF CHAR), an
+  LSTRING(n) (its current length is the formal's UPPER), a CHAR and
+  another STRING or LSTRING super-array formal; for LSTRING, an LSTRING(n)
+  or another LSTRING formal. A VAR actual must be a variable, and not a
+  CONST formal. A CONST actual may also be a constant (a string or CHAR
+  literal or CONST name, which converts to LSTRING) or a function result
+  of a type the formal admits; an expression with operators is neither.
+  The formal's UPPER is an INTEGER, so a STRING(n) or LSTRING(n) of a
+  capacity above 32767 is rejected for it. }
+VAR
+  si, actual_si: INTEGER32;
+  nt, kname: Str255;
+  is_storage, is_constant, is_result, is_lstring: BOOLEAN;
+  cap_node: ADRMEM;
+  cap_bound: INTEGER32;
+  cap_kind: INTEGER;
+BEGIN
+  IF atk = TK_UNKNOWN THEN RETURN;
+  IF kind = SUPER_STR_LSTRING THEN kname := 'LSTRING' ELSE kname := 'STRING';
+  actual_si := SuperStringRefSym(arg);
+  IF actual_si <> 0 THEN
+  BEGIN
+    IF (kind = SUPER_STR_LSTRING) AND
+       (symbols[actual_si].super_str <> SUPER_STR_LSTRING) THEN
+      AddError2('A super-array STRING parameter cannot be passed to an LSTRING parameter in call to ', rname)
+    ELSE IF (mode = PARAM_VAR) AND symbols[actual_si].is_const_param THEN
+      AddError2('A CONST parameter cannot be passed as a VAR parameter in call to ', rname);
+    RETURN;
+  END;
+  nt := NodeType(arg);
+  is_storage := FALSE;
+  is_constant := (nt = 'StringLiteral') OR (nt = 'CharLiteral');
+  is_result := (nt = 'FuncCall') OR (nt = 'PostfixExpr');
+  is_lstring := FALSE;
+  cap_node := NIL;
+  cap_bound := 0;
+  si := 0;
+  IF (nt = 'Identifier') OR (nt = 'Designator') THEN
+    si := LookupSymbol(GetStr(arg, 'name'));
+  IF (nt = 'Designator') AND
+     (cJSON_GetArraySize(GetObj(arg, 'selectors')) <> 0) THEN
+  BEGIN
+    is_storage := TRUE;
+    is_lstring := last_designator_aux2 = 1;
+    cap_node := last_designator_sem_node;
+    cap_bound := last_designator_type_bound;
+  END
+  ELSE IF si <> 0 THEN
+  BEGIN
+    IF symbols[si].kind = 'VAR' THEN
+    BEGIN
+      is_storage := TRUE;
+      is_lstring := symbols[si].aux2 = 1;
+      cap_node := symbols[si].type_node;
+      cap_bound := symbols[si].type_bound;
+    END
+    ELSE IF symbols[si].kind = 'CONST' THEN
+      is_constant := TRUE
+    ELSE IF symbols[si].kind = 'FUNC' THEN
+      is_result := TRUE;
+  END;
+  IF is_result THEN
+  BEGIN
+    si := 0;
+    IF nt = 'PostfixExpr' THEN si := 0
+    ELSE IF (nt = 'FuncCall') OR (nt = 'Identifier') OR (nt = 'Designator') THEN
+      si := LookupSymbol(GetStr(arg, 'name'));
+    IF si <> 0 THEN
+      IF symbols[si].kind = 'FUNC' THEN
+      BEGIN
+        is_lstring := symbols[si].ret_aux2 = 1;
+        cap_node := symbols[si].ret_type_node;
+        cap_bound := symbols[si].type_bound;
+      END;
+  END;
+  IF (mode = PARAM_VAR) AND NOT is_storage THEN
+  BEGIN
+    AddError2('VAR argument must be a variable in call to ', rname);
+    RETURN;
+  END;
+  IF NOT (is_storage OR is_constant OR is_result) THEN
+  BEGIN
+    AddError2('CONST argument must be a variable, a constant or a function result in call to ', rname);
+    RETURN;
+  END;
+  IF (atk <> TK_STRING) AND (atk <> TK_CHAR) THEN
+  BEGIN
+    AddError2('Argument type mismatch or implicit narrowing in call to ', rname);
+    RETURN;
+  END;
+  IF kind = SUPER_STR_LSTRING THEN
+  BEGIN
+    { Only a constant converts to LSTRING (6-38): a STRING(n) or CHAR
+      variable or result is not an LSTRING. }
+    IF NOT is_constant AND NOT ((atk = TK_STRING) AND is_lstring) THEN
+    BEGIN
+      AddError2('Argument type mismatch for an LSTRING super-array parameter in call to ', rname);
+      RETURN;
+    END;
+  END;
+  IF (atk = TK_STRING) AND NOT is_constant THEN
+    IF (kind = SUPER_STR_LSTRING) OR NOT is_lstring THEN
+    BEGIN
+      cap_kind := StringBoundKind(cap_node, cap_bound);
+      IF (cap_kind <> TK_INTEGER) AND (cap_kind <> TK_UNKNOWN) THEN
+      BEGIN
+        kname := 'Argument capacity exceeds 32767 for a super-array ';
+        IF kind = SUPER_STR_LSTRING THEN CONCAT(kname, 'LSTRING')
+        ELSE CONCAT(kname, 'STRING');
+        CONCAT(kname, ' parameter in call to ');
+        AddError2(kname, rname);
+      END;
+    END;
+END;
+
+PROCEDURE CheckRoutineArg(arg: ADRMEM; si, pi: INTEGER32; atk: INTEGER; rname: Str255);
+{ The actual arg (already checked, of kind atk) for formal pi of routine
+  si. A conformant STRING/LSTRING formal has its own rules
+  (CheckSuperStringArg); any other formal takes an assignable value, and
+  never a conformant STRING/LSTRING formal as a whole. }
+BEGIN
+  IF symbols[si].param_super_str[pi] <> 0 THEN
+    CheckSuperStringArg(arg, atk, symbols[si].param_super_str[pi],
+      symbols[si].param_mode[pi], rname)
+  ELSE IF NOT CanAssign(symbols[si].param_tk[pi], atk) THEN
+    AddError2('Argument type mismatch or implicit narrowing in call to ', rname)
+  ELSE IF SuperStringRefSym(arg) <> 0 THEN
+    AddError2('A super-array STRING/LSTRING parameter can be passed only to a STRING or LSTRING super-array parameter in call to ', rname);
+END;
+
 FUNCTION IsEncodeValueKind(tk: INTEGER): BOOLEAN;
 { The value types ENCODE formats and DECODE converts: the manual's INTEGER,
   WORD, enumerations, their subranges, BOOLEAN and REAL (11-14), plus CHAR,
@@ -1348,8 +1516,7 @@ BEGIN
       ELSE
         atk := CheckExpr(warg);
       IF i < symbols[si].nparams THEN
-        IF NOT CanAssign(symbols[si].param_tk[i + 1], atk) THEN
-          AddError2('Argument type mismatch or implicit narrowing in call to ', orig_name);
+        CheckRoutineArg(warg, si, i + 1, atk, orig_name);
     END;
   CheckFuncCall := symbols[si].ret_tk;
   IF symbols[si].ret_tk = TK_SET THEN
@@ -1517,7 +1684,19 @@ BEGIN
   END
   ELSE IF nt = 'StringLiteral' THEN CheckExprBody := TK_STRING
   ELSE IF nt = 'NilLiteral' THEN CheckExprBody := TK_POINTER
-  ELSE IF nt = 'SizeofExpr' THEN CheckExprBody := TK_INTEGER
+  ELSE IF nt = 'SizeofExpr' THEN
+  BEGIN
+    { A conformant STRING/LSTRING formal's size is its actual's, known
+      only at run time; SIZEOF is a compile-time constant (NEW-29). }
+    IF cJSON_GetStringValue(GetObj(node, 'target')) <> NIL THEN
+    BEGIN
+      si := LookupSymbol(GetStr(node, 'target'));
+      IF si <> 0 THEN
+        IF symbols[si].super_str <> 0 THEN
+          AddError2('SIZEOF of a super-array STRING/LSTRING parameter has no constant value: ', GetStr(node, 'target'));
+    END;
+    CheckExprBody := TK_INTEGER;
+  END
   ELSE IF nt = 'AdrExpr' THEN
   BEGIN
     { ADR <var>: address-of a bare variable. This stage's type model has no
@@ -1678,6 +1857,9 @@ BEGIN
             symbols[si].type_bound);
       END;
     END;
+    { A conformant STRING/LSTRING formal's bounds are its actual's: 1 or
+      0 and an INTEGER upper the caller passed (NEW-29). }
+    IF SuperStringRefSym(operand_node) <> 0 THEN bound_str_kind := TK_INTEGER;
     IF (NodeType(operand_node) = 'BinOp') AND (ot = TK_SET) THEN
       bound_base_tk := last_set_base_tk;
     { A parameterless function named without an argument list: its bounds
@@ -1873,6 +2055,11 @@ BEGIN
       END
       ELSE IF NOT (IsNumeric(lt) AND IsNumeric(rt)) AND (lt <> rt) THEN
         AddError('Comparison operands are not comparable')
+      { The length of a super-array STRING formal varies, so it is never
+        compared as a whole; an LSTRING one compares (manual 6-17, 6-19). }
+      ELSE IF IsSuperStringRef(left_node, SUPER_STR_STRING) OR
+              IsSuperStringRef(right_node, SUPER_STR_STRING) THEN
+        AddError('A super-array STRING parameter cannot be compared as a whole')
       { Values of two enumerations never compare (codegen has no common
         type for them); both identities must be known. }
       ELSE IF (lt = TK_ENUM) AND (rt = TK_ENUM) AND

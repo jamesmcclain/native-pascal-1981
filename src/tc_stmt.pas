@@ -471,7 +471,14 @@ BEGIN
     { Snapshot before descending into the RHS: nested designators and calls
       overwrite their global result channels. }
     expr_tk := CheckExprForSetTarget(expr_node, target_tk, target_set_sem_base);
-    IF NOT CanAssign(target_tk, expr_tk) THEN
+    { A super-array STRING/LSTRING formal is assigned and read only by
+      component (IBM manual 6-16, 6-19); COPYLST, COPYSTR and the other
+      string procedures take it whole (NEW-29). }
+    IF SuperStringRefSym(target_node) <> 0 THEN
+      AddError2('Cannot assign to a super-array STRING/LSTRING parameter as a whole: ', varname)
+    ELSE IF SuperStringRefSym(expr_node) <> 0 THEN
+      AddError2('Cannot assign a super-array STRING/LSTRING parameter as a whole to: ', varname)
+    ELSE IF NOT CanAssign(target_tk, expr_tk) THEN
       AddError2('Cannot assign incompatible type without narrowing: ', varname)
     { Two enumerations are never assignment compatible. Both identities
       must be known (a deep selection's is read back from its type node). }
@@ -560,8 +567,7 @@ BEGIN
             ELSE
               expr_tk := CheckExpr(warg);
             IF i < symbols[si].nparams THEN
-              IF NOT CanAssign(symbols[si].param_tk[i + 1], expr_tk) THEN
-                AddError2('Argument type mismatch or implicit narrowing in call to ', pname);
+              CheckRoutineArg(warg, si, i + 1, expr_tk, pname);
           END;
       END;
     END
@@ -768,8 +774,7 @@ BEGIN
             ELSE
               expr_tk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
             IF i < symbols[si].nparams THEN
-              IF NOT CanAssign(symbols[si].param_tk[i + 1], expr_tk) THEN
-                AddError2('Argument type mismatch or implicit narrowing in call to ', pname);
+              CheckRoutineArg(cJSON_GetArrayItem(args_arr, i), si, i + 1, expr_tk, pname);
           END;
       END;
     END;

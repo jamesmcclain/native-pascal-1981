@@ -1,0 +1,18 @@
+Type checking failed:
+Cannot assign to a super-array STRING/LSTRING parameter as a whole: s at line 28 column 3
+Cannot assign a super-array STRING/LSTRING parameter as a whole to: a at line 29 column 3
+Cannot assign to a super-array STRING/LSTRING parameter as a whole: u at line 30 column 3
+A super-array STRING parameter cannot be compared as a whole at line 31 column 3
+A super-array STRING/LSTRING parameter can be passed only to a STRING or LSTRING super-array parameter in call to Fixed at line 32 column 3
+A super-array STRING/LSTRING parameter can be passed only to a STRING or LSTRING super-array parameter in call to ValS at line 33 column 3
+A CONST parameter cannot be passed as a VAR parameter in call to PS at line 34 column 3
+A super-array STRING parameter cannot be passed to an LSTRING parameter in call to PL at line 35 column 3
+SIZEOF of a super-array STRING/LSTRING parameter has no constant value: s at line 36 column 8
+VAR argument must be a variable in call to PS at line 40 column 3
+Argument type mismatch for an LSTRING super-array parameter in call to PL at line 41 column 3
+Argument type mismatch for an LSTRING super-array parameter in call to CL at line 42 column 3
+Argument type mismatch for an LSTRING super-array parameter in call to CL at line 43 column 3
+Argument type mismatch or implicit narrowing in call to PS at line 44 column 3
+Argument capacity exceeds 32767 for a super-array STRING parameter in call to CS at line 45 column 3
+Argument capacity exceeds 32767 for a super-array LSTRING parameter in call to PL at line 46 column 3
+CONST argument must be a variable, a constant or a function result in call to CS at line 47 column 3

@@ -46,6 +46,12 @@ CONST
   DECL_OTHER = 0;
   DECL_ROUTINE_HEADING = 1;
   DECL_ROUTINE_BODY = 2;
+  { SymRec.super_str / param_super_str and param_mode values. }
+  SUPER_STR_STRING = 1;
+  SUPER_STR_LSTRING = 2;
+  PARAM_VALUE = 0;
+  PARAM_VAR = 1;
+  PARAM_CONST = 2;
 
 TYPE
   SymRec = RECORD
@@ -80,6 +86,14 @@ TYPE
     const_str_node: ADRMEM; { a multi-character string CONST: its
                               StringLiteral value node, which every
                               reference to the name is rewritten to }
+    super_str: INTEGER; { a VAR/VARS/CONST/CONSTS formal of the predeclared
+                          super-array type itself (NEW-29): 0 none,
+                          SUPER_STR_STRING or SUPER_STR_LSTRING }
+    is_const_param: BOOLEAN; { a formal declared CONST or CONSTS }
+    param_super_str: ARRAY [1..MAX_PARAMS] OF INTEGER; { a routine's
+                          formals' super_str }
+    param_mode: ARRAY [1..MAX_PARAMS] OF INTEGER; { a routine's formals'
+                          PARAM_VALUE, PARAM_VAR or PARAM_CONST }
   END;
 
   TypeRec = RECORD

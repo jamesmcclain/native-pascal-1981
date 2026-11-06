@@ -25,6 +25,11 @@ VAR
                    declaration, a formal, or the predeclared INPUT/OUTPUT)
                    -- see EnsureTextType. TEXT is one predeclared type, so
                    every occurrence must share one tid, as INTEGER does. }
+  borrowed_string_tid, borrowed_lstring_tid: INTEGER;
+  borrowed_data: ARRAY [1..MAX_BORROWED] OF ADRMEM;
+  borrowed_upper: ARRAY [1..MAX_BORROWED] OF ADRMEM;
+  nborrowed: INTEGER32;
+  last_desig_lstring_dyncap: ADRMEM;
   main_fnty, main_fn, entry_bb: ADRMEM;
   printf_fnty, printf_fn: ADRMEM;
   malloc_fnty, malloc_fn, free_fnty, free_fn: ADRMEM; { the *target program's*

@@ -373,6 +373,18 @@ BEGIN
   END;
 END;
 
+FUNCTION ParamModeOf(param: ADRMEM): INTEGER;
+{ PARAM_VAR for a VAR/VARS formal, PARAM_CONST for CONST/CONSTS, else
+  PARAM_VALUE. }
+VAR
+  mode: Str255;
+BEGIN
+  mode := GetStr(param, 'mode');
+  IF (mode = 'VAR') OR (mode = 'VARS') THEN ParamModeOf := PARAM_VAR
+  ELSE IF (mode = 'CONST') OR (mode = 'CONSTS') THEN ParamModeOf := PARAM_CONST
+  ELSE ParamModeOf := PARAM_VALUE;
+END;
+
 PROCEDURE CheckDeclBody(decl: ADRMEM);
 VAR
   nt, dname: Str255;
@@ -390,6 +402,7 @@ VAR
   attrs_arr, attr_item: ADRMEM;
   nattrs, ai: INTEGER32;
   is_vararg, has_c: BOOLEAN;
+  has_super_str: BOOLEAN; { some reference formal is STRING/LSTRING itself }
   has_block_body: BOOLEAN;
   prior: INTEGER32;
   const_value: INTEGER64;
@@ -538,6 +551,7 @@ BEGIN
         symbols[si].ret_scalar_sem_base := SemanticBaseOfOrdinalType(ret_type_node);
     END;
     symbols[si].is_extern := HasExternMarkerDecl(decl);
+    has_super_str := FALSE;
     ppi := 0;
     FOR pi := 0 TO np - 1 DO
     BEGIN
@@ -551,6 +565,13 @@ BEGIN
         IF ppi <= MAX_PARAMS THEN
         BEGIN
           symbols[si].param_tk[ppi] := ptk;
+          symbols[si].param_mode[ppi] := ParamModeOf(param);
+          symbols[si].param_super_str[ppi] := 0;
+          IF symbols[si].param_mode[ppi] <> PARAM_VALUE THEN
+            symbols[si].param_super_str[ppi] :=
+              SuperStringKind(GetObj(param, 'type_expr'));
+          IF symbols[si].param_super_str[ppi] <> 0 THEN
+            has_super_str := TRUE;
           symbols[si].param_set_sem_base[ppi] := SB_UNKNOWN;
           IF ptk = TK_SET THEN
             symbols[si].param_set_sem_base[ppi] :=
@@ -589,6 +610,13 @@ BEGIN
       AddError2('[VARARGS] is not permitted in DEVICE code: ', dname);
     CheckLaunchBoundAttrs(decl, nt = 'FuncDecl');
     symbols[si].is_vararg := is_vararg;
+    { A conformant STRING/LSTRING formal travels as a Pascal-only view of
+      its actual (data and upper bound), which C has no counterpart for;
+      DEVICE code has no host strings at all. }
+    IF has_super_str AND has_c THEN
+      AddError2('A super-array STRING/LSTRING parameter cannot cross a [C] routine signature: ', dname);
+    IF has_super_str AND is_device_compiland THEN
+      AddError2('A super-array STRING/LSTRING parameter is not permitted in DEVICE code: ', dname);
 
     { Check the routine body (if any) in its own scope, with parameters
       bound and -- for a FUNCTION -- cur_func_name/cur_func_ret_tk/aux/aux2
@@ -635,6 +663,9 @@ BEGIN
             (GetStr(param, 'mode') = 'VARS') OR
             (GetStr(param, 'mode') = 'CONST') OR
             (GetStr(param, 'mode') = 'CONSTS');
+          symbols[si].is_const_param := ParamModeOf(param) = PARAM_CONST;
+          IF symbols[si].is_ref_param THEN
+            symbols[si].super_str := SuperStringKind(symbols[si].type_node);
           IF ptk = TK_SET THEN
             symbols[si].set_sem_base := SemanticSetBaseType(symbols[si].type_node);
           IF IsOrdinal(ptk) THEN
@@ -1198,6 +1229,8 @@ BEGIN
     BEGIN
       symbols[ai].param_tk[pi] := symbols[si].param_tk[pi];
       symbols[ai].param_set_sem_base[pi] := symbols[si].param_set_sem_base[pi];
+      symbols[ai].param_mode[pi] := symbols[si].param_mode[pi];
+      symbols[ai].param_super_str[pi] := symbols[si].param_super_str[pi];
     END;
     symbols[ai].ret_tk := symbols[si].ret_tk;
     symbols[ai].ret_set_sem_base := symbols[si].ret_set_sem_base;

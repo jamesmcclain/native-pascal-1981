@@ -201,7 +201,7 @@ VAR
   v, addr, saved_taint, shadow: ADRMEM;
   target_tid: INTEGER;
   lstring_capacity: INTEGER32;
-  lstring_is_length: ADRMEM;
+  lstring_is_length, lstring_dyncap: ADRMEM;
   tracked: BOOLEAN;
   res_frame: INTEGER32;
   res_tk: INTEGER;
@@ -267,6 +267,9 @@ BEGIN
     symi := LookupSym(nm);
     IF symi = 0 THEN
       AbortWith2('codegen: undefined variable: ', nm);
+    { The typechecker rejects this first (NEW-29). }
+    IF IsBorrowedString(symbols[symi].tk) THEN
+      AbortWith2('codegen: a super-array STRING/LSTRING formal cannot be assigned as a whole: ', nm);
     IF (TypeKind(symbols[symi].tk) = TK_LSTRING) AND (NodeType(GetObj(stmt, 'expr')) = 'StringLiteral') THEN
       CodegenLStringLiteralAssign(symbols[symi].llvm_val, symbols[symi].tk,
         DecodeStringLiteral(GetStr(GetObj(stmt, 'expr'), 'value')))
@@ -297,6 +300,7 @@ BEGIN
     target_tid := last_val_tk;
     lstring_capacity := last_desig_lstring_capacity;
     lstring_is_length := last_desig_lstring_is_length;
+    lstring_dyncap := last_desig_lstring_dyncap;
     { The destination (and its shadow) is selected before the RHS runs,
       exactly as the data address is. }
     shadow := last_desig_shadow;
@@ -314,7 +318,7 @@ BEGIN
       v := CodegenExpr(GetObj(stmt, 'expr'));
       v := CoerceCheckedForAssign(v, last_val_tk, target_tid, GetObj(stmt, 'expr'), nm,
         GetObjOrNil(stmt, 'location'));
-      EmitLStringLengthCheck(v, lstring_is_length, lstring_capacity, target);
+      EmitLStringLengthCheck(v, lstring_is_length, lstring_capacity, lstring_dyncap, target);
       LLVMBuildStore(builder, v, addr);
       { A selected leaf is a producer for that leaf only; its siblings,
         including overlapping variant alternatives, keep their own state. }
@@ -829,9 +833,9 @@ BEGIN
   LLVMPositionBuilderAtEnd(builder, end_bb);
 END;
 
-PROCEDURE EmitStringCapacityCheck(new_len: ADRMEM; capacity: INTEGER32;
+PROCEDURE EmitStringCapacityCheck(new_len: ADRMEM; capacity: ADRMEM;
   site: ADRMEM; prefix, error_name: Str255); FORWARD;
-PROCEDURE EmitStringCapacityGuard(new_len: ADRMEM; capacity: INTEGER32;
+PROCEDURE EmitStringCapacityGuard(new_len: ADRMEM; capacity: ADRMEM;
   site: ADRMEM; prefix, error_name: Str255); FORWARD;
 PROCEDURE EmitStringSpanGuard(pos, count, len: ADRMEM; site: ADRMEM;
   prefix, error_name: Str255); FORWARD;
@@ -843,7 +847,8 @@ PROCEDURE CodegenCopylst(stmt: ADRMEM);
 
 VAR
   args, d_arg, source: ADRMEM;
-  d_symi, capacity: INTEGER32;
+  d_symi: INTEGER32;
+  capacity: ADRMEM;
   d_tid: INTEGER;
   d_addr, len_ptr, src_len_byte: ADRMEM;
   dest_chars: ADRMEM;
@@ -870,8 +875,7 @@ BEGIN
       InitckBoundaryAt('STRING/LSTRING COPYLST operand', source);
   ResolveStringExprCharsLen(source, src_chars, src_len);
   src_len64 := LLVMBuildZExt(builder, src_len, i64ty, MakeCStr('copylst.length'));
-  capacity := types[d_tid].hi;
-  IF capacity > 255 THEN capacity := 255;
+  capacity := LStringLengthCap(d_tid, d_addr);
   EmitStringCapacityCheck(src_len64, capacity, stmt, 'copylst', 'pas_copylst_error');
 
   gep_idx := AllocPtrArray(2);
@@ -924,7 +928,7 @@ BEGIN
       InitckBoundaryAt('STRING/LSTRING COPYSTR operand', source);
   ResolveStringExprCharsLen(source, src_chars, src_len);
   EmitStringCapacityGuard(LLVMBuildZExt(builder, src_len, i64ty, MakeCStr('copystr.length')),
-    types[d_tid].hi, stmt, 'copystr', 'pas_copystr_error');
+    StringCapacityValue(d_tid, d_addr), stmt, 'copystr', 'pas_copystr_error');
 
   gep_idx := AllocPtrArray(2);
   SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
@@ -935,7 +939,7 @@ BEGIN
   gep_idx := AllocPtrArray(1);
   SetPtrArrayElem(gep_idx, 0, src_len);
   pad_ptr := LLVMBuildGEP2(builder, i8ty, dest_chars, gep_idx, 1, MakeCStr(''));
-  pad_len := LLVMBuildSub(builder, LLVMConstInt(i32ty, types[d_tid].hi, 0), src_len, MakeCStr(''));
+  pad_len := LLVMBuildSub(builder, StringCapacityValue(d_tid, d_addr), src_len, MakeCStr(''));
   EmitByteFillLoop(pad_ptr, pad_len, 32);
 END;
 
@@ -954,7 +958,8 @@ PROCEDURE CodegenInsert(stmt: ADRMEM);
 VAR
   args, source: ADRMEM;
   src_chars, src_len: ADRMEM;
-  d_symi, capacity: INTEGER32;
+  d_symi: INTEGER32;
+  capacity: ADRMEM;
   d_tid: INTEGER;
   d_addr, dst_chars, dst_len: ADRMEM;
   pos_val, pos32, pos0, new_len, tail_len, shift_offset: ADRMEM;
@@ -984,8 +989,7 @@ BEGIN
     overflowing length back into the accepted range. }
   new_len := LLVMBuildAdd(builder, LLVMBuildZExt(builder, dst_len, i64ty, MakeCStr('')),
     LLVMBuildZExt(builder, src_len, i64ty, MakeCStr('')), MakeCStr('insert.length'));
-  capacity := types[d_tid].hi;
-  IF capacity > 255 THEN capacity := 255;
+  capacity := LStringLengthCap(d_tid, d_addr);
   EmitStringCapacityGuard(new_len, capacity, stmt, 'insert', 'pas_insert_error');
 
   pos0 := LLVMBuildSub(builder, pos32, LLVMConstInt(i32ty, 1, 0), MakeCStr(''));
@@ -1079,7 +1083,7 @@ BEGIN
   LLVMBuildStore(builder, new_len_byte, len_ptr);
 END;
 
-PROCEDURE EmitStringCapacityCheck(new_len: ADRMEM; capacity: INTEGER32;
+PROCEDURE EmitStringCapacityCheck(new_len: ADRMEM; capacity: ADRMEM;
   site: ADRMEM; prefix, error_name: Str255);
 { RANGECK owns this semantic capacity check, not MATHCK. As with other
   RANGECK guards, unchecked and NVPTX paths retain their existing behavior.
@@ -1089,7 +1093,7 @@ BEGIN
     EmitStringCapacityGuard(new_len, capacity, site, prefix, error_name);
 END;
 
-PROCEDURE EmitStringCapacityGuard(new_len: ADRMEM; capacity: INTEGER32;
+PROCEDURE EmitStringCapacityGuard(new_len: ADRMEM; capacity: ADRMEM;
   site: ADRMEM; prefix, error_name: Str255);
 { Fail through error_name(new_len, capacity, line, column) unless new_len <=
   capacity. Callers decide whether a switch controls the guard; NVPTX has no
@@ -1104,7 +1108,7 @@ BEGIN
   bad_name := prefix; CONCAT(bad_name, '.bad');
   ok_name := prefix; CONCAT(ok_name, '.ok');
   ok := LLVMBuildICmp(builder, LLVMIntULE, new_len,
-    LLVMConstInt(i64ty, capacity, 0), MakeCStr(in_name));
+    LLVMBuildZExt(builder, capacity, i64ty, MakeCStr('')), MakeCStr(in_name));
   bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr(bad_name));
   ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr(ok_name));
   LLVMBuildCondBr(builder, ok, ok_bb, bad_bb);
@@ -1125,7 +1129,7 @@ BEGIN
   END;
   args := AllocPtrArray(4);
   SetPtrArrayElem(args, 0, new_len);
-  SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, capacity, 0));
+  SetPtrArrayElem(args, 1, capacity);
   SetPtrArrayElem(args, 2, LLVMConstInt(i32ty, line, 0));
   SetPtrArrayElem(args, 3, LLVMConstInt(i32ty, column, 0));
   EmitDiagFile(location);
@@ -1196,7 +1200,7 @@ VAR
   args, d_arg: ADRMEM;
   d_symi: INTEGER32;
   d_tid: INTEGER;
-  capacity: INTEGER32;
+  capacity: ADRMEM;
   d_addr, len_ptr, dest_len_byte, dest_len, new_len, new_len_byte: ADRMEM;
   dest_chars, append_ptr: ADRMEM;
   src_chars, src_len, src_len64, dest_len64: ADRMEM;
@@ -1229,8 +1233,7 @@ BEGIN
   dest_len64 := LLVMBuildZExt(builder, dest_len, i64ty, MakeCStr(''));
   src_len64 := LLVMBuildZExt(builder, src_len, i64ty, MakeCStr(''));
   new_len := LLVMBuildAdd(builder, dest_len64, src_len64, MakeCStr('concat.length'));
-  capacity := types[d_tid].hi;
-  IF capacity > 255 THEN capacity := 255;
+  capacity := LStringLengthCap(d_tid, d_addr);
   EmitStringCapacityCheck(new_len, capacity, stmt, 'concat', 'pas_concat_error');
 
   gep_idx := AllocPtrArray(2);

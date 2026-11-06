@@ -904,6 +904,22 @@ BEGIN
 END;
 
 
+FUNCTION IsConformantStringType(te: ADRMEM): BOOLEAN;
+{ te names the predeclared STRING or LSTRING itself: no capacity, and no
+  user TYPE of the name shadowing it (the typechecker's SuperStringKind). }
+VAR
+  unm: Str255;
+BEGIN
+  IsConformantStringType := FALSE;
+  IF NodeType(te) = 'NamedType' THEN
+    IF GetObjOrNil(te, 'param') = NIL THEN
+      IF LookupNamedType(GetStr(te, 'name')) = 0 THEN
+      BEGIN
+        unm := UpperStr(GetStr(te, 'name'));
+        IsConformantStringType := (unm = 'STRING') OR (unm = 'LSTRING');
+      END;
+END;
+
 PROCEDURE FlattenParams(params_arr: ADRMEM; VAR n: INTEGER32; VAR names: ParamNameArr;
                          VAR tks: ParamTkArr; VAR isvar: ParamVarArr; VAR isconst: ParamVarArr;
                          VAR needs_copy: ParamVarArr);
@@ -933,6 +949,16 @@ BEGIN
       CONST formal accepts an actual without storage (see param_is_const). }
     is_const := (GetStr(param, 'mode') = 'CONST') OR (GetStr(param, 'mode') = 'CONSTS');
     is_v := is_const OR (GetStr(param, 'mode') = 'VAR') OR (GetStr(param, 'mode') = 'VARS');
+    { A reference formal of the super-array type STRING or LSTRING itself
+      is conformant (NEW-29): it takes any STRING(n)/LSTRING(n) actual and
+      receives the actual's upper bound with its data. Elsewhere a bare
+      name keeps its capacity-256 default. }
+    IF is_v AND IsConformantStringType(GetObj(param, 'type_expr')) THEN
+    BEGIN
+      IF is_device_compiland THEN
+        AbortWith('codegen: super-array STRING/LSTRING formals are not permitted in DEVICE code');
+      tk := BorrowedStringTid(TypeKind(tk) = TK_LSTRING);
+    END;
     { A plain value-mode ARRAY/RECORD/LSTRING/STRING param: too large to
       pass as a raw LLVM value the way a scalar is, so it is passed as a
       pointer too (see needs_copy at the routine-entry/call-site level),
@@ -1386,6 +1412,7 @@ VAR
   initck_any: BOOLEAN;
   env_depth: INTEGER32;
   env_param: ADRMEM;
+  view_gep: ADRMEM;
 BEGIN
   name := GetStr(decl, 'name');
   IF HasCAttribute(decl) AND (NOT FeaturesAreExtended(active_features)) THEN
@@ -1561,6 +1588,9 @@ BEGIN
       FOR i := 1 TO n DO
         IF ExposesHostDescriptor(tks[i]) THEN
           AbortWith2('codegen: a super-array descriptor cannot cross a [C] routine signature: ', name);
+      FOR i := 1 TO n DO
+        IF IsBorrowedString(tks[i]) THEN
+          AbortWith2('codegen: a super-array STRING/LSTRING formal cannot cross a [C] routine signature: ', name);
       { A bare VECTOR can never cross a [C] signature: the SysV
         vector-register classes (SSEUP) are not implemented, and silently
         routing a vector through MEMORY byval would disagree with the ABI
@@ -1955,7 +1985,25 @@ BEGIN
     BEGIN
       param_val := LLVMGetParam(fn, llvm_idx);
       llvm_idx := llvm_idx + 1;
-      IF isvar[i] THEN
+      IF isvar[i] AND IsBorrowedString(tks[i]) THEN
+      BEGIN
+        { A conformant STRING/LSTRING formal (NEW-29): the incoming pointer
+          addresses the caller's (data, UPPER) pair. The data pointer is
+          the formal's storage; its UPPER stays in the pair, which outlives
+          the call, and is found again through the data pointer. }
+        view_gep := AllocPtrArray(2);
+        SetPtrArrayElem(view_gep, 0, LLVMConstInt(i32ty, 0, 0));
+        SetPtrArrayElem(view_gep, 1, LLVMConstInt(i32ty, 0, 0));
+        palloca := LLVMBuildLoad2(builder, i8ptrty,
+          LLVMBuildGEP2(builder, BorrowedViewTy, param_val, view_gep, 2, MakeCStr('')),
+          MakeCStr('super.data'));
+        view_gep := AllocPtrArray(2);
+        SetPtrArrayElem(view_gep, 0, LLVMConstInt(i32ty, 0, 0));
+        SetPtrArrayElem(view_gep, 1, LLVMConstInt(i32ty, 1, 0));
+        RegisterBorrowed(palloca,
+          LLVMBuildGEP2(builder, BorrowedViewTy, param_val, view_gep, 2, MakeCStr('super.upperp')));
+      END
+      ELSE IF isvar[i] THEN
         palloca := param_val { the incoming pointer already IS the storage }
       ELSE IF needs_copy[i] THEN
       BEGIN

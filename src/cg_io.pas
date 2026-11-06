@@ -75,7 +75,7 @@ BEGIN
   ELSE
   BEGIN
     IF TypeKind(tid) = TK_STRING THEN
-      len_val := LLVMConstInt(i32ty, types[tid].hi, 0)
+      len_val := StringCapacityValue(tid, addr)
     ELSE
       len_val := LLVMConstInt(i32ty, types[tid].hi - types[tid].lo + 1, 0);
     gep_idx := AllocPtrArray(2);
@@ -357,7 +357,7 @@ BEGIN
   ELSE IF TypeKind(tid) = TK_LSTRING THEN
   BEGIN
     buf_i8 := LLVMBuildBitCast(builder, addr, i8ptrty, MakeCStr(''));
-    cap := LLVMConstInt(i32ty, types[tid].hi, 0);
+    cap := StringCapacityValue(tid, addr);
     call_args := AllocPtrArray(2);
     SetPtrArrayElem(call_args, 0, buf_i8);
     SetPtrArrayElem(call_args, 1, cap);
@@ -366,7 +366,7 @@ BEGIN
   ELSE IF TypeKind(tid) = TK_STRING THEN
   BEGIN
     buf_i8 := LLVMBuildBitCast(builder, addr, i8ptrty, MakeCStr(''));
-    cap := LLVMConstInt(i32ty, types[tid].hi, 0);
+    cap := StringCapacityValue(tid, addr);
     call_args := AllocPtrArray(2);
     SetPtrArrayElem(call_args, 0, buf_i8);
     SetPtrArrayElem(call_args, 1, cap);
@@ -579,6 +579,7 @@ VAR
   lstring_capacity: INTEGER32; { the destination's LSTRING capacity when it
     is a selected .LEN or index-zero byte, else -1 }
   lstring_is_length: ADRMEM;
+  lstring_dyncap: ADRMEM; { a conformant LSTRING formal's run-time bound }
 BEGIN
   nargs := ArrSize(args);
   start_idx := 0;
@@ -610,6 +611,7 @@ BEGIN
     dest_state := NIL;
     lstring_capacity := -1;
     lstring_is_length := NIL;
+    lstring_dyncap := NIL;
     IF NodeType(argnode) = 'Identifier' THEN
       dest_symi := LookupSym(GetStr(argnode, 'name'))
     ELSE IF NodeType(argnode) = 'Designator' THEN
@@ -628,6 +630,7 @@ BEGIN
       tid := last_val_tk;
       lstring_capacity := last_desig_lstring_capacity;
       lstring_is_length := last_desig_lstring_is_length;
+      lstring_dyncap := last_desig_lstring_dyncap;
       { A selected tracked leaf is a producer like a direct destination. }
       IF (dest_symi = 0) AND (last_desig_shadow <> NIL) AND InitckTrackedTk(tid) THEN
         dest_state := last_desig_shadow;
@@ -752,7 +755,7 @@ BEGIN
     ELSE IF TypeKind(tid) = TK_LSTRING THEN
     BEGIN
       buf_i8 := LLVMBuildBitCast(builder, addr, i8ptrty, MakeCStr(''));
-      cap := LLVMConstInt(i32ty, types[tid].hi, 0);
+      cap := StringCapacityValue(tid, addr);
       IF using_file THEN
       BEGIN
         call_args := AllocPtrArray(3);
@@ -772,7 +775,7 @@ BEGIN
     ELSE IF TypeKind(tid) = TK_STRING THEN
     BEGIN
       buf_i8 := LLVMBuildBitCast(builder, addr, i8ptrty, MakeCStr(''));
-      cap := LLVMConstInt(i32ty, types[tid].hi, 0);
+      cap := StringCapacityValue(tid, addr);
       IF using_file THEN
       BEGIN
         call_args := AllocPtrArray(3);
@@ -913,7 +916,8 @@ BEGIN
       cont_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('read_lengthed'));
       LLVMBuildCondBr(builder, ReadOk(rd_status, rd_ok), chk_bb, cont_bb);
       LLVMPositionBuilderAtEnd(builder, chk_bb);
-      EmitLStringLengthRecheck(addr, lstring_is_length, lstring_capacity, argnode);
+      EmitLStringLengthRecheck(addr, lstring_is_length, lstring_capacity,
+        lstring_dyncap, argnode);
       LLVMBuildBr(builder, cont_bb);
       LLVMPositionBuilderAtEnd(builder, cont_bb);
     END;
@@ -987,7 +991,7 @@ BEGIN
     AbortWith('codegen: READSET destination must be LSTRING');
   addr := symbols[symi].llvm_val;
   buf_i8 := LLVMBuildBitCast(builder, addr, i8ptrty, MakeCStr(''));
-  cap := LLVMConstInt(i32ty, types[tid].hi, 0);
+  cap := StringCapacityValue(tid, addr);
 
   set_node := ArrItem(args, start_idx + 1);
   IF (NodeType(set_node) = 'SetConstructor') AND

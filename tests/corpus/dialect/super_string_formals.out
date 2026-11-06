@@ -1,0 +1,37 @@
+[abcde] upper 5 lower 1 chars: a b c d e
+[twelve chars] upper 12 lower 1 chars: t w e l v e   c h a r s
+[lit] upper 3 lower 1 chars: l i t
+[hello] upper 5 lower 1 chars: h e l l o
+[x] upper 1 lower 1 chars: x
+[!] upper 1 lower 1 chars: !
+[] upper 0 lower 1 chars:
+[fives] upper 5 lower 1 chars: f i v e s
+[q] upper 1 lower 1 chars: q
+char written through VAR: k
+[an lstring] upper 10 lower 1 chars: a n   l s t r i n g
+<an lstring> upper 100 lower 0 len 10 10
+<literal> upper 7 lower 0 len 7 7
+<hello> upper 5 lower 0 len 5 5
+<z> upper 1 lower 0 len 1 1
+<> upper 0 lower 0 len 0 0
+[ABCDE] upper 5 lower 1 chars: A B C D E
+after upcase: ABCDE
+[AN LSTRING] upper 10 lower 1 chars: A N   L S T R I N G
+after upcase: AN LSTRING
+<AN LSTRING more> upper 100 lower 0 len 15 15
+<AN LSTRING moreABCDE> upper 100 lower 0 len 20 20
+truncated: AN
+lstring formal compares equal
+lstring formal compares less
+filled: <opied
+[ab   ] upper 5 lower 1 chars: a b      
+padded: [ab   ]
+<abc> upper 3 lower 0 len 3 3
+count: 3 2 1
+inner [   abcde] 5 pos 2
+middle: abcd*
+inner [    xbcz] 4 pos 2
+encode TRUE [  12345] 7
+decode TRUE 42
+decode TRUE 12345
+read [a line read into an LSTRING formal] [ab   ]

@@ -298,6 +298,11 @@ CONST
     the smallest leaf is 1 byte, so 16 is the true maximum; 32 leaves headroom
     and the walker aborts loudly rather than truncating if it is ever hit. }
   MAX_ROUTINES = 512;
+  MAX_BORROWED = 1024; { conformant STRING/LSTRING formals in one compiland }
+  BORROWED_STRING_HI = 32767; { the placeholder capacity of a conformant
+    STRING/LSTRING formal's type: every actual's UPPER is at most this }
+  BORROWED_LEN_MARK = -2; { ResolveStringExprStorage's fixed_len for a
+    conformant STRING formal: len_ptr is then its i16 upper slot }
   MAX_TYPES = 200;
   MAX_DEV_FILES = 64; { distinct $INCLUDEd files named by one NVPTX module's
                         device error sites (DeviceFileIndex in cg_expr) }
@@ -378,6 +383,10 @@ TYPE
     is_descriptor: BOOLEAN; { POINTER storage chosen at registration, not
                               when later queried across a DEVICE interface }
     is_subrange: BOOLEAN; { scalar whose declared bounds are lo..hi }
+    is_borrowed: BOOLEAN; { STRING/LSTRING: the conformant formal type of
+                            the super-array itself (NEW-29). hi is the
+                            BORROWED_STRING_HI placeholder; the actual
+                            upper travels with the data (BorrowedUpperSlot) }
     variant_empty: BOOLEAN; { RECORD only: some variant alternative declares
                               no fields (INITCK: an empty alternative is
                               always complete) }
@@ -565,6 +574,17 @@ VAR
                    declaration, a formal, or the predeclared INPUT/OUTPUT)
                    -- see EnsureTextType. TEXT is one predeclared type, so
                    every occurrence must share one tid, as INTEGER does. }
+  borrowed_string_tid, borrowed_lstring_tid: INTEGER; { lazily registered
+                   conformant STRING / LSTRING formal types (BorrowedStringTid),
+                   one each, so headings repeat identically }
+  borrowed_data: ARRAY [1..MAX_BORROWED] OF ADRMEM; { a conformant formal's
+                   data pointer, as its symbol's llvm_val }
+  borrowed_upper: ARRAY [1..MAX_BORROWED] OF ADRMEM; { the matching entry
+                   slot holding its actual's i16 UPPER }
+  nborrowed: INTEGER32;
+  last_desig_lstring_dyncap: ADRMEM; { with last_desig_lstring_capacity: the
+                   i32 run-time capacity (capped at 255) of a selected byte
+                   of a conformant LSTRING formal, else NIL }
   main_fnty, main_fn, entry_bb: ADRMEM;
   printf_fnty, printf_fn: ADRMEM;
   malloc_fnty, malloc_fn, free_fnty, free_fn: ADRMEM; { the *target program's*

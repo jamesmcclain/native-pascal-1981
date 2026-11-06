@@ -381,6 +381,25 @@ BEGIN
   END;
 END;
 
+FUNCTION SuperStringKind(node: ADRMEM): INTEGER;
+{ SUPER_STR_STRING or SUPER_STR_LSTRING when node names the predeclared
+  super-array type STRING or LSTRING itself: no capacity, and no user TYPE
+  of the name shadowing it. Only a reference formal (VAR, VARS, CONST,
+  CONSTS) gives that a conformant meaning (NEW-29); elsewhere a bare name
+  keeps its capacity-256 default. 0 otherwise. }
+VAR
+  uname: Str255;
+BEGIN
+  SuperStringKind := 0;
+  IF node = NIL THEN RETURN;
+  IF NodeType(node) <> 'NamedType' THEN RETURN;
+  IF GetObjOrNil(node, 'param') <> NIL THEN RETURN;
+  IF LookupType(GetStr(node, 'name')) <> 0 THEN RETURN;
+  uname := UpperStr(GetStr(node, 'name'));
+  IF uname = 'STRING' THEN SuperStringKind := SUPER_STR_STRING
+  ELSE IF uname = 'LSTRING' THEN SuperStringKind := SUPER_STR_LSTRING;
+END;
+
 FUNCTION SemanticOrdinalBase(tk, aux: INTEGER): INTEGER;
 { The host of an ordinal type. Subranges keep their host TK; enum types
   additionally carry the declaration id in aux. Never infer a host from a

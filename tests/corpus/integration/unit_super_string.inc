@@ -1,0 +1,7 @@
+INTERFACE;
+UNIT superstringunit (Shout, Grow);
+
+PROCEDURE Shout(CONST s: STRING);
+PROCEDURE Grow(VAR d: LSTRING; CONST s: STRING);
+
+END;

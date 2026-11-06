@@ -143,6 +143,7 @@ BEGIN
   types[ntypes].is_super := FALSE;
   types[ntypes].is_descriptor := FALSE;
   types[ntypes].is_subrange := FALSE;
+  types[ntypes].is_borrowed := FALSE;
   types[ntypes].variant_empty := FALSE;
   types[ntypes].ptr_space := PTR_SPACE_PLAIN;
   types[ntypes].enum_values := NIL;
@@ -173,6 +174,108 @@ BEGIN
   IF text_tid = 0 THEN
     text_tid := RegisterType(TK_FILE, TK_CHAR, 0, 1, i8ptrty);
   EnsureTextType := text_tid;
+END;
+
+FUNCTION BorrowedStringTid(is_lstring: BOOLEAN): INTEGER;
+{ The type of a VAR/CONST formal of the super-array type STRING or LSTRING
+  itself (NEW-29): one registered entry per kind, so repeated headings
+  agree. Its storage is the actual's, laid out as a STRING(n)/LSTRING(n)
+  with n the placeholder BORROWED_STRING_HI, so every existing two-index
+  GEP stays valid; no value of the type is ever loaded, stored or
+  allocated whole. The actual's upper bound lives beside the data pointer
+  (RegisterBorrowed/BorrowedUpperSlot). }
+VAR
+  tid: INTEGER;
+BEGIN
+  IF is_lstring THEN tid := borrowed_lstring_tid ELSE tid := borrowed_string_tid;
+  IF tid = 0 THEN
+  BEGIN
+    IF is_lstring THEN
+      tid := RegisterType(TK_LSTRING, TK_CHAR, 0, BORROWED_STRING_HI,
+        LLVMArrayType(i8ty, BORROWED_STRING_HI + 1))
+    ELSE
+      tid := RegisterType(TK_STRING, TK_CHAR, 1, BORROWED_STRING_HI,
+        LLVMArrayType(i8ty, BORROWED_STRING_HI));
+    types[tid].is_borrowed := TRUE;
+    IF is_lstring THEN borrowed_lstring_tid := tid ELSE borrowed_string_tid := tid;
+  END;
+  BorrowedStringTid := tid;
+END;
+
+FUNCTION BorrowedViewTy: ADRMEM;
+{ What a conformant STRING/LSTRING formal receives: the address of a
+  caller-built (data pointer, i16 UPPER) pair, valid for the call. }
+VAR
+  elems: ADRMEM;
+BEGIN
+  elems := AllocPtrArray(2);
+  SetPtrArrayElem(elems, 0, i8ptrty);
+  SetPtrArrayElem(elems, 1, i16ty);
+  BorrowedViewTy := LLVMStructTypeInContext(ctx, elems, 2, 0);
+END;
+
+FUNCTION IsBorrowedString(tid: INTEGER): BOOLEAN;
+BEGIN
+  IsBorrowedString := FALSE;
+  IF (TypeKind(tid) = TK_STRING) OR (TypeKind(tid) = TK_LSTRING) THEN
+    IsBorrowedString := types[tid].is_borrowed;
+END;
+
+PROCEDURE RegisterBorrowed(data, upper_slot: ADRMEM);
+{ data is a conformant formal's data pointer (its symbol's llvm_val) and
+  upper_slot the entry slot holding its actual's i16 UPPER. }
+BEGIN
+  IF nborrowed >= MAX_BORROWED THEN
+    AbortWith('codegen: too many super-array STRING/LSTRING formals');
+  nborrowed := nborrowed + 1;
+  borrowed_data[nborrowed] := data;
+  borrowed_upper[nborrowed] := upper_slot;
+END;
+
+FUNCTION BorrowedUpperSlot(data: ADRMEM): ADRMEM;
+{ The i16 UPPER slot of the conformant formal whose data pointer is data.
+  Every consumer of such a formal receives its symbol's own llvm_val (the
+  formal takes no selector that yields a string), so the lookup is exact. }
+VAR
+  k: INTEGER32;
+  found: ADRMEM;
+BEGIN
+  found := NIL;
+  FOR k := 1 TO nborrowed DO
+    IF borrowed_data[k] = data THEN found := borrowed_upper[k];
+  IF found = NIL THEN
+    AbortWith('codegen: super-array STRING/LSTRING formal has no bound');
+  BorrowedUpperSlot := found;
+END;
+
+FUNCTION StringCapacityValue(tid: INTEGER; data: ADRMEM): ADRMEM;
+{ The i32 capacity of the STRING/LSTRING storage of type tid at data: its
+  declared n, or for a conformant formal the UPPER its caller passed. }
+BEGIN
+  IF IsBorrowedString(tid) THEN
+    StringCapacityValue := LLVMBuildZExt(builder,
+      LLVMBuildLoad2(builder, i16ty, BorrowedUpperSlot(data), MakeCStr('super.upper')),
+      i32ty, MakeCStr(''))
+  ELSE
+    StringCapacityValue := LLVMConstInt(i32ty, types[tid].hi, 0);
+END;
+
+FUNCTION LStringLengthCap(tid: INTEGER; data: ADRMEM): ADRMEM;
+{ The i32 bound on an LSTRING's length byte: min(capacity, 255). }
+VAR
+  cap: ADRMEM;
+BEGIN
+  IF IsBorrowedString(tid) THEN
+  BEGIN
+    cap := StringCapacityValue(tid, data);
+    LStringLengthCap := LLVMBuildSelect(builder,
+      LLVMBuildICmp(builder, LLVMIntUGT, cap, LLVMConstInt(i32ty, 255, 0), MakeCStr('')),
+      LLVMConstInt(i32ty, 255, 0), cap, MakeCStr('lstring.cap'));
+  END
+  ELSE IF types[tid].hi > 255 THEN
+    LStringLengthCap := LLVMConstInt(i32ty, 255, 0)
+  ELSE
+    LStringLengthCap := LLVMConstInt(i32ty, types[tid].hi, 0);
 END;
 
 PROCEDURE RejectNvptxVector;
@@ -952,7 +1055,8 @@ BEGIN
   discard := LLVMBuildUnreachable(builder);
 END;
 
-PROCEDURE EmitLStringLengthCheck(v, is_length: ADRMEM; capacity: INTEGER32; site: ADRMEM);
+PROCEDURE EmitLStringLengthCheck(v, is_length: ADRMEM; capacity: INTEGER32;
+  dyncap, site: ADRMEM);
 { A selected .LEN (also exposed by index zero) remains CHAR for expression/
   ABI purposes, but its stored value must fit the containing LSTRING.
   capacity and is_length come from ComputeDesignatorAddress
@@ -962,16 +1066,20 @@ PROCEDURE EmitLStringLengthCheck(v, is_length: ADRMEM; capacity: INTEGER32; site
   until the check succeeds. Writers that store through the address
   themselves recheck it afterwards (EmitLStringLengthRecheck). Failure
   reports pas_lstring_length_error at site, the target designator; NVPTX
-  keeps its existing exclusion. }
+  keeps its existing exclusion. dyncap, when not NIL, is the i32 run-time
+  bound of a conformant LSTRING formal (NEW-29) and replaces capacity. }
 VAR
   length, ok, bad_bb, ok_bb, ps, fnty, fn, args, discard, location: ADRMEM;
+  cap_val: ADRMEM;
   line, column: INTEGER32;
 BEGIN
   IF capacity < 0 THEN RETURN;
   IF NOT cur_rangeck OR is_nvptx_device THEN RETURN;
+  IF dyncap <> NIL THEN cap_val := dyncap
+  ELSE cap_val := LLVMConstInt(i32ty, capacity, 0);
   length := LLVMBuildZExt(builder, v, i64ty, MakeCStr('lstring.length'));
   ok := LLVMBuildICmp(builder, LLVMIntULE, length,
-    LLVMConstInt(i64ty, capacity, 0), MakeCStr(''));
+    LLVMBuildZExt(builder, cap_val, i64ty, MakeCStr('')), MakeCStr(''));
   { A dynamic string index may select payload instead. Only index zero
     publishes a length; ordinary character stores have no capacity limit. }
   ok := LLVMBuildOr(builder, LLVMBuildNot(builder, is_length, MakeCStr('')),
@@ -999,7 +1107,7 @@ BEGIN
   END;
   args := AllocPtrArray(4);
   SetPtrArrayElem(args, 0, length);
-  SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, capacity, 0));
+  SetPtrArrayElem(args, 1, cap_val);
   SetPtrArrayElem(args, 2, LLVMConstInt(i32ty, line, 0));
   SetPtrArrayElem(args, 3, LLVMConstInt(i32ty, column, 0));
   EmitDiagFile(location);
@@ -1008,7 +1116,8 @@ BEGIN
   LLVMPositionBuilderAtEnd(builder, ok_bb);
 END;
 
-PROCEDURE EmitLStringLengthRecheck(addr, is_length: ADRMEM; capacity: INTEGER32; site: ADRMEM);
+PROCEDURE EmitLStringLengthRecheck(addr, is_length: ADRMEM; capacity: INTEGER32;
+  dyncap, site: ADRMEM);
 { EmitLStringLengthCheck for a byte some other writer has already stored
   through addr: READ into .LEN or index zero, or a VAR CHAR formal bound
   to one, checked as soon as control returns to the caller. The program
@@ -1017,7 +1126,7 @@ BEGIN
   IF capacity < 0 THEN RETURN;
   IF NOT cur_rangeck OR is_nvptx_device THEN RETURN;
   EmitLStringLengthCheck(LLVMBuildLoad2(builder, i8ty, addr, MakeCStr('')),
-                         is_length, capacity, site);
+                         is_length, capacity, dyncap, site);
 END;
 
 PROCEDURE EmitSubrangeCheck(v: ADRMEM; from_tid, to_tid: INTEGER; location: ADRMEM);

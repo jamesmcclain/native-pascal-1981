@@ -1525,6 +1525,179 @@ BEGIN
   MaterializeConstActual := tmp;
 END;
 
+FUNCTION BorrowedLiteralData(s: Str255; with_length: BOOLEAN): ADRMEM;
+{ A private entry slot holding the characters of s, after a length byte
+  when with_length (an LSTRING); a CONST formal never writes it. }
+VAR
+  tmp, gep_idx: ADRMEM;
+  i, n, off: INTEGER;
+BEGIN
+  n := ORD(s[0]);
+  IF with_length THEN off := 1 ELSE off := 0;
+  tmp := EntryAlloca(LLVMArrayType(i8ty, n + off + 1), 'super.lit');
+  IF with_length THEN
+    LLVMBuildStore(builder, LLVMConstInt(i8ty, n, 0), tmp);
+  FOR i := 1 TO n DO
+  BEGIN
+    gep_idx := AllocPtrArray(1);
+    SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, i - 1 + off, 0));
+    LLVMBuildStore(builder, LLVMConstInt(i8ty, ORD(s[i]), 0),
+      LLVMBuildGEP2(builder, i8ty, tmp, gep_idx, 1, MakeCStr('')));
+  END;
+  BorrowedLiteralData := tmp;
+END;
+
+FUNCTION BorrowedStringActual(arg_node: ADRMEM; ftid: INTEGER; is_const: BOOLEAN;
+  rname: Str255; VAR len_addr, len_is_length, len_dyncap: ADRMEM;
+  VAR len_cap: INTEGER32): ADRMEM;
+{ The (data, UPPER) pair a conformant STRING/LSTRING formal of type ftid
+  receives for arg_node (NEW-29), in a fresh entry slot whose address is
+  passed. A STRING(n) passes n; an LSTRING(n) passes n to an LSTRING
+  formal, and to a STRING formal its characters with its current length
+  (IBM manual 6-19); a CHAR passes itself with UPPER 1; another conformant
+  formal forwards its own pair, or as STRING the characters and length of
+  an LSTRING. A CONST actual without storage of its own (a literal, a
+  constant, a function result) is first put in a private temporary, a
+  string constant converting to LSTRING. A VAR or CONST binding of tracked
+  CHAR storage is an INITCK boundary: strings are untracked, so the state
+  is released (initialized) at the call. An LSTRING length byte bound as
+  a CHAR is rechecked after the call like a VAR CHAR's (len_addr). The
+  typechecker has already admitted the pair; mismatches abort here. }
+VAR
+  want_l: BOOLEAN;
+  nt, s: Str255;
+  view, data, up_val, addr, shadow, gep_idx, v: ADRMEM;
+  tid: INTEGER;
+  symi: INTEGER32;
+BEGIN
+  want_l := TypeKind(ftid) = TK_LSTRING;
+  nt := NodeType(arg_node);
+  len_addr := NIL;
+  shadow := NIL;
+  data := NIL;
+  up_val := NIL;
+  addr := NIL;
+  tid := TK_UNKNOWN;
+  IF (nt = 'StringLiteral') OR (nt = 'CharLiteral') THEN
+  BEGIN
+    IF nt = 'CharLiteral' THEN s := GetStr(arg_node, 'value')
+    ELSE s := DecodeStringLiteral(GetStr(arg_node, 'value'));
+    data := BorrowedLiteralData(s, want_l);
+    up_val := LLVMConstInt(i16ty, ORD(s[0]), 0);
+  END
+  ELSE IF ActualNamesStorage(arg_node) AND NOT ((nt = 'Identifier') AND
+          (LookupSym(GetStr(arg_node, 'name')) = 0)) THEN
+  BEGIN
+    IF nt = 'Identifier' THEN
+    BEGIN
+      symi := LookupSym(GetStr(arg_node, 'name'));
+      tid := symbols[symi].tk;
+      addr := symbols[symi].llvm_val;
+      IF InitckTracked(symi) THEN shadow := symbols[symi].init_state;
+    END
+    ELSE
+    BEGIN
+      addr := ComputeDesignatorAddress(arg_node);
+      tid := last_val_tk;
+      shadow := last_desig_shadow;
+      IF last_desig_lstring_capacity >= 0 THEN
+      BEGIN
+        len_addr := addr;
+        len_is_length := last_desig_lstring_is_length;
+        len_cap := last_desig_lstring_capacity;
+        len_dyncap := last_desig_lstring_dyncap;
+      END;
+    END;
+  END
+  ELSE
+  BEGIN
+    IF NOT is_const THEN
+      AbortWith2('codegen: a VAR argument must be an lvalue, calling: ', rname);
+    v := CodegenExpr(arg_node);
+    tid := last_val_tk;
+    IF tid = TK_CHAR THEN
+    BEGIN
+      IF want_l THEN
+      BEGIN
+        data := EntryAlloca(LLVMArrayType(i8ty, 2), 'super.char');
+        LLVMBuildStore(builder, LLVMConstInt(i8ty, 1, 0), data);
+        gep_idx := AllocPtrArray(1);
+        SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 1, 0));
+        LLVMBuildStore(builder, v, LLVMBuildGEP2(builder, i8ty, data, gep_idx, 1, MakeCStr('')));
+      END
+      ELSE
+      BEGIN
+        data := EntryAlloca(i8ty, 'super.char');
+        LLVMBuildStore(builder, v, data);
+      END;
+      up_val := LLVMConstInt(i16ty, 1, 0);
+    END
+    ELSE IF ((TypeKind(tid) = TK_STRING) OR (TypeKind(tid) = TK_LSTRING)) AND
+            NOT IsBorrowedString(tid) THEN
+    BEGIN
+      addr := EntryAlloca(LLVMTypeForTk(tid), 'super.result');
+      LLVMBuildStore(builder, v, addr);
+    END
+    ELSE
+      AbortWith2('codegen: super-array STRING/LSTRING argument type mismatch calling: ', rname);
+  END;
+  IF data = NIL THEN
+  BEGIN
+    IF tid = TK_CHAR THEN
+    BEGIN
+      IF want_l THEN
+        AbortWith2('codegen: super-array LSTRING argument type mismatch calling: ', rname);
+      data := addr;
+      up_val := LLVMConstInt(i16ty, 1, 0);
+    END
+    ELSE IF (TypeKind(tid) = TK_LSTRING) AND NOT want_l THEN
+    BEGIN
+      { An LSTRING to a STRING formal: its characters, and its current
+        length as UPPER. }
+      gep_idx := AllocPtrArray(1);
+      SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 1, 0));
+      data := LLVMBuildGEP2(builder, i8ty, addr, gep_idx, 1, MakeCStr('super.chars'));
+      up_val := LLVMBuildZExt(builder, LLVMBuildLoad2(builder, i8ty, addr, MakeCStr('')),
+        i16ty, MakeCStr('super.length'));
+    END
+    ELSE IF (TypeKind(tid) = TK_STRING) AND want_l THEN
+      AbortWith2('codegen: super-array LSTRING argument type mismatch calling: ', rname)
+    ELSE IF (TypeKind(tid) = TK_STRING) OR (TypeKind(tid) = TK_LSTRING) THEN
+    BEGIN
+      data := addr;
+      IF IsBorrowedString(tid) THEN
+        up_val := LLVMBuildLoad2(builder, i16ty, BorrowedUpperSlot(addr), MakeCStr('super.upper'))
+      ELSE
+      BEGIN
+        IF types[tid].hi > 32767 THEN
+          AbortWith2('codegen: super-array STRING/LSTRING argument capacity exceeds 32767 calling: ', rname);
+        up_val := LLVMConstInt(i16ty, types[tid].hi, 0);
+      END;
+    END
+    ELSE
+      AbortWith2('codegen: super-array STRING/LSTRING argument type mismatch calling: ', rname);
+  END;
+  { Strings carry no INITCK state. Tracked CHAR storage seen through the
+    formal is read at the call by a CONST binding, and released
+    (initialized) at the call by a VAR one, which may write it. }
+  IF (shadow <> NIL) AND (NOT is_device_compiland) THEN
+  BEGIN
+    IF NOT is_const THEN InitckReleaseAtCall(shadow, tid)
+    ELSE IF nt = 'Identifier' THEN GuardInitckRead(arg_node, symi)
+    ELSE GuardInitckComponent(arg_node, shadow, tid);
+  END;
+  view := EntryAlloca(BorrowedViewTy, 'super.view');
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
+  LLVMBuildStore(builder, data, LLVMBuildGEP2(builder, BorrowedViewTy, view, gep_idx, 2, MakeCStr('')));
+  gep_idx := AllocPtrArray(2);
+  SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+  SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 1, 0));
+  LLVMBuildStore(builder, up_val, LLVMBuildGEP2(builder, BorrowedViewTy, view, gep_idx, 2, MakeCStr('')));
+  BorrowedStringActual := view;
+END;
+
 FUNCTION CodegenCallCommon(name: Str255; args_arr: ADRMEM): ADRMEM;
 { Shared by a FuncCall expression and a bare ProcCallStmt that isn't
   WRITE/WRITELN: look up a user-declared routine, marshal its arguments
@@ -1571,6 +1744,7 @@ VAR
     LSTRING's .LEN or index-zero byte, rechecked after the call, or NIL }
   length_is_length: ARRAY [1..MAX_PARAMS] OF ADRMEM;
   length_capacity: ARRAY [1..MAX_PARAMS] OF INTEGER32;
+  length_dyncap: ARRAY [1..MAX_PARAMS] OF ADRMEM;
   length_site: ARRAY [1..MAX_PARAMS] OF ADRMEM;
 BEGIN
   ri := LookupRoutine(name);
@@ -1652,6 +1826,11 @@ BEGIN
           InitckReleaseAtCall(v, 0);
         v := VariadicPromote(v, last_val_tk, name);
       END
+      ELSE IF routines[ri].param_is_var[i + 1] AND
+              IsBorrowedString(routines[ri].param_tk[i + 1]) THEN
+        v := BorrowedStringActual(arg_node, routines[ri].param_tk[i + 1],
+          routines[ri].param_is_const[i + 1], name, length_addr[i + 1],
+          length_is_length[i + 1], length_dyncap[i + 1], length_capacity[i + 1])
       ELSE IF routines[ri].param_is_var[i + 1] THEN
       BEGIN
         var_shadow := NIL;
@@ -1703,6 +1882,7 @@ BEGIN
             length_addr[i + 1] := v;
             length_is_length[i + 1] := last_desig_lstring_is_length;
             length_capacity[i + 1] := last_desig_lstring_capacity;
+            length_dyncap[i + 1] := last_desig_lstring_dyncap;
             length_site[i + 1] := arg_node;
           END;
           { See AggStringTypesInterchangeable -- equal-capacity string types. }
@@ -2013,7 +2193,7 @@ BEGIN
     FOR i := 1 TO routines[ri].nparams DO
       IF length_addr[i] <> NIL THEN
         EmitLStringLengthRecheck(length_addr[i], length_is_length[i], length_capacity[i],
-                                 length_site[i]);
+                                 length_dyncap[i], length_site[i]);
     IF track_ret AND (initck_taint <> NIL) THEN
     BEGIN
       returned := LLVMBuildLoad2(builder, i1ty, InitckRetFlag, MakeCStr('initck.returned'));
@@ -2244,9 +2424,16 @@ VAR
   lstring_capacity: INTEGER32; { local until the full address is selected;
     recursive index expressions must not overwrite the target's capacity }
   lstring_is_length: ADRMEM;
+  lstring_dyncap: ADRMEM; { the run-time length bound of a selected byte of
+    a conformant LSTRING formal, else NIL }
+  borrowed_root: ADRMEM; { the data pointer of a conformant STRING/LSTRING
+    formal at the root, whose INDEX selector is bounded by its actual's
+    UPPER; else NIL }
 BEGIN
   lstring_capacity := -1;
   lstring_is_length := NIL;
+  lstring_dyncap := NIL;
+  borrowed_root := NIL;
   deref_ptr_tid := 0;
   heap_data := NIL;
   file_state := NIL;
@@ -2308,6 +2495,7 @@ BEGIN
     base_ptr := symbols[symi].llvm_val;
     cur_tid := symbols[symi].tk;
     IF InitckTracked(symi) THEN shadow := symbols[symi].init_state;
+    IF IsBorrowedString(cur_tid) THEN borrowed_root := base_ptr;
   END;
 
   FOR si := 0 TO nsel - 1 DO
@@ -2389,6 +2577,44 @@ BEGIN
           LLVMConstInt(i64ty, types[cur_tid].lo, 1),
           LLVMConstInt(i64ty, types[cur_tid].hi, 1), sel, unsigned_idx);
         LLVMPositionBuilderAtEnd(builder, ok_bb);
+      END;
+      { A conformant STRING/LSTRING formal (NEW-29) is checked like a
+        SUPER ARRAY: against its declared lower (1 or 0) and the UPPER its
+        caller passed, since its storage is only the actual's. Other string
+        selectors stay unchecked. }
+      IF indexck AND (NOT is_device_compiland) AND (borrowed_root <> NIL) AND
+         IsBorrowedString(cur_tid) THEN
+      BEGIN
+        unsigned_idx := (last_val_tk = TK_CHAR) OR
+          (last_val_tk = TK_BOOLEAN) OR (TypeKind(last_val_tk) = TK_ENUM) OR
+          IsUnsignedWordTk(last_val_tk);
+        IF NOT (unsigned_idx OR IsIntegerFamilyTk(last_val_tk)) THEN
+          AbortWith('codegen: a string index must be an ordinal type');
+        i128ty := LLVMIntTypeInContext(ctx, 128);
+        IF (last_val_tk = TK_INTEGER) AND IsIntLiteralLike(idx_expr) AND
+           FoldConstInt(idx_expr, folded) AND
+           ((folded < -32768) OR (folded > 32767)) THEN
+          idx128 := LLVMConstInt(i128ty, folded, 1)
+        ELSE IF unsigned_idx THEN
+          idx128 := LLVMBuildZExt(builder, idx_val, i128ty, MakeCStr(''))
+        ELSE
+          idx128 := LLVMBuildSExt(builder, idx_val, i128ty, MakeCStr(''));
+        selected_upper := LLVMBuildSExt(builder,
+          LLVMBuildLoad2(builder, i16ty, BorrowedUpperSlot(borrowed_root), MakeCStr('super.upper')),
+          i64ty, MakeCStr(''));
+        in_bounds := LLVMBuildICmp(builder, LLVMIntSGE, idx128,
+          LLVMConstInt(i128ty, types[cur_tid].lo, 1), MakeCStr(''));
+        upper_ok := LLVMBuildICmp(builder, LLVMIntSLE, idx128,
+          LLVMBuildSExt(builder, selected_upper, i128ty, MakeCStr('')), MakeCStr(''));
+        in_bounds := LLVMBuildAnd(builder, in_bounds, upper_ok, MakeCStr(''));
+        bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('index.bad'));
+        ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('index.ok'));
+        LLVMBuildCondBr(builder, in_bounds, ok_bb, bad_bb);
+        LLVMPositionBuilderAtEnd(builder, bad_bb);
+        EmitArrayIndexFailure(LLVMBuildTrunc(builder, idx128, i64ty, MakeCStr('')),
+          LLVMConstInt(i64ty, types[cur_tid].lo, 1), selected_upper, sel, unsigned_idx);
+        LLVMPositionBuilderAtEnd(builder, ok_bb);
+        selected_upper := NIL;
       END;
       { A descriptor-backed SUPER ARRAY selector checks against the actual
         upper bound the DEREF selector captured. NEW and UNSAFESUPER both
@@ -2520,6 +2746,8 @@ BEGIN
           Reuse the evaluated offset; never replay the index expression. }
         lstring_capacity := types[cur_tid].hi;
         IF lstring_capacity > 255 THEN lstring_capacity := 255;
+        IF (borrowed_root <> NIL) AND IsBorrowedString(cur_tid) THEN
+          lstring_dyncap := LStringLengthCap(cur_tid, borrowed_root);
         IF (last_val_tk = TK_CHAR) OR (last_val_tk = TK_BOOLEAN) OR
            (TypeKind(last_val_tk) = TK_ENUM) THEN offset_ty := i32ty
         ELSE offset_ty := i64ty;
@@ -2645,6 +2873,8 @@ BEGIN
         END;
         lstring_capacity := types[cur_tid].hi;
         IF lstring_capacity > 255 THEN lstring_capacity := 255;
+        IF (borrowed_root <> NIL) AND IsBorrowedString(cur_tid) THEN
+          lstring_dyncap := LStringLengthCap(cur_tid, borrowed_root);
         lstring_is_length := LLVMConstInt(i1ty, 1, 0);
         cur_tid := types[cur_tid].elem_tid;
       END
@@ -2715,6 +2945,7 @@ BEGIN
   last_desig_super_upper := selected_upper;
   last_desig_lstring_capacity := lstring_capacity;
   last_desig_lstring_is_length := lstring_is_length;
+  last_desig_lstring_dyncap := lstring_dyncap;
   last_desig_shadow := shadow;
   ComputeDesignatorAddress := base_ptr;
 END;
@@ -3567,6 +3798,9 @@ BEGIN
     IF symi <> 0 THEN
     BEGIN
       GuardInitckRead(node, symi);
+      { The typechecker rejects this first (NEW-29). }
+      IF IsBorrowedString(symbols[symi].tk) THEN
+        AbortWith2('codegen: a super-array STRING/LSTRING formal has no value as a whole: ', nm);
       res := LLVMBuildLoad2(builder, LLVMTypeForTk(symbols[symi].tk), symbols[symi].llvm_val, MakeCStr(''));
       last_val_tk := symbols[symi].tk;
       IF InitckTracked(symi) THEN value_shadow := symbols[symi].init_state;
@@ -3658,6 +3892,9 @@ BEGIN
       ELSE IF GetBool(GetObj(node, 'read_flags'), 'INITCK') THEN
         InitckBoundaryAt('selected storage', node);
     END;
+    IF IsBorrowedString(result_tid) THEN
+      AbortWith2('codegen: a super-array STRING/LSTRING formal has no value as a whole: ',
+        GetStr(node, 'name'));
     res := LLVMBuildLoad2(builder, LLVMTypeForTk(result_tid), addr, MakeCStr(''));
     last_val_tk := result_tid;
   END
@@ -3761,7 +3998,23 @@ BEGIN
       IF TypeKind(result_tid) = TK_ARRAY THEN
         IF types[result_tid].is_super THEN
           AbortWith('codegen: non-pointer SUPER ARRAY value has no runtime bound');
-      IF (TypeKind(result_tid) = TK_ARRAY) OR (TypeKind(result_tid) = TK_STRING)
+      IF IsBorrowedString(result_tid) THEN
+      BEGIN
+        { A conformant STRING/LSTRING formal (NEW-29): LOWER is 1 or 0,
+          UPPER the INTEGER its caller passed with the data. }
+        static_bound_tid := TK_INTEGER;
+        IF nt = 'UpperExpr' THEN
+        BEGIN
+          symi := LookupSym(GetStr(bound_operand, 'name'));
+          IF (symi = 0) OR (bound_n <> 0) THEN
+            AbortWith('codegen: UPPER of a super-array STRING/LSTRING formal needs the formal itself');
+          res := LLVMBuildLoad2(builder, i16ty, BorrowedUpperSlot(symbols[symi].llvm_val),
+            MakeCStr('super.upper'));
+        END
+        ELSE
+          res := LLVMConstInt(i16ty, types[result_tid].lo, 1);
+      END
+      ELSE IF (TypeKind(result_tid) = TK_ARRAY) OR (TypeKind(result_tid) = TK_STRING)
          OR (TypeKind(result_tid) = TK_LSTRING) OR (TypeKind(result_tid) = TK_VECTOR)
          OR (TypeKind(result_tid) = TK_SET) OR (TypeKind(result_tid) = TK_ENUM)
          OR bound_is_subrange THEN
@@ -4096,6 +4349,13 @@ BEGIN
   ELSE IF TypeKind(tid) = TK_STRING THEN
   BEGIN
     fixed_len := types[tid].hi;
+    { A conformant STRING formal's length is the UPPER its caller passed:
+      len_ptr is then that i16 slot (ResolvedStringLength). }
+    IF IsBorrowedString(tid) THEN
+    BEGIN
+      fixed_len := BORROWED_LEN_MARK;
+      len_ptr := BorrowedUpperSlot(addr);
+    END;
     SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
   END
   ELSE
@@ -4113,6 +4373,11 @@ VAR
 BEGIN
   IF len_ptr = NIL THEN
     ResolvedStringLength := LLVMConstInt(i32ty, fixed_len, 0)
+  ELSE IF fixed_len = BORROWED_LEN_MARK THEN
+  BEGIN
+    len_val := LLVMBuildLoad2(builder, i16ty, len_ptr, MakeCStr('super.upper'));
+    ResolvedStringLength := LLVMBuildZExt(builder, len_val, i32ty, MakeCStr(''));
+  END
   ELSE
   BEGIN
     len_val := LLVMBuildLoad2(builder, i8ty, len_ptr, MakeCStr(''));
@@ -4163,7 +4428,7 @@ BEGIN
   END
   ELSE IF TypeKind(d_tid) = TK_STRING THEN
   BEGIN
-    len_val := LLVMConstInt(i32ty, types[d_tid].hi, 0);
+    len_val := StringCapacityValue(d_tid, d_addr);
     gep_idx := AllocPtrArray(2);
     SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
     SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
@@ -4342,7 +4607,7 @@ BEGIN
   EmitScalarWriteArg(val, v_tid, width_node <> NIL, prec_node <> NIL,
                      width_val, prec_val, fmt, vals, vi);
   SetPtrArrayElem(vals, 0, dest_chars);
-  SetPtrArrayElem(vals, 1, LLVMConstInt(i32ty, types[d_tid].hi, 0));
+  SetPtrArrayElem(vals, 1, StringCapacityValue(d_tid, d_addr));
   SetPtrArrayElem(vals, 2, LLVMBuildBitCast(builder, d_addr, i8ptrty, MakeCStr('')));
   SetPtrArrayElem(vals, 3, LLVMBuildGlobalStringPtr(builder, MakeCStr(fmt), MakeCStr('encfmt')));
   CodegenEncode := LLVMBuildICmp(builder, LLVMIntNE,

@@ -557,7 +557,13 @@ BEGIN
           BEGIN
             { The binding names the actual's own storage: a direct slot, a
               selected leaf, or a whole or sub-aggregate. }
-            IF InitckShadowSize(routines[ri].param_tk[i + 1]) = 0 THEN
+            { A conformant STRING/LSTRING formal (NEW-29) sees a CHAR
+              actual's storage untracked: a VAR binding releases it at the
+              call and a CONST one reads it there (BorrowedStringActual). }
+            IF IsBorrowedString(routines[ri].param_tk[i + 1]) AND
+               NOT is_device_compiland THEN
+              arg_whole := TRUE
+            ELSE IF InitckShadowSize(routines[ri].param_tk[i + 1]) = 0 THEN
               arg_unsafe := TRUE
             ELSE IF InitckTransports(ri) OR
                     (routines[ri].is_c AND NOT is_device_compiland) THEN

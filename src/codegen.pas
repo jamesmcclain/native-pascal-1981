@@ -319,6 +319,10 @@ BEGIN
   setty := LLVMArrayType(i64ty, 4);
   generic_set_tid := 0;
   text_tid := 0;
+  borrowed_string_tid := 0;
+  borrowed_lstring_tid := 0;
+  nborrowed := 0;
+  last_desig_lstring_dyncap := NIL;
   param_arr := AllocPtrArray(12);
   SetPtrArrayElem(param_arr, 0, i32ty);
   SetPtrArrayElem(param_arr, 1, i32ty);
