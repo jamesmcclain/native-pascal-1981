@@ -188,7 +188,7 @@ BEGIN
   src_tid := last_val_tk;
   initck_copy_source := saved_source;
   IF src_tid <> tid THEN src_shadow := NIL;
-  v := CoerceCheckedForAssign(v, src_tid, tid, expr, nm);
+  v := CoerceCheckedForAssign(v, src_tid, tid, expr, nm, GetObjOrNil(stmt, 'location'));
   LLVMBuildStore(builder, v, addr);
   InitckTransferShadow(shadow, src_shadow, tid, EndInitckValue(saved_taint));
 END;
@@ -203,6 +203,9 @@ VAR
   lstring_capacity: INTEGER32;
   lstring_is_length: ADRMEM;
   tracked: BOOLEAN;
+  res_frame: INTEGER32;
+  res_tk: INTEGER;
+  res_slot, res_state: ADRMEM;
 BEGIN
   target := GetObj(stmt, 'target');
   IF NodeType(target) <> 'Designator' THEN
@@ -210,26 +213,53 @@ BEGIN
   sel := GetObj(target, 'selectors');
   nm := GetStr(target, 'name');
 
+  res_frame := -1;
   IF (ArrSize(sel) = 0) AND (cur_func_name <> '') AND (nm = cur_func_name) THEN
+  BEGIN
+    res_frame := 0;
+    res_tk := cur_func_ret_tk;
+    res_slot := cur_func_ret_slot;
+    res_state := cur_func_ret_state;
+  END
+  ELSE IF ArrSize(sel) = 0 THEN
+  BEGIN
+    { An enclosing FUNCTION's result, assigned from a nested routine, is
+      reached through the static link like its locals. }
+    res_frame := EnclosingResultFrame(nm);
+    IF res_frame = 0 THEN res_frame := -1
+    ELSE
+    BEGIN
+      res_tk := frame_ret_tk[res_frame];
+      res_slot := CapturedFramePtr(res_frame, ENV_KEY_RESULT,
+                                   frame_ret_slot[res_frame], 'the result');
+      res_state := NIL;
+      IF frame_ret_state[res_frame] <> NIL THEN
+        res_state := CapturedFramePtr(res_frame, ENV_KEY_RESULT_STATE,
+                                      frame_ret_state[res_frame], 'the result');
+    END;
+  END;
+
+  IF res_frame >= 0 THEN
   BEGIN
     { `FuncName := expr` inside FuncName's own body assigns through the
       return-value slot, not a symbol -- see cur_func_name's declaration. }
-    IF (TypeKind(cur_func_ret_tk) = TK_LSTRING) AND (NodeType(GetObj(stmt, 'expr')) = 'StringLiteral') THEN
-      CodegenLStringLiteralAssign(cur_func_ret_slot, cur_func_ret_tk,
+    IF (TypeKind(res_tk) = TK_LSTRING) AND (NodeType(GetObj(stmt, 'expr')) = 'StringLiteral') THEN
+      CodegenLStringLiteralAssign(res_slot, res_tk,
         DecodeStringLiteral(GetStr(GetObj(stmt, 'expr'), 'value')))
-    ELSE IF (TypeKind(cur_func_ret_tk) = TK_STRING) AND (NodeType(GetObj(stmt, 'expr')) = 'StringLiteral') THEN
-      CodegenStringLiteralAssign(cur_func_ret_slot, cur_func_ret_tk,
+    ELSE IF (TypeKind(res_tk) = TK_STRING) AND (NodeType(GetObj(stmt, 'expr')) = 'StringLiteral') THEN
+      CodegenStringLiteralAssign(res_slot, res_tk,
         DecodeStringLiteral(GetStr(GetObj(stmt, 'expr'), 'value')))
     ELSE
     BEGIN
-      IF cur_func_ret_state <> NIL THEN
+      IF res_state <> NIL THEN
         saved_taint := BeginInitckValue(GetObj(stmt, 'expr'));
       v := CodegenExpr(GetObj(stmt, 'expr'));
-      v := CoerceCheckedForAssign(v, last_val_tk, cur_func_ret_tk, GetObj(stmt, 'expr'), nm);
-      LLVMBuildStore(builder, v, cur_func_ret_slot);
+      v := CoerceCheckedForAssign(v, last_val_tk, res_tk, GetObj(stmt, 'expr'), nm,
+        GetObjOrNil(stmt, 'location'));
+      LLVMBuildStore(builder, v, res_slot);
       { The result is a producer exactly like a tracked local. }
-      IF cur_func_ret_state <> NIL THEN
-        LLVMBuildStore(builder, EndInitckValue(saved_taint), cur_func_ret_state);
+      IF res_state <> NIL THEN
+        LLVMBuildStore(builder, EndInitckValue(saved_taint), res_state);
     END;
   END
   ELSE IF ArrSize(sel) = 0 THEN
@@ -251,7 +281,8 @@ BEGIN
       tracked := InitckTracked(symi);
       IF tracked THEN saved_taint := BeginInitckValue(GetObj(stmt, 'expr'));
       v := CodegenExpr(GetObj(stmt, 'expr'));
-      v := CoerceCheckedForAssign(v, last_val_tk, symbols[symi].tk, GetObj(stmt, 'expr'), nm);
+      v := CoerceCheckedForAssign(v, last_val_tk, symbols[symi].tk, GetObj(stmt, 'expr'), nm,
+        GetObjOrNil(stmt, 'location'));
       LLVMBuildStore(builder, v, symbols[symi].llvm_val);
       { Publish state only after evaluation/coercion and the data store.
         Write tracking is independent of INITCK at the producer, but an
@@ -281,7 +312,8 @@ BEGIN
     BEGIN
       IF shadow <> NIL THEN saved_taint := BeginInitckValue(GetObj(stmt, 'expr'));
       v := CodegenExpr(GetObj(stmt, 'expr'));
-      v := CoerceCheckedForAssign(v, last_val_tk, target_tid, GetObj(stmt, 'expr'), nm);
+      v := CoerceCheckedForAssign(v, last_val_tk, target_tid, GetObj(stmt, 'expr'), nm,
+        GetObjOrNil(stmt, 'location'));
       EmitLStringLengthCheck(v, lstring_is_length, lstring_capacity, target);
       LLVMBuildStore(builder, v, addr);
       { A selected leaf is a producer for that leaf only; its siblings,
@@ -358,6 +390,7 @@ BEGIN
   location := GetObj(stmt, 'location');
   SetPtrArrayElem(args, 2, LLVMConstInt(i32ty, GetInt(location, 'line'), 0));
   SetPtrArrayElem(args, 3, LLVMConstInt(i32ty, GetInt(location, 'column'), 0));
+  EmitDiagFile(location);
   discard := LLVMBuildCall2(builder, fnty, fn, args, 4, MakeCStr(''));
   discard := LLVMBuildUnreachable(builder);
 END;
@@ -571,7 +604,7 @@ VAR
   start_node, end_node: ADRMEM;
   start_val, end_val, cur_val, cmp_val, next_val: ADRMEM;
   loop_bb, body_bb, step_bb, inc_bb, end_bb, chk_bb, cont_bb: ADRMEM;
-  done_bb, saved_taint, start_state: ADRMEM;
+  done_bb, saved_taint, start_state, loc: ADRMEM;
   down, narrow, unsigned, sub_chk, tracked, unset_at_exit: BOOLEAN;
 BEGIN
   var_name := GetStr(stmt, 'var');
@@ -630,8 +663,14 @@ BEGIN
     cont_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('for_ranged'));
     LLVMBuildCondBr(builder, cmp_val, chk_bb, cont_bb);
     LLVMPositionBuilderAtEnd(builder, chk_bb);
-    EmitSubrangeCheck(start_val, var_tk, symbols[symi].tk);
-    EmitSubrangeCheck(end_val, var_tk, symbols[symi].tk);
+    { Each bound is reported at its own expression (the FOR statement
+      for a legacy node without a location). }
+    loc := NodeDiagLocation(start_node);
+    IF loc = NIL THEN loc := GetObjOrNil(stmt, 'location');
+    EmitSubrangeCheck(start_val, var_tk, symbols[symi].tk, loc);
+    loc := NodeDiagLocation(end_node);
+    IF loc = NIL THEN loc := GetObjOrNil(stmt, 'location');
+    EmitSubrangeCheck(end_val, var_tk, symbols[symi].tk, loc);
     LLVMBuildBr(builder, cont_bb);
     LLVMPositionBuilderAtEnd(builder, cont_bb);
   END;
@@ -1089,6 +1128,7 @@ BEGIN
   SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, capacity, 0));
   SetPtrArrayElem(args, 2, LLVMConstInt(i32ty, line, 0));
   SetPtrArrayElem(args, 3, LLVMConstInt(i32ty, column, 0));
+  EmitDiagFile(location);
   discard := LLVMBuildCall2(builder, fnty, fn, args, 4, MakeCStr(''));
   discard := LLVMBuildUnreachable(builder);
   LLVMPositionBuilderAtEnd(builder, ok_bb);
@@ -1142,6 +1182,7 @@ BEGIN
   SetPtrArrayElem(call_args, 2, len);
   SetPtrArrayElem(call_args, 3, LLVMConstInt(i32ty, line, 0));
   SetPtrArrayElem(call_args, 4, LLVMConstInt(i32ty, column, 0));
+  EmitDiagFile(location);
   discard := LLVMBuildCall2(builder, fnty, fn, call_args, 5, MakeCStr(''));
   discard := LLVMBuildUnreachable(builder);
   LLVMPositionBuilderAtEnd(builder, ok_bb);
@@ -1215,8 +1256,7 @@ VAR
   indices, call_args: ADRMEM;
   i: INTEGER32;
 BEGIN
-  thunk_name := '__pas_klaunch_';
-  CONCAT(thunk_name, routines[ridx].name);
+  thunk_name := BoundedSymbol('__pas_klaunch_', routines[ridx].name);
   thunk_ty := LLVMFunctionType(voidty, MakeArgs1(LLVMPointerType(i8ptrty, 0)), 1, 0);
   thunk := LLVMAddFunction(modl, MakeCStr(thunk_name), thunk_ty);
   LLVMSetLinkage(thunk, 8); { LLVMInternalLinkage -- reached only through the
@@ -1997,8 +2037,10 @@ PROCEDURE CodegenStmt(stmt: ADRMEM);
 VAR
   nt, msg: Str255;
   saved_rangeck: BOOLEAN;
+  saved_line, saved_column: INTEGER32;
 BEGIN
   EnterStmtLevel;
+  EnterLayoutSite(stmt, saved_line, saved_column);
   saved_rangeck := cur_rangeck;
   nt := NodeType(stmt);
   IF GetObjOrNil(stmt, 'rangeck') <> NIL THEN
@@ -2025,6 +2067,7 @@ BEGIN
     AbortWith(msg);
   END;
   cur_rangeck := saved_rangeck;
+  LeaveLayoutSite(saved_line, saved_column);
   LeaveStmtLevel;
 END;
 

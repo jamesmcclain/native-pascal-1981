@@ -171,15 +171,26 @@ static void lex_number(Lexer *lx, Token *t)
     while (p < lx->len && isdigit((unsigned char) s[p]))
         p++;
     if (p < lx->len && s[p] == '#') {
-        /* radix constant: base#digits */
-        int base = atoi(s + lx->pos);
-        if (base < 2 || base > 36)
+        /* radix constant: base#digits. The base is read digit by digit (no
+         * atoi, which is undefined on overflow) and the value must fit
+         * INTEGER64, the widest pasboot type: no silent wraparound. */
+        int base = 0;
+        for (size_t q = lx->pos; q < p; q++) {
+            base = base * 10 + (s[q] - '0');
+            if (base > 36)
+                fatal(t->loc, "bad radix constant");
+        }
+        if (base < 2)
             fatal(t->loc, "bad radix constant");
         p++;
         uint64_t v = 0;
         size_t d0 = p;
-        while (p < lx->len && digit_value(s[p]) < base)
-            v = v * (uint64_t) base + (uint64_t) digit_value(s[p++]);
+        while (p < lx->len && digit_value(s[p]) < base) {
+            uint64_t d = (uint64_t) digit_value(s[p++]);
+            if (v > ((uint64_t) INT64_MAX - d) / (uint64_t) base)
+                fatal(t->loc, "integer literal exceeds INTEGER64");
+            v = v * (uint64_t) base + d;
+        }
         if (p == d0)
             fatal(t->loc, "bad radix constant");
         t->kind = T_INT;
@@ -211,8 +222,18 @@ static void lex_number(Lexer *lx, Token *t)
         t->kind = T_REAL;
         t->rval = strtod(text, NULL);
     } else {
+        /* Exact decimal accumulation: strtoull saturates silently and the
+         * cast of 2^63 and above has no INTEGER64 value. Every pasboot
+         * integer type is signed, so a literal past INTEGER64 is an error. */
+        uint64_t v = 0;
+        for (const char *q = text; *q; q++) {
+            uint64_t d = (uint64_t) (*q - '0');
+            if (v > ((uint64_t) INT64_MAX - d) / 10)
+                fatal(t->loc, "integer literal exceeds INTEGER64");
+            v = v * 10 + d;
+        }
         t->kind = T_INT;
-        t->ival = (int64_t) strtoull(text, NULL, 10);
+        t->ival = (int64_t) v;
     }
     lx->pos = p;
 }

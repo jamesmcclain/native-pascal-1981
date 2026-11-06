@@ -1,0 +1,1 @@
+runtime error: value 10 is outside subrange 0..9 at line 4 column 3 of file runtime_subrange.inc

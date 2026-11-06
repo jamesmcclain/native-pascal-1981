@@ -1,0 +1,9 @@
+Type checking failed:
+HIBYTE/LOBYTE argument must be INTEGER or WORD at line 12 column 8
+HIBYTE/LOBYTE argument must be INTEGER or WORD at line 13 column 8
+HIBYTE/LOBYTE argument must be INTEGER or WORD at line 14 column 8
+Positive integer constant out of range for INTEGER at line 15 column 8
+Cannot assign incompatible type without narrowing: i at line 15 column 3
+ABS/SQR argument must be numeric at line 16 column 8
+Cannot assign incompatible type without narrowing: x at line 16 column 3
+Positive integer constant out of range for INTEGER at line 17 column 3

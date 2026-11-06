@@ -92,10 +92,11 @@ check_frozen_ast() {
   local actual_typed="$work/$name.typed.json"
 
   # The reference predates native per-index and per-operation flag snapshots;
-  # those are checked separately by indexck_metadata.sh/mathck_metadata.sh,
+  # those are checked separately by indexck_metadata.sh/mathck_metadata.sh
+  # (and the routine-level stackck snapshot by stackck.sh),
   # not treated as reference parity.
   if bin/lexer < "$reference.pas" | bin/parser > "$actual_ast" &&
-     bin/astcompare --ignore-key indexck --ignore-key rangeck --ignore-key meta_flags --ignore-key read_flags --ignore-key read_location --ignore-key location --ignore-key mathck --ignore-key op_location --ignore-key leading_comments --ignore-key trailing_comment \
+     bin/astcompare --ignore-key indexck --ignore-key rangeck --ignore-key meta_flags --ignore-key read_flags --ignore-key read_location --ignore-key location --ignore-key mathck --ignore-key stackck --ignore-key op_location --ignore-key leading_comments --ignore-key trailing_comment \
        "$reference.ast.json" "$actual_ast"; then
     pass "native parser matches the frozen $label AST"
   else
@@ -103,7 +104,7 @@ check_frozen_ast() {
   fi
 
   if bin/typechecker < "$actual_ast" > "$actual_typed" &&
-     bin/astcompare --ignore-key resolved_type --ignore-key indexck --ignore-key rangeck --ignore-key meta_flags --ignore-key read_flags --ignore-key read_location --ignore-key location --ignore-key mathck --ignore-key op_location \
+     bin/astcompare --ignore-key resolved_type --ignore-key indexck --ignore-key rangeck --ignore-key meta_flags --ignore-key read_flags --ignore-key read_location --ignore-key location --ignore-key mathck --ignore-key stackck --ignore-key op_location \
        --ignore-key leading_comments --ignore-key trailing_comment \
        "$reference.typed.json" "$actual_typed"; then
     pass "native typechecker matches the frozen $label AST"

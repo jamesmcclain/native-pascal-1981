@@ -1,0 +1,6 @@
+Type checking failed:
+STRING capacity must be an integer constant at line 10 column 3
+Selector on a string constant: S at line 12 column 11
+UPPER/LOWER string literal has no declared capacity at line 13 column 11
+Cannot assign incompatible type without narrowing: i at line 14 column 3
+ORD argument must be an ordinal type at line 15 column 11

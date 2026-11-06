@@ -1,0 +1,11 @@
+Type checking failed:
+STRING capacity -3 is outside 1..65535 at line 8 column 3
+STRING capacity -3 is outside 1..65535 at line 9 column 3
+LSTRING capacity -3 is outside 0..65535 at line 10 column 3
+STRING capacity 0 is outside 1..65535 at line 11 column 3
+LSTRING capacity -1 is outside 0..65535 at line 12 column 3
+STRING capacity must be an integer constant at line 13 column 3
+LSTRING capacity 70000 is outside 0..65535 at line 14 column 3
+STRING capacity 0 is outside 1..65535 at line 15 column 3
+LSTRING capacity 4294967293 is outside 0..65535 at line 16 column 3
+STRING capacity must be an integer constant at line 17 column 3

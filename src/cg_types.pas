@@ -459,12 +459,44 @@ BEGIN
       END;
 END;
 
-FUNCTION FoldConstInt(expr_node: ADRMEM; VAR folded: INTEGER64): BOOLEAN;
-{ Fold the integer-only constant-expression subset used by the reference
-  typechecker's _fold_const_int: literals, unary +/-, arithmetic, earlier
-  integer CONSTs, and ORD/SUCC/PRED/ABS/SQR.  This is deliberately not CodegenExpr:
-  callers need the untruncated value before rebuilding it at a wider target
-  type for the vintage INTEGER-constant adaptation rule. }
+FUNCTION FoldConstIntIn(expr_node: ADRMEM; general, typechecked: BOOLEAN;
+                        VAR folded: INTEGER64): BOOLEAN;
+{ Fold the integer-only constant-expression subset: literals, unary +/-,
+  arithmetic, names and the intrinsics ORD/CHR/SUCC/PRED/ABS/SQR/BYWORD,
+  and WRD in a constant expression only.
+  This is deliberately not CodegenExpr: callers need the untruncated value
+  before rebuilding it at a wider target type for the vintage
+  INTEGER-constant adaptation rule.
+
+  typechecked selects the typechecker's rule (FoldConstInt in tc_types.pas),
+  which decides what is an integer constant for every consumer that adapts,
+  narrows or range-checks one: IsIntLiteralLike and a CONST's int_const use
+  it, so a constant the typechecker tagged or adapted is the constant
+  lowered here and an expression it treated as dynamic -- and so MATHCK-
+  checked -- is never materialized as a constant
+  (tests/contract/const_fold_shadowing.sh runs the two side by side):
+  - a name folds when its innermost visible declaration is an integer,
+    CHAR or BOOLEAN CONST whose own value folded (int_const), or, with no
+    user declaration of that spelling visible, a predeclared MAXINT,
+    MAXWORD, MAXINT32, MAXWORD32 or MAXINT64 -- never a variable,
+    parameter, WITH field or routine (LookupSym, then LookupConst, then
+    PredeclaredConstVisible; the typechecker's scoped LookupSymbol answers
+    the same question in one step). An enumeration member, and a CONST
+    computed from one, is not an integer constant: operations on them are
+    checked at run time (tests/contract/mathck_scalar.sh);
+  - an intrinsic call folds in a general expression only when no user
+    routine of its name is visible (the typechecker rejects a call to a
+    visible variable or field: `Not a function'). general is FALSE in a
+    constant expression -- a CONST value, a bound -- where the call is
+    always the intrinsic, since ParseConstant admits those names by
+    spelling (the typechecker's const_expr_level; docs/dialect_notes.md).
+  Without typechecked (FoldConstInt) an enumeration member folds to its
+  ordinal too: a CONST's value and an array bound need it.
+  One difference is deliberate: an enabled out-of-domain CHR or BYWORD is
+  declined here, so it is lowered with its runtime guard, which always
+  fails before the value is used; the typechecker folds its converted
+  value, but every constant context and every folded operation around it
+  report the call first (CheckConstByteDomain). }
 VAR
   nt, op, nm, ch: Str255;
   left, right: INTEGER64;
@@ -473,7 +505,7 @@ VAR
   chr_checked: BOOLEAN;
 BEGIN
   nt := NodeType(expr_node);
-  FoldConstInt := FALSE;
+  FoldConstIntIn := FALSE;
   IF nt = 'IntLiteral' THEN
   BEGIN
     { Exact, not Real64ToInt64(GetReal(...)): a JSON number keeps 15 digits,
@@ -481,12 +513,12 @@ BEGIN
     folded := GetInt64(expr_node, 'value');
     { A literal of 2^63 or more holds only its WORD64 bit pattern; it is a
       WORD64 operand, never an INTEGER64 constant (CodegenExpr). }
-    FoldConstInt := NOT GetBool(expr_node, 'word64');
+    FoldConstIntIn := NOT GetBool(expr_node, 'word64');
   END
   ELSE IF nt = 'BoolLiteral' THEN
   BEGIN
     IF GetBool(expr_node, 'value') THEN folded := 1 ELSE folded := 0;
-    FoldConstInt := TRUE;
+    FoldConstIntIn := TRUE;
   END
   ELSE IF nt = 'CharLiteral' THEN
   BEGIN
@@ -496,42 +528,42 @@ BEGIN
       const_tbl[].is_char and recovered when the value is materialized. }
     ch := GetStr(expr_node, 'value');
     folded := ORD(ch[1]);
-    FoldConstInt := TRUE;
+    FoldConstIntIn := TRUE;
   END
   ELSE IF nt = 'UnaryOp' THEN
   BEGIN
     op := GetStr(expr_node, 'op');
-    IF ((op = 'PLUS') OR (op = 'MINUS')) AND FoldConstInt(GetObj(expr_node, 'operand'), folded) THEN
+    IF ((op = 'PLUS') OR (op = 'MINUS')) AND FoldConstIntIn(GetObj(expr_node, 'operand'), general, typechecked, folded) THEN
     BEGIN
-      IF op = 'MINUS' THEN FoldConstInt := FoldArith('MINUS', 0, folded, folded)
-      ELSE FoldConstInt := TRUE;
+      IF op = 'MINUS' THEN FoldConstIntIn := FoldArith('MINUS', 0, folded, folded)
+      ELSE FoldConstIntIn := TRUE;
     END
     ELSE IF (op = 'MINUS') AND IsWord64MinLiteral(GetObj(expr_node, 'operand')) THEN
     BEGIN
       { -9223372036854775808: the bit pattern of 2^63 is already the
         INTEGER64 minimum. }
       folded := GetInt64(GetObj(expr_node, 'operand'), 'value');
-      FoldConstInt := TRUE;
+      FoldConstIntIn := TRUE;
     END;
   END
   ELSE IF nt = 'BinOp' THEN
   BEGIN
     op := GetStr(expr_node, 'op');
     IF ((op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') OR (op = 'DIV') OR (op = 'MOD')) AND
-       FoldConstInt(GetObj(expr_node, 'left'), left) AND
-       FoldConstInt(GetObj(expr_node, 'right'), right) THEN
+       FoldConstIntIn(GetObj(expr_node, 'left'), general, typechecked, left) AND
+       FoldConstIntIn(GetObj(expr_node, 'right'), general, typechecked, right) THEN
     BEGIN
       IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') THEN
-        FoldConstInt := FoldArith(op, left, right, folded)
+        FoldConstIntIn := FoldArith(op, left, right, folded)
       ELSE IF right = -1 THEN
       BEGIN
         { x DIV -1 is -x, which overflows only for the minimum; x MOD -1
           is 0. }
-        IF op = 'DIV' THEN FoldConstInt := FoldArith('MINUS', 0, left, folded)
+        IF op = 'DIV' THEN FoldConstIntIn := FoldArith('MINUS', 0, left, folded)
         ELSE
         BEGIN
           folded := 0;
-          FoldConstInt := TRUE;
+          FoldConstIntIn := TRUE;
         END;
       END
       ELSE IF right <> 0 THEN
@@ -539,43 +571,59 @@ BEGIN
         { Truncate toward zero; MOD has the dividend's sign, like runtime. }
         IF op = 'DIV' THEN folded := left DIV right
         ELSE folded := left MOD right;
-        FoldConstInt := TRUE;
+        FoldConstIntIn := TRUE;
       END
       ELSE
         AbortWith('codegen: Constant division by zero');
     END;
   END
-  ELSE IF nt = 'Identifier' THEN
+  ELSE IF (nt = 'Identifier') OR
+          ((nt = 'Designator') AND (ArrSize(GetObj(expr_node, 'selectors')) = 0)) THEN
   BEGIN
-    ci := LookupConst(GetStr(expr_node, 'name'));
+    { The innermost visible declaration decides, as LookupSymbol does for
+      the typechecker: a variable, parameter, WITH field or routine is not
+      a constant; a CONST is (an enumeration member only without
+      typechecked); with no user declaration at all, the predeclared maxima
+      are. }
+    nm := GetStr(expr_node, 'name');
+    ci := 0;
+    IF LookupSym(nm) = 0 THEN ci := LookupConst(nm);
     IF ci <> 0 THEN
     BEGIN
       { A WORD64 constant of 2^63 or more holds only its bit pattern. }
-      IF NOT const_tbl[ci].is_real AND
-         NOT ((const_tbl[ci].integer_tid = TK_WORD64) AND (const_tbl[ci].ival < 0)) THEN
+      IF NOT const_tbl[ci].is_real AND NOT const_tbl[ci].is_string AND
+         NOT ((const_tbl[ci].integer_tid = TK_WORD64) AND (const_tbl[ci].ival < 0)) AND
+         (const_tbl[ci].int_const OR NOT typechecked) THEN
       BEGIN
         folded := const_tbl[ci].ival;
-        FoldConstInt := TRUE;
+        FoldConstIntIn := TRUE;
       END;
     END
-    ELSE
+    ELSE IF PredeclaredConstVisible(nm) THEN
     BEGIN
-      { The predeclared signed maxima are constants to the typechecker
-        (tc_base.pas) but live in CodegenExpr rather than const_tbl; without
-        them `w + MAXINT` missed the constant-adaptation rule. The WORD
-        maxima stay unfolded: MAXWORD64 has no INTEGER64 value. }
-      nm := UpperStr(GetStr(expr_node, 'name'));
+      { The predeclared maxima are constants to the typechecker
+        (tc_base.pas) but live in CodegenExpr rather than const_tbl.
+        MAXWORD64 has no INTEGER64 value and stays unfolded. }
+      nm := UpperStr(nm);
       IF nm = 'MAXINT' THEN
       BEGIN
-        folded := 32767; FoldConstInt := TRUE;
+        folded := 32767; FoldConstIntIn := TRUE;
+      END
+      ELSE IF nm = 'MAXWORD' THEN
+      BEGIN
+        folded := 65535; FoldConstIntIn := TRUE;
       END
       ELSE IF nm = 'MAXINT32' THEN
       BEGIN
-        folded := 2147483647; FoldConstInt := TRUE;
+        folded := 2147483647; FoldConstIntIn := TRUE;
+      END
+      ELSE IF nm = 'MAXWORD32' THEN
+      BEGIN
+        folded := 4294967295; FoldConstIntIn := TRUE;
       END
       ELSE IF nm = 'MAXINT64' THEN
       BEGIN
-        folded := 9223372036854775807; FoldConstInt := TRUE;
+        folded := 9223372036854775807; FoldConstIntIn := TRUE;
       END;
     END;
   END
@@ -583,9 +631,12 @@ BEGIN
   BEGIN
     nm := UpperStr(GetStr(expr_node, 'name'));
     args := GetObj(expr_node, 'args');
+    { In a general expression a visible user routine of this spelling is
+      an ordinary call. }
+    IF general AND UserRoutineShadows(nm) THEN RETURN;
     IF (nm = 'BYWORD') AND (ArrSize(args) = 2) AND
-       FoldConstInt(ArrItem(args, 0), left) AND
-       FoldConstInt(ArrItem(args, 1), right) THEN
+       FoldConstIntIn(ArrItem(args, 0), general, typechecked, left) AND
+       FoldConstIntIn(ArrItem(args, 1), general, typechecked, right) THEN
     BEGIN
       { An enabled out-of-domain call does not fold: the typechecker
         rejects it where a constant is required (CheckConstByteDomain),
@@ -596,11 +647,20 @@ BEGIN
          ((left < 0) OR (left > 255) OR (right < 0) OR (right > 255)) THEN
         RETURN;
       folded := LowByte(left) * 256 + LowByte(right);
-      FoldConstInt := TRUE;
+      FoldConstIntIn := TRUE;
+    END
+    ELSE IF (nm = 'WRD') AND NOT general AND (ArrSize(args) = 1) AND
+       FoldConstIntIn(ArrItem(args, 0), general, typechecked, folded) THEN
+    BEGIN
+      { Only in a constant expression, as the typechecker folds it: the
+        WORD bit pattern, WRD(-2) = 65534. }
+      folded := folded MOD 65536;
+      IF folded < 0 THEN folded := folded + 65536;
+      FoldConstIntIn := TRUE;
     END
     ELSE IF ((nm = 'ORD') OR (nm = 'CHR') OR (nm = 'SUCC') OR (nm = 'PRED') OR
         (nm = 'ABS') OR (nm = 'SQR')) AND (ArrSize(args) = 1) AND
-       FoldConstInt(ArrItem(args, 0), folded) THEN
+       FoldConstIntIn(ArrItem(args, 0), general, typechecked, folded) THEN
     BEGIN
       IF nm = 'CHR' THEN
       BEGIN
@@ -611,74 +671,44 @@ BEGIN
           RETURN;
         { Preserve the converted ordinal only after checking the original. }
         folded := LowByte(folded);
-        FoldConstInt := TRUE;
+        FoldConstIntIn := TRUE;
       END
-      ELSE IF nm = 'SUCC' THEN FoldConstInt := FoldArith('PLUS', folded, 1, folded)
-      ELSE IF nm = 'PRED' THEN FoldConstInt := FoldArith('MINUS', folded, 1, folded)
-      ELSE IF nm = 'SQR' THEN FoldConstInt := FoldArith('MUL', folded, folded, folded)
-      ELSE IF (nm = 'ABS') AND (folded < 0) THEN FoldConstInt := FoldArith('MINUS', 0, folded, folded)
-      ELSE FoldConstInt := TRUE;
+      ELSE IF nm = 'SUCC' THEN FoldConstIntIn := FoldArith('PLUS', folded, 1, folded)
+      ELSE IF nm = 'PRED' THEN FoldConstIntIn := FoldArith('MINUS', folded, 1, folded)
+      ELSE IF nm = 'SQR' THEN FoldConstIntIn := FoldArith('MUL', folded, folded, folded)
+      ELSE IF (nm = 'ABS') AND (folded < 0) THEN FoldConstIntIn := FoldArith('MINUS', 0, folded, folded)
+      ELSE FoldConstIntIn := TRUE;
     END;
   END;
 END;
 
-FUNCTION FoldsThroughShadowedName(expr_node: ADRMEM): BOOLEAN;
-{ TRUE when FoldConstInt would reach its value through a spelling that a
-  visible variable or user routine has taken over.  FoldConstInt itself
-  folds a CONST name and BYWORD/ORD/CHR/SUCC/PRED (and ABS/SQR) by name, deliberately: ps_expr.pas's
-  ParseConstant admits exactly those names in a constant expression and
-  nothing else can appear there, so a CONST value is the intrinsic whatever
-  else is in scope -- which is also what the Python reference's
-  eval_const_expr/_fold_const_int do.  A general expression is the opposite
-  case: `y := ORD(''a'')' with a user ORD in scope is an ordinary call, and
-  `a[big]' with a VAR big visible loads the variable (CodegenExpr asks
-  LookupSym first), so folding either substitutes a value the lowered code
-  never computes.  LookupConst already declines a CONST that a deeper
-  symbol hides; the Identifier arm also covers a symbol and CONST declared
-  in the same scope, which CodegenExpr resolves to the symbol. }
-VAR
-  nt: Str255;
-  args: ADRMEM;
-  i, n: INTEGER32;
-  found: BOOLEAN;
+FUNCTION FoldConstInt(expr_node: ADRMEM; VAR folded: INTEGER64): BOOLEAN;
+{ The value of a constant expression -- a CONST value or a bound -- or of
+  an expression IsIntLiteralLike accepted (FoldConstIntIn). }
 BEGIN
-  found := FALSE;
-  nt := NodeType(expr_node);
-  IF nt = 'Identifier' THEN
-    found := LookupSym(GetStr(expr_node, 'name')) <> 0
-  ELSE IF nt = 'FuncCall' THEN
-  BEGIN
-    IF UserRoutineShadows(GetStr(expr_node, 'name')) THEN found := TRUE;
-    args := GetObj(expr_node, 'args');
-    n := ArrSize(args);
-    FOR i := 0 TO n - 1 DO
-      IF FoldsThroughShadowedName(ArrItem(args, i)) THEN found := TRUE;
-  END
-  ELSE IF nt = 'UnaryOp' THEN
-    found := FoldsThroughShadowedName(GetObj(expr_node, 'operand'))
-  ELSE IF nt = 'BinOp' THEN
-  BEGIN
-    IF FoldsThroughShadowedName(GetObj(expr_node, 'left')) THEN found := TRUE;
-    IF FoldsThroughShadowedName(GetObj(expr_node, 'right')) THEN found := TRUE;
-  END;
-  FoldsThroughShadowedName := found;
+  FoldConstInt := FoldConstIntIn(expr_node, FALSE, FALSE, folded);
 END;
 
-FUNCTION IsIntLiteralLike(expr_node: ADRMEM): BOOLEAN;
-{ True when FoldConstInt can produce a compile-time INTEGER value.  Every
-  caller is a general-expression coercion (CoerceForAssign's narrowing arms,
-  cg_expr's mixed-width binop widening, index and VLOAD bound checks), never
-  a constant declaration, so a shadowed spelling must not fold here -- see
-  FoldsThroughShadowedName. }
+FUNCTION ConstValueIsIntConst(expr_node: ADRMEM): BOOLEAN;
+{ A CONST declaration's int_const: does the typechecker's FoldConstInt fold
+  its value (FoldConstIntIn)? }
 VAR
   folded: INTEGER64;
 BEGIN
-  IF FoldsThroughShadowedName(expr_node) THEN
-    IsIntLiteralLike := FALSE
-  ELSE
-    IsIntLiteralLike := FoldConstInt(expr_node, folded);
+  ConstValueIsIntConst := FoldConstIntIn(expr_node, FALSE, TRUE, folded);
 END;
 
+FUNCTION IsIntLiteralLike(expr_node: ADRMEM): BOOLEAN;
+{ True when an expression outside a constant declaration -- a coercion,
+  a mixed-width operand, an index or a VLOAD bound -- has a compile-time
+  INTEGER value (FoldConstIntIn). Its callers take the value from
+  IntLiteralValue or FoldConstInt, which agree once this holds: a
+  general-expression fold never passes through a shadowed call. }
+VAR
+  folded: INTEGER64;
+BEGIN
+  IsIntLiteralLike := FoldConstIntIn(expr_node, TRUE, TRUE, folded);
+END;
 
 FUNCTION IntLiteralValue(expr_node: ADRMEM): INTEGER64;
 { The full signed value of an IsIntLiteralLike expression. }
@@ -773,7 +803,7 @@ BEGIN
     IntToFloat := LLVMBuildSIToFP(builder, v, destty, MakeCStr(''));
 END;
 
-FUNCTION CoerceForAssign(v: ADRMEM; from_tid, to_tid: INTEGER; expr_node: ADRMEM; ctx_name: Str255): ADRMEM;
+FUNCTION CoerceForAssignHost(v: ADRMEM; from_tid, to_tid: INTEGER; expr_node: ADRMEM; ctx_name: Str255): ADRMEM;
 { Resolve an assignment's RHS value against its target type, mirroring the
   Python reference's can_assign plus its _const_adapts_to_int_target
   exemption (consts.py): a compile-time INTEGER *literal* may flow into a
@@ -782,39 +812,40 @@ FUNCTION CoerceForAssign(v: ADRMEM; from_tid, to_tid: INTEGER; expr_node: ADRMEM
   needs no coercion; INTEGER8 is i8, so the literal is truncated). A
   non-literal INTEGER expression assigned to WORD/INTEGER8 is rejected,
   same as the reference (use WRD(...) / an INTEGER8-typed expression
-  explicitly). }
+  explicitly). Reached through CoerceForAssign, which passes a
+  subrange's host. }
 BEGIN
   IF IsHostDescriptor(to_tid) AND (NodeType(expr_node) = 'NilLiteral') THEN
-    CoerceForAssign := LLVMConstNull(LLVMTypeForTk(to_tid))
+    CoerceForAssignHost := LLVMConstNull(LLVMTypeForTk(to_tid))
   ELSE IF (IsHostDescriptor(from_tid) OR IsHostDescriptor(to_tid)) AND (from_tid <> to_tid) THEN
   BEGIN
     AbortWith2('codegen: incompatible super-array descriptor pointer; use explicit unsafe conversion: ', ctx_name);
-    CoerceForAssign := NIL;
+    CoerceForAssignHost := NIL;
   END
   ELSE IF (from_tid <> to_tid) AND ExposesHostDescriptor(from_tid) AND
           ((to_tid = TK_ADRMEM) OR (TypeKind(to_tid) = TK_POINTER)) THEN
   BEGIN
-    IF SameStoragePointerTarget(from_tid, to_tid) THEN CoerceForAssign := v
+    IF SameStoragePointerTarget(from_tid, to_tid) THEN CoerceForAssignHost := v
     ELSE
     BEGIN
       AbortWith2('codegen: implicit escape of super-array descriptor storage is unsupported: ', ctx_name);
-      CoerceForAssign := NIL;
+      CoerceForAssignHost := NIL;
     END;
   END
   ELSE IF TypesCompatibleForAssign(from_tid, to_tid) THEN
   BEGIN
     ReleaseReinterpretedReferent(v, from_tid, to_tid, expr_node);
-    CoerceForAssign := v;
+    CoerceForAssignHost := v;
   END
   ELSE IF (from_tid = TK_INTEGER) AND ((to_tid = TK_INTEGER8) OR (to_tid = TK_WORD8)) AND IsIntLiteralLike(expr_node) THEN
-    CoerceForAssign := LLVMConstInt(i8ty, IntLiteralValue(expr_node), 1)
+    CoerceForAssignHost := LLVMConstInt(i8ty, IntLiteralValue(expr_node), 1)
   ELSE IF (from_tid = TK_INTEGER) AND ((to_tid = TK_INTEGER32) OR (to_tid = TK_WORD32)) AND IsIntLiteralLike(expr_node) THEN
-    CoerceForAssign := LLVMConstInt(i32ty, IntLiteralValue(expr_node), 1)
+    CoerceForAssignHost := LLVMConstInt(i32ty, IntLiteralValue(expr_node), 1)
   ELSE IF (from_tid = TK_INTEGER) AND ((to_tid = TK_INTEGER64) OR (to_tid = TK_WORD64)) AND IsIntLiteralLike(expr_node) THEN
-    CoerceForAssign := LLVMConstInt(i64ty, IntLiteralValue(expr_node), 1)
+    CoerceForAssignHost := LLVMConstInt(i64ty, IntLiteralValue(expr_node), 1)
   ELSE IF (from_tid = TK_REAL32) AND (to_tid = TK_REAL) THEN
     { REAL32 widens implicitly into REAL, matching the reference. }
-    CoerceForAssign := LLVMBuildFPExt(builder, v, dblty, MakeCStr(''))
+    CoerceForAssignHost := LLVMBuildFPExt(builder, v, dblty, MakeCStr(''))
   ELSE IF ((from_tid = TK_INTEGER) OR (from_tid = TK_WORD) OR (from_tid = TK_INTEGER8) OR (from_tid = TK_WORD8)
       OR (from_tid = TK_INTEGER32) OR (from_tid = TK_WORD32) OR (from_tid = TK_INTEGER64) OR (from_tid = TK_WORD64))
       AND ((to_tid = TK_REAL) OR (to_tid = TK_REAL32)) THEN
@@ -822,7 +853,7 @@ BEGIN
       target float width, matching the reference's general C-ABI argument
       coercion (not just a literal exemption -- any integer-typed
       expression, e.g. cJSON_CreateNumber(int_var)). }
-    CoerceForAssign := IntToFloat(v, from_tid, LLVMTypeForTk(to_tid))
+    CoerceForAssignHost := IntToFloat(v, from_tid, LLVMTypeForTk(to_tid))
   ELSE IF TypeKind(to_tid) = TK_ENUM THEN
   BEGIN
     { An enum target stores a 0-based ordinal in i32. Enum member
@@ -831,22 +862,22 @@ BEGIN
       integer-family expressions (the manual's ordinal arithmetic) as
       their own widths -- coerce each into the i32 storage. }
     IF IsIntLiteralLike(expr_node) THEN
-      CoerceForAssign := LLVMConstInt(i32ty, IntLiteralValue(expr_node), 1)
+      CoerceForAssignHost := LLVMConstInt(i32ty, IntLiteralValue(expr_node), 1)
     ELSE IF TypeKind(from_tid) = TK_ENUM THEN
-      CoerceForAssign := v
+      CoerceForAssignHost := v
     ELSE IF IsIntegerFamilyTk(from_tid) THEN
     BEGIN
       IF IntFamilyWidth(from_tid) > 32 THEN
-        CoerceForAssign := LLVMBuildTrunc(builder, v, i32ty, MakeCStr(''))
+        CoerceForAssignHost := LLVMBuildTrunc(builder, v, i32ty, MakeCStr(''))
       ELSE IF IsUnsignedWordTk(from_tid) THEN
-        CoerceForAssign := LLVMBuildZExt(builder, v, i32ty, MakeCStr(''))
+        CoerceForAssignHost := LLVMBuildZExt(builder, v, i32ty, MakeCStr(''))
       ELSE
-        CoerceForAssign := LLVMBuildSExt(builder, v, i32ty, MakeCStr(''));
+        CoerceForAssignHost := LLVMBuildSExt(builder, v, i32ty, MakeCStr(''));
     END
     ELSE
     BEGIN
       AbortWith2('codegen: assignment type mismatch for: ', ctx_name);
-      CoerceForAssign := v;
+      CoerceForAssignHost := v;
     END;
   END
   ELSE IF IsIntegerFamilyTk(from_tid) AND IsIntegerFamilyTk(to_tid) THEN
@@ -857,35 +888,56 @@ BEGIN
       same-tid/WORD-widening rule -- e.g. INTEGER32 -> INTEGER (a plain
       truncation, used by lexer.pas's radix-literal scan accumulator). }
     IF IntFamilyWidth(from_tid) > IntFamilyWidth(to_tid) THEN
-      CoerceForAssign := LLVMBuildTrunc(builder, v, LLVMTypeForTk(to_tid), MakeCStr(''))
+      CoerceForAssignHost := LLVMBuildTrunc(builder, v, LLVMTypeForTk(to_tid), MakeCStr(''))
     ELSE IF IsUnsignedWordTk(from_tid) THEN
-      CoerceForAssign := LLVMBuildZExt(builder, v, LLVMTypeForTk(to_tid), MakeCStr(''))
+      CoerceForAssignHost := LLVMBuildZExt(builder, v, LLVMTypeForTk(to_tid), MakeCStr(''))
     ELSE
-      CoerceForAssign := LLVMBuildSExt(builder, v, LLVMTypeForTk(to_tid), MakeCStr(''));
+      CoerceForAssignHost := LLVMBuildSExt(builder, v, LLVMTypeForTk(to_tid), MakeCStr(''));
   END
   ELSE
   BEGIN
     AbortWith2('codegen: assignment type mismatch for: ', ctx_name);
-    CoerceForAssign := v;
+    CoerceForAssignHost := v;
   END;
 END;
 
-PROCEDURE EmitSubrangeFailure(bad_value: ADRMEM; is_unsigned: BOOLEAN; lo, hi: INTEGER32);
+FUNCTION CoerceForAssign(v: ADRMEM; from_tid, to_tid: INTEGER; expr_node: ADRMEM; ctx_name: Str255): ADRMEM;
+{ CoerceForAssignHost on the hosts: a subrange source or target is coerced
+  as its host, so a WORD or INTEGER32 subrange (NEW-32) takes what its
+  host takes, as an INTEGER one always did. }
+BEGIN
+  CoerceForAssign := CoerceForAssignHost(v, SubrangeBaseTid(from_tid),
+    SubrangeBaseTid(to_tid), expr_node, ctx_name);
+END;
+
+PROCEDURE EmitSubrangeFailure(bad_value: ADRMEM; is_unsigned: BOOLEAN; lo, hi: INTEGER32;
+                              location: ADRMEM);
 { The noreturn pas_subrange_error call (runtime/subrange.c) for an i64
-  bad_value outside lo..hi, at the builder's current (failure) block. }
+  bad_value outside lo..hi, at the builder's current (failure) block,
+  located at location (NodeDiagLocation; NIL, or a legacy 0:0 one, reports
+  no location). An included-file location also stores the file name
+  (EmitDiagFile). }
 VAR
   args, ps, fnty, fn, discard: ADRMEM;
+  line, column: INTEGER32;
 BEGIN
-  ps := AllocPtrArray(4);
+  line := 0; column := 0;
+  IF location <> NIL THEN
+  BEGIN
+    line := GetInt(location, 'line'); column := GetInt(location, 'column');
+  END;
+  ps := AllocPtrArray(6);
   SetPtrArrayElem(ps, 0, i64ty);
   SetPtrArrayElem(ps, 1, i32ty);
   SetPtrArrayElem(ps, 2, i64ty);
   SetPtrArrayElem(ps, 3, i64ty);
-  fnty := LLVMFunctionType(voidty, ps, 4, 0);
+  SetPtrArrayElem(ps, 4, i32ty);
+  SetPtrArrayElem(ps, 5, i32ty);
+  fnty := LLVMFunctionType(voidty, ps, 6, 0);
   fn := LLVMGetNamedFunction(modl, MakeCStr('pas_subrange_error'));
   IF fn = NIL THEN
     fn := LLVMAddFunction(modl, MakeCStr('pas_subrange_error'), fnty);
-  args := AllocPtrArray(4);
+  args := AllocPtrArray(6);
   SetPtrArrayElem(args, 0, bad_value);
   IF is_unsigned THEN
     SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 1, 0))
@@ -893,7 +945,10 @@ BEGIN
     SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 0, 0));
   SetPtrArrayElem(args, 2, LLVMConstInt(i64ty, lo, 1));
   SetPtrArrayElem(args, 3, LLVMConstInt(i64ty, hi, 1));
-  discard := LLVMBuildCall2(builder, fnty, fn, args, 4, MakeCStr(''));
+  SetPtrArrayElem(args, 4, LLVMConstInt(i32ty, line, 0));
+  SetPtrArrayElem(args, 5, LLVMConstInt(i32ty, column, 0));
+  EmitDiagFile(location);
+  discard := LLVMBuildCall2(builder, fnty, fn, args, 6, MakeCStr(''));
   discard := LLVMBuildUnreachable(builder);
 END;
 
@@ -947,6 +1002,7 @@ BEGIN
   SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, capacity, 0));
   SetPtrArrayElem(args, 2, LLVMConstInt(i32ty, line, 0));
   SetPtrArrayElem(args, 3, LLVMConstInt(i32ty, column, 0));
+  EmitDiagFile(location);
   discard := LLVMBuildCall2(builder, fnty, fn, args, 4, MakeCStr(''));
   discard := LLVMBuildUnreachable(builder);
   LLVMPositionBuilderAtEnd(builder, ok_bb);
@@ -964,13 +1020,14 @@ BEGIN
                          is_length, capacity, site);
 END;
 
-PROCEDURE EmitSubrangeCheck(v: ADRMEM; from_tid, to_tid: INTEGER);
+PROCEDURE EmitSubrangeCheck(v: ADRMEM; from_tid, to_tid: INTEGER; location: ADRMEM);
 { $RANGECK for a store into a subrange: when to_tid is a subrange and the
   check is on, compare v (a value of the ordinal type from_tid, extended by
   its own signedness) against the declared lo..hi and call the noreturn
   pas_subrange_error (runtime/subrange.c) from a cold block if it is
-  outside. The compare is done in i128 so no source width, WORD64 included,
-  can wrap into range. Leaves the builder in the in-range block. Device
+  outside, reported at location (NodeDiagLocation of the store's site).
+  The compare is done in i128 so no source width, WORD64 included, can
+  wrap into range. Leaves the builder in the in-range block. Device
   code has no host runtime to call, so it is not checked. }
 VAR
   i128ty, v128, ok, okhi, bad_bb, ok_bb: ADRMEM;
@@ -1003,13 +1060,15 @@ BEGIN
 
   LLVMPositionBuilderAtEnd(builder, bad_bb);
   EmitSubrangeFailure(LLVMBuildTrunc(builder, v128, i64ty, MakeCStr('')), is_unsigned,
-    types[to_tid].lo, types[to_tid].hi);
+    types[to_tid].lo, types[to_tid].hi, location);
 
   LLVMPositionBuilderAtEnd(builder, ok_bb);
 END;
 
-FUNCTION CoerceCheckedForAssign(v: ADRMEM; from_tid, to_tid: INTEGER; expr_node: ADRMEM; ctx_name: Str255): ADRMEM;
-{ CoerceForAssign plus the $RANGECK subrange check. An ordinal source is
+FUNCTION CoerceCheckedForAssign(v: ADRMEM; from_tid, to_tid: INTEGER; expr_node: ADRMEM; ctx_name: Str255;
+                                location: ADRMEM): ADRMEM;
+{ CoerceForAssign plus the $RANGECK subrange check, reported at location
+  (EmitSubrangeCheck). An ordinal source is
   checked before coercion, so a wider value that CoerceForAssign would
   truncate (INTEGER32 -> INTEGER, INTEGER64 -> an enumeration) cannot wrap
   into range; any other source is checked as the coerced host value. }
@@ -1020,13 +1079,13 @@ BEGIN
   fk := TypeKind(from_tid);
   IF (fk = TK_CHAR) OR (fk = TK_BOOLEAN) OR (fk = TK_ENUM) OR IsIntegerFamilyTk(fk) THEN
   BEGIN
-    EmitSubrangeCheck(v, from_tid, to_tid);
+    EmitSubrangeCheck(v, from_tid, to_tid, location);
     r := CoerceForAssign(v, from_tid, to_tid, expr_node, ctx_name);
   END
   ELSE
   BEGIN
     r := CoerceForAssign(v, from_tid, to_tid, expr_node, ctx_name);
-    EmitSubrangeCheck(r, SubrangeBaseTid(to_tid), to_tid);
+    EmitSubrangeCheck(r, SubrangeBaseTid(to_tid), to_tid, location);
   END;
   CoerceCheckedForAssign := r;
 END;
@@ -1034,9 +1093,25 @@ END;
 FUNCTION RoundUpBytes(n, a: INTEGER32): INTEGER32;
 { Round n up to the next multiple of alignment a, matching the reference's
   c_abi.py::_round_up -- shared by TypeSizeBytes/TypeAlignBytes's struct
-  layout below. }
+  layout below. Formed in INTEGER64: an offset just below 2147483647
+  rounds past it, which LayoutBytes rejects as a layout too large. }
+VAR
+  wide: INTEGER64;
 BEGIN
-  RoundUpBytes := ((n + a - 1) DIV a) * a;
+  wide := n;
+  wide := ((wide + a - 1) DIV a) * a;
+  RoundUpBytes := LayoutBytes(wide);
+END;
+
+FUNCTION LayoutAdd(a, b: INTEGER32): INTEGER32;
+{ a + b for layout offsets and sizes, rejected by LayoutBytes when the sum
+  leaves INTEGER32 (each field below 2 GiB, the record above it). }
+VAR
+  wide: INTEGER64;
+BEGIN
+  wide := a;
+  wide := wide + b;
+  LayoutAdd := LayoutBytes(wide);
 END;
 
 FUNCTION LayoutScalarTid(tid: INTEGER): INTEGER;
@@ -1150,7 +1225,7 @@ VAR
   tid: INTEGER;
   i: INTEGER;
   off, fa, end_off: INTEGER32;
-  wide_size: INTEGER64;
+  wide_size, wide_count: INTEGER64;
 BEGIN
   tid := LayoutScalarTid(tid_in);
   IF tid = TK_INTEGER THEN TypeSizeBytes := 2
@@ -1171,11 +1246,11 @@ BEGIN
     { The product can exceed INTEGER32 (an ARRAY of 2^16 64 KiB pages):
       reject a size the INTEGER32 layout bookkeeping cannot represent rather
       than wrapping it into a wrong record offset or NEW size. }
+    wide_count := types[tid].hi;
+    wide_count := wide_count - types[tid].lo + 1;
     wide_size := RoundUpBytes(TypeSizeBytes(types[tid].elem_tid), TypeAlignBytes(types[tid].elem_tid));
-    wide_size := wide_size * (types[tid].hi - types[tid].lo + 1);
-    IF wide_size > 2147483647 THEN
-      AbortWith('codegen: type layout exceeds the supported 2147483647-byte size');
-    TypeSizeBytes := RETYPE(INTEGER32, wide_size);
+    wide_size := wide_size * wide_count;
+    TypeSizeBytes := LayoutBytes(wide_size);
   END
   ELSE IF TypeKind(tid) = TK_RECORD THEN
   BEGIN
@@ -1183,7 +1258,7 @@ BEGIN
     FOR i := 1 TO nfields DO
       IF fields[i].rec_tid = tid THEN
       BEGIN
-        off := fields[i].byte_offset + TypeSizeBytes(fields[i].field_tid);
+        off := LayoutAdd(fields[i].byte_offset, TypeSizeBytes(fields[i].field_tid));
         IF off > end_off THEN end_off := off;
       END;
     TypeSizeBytes := RoundUpBytes(end_off, TypeAlignBytes(tid));
@@ -1250,12 +1325,12 @@ VAR
   msg: Str255;
 BEGIN
   msg := 'codegen: internal error: record layout disagrees with LLVM: ';
-  CONCAT(msg, what);
-  CONCAT(msg, ' is ');
-  CONCAT(msg, IntToStr255(RETYPE(INTEGER32, ours)));
-  CONCAT(msg, ' here but ');
-  CONCAT(msg, IntToStr255(RETYPE(INTEGER32, llvm)));
-  CONCAT(msg, ' in LLVM');
+  AppendText(msg, CgElide(what, 140));
+  AppendText(msg, ' is ');
+  AppendText(msg, IntToStr255(RETYPE(INTEGER32, ours)));
+  AppendText(msg, ' here but ');
+  AppendText(msg, IntToStr255(RETYPE(INTEGER32, llvm)));
+  AppendText(msg, ' in LLVM');
   AbortWith(msg);
 END;
 
@@ -1283,7 +1358,7 @@ BEGIN
       IF ours <> llvm THEN
       BEGIN
         what := 'offset of field ';
-        CONCAT(what, fields[i].fname);
+        AppendText(what, fields[i].fname);
         LayoutMismatch(what, ours, llvm);
       END;
     END;
@@ -1680,16 +1755,55 @@ END;
 
 { Vintage array bounds can be INTEGER or WORD constants. Keep the widened
   value until both bounds are known; ResolveTypeExpr then applies the manual's
-  negative-INTEGER-to-WORD adaptation when one bound selects WORD. }
+  negative-INTEGER-to-WORD adaptation when one bound selects WORD. The
+  extended dialect's wide integers admit an upper bound up to the INTEGER32
+  maximum (the bound's own width here).
+
+  The upper test used to be `wide > MAXWORD', which the compiler that built
+  this one lowered as an unsigned compare against the all-ones INTEGER64
+  pattern -- always FALSE -- so no upper bound was ever enforced and a
+  bound past 2^31 was silently truncated. Once MAXWORD became a folded
+  constant (FoldConstIntIn) that test started to hold; the limits are now
+  explicit literals. }
 FUNCTION CheckedIndexBound(wide: INTEGER64): INTEGER32;
 BEGIN
-  IF (wide > MAXWORD) OR (wide < -32768) THEN
+  { The bound is kept as INTEGER32 (TypeRec.lo/hi): a larger one would wrap
+    into a different, silently wrong index range. }
+  IF wide > 2147483647 THEN
+  BEGIN
+    AbortAtLayoutSite('codegen: array index bound exceeds the supported INTEGER32 range');
+    CheckedIndexBound := 0;
+  END
+  ELSE IF wide < -32768 THEN
+  BEGIN
+    AbortWith('codegen: array index bound is outside -32768..65535');
+    CheckedIndexBound := 0;
+  END
+  ELSE IF NOT active_features.wide_integers AND (wide > 65535) THEN
   BEGIN
     AbortWith('codegen: array index bound is outside -32768..65535');
     CheckedIndexBound := 0;
   END
   ELSE
     CheckedIndexBound := RETYPE(INTEGER32, wide);
+END;
+
+FUNCTION ArrayElementCount(lo, hi: INTEGER32): INTEGER32;
+{ hi - lo + 1 for a fixed array's bounds, formed in INTEGER64: the bounds
+  are INTEGER32, so the count of a range such as -1..2147483647 leaves
+  INTEGER32 and would otherwise stop the compile with a MATHCK trap. }
+VAR
+  wide: INTEGER64;
+BEGIN
+  wide := hi;
+  wide := wide - lo + 1;
+  IF wide > 2147483647 THEN
+  BEGIN
+    AbortAtLayoutSite('codegen: array index range has more than 2147483647 elements');
+    ArrayElementCount := 0;
+  END
+  ELSE
+    ArrayElementCount := RETYPE(INTEGER32, wide);
 END;
 
 FUNCTION ResolveIntLiteral(node: ADRMEM): INTEGER32;
@@ -1708,7 +1822,7 @@ VAR
   wide: INTEGER64;
 BEGIN
   IF NodeType(node) = 'IntLiteral' THEN
-    ResolveIntLiteral := CheckedIndexBound(RETYPE(INTEGER64, GetInt(node, 'value')))
+    ResolveIntLiteral := CheckedIndexBound(GetInt64(node, 'value'))
   ELSE IF NodeType(node) = 'CharLiteral' THEN
   BEGIN
     ch := GetStr(node, 'value');
@@ -1723,6 +1837,8 @@ BEGIN
   BEGIN
     nm := GetStr(node, 'name');
     ci := LookupConst(nm);
+    IF ci <> 0 THEN
+      IF const_tbl[ci].is_string THEN ci := 0;
     IF ci = 0 THEN
     BEGIN
       AbortWith2('codegen: undefined constant in array index bound: ', nm);
@@ -1748,6 +1864,9 @@ BEGIN
       ResolveIntLiteral := 0;
     END;
   END
+  ELSE IF (NodeType(node) = 'UnaryOp') AND FoldConstInt(node, wide) THEN
+    { A signed CONST name, -N (the typechecker checked its range). }
+    ResolveIntLiteral := CheckedIndexBound(wide)
   ELSE
   BEGIN
     AbortWith('codegen: array index bounds must be integer literals or CONST identifiers');
@@ -1784,6 +1903,32 @@ BEGIN
     ELSE IF ((nm = 'SUCC') OR (nm = 'PRED')) AND (ArrSize(args) = 1) THEN
       BoundHostTid := BoundHostTid(ArrItem(args, 0));
   END;
+END;
+
+FUNCTION BoundValueTid(bound_value: INTEGER64): INTEGER;
+{ The narrowest of INTEGER, WORD and INTEGER32 that holds a non-negative
+  bound: the one rule (NEW-5) for an integer index range, a STRING(n)
+  capacity's LOWER/UPPER and an integer subrange's host. The
+  typechecker's tc_types BoundValueKind is the same rule. }
+BEGIN
+  IF bound_value > 65535 THEN BoundValueTid := TK_INTEGER32
+  ELSE IF bound_value > 32767 THEN BoundValueTid := TK_WORD
+  ELSE BoundValueTid := TK_INTEGER;
+END;
+
+FUNCTION WidenBoundHostTid(host_tid: INTEGER; hi: INTEGER64): INTEGER;
+{ The host of an integer range lo..hi whose low bound alone gives
+  host_tid (BoundHostTid): an INTEGER or WORD host widens to hold hi
+  (BoundValueTid), so 0..40000 is a WORD range and (extended only)
+  0..70000 an INTEGER32 one. Any other host is kept. The typechecker's
+  tc_types WidenBoundHostKind is the same rule. }
+VAR
+  r: INTEGER;
+BEGIN
+  r := host_tid;
+  IF (host_tid = TK_INTEGER) OR (host_tid = TK_WORD) THEN
+    IF BoundValueTid(hi) <> TK_INTEGER THEN r := BoundValueTid(hi);
+  WidenBoundHostTid := r;
 END;
 
 PROCEDURE ResolveNamedIndexDomain(index_node: ADRMEM; VAR lo, hi: INTEGER32; VAR host_tid: INTEGER);
@@ -2006,6 +2151,35 @@ BEGIN
   RecordTidFor := tid;
 END;
 
+FUNCTION StringCapacity(te: ADRMEM): INTEGER32;
+{ The n of a STRING(n)/LSTRING(n) NamedType whose param is present: a
+  literal, a CONST name, or a constant expression the parser kept whole
+  (-N, WRD(5)). The typechecker accepted only an integer constant in
+  range (CheckStringCapacity). A CONST name used to read as 0. }
+VAR
+  pname: Str255;
+  ci: INTEGER32;
+  folded: INTEGER64;
+BEGIN
+  pname := GetStr(te, 'param');
+  IF pname <> '' THEN
+  BEGIN
+    ci := LookupConst(pname);
+    IF ci <> 0 THEN
+      IF const_tbl[ci].is_string THEN ci := 0;
+    IF ci = 0 THEN AbortWith2('codegen: STRING capacity is not a constant: ', pname);
+    StringCapacity := RETYPE(INTEGER32, const_tbl[ci].ival);
+  END
+  ELSE IF NodeType(GetObj(te, 'param')) <> '' THEN
+  BEGIN
+    IF NOT FoldConstInt(GetObj(te, 'param'), folded) THEN
+      AbortWith('codegen: STRING capacity is not a constant');
+    StringCapacity := RETYPE(INTEGER32, folded);
+  END
+  ELSE
+    StringCapacity := GetInt(te, 'param');
+END;
+
 FUNCTION ResolveTypeExpr(te: ADRMEM): INTEGER;
 VAR
   nm, unm, flavor, space_name: Str255;
@@ -2104,14 +2278,14 @@ BEGIN
         TYPE of the name shadowed it: the probe above only skips a NamedType
         carrying a param. }
       IF GetObjOrNil(te, 'param') = NIL THEN hi := 256
-      ELSE hi := ORD(GetInt(te, 'param'));
+      ELSE hi := StringCapacity(te);
       arr_ty := LLVMArrayType(i8ty, hi + 1);
       tid := RegisterType(TK_LSTRING, TK_CHAR, 0, hi, arr_ty);
     END
     ELSE IF unm = 'STRING' THEN
     BEGIN
       IF GetObjOrNil(te, 'param') = NIL THEN hi := 256
-      ELSE hi := ORD(GetInt(te, 'param'));
+      ELSE hi := StringCapacity(te);
       arr_ty := LLVMArrayType(i8ty, hi);
       tid := RegisterType(TK_STRING, TK_CHAR, 1, hi, arr_ty);
     END
@@ -2145,7 +2319,7 @@ BEGIN
         AbortWith('codegen: SUPER ARRAY requires an explicit index range');
       ResolveNamedIndexDomain(GetObj(te, 'index_range'), lo, hi, idx_host);
       elem_tid := ResolveTypeExpr(GetObj(te, 'element_type'));
-      count := hi - lo + 1;
+      count := ArrayElementCount(lo, hi);
       arr_ty := LLVMArrayType(LLVMTypeForTk(elem_tid), count);
       tid := RegisterType(TK_ARRAY, elem_tid, lo, hi, arr_ty);
       IF idx_host <> TK_INTEGER THEN
@@ -2176,18 +2350,26 @@ BEGIN
     ELSE
     BEGIN
       hi := ResolveIntLiteral(GetObj(GetObj(te, 'index_range'), 'high'));
-      IF (lo < 0) AND (hi > MAXINT) THEN lo := lo + MAXINT + 1 + MAXINT + 1;
+      { A negative INTEGER low paired with a WORD high is read as a WORD
+        bit pattern (so it is rejected as reversed). A high above 65535
+        (extended only) makes an INTEGER32 range instead: -5..70000 must
+        not silently become 65531..70000. }
+      IF (lo < 0) AND (hi > 32767) AND (hi <= 65535) THEN
+        lo := lo + MAXINT + 1 + MAXINT + 1;
       IF (hi < 0) AND (lo > MAXINT) THEN hi := hi + MAXINT + 1 + MAXINT + 1;
       IF lo > hi THEN AbortWith('codegen: invalid array index range');
-      count := hi - lo + 1;
+      count := ArrayElementCount(lo, hi);
       arr_ty := LLVMArrayType(LLVMTypeForTk(elem_tid), count);
       tid := RegisterType(TK_ARRAY, elem_tid, lo, hi, arr_ty);
-      elem_tid := BoundHostTid(GetObj(GetObj(te, 'index_range'), 'low'));
+      { An integer index takes the narrowest of INTEGER, WORD and
+        INTEGER32 that holds its upper bound, however it is spelled (NEW-5),
+        as a subrange's host does (WidenBoundHostTid) and the
+        typechecker's SubrangeIndexKind decides: LOWER and UPPER return
+        the bound at that width. }
+      elem_tid := WidenBoundHostTid(
+        BoundHostTid(GetObj(GetObj(te, 'index_range'), 'low')), hi);
       IF elem_tid <> TK_INTEGER THEN
-        types[tid].index_tid := elem_tid
-      ELSE IF (NodeType(GetObj(GetObj(te, 'index_range'), 'low')) <> 'Identifier')
-              AND (hi > 32767) THEN
-        types[tid].index_tid := TK_WORD;
+        types[tid].index_tid := elem_tid;
     END;
     END;
   END
@@ -2256,7 +2438,7 @@ BEGIN
         fields[nfields].field_tid := field_tid; fields[nfields].field_index := field_index;
         fields[nfields].byte_offset := fixed_off; fields[nfields].arm := 0;
         SetPtrArrayElem(elem_llvm_types, field_index, LLVMTypeForTk(field_tid));
-        fixed_off := fixed_off + TypeSizeBytes(field_tid); field_index := field_index + 1;
+        fixed_off := LayoutAdd(fixed_off, TypeSizeBytes(field_tid)); field_index := field_index + 1;
       END;
     END;
     IF has_variants AND GetBool(te, 'has_tag') THEN
@@ -2267,7 +2449,7 @@ BEGIN
       fields[nfields].field_tid := tag_tid; fields[nfields].field_index := field_index;
       fields[nfields].byte_offset := fixed_off; fields[nfields].arm := 0;
       SetPtrArrayElem(elem_llvm_types, field_index, LLVMTypeForTk(tag_tid));
-      fixed_off := fixed_off + TypeSizeBytes(tag_tid); field_index := field_index + 1;
+      fixed_off := LayoutAdd(fixed_off, TypeSizeBytes(tag_tid)); field_index := field_index + 1;
     END;
     { Every arm begins at the same aligned payload offset. }
     payload_align := 1;
@@ -2297,7 +2479,7 @@ BEGIN
           nfields := nfields + 1; fields[nfields].rec_tid := tid; fields[nfields].fname := fname;
           fields[nfields].field_tid := field_tid; fields[nfields].field_index := field_index;
           fields[nfields].byte_offset := arm_off; fields[nfields].arm := RETYPE(INTEGER, ai + 1);
-          arm_off := arm_off + TypeSizeBytes(field_tid);
+          arm_off := LayoutAdd(arm_off, TypeSizeBytes(field_tid));
         END;
       END;
       IF arm_off - fixed_off > payload_size THEN payload_size := arm_off - fixed_off;
@@ -2311,7 +2493,7 @@ BEGIN
       ELSE IF payload_align >= 4 THEN payload_ty := i32ty
       ELSE IF payload_align >= 2 THEN payload_ty := i16ty
       ELSE payload_ty := i8ty;
-      count := (payload_size + payload_align - 1) DIV payload_align;
+      count := RoundUpBytes(payload_size, payload_align) DIV payload_align;
       SetPtrArrayElem(elem_llvm_types, field_index, LLVMArrayType(payload_ty, count));
       field_index := field_index + 1;
     END;
@@ -2402,9 +2584,16 @@ BEGIN
     ELSE IF elem_tid = TK_BOOLEAN THEN
       tid := RegisterType(TK_BOOLEAN, TK_BOOLEAN, lo, hi, i1ty)
     ELSE BEGIN
-      IF (lo < -32768) OR (hi > 32767) THEN
-        AbortWith('codegen: INTEGER subrange bounds must fit vintage INTEGER');
-      tid := RegisterType(TK_INTEGER, TK_INTEGER, lo, hi, i16ty);
+      { An integer subrange's host is the narrowest of INTEGER, WORD and
+        INTEGER32 that holds its upper bound (NEW-32), the NEW-5 index rule and
+        the typechecker's SubrangeHostKind; a CONST bound of another
+        integer type keeps that type. A negative low in a WORD subrange is
+        the IBM manual's reversed `-1..50000' (the typechecker rejects
+        it). }
+      elem_tid := WidenBoundHostTid(elem_tid, hi);
+      IF (elem_tid = TK_WORD) AND (lo < 0) THEN
+        AbortWith('codegen: subrange lower bound is negative in a WORD subrange');
+      tid := RegisterType(elem_tid, elem_tid, lo, hi, LLVMTypeForTk(elem_tid));
     END;
     types[tid].is_subrange := TRUE;
   END
@@ -2495,6 +2684,9 @@ BEGIN
       const_tbl[nconsts].is_char := FALSE;
       const_tbl[nconsts].enum_tid := tid;
       const_tbl[nconsts].integer_tid := 0;
+      const_tbl[nconsts].int_const := FALSE;
+      const_tbl[nconsts].is_string := FALSE;
+      const_tbl[nconsts].str_node := NIL;
       const_tbl[nconsts].ival := mi;
     END;
   END

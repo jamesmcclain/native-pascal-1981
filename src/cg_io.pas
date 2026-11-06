@@ -130,7 +130,7 @@ END;
 
 FUNCTION GetDefaultInputFcbPtr: ADRMEM;
 { Loads the predeclared INPUT/OUTPUT FCBs (registered unconditionally for
-  every PROGRAM by RegisterPredeclaredFiles) and lazily binds them to real
+  every PROGRAM by DeclarePredeclaredFiles) and lazily binds them to real
   stdin/stdout via pas_file_attach_std, mirroring the reference's
   _file_selector_fcb attach-on-first-use behavior. Returns the INPUT FCB*. }
 VAR
@@ -431,7 +431,8 @@ BEGIN
     IF types[tid].is_subrange THEN
     BEGIN
       cur_v := LLVMBuildLoad2(builder, LLVMTypeForTk(SubrangeBaseTid(tid)), addr, MakeCStr(''));
-      EmitSubrangeCheck(cur_v, SubrangeBaseTid(tid), tid);
+      { A heading parameter has no source location: unlocated report. }
+      EmitSubrangeCheck(cur_v, SubrangeBaseTid(tid), tid, NIL);
     END;
 END;
 
@@ -673,6 +674,9 @@ BEGIN
         SetPtrArrayElem(call_args, 0, addr);
         loaded := LLVMBuildCall2(builder, read_int32_fnty, read_int32_fn, call_args, 1, MakeCStr(''));
       END;
+      { The status gates the $RANGECK check of a WORD or INTEGER32
+        subrange (NEW-32) and INITCK, as for INTEGER. }
+      rd_status := loaded;
     END
     ELSE IF TypeKind(tid) = TK_INTEGER64 THEN
     BEGIN
@@ -689,6 +693,9 @@ BEGIN
         SetPtrArrayElem(call_args, 0, addr);
         loaded := LLVMBuildCall2(builder, read_int64_fnty, read_int64_fn, call_args, 1, MakeCStr(''));
       END;
+      { The status gates the $RANGECK check of a WORD or INTEGER32
+        subrange (NEW-32) and INITCK, as for INTEGER. }
+      rd_status := loaded;
     END
     ELSE IF TypeKind(tid) = TK_WORD THEN
     BEGIN
@@ -705,6 +712,9 @@ BEGIN
         SetPtrArrayElem(call_args, 0, addr);
         loaded := LLVMBuildCall2(builder, read_word_fnty, read_word_fn, call_args, 1, MakeCStr(''));
       END;
+      { The status gates the $RANGECK check of a WORD or INTEGER32
+        subrange (NEW-32) and INITCK, as for INTEGER. }
+      rd_status := loaded;
     END
     ELSE IF TypeKind(tid) = TK_REAL THEN
     BEGIN
@@ -890,7 +900,7 @@ BEGIN
       LLVMBuildCondBr(builder, ReadOk(rd_status, rd_ok), chk_bb, cont_bb);
       LLVMPositionBuilderAtEnd(builder, chk_bb);
       cur_v := LLVMBuildLoad2(builder, LLVMTypeForTk(SubrangeBaseTid(tid)), addr, MakeCStr(''));
-      EmitSubrangeCheck(cur_v, SubrangeBaseTid(tid), tid);
+      EmitSubrangeCheck(cur_v, SubrangeBaseTid(tid), tid, NodeDiagLocation(argnode));
       LLVMBuildBr(builder, cont_bb);
       LLVMPositionBuilderAtEnd(builder, cont_bb);
     END;
@@ -943,7 +953,7 @@ PROCEDURE CodegenReadSet(args: ADRMEM);
   pas_freadset (runtime/fileops.c) -- no runtime changes needed, only this
   call-site wiring, mirroring the reference's builtin_readset. The 2-argument
   form (implicit INPUT) routes through GetDefaultInputFcbPtr, which lazily
-  attaches the predeclared INPUT/OUTPUT FCBs (RegisterPredeclaredFiles) to
+  attaches the predeclared INPUT/OUTPUT FCBs (DeclarePredeclaredFiles) to
   real stdin/stdout via pas_file_attach_std -- mirroring the reference's
   own lazy-attach-on-first-use behavior. }
 VAR

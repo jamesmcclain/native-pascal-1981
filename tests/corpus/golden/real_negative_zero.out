@@ -1,0 +1,10 @@
+literal -0.0  TRUE TRUE FALSE
+CONST -0.0    TRUE FALSE TRUE FALSE
+CONST -name   FALSE TRUE
+-x of 0.0     TRUE FALSE FALSE TRUE
+ABS of zeros  FALSE FALSE FALSE
+zeros equal   TRUE TRUE FALSE
+ -3.25  3.25 -2.50 -2.50  2.50  3.25
+ -2.25  -6.50TRUE
+ -5 -5 -5  5 -5 -5  7
+label -N

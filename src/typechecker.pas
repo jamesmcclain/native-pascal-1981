@@ -9,7 +9,7 @@ PROGRAM pascal1981_typecheck(input, output);
 
 USES argparse, features, jsonutil, tc_base, tc_decl;
 
-FUNCTION cJSON_Print(item: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION pas_cjson_print_exact(item: ADRMEM; formatted: CINT): ADRMEM [C]; EXTERN;
 FUNCTION puts(str: ADRMEM): CINT [C]; EXTERN;
 PROCEDURE exit(code: CINT) [C]; EXTERN;
 
@@ -72,6 +72,7 @@ BEGIN
 
   IF nerrors > 0 THEN ReportErrorsAndExit;
 
-  out_str := cJSON_Print(root);
+  { Exact REAL values; cJSON_Print keeps 15 digits (json_helpers.c). }
+  out_str := pas_cjson_print_exact(root, 1);
   res_c := puts(out_str);
 END.

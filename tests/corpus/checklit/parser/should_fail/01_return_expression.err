@@ -1,1 +1,4 @@
-Parser Error: expected statement
+Parser Error: Expected token match failed. Expected:
+SEMICOLON
+Got:
+INTEGER_LITERAL at line 7 column 10

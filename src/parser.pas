@@ -10,6 +10,8 @@ PROGRAM pascal1981_parse(input, output);
 
 USES argparse, jsonutil, ps_base, ps_expr, ps_stmt, ps_decl;
 
+FUNCTION pas_cjson_print_exact(item: ADRMEM; formatted: CINT): ADRMEM [C]; EXTERN;
+
 
 VAR
   ast_root, json_out, interfaces_arr, iface_node, local_ifaces_arr: ADRMEM;
@@ -115,8 +117,7 @@ BEGIN
     END
     ELSE
     BEGIN
-      EPrint('Parser Error: expected compilation unit start');
-      exit(1);
+      ParseFail('Parser Error: expected compilation unit start');
     END;
 
     { Wire up any spliced leading INTERFACE header(s): attach a duplicate of
@@ -126,8 +127,8 @@ BEGIN
     n_ifaces := cJSON_GetArraySize(interfaces_arr);
     IF n_ifaces > 0 THEN
     BEGIN
-      unit_type_field := cJSON_GetObjectItem(ast_root, MakeCStr('__node_type__'));
-      local_ifaces_arr := cJSON_GetObjectItem(ast_root, MakeCStr('local_interfaces'));
+      unit_type_field := cJSON_GetObjectItemCaseSensitive(ast_root, MakeCStr('__node_type__'));
+      local_ifaces_arr := cJSON_GetObjectItemCaseSensitive(ast_root, MakeCStr('local_interfaces'));
       matched_iface := NIL;
       FOR ii := 0 TO n_ifaces - 1 DO
       BEGIN
@@ -137,10 +138,10 @@ BEGIN
         IF (matched_iface = NIL) AND
            StringEqual(CStrToStr255(cJSON_GetStringValue(unit_type_field)), 'ImplementationUnit') THEN
         BEGIN
-          iface_name_field := cJSON_GetObjectItem(cand_iface, MakeCStr('name'));
+          iface_name_field := cJSON_GetObjectItemCaseSensitive(cand_iface, MakeCStr('name'));
           IF StringEqual(UpperStr(CStrToStr255(cJSON_GetStringValue(iface_name_field))),
                           UpperStr(CStrToStr255(cJSON_GetStringValue(
-                            cJSON_GetObjectItem(ast_root, MakeCStr('name')))))) THEN
+                            cJSON_GetObjectItemCaseSensitive(ast_root, MakeCStr('name')))))) THEN
             matched_iface := cand_iface;
         END;
       END;
@@ -158,7 +159,8 @@ BEGIN
     cJSON_Delete(interfaces_arr);
   END;
 
-  json_out := cJSON_Print(ast_root);
+  { Exact REAL values; cJSON_Print keeps 15 digits (json_helpers.c). }
+  json_out := pas_cjson_print_exact(ast_root, 1);
   res_c := puts(json_out);
   free(json_out);
   cJSON_Delete(ast_root);

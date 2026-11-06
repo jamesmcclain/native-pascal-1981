@@ -10,14 +10,14 @@ TYPE
   Node = RECORD v: INTEGER END;
   PList = ^Cell;
   Cell = RECORD val: INTEGER; next: PList END;
-  PA = ^RA;
+  TPA = ^RA;
   PB = ^RB;
   RA = RECORD n: INTEGER; b: PB END;
-  RB = RECORD m: INTEGER; a: PA END;
+  RB = RECORD m: INTEGER; a: TPA END;
   PArr = ^Arr;
   Arr = ARRAY [1..3] OF INTEGER;
-  PPC = ^PC;
-  PC = ^Cell;
+  TPPC = ^TPC;
+  TPC = ^Cell;
   Self = RECORD k: INTEGER; me: ^Self END;
   Tagged = RECORD
     nx: ^Tagged;
@@ -28,12 +28,12 @@ TYPE
 VAR
   head, p: PList;
   i, sum: INTEGER;
-  a: PA;
+  a: TPA;
   b: PB;
   pa: PArr;
   x: Arr;
-  pc: PC;
-  ppc: PPC;
+  pc: TPC;
+  ppc: TPPC;
   s: Self;
   tg: Tagged;
 

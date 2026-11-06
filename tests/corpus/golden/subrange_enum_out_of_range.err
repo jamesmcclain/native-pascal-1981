@@ -1,1 +1,1 @@
-runtime error: value 3 is outside subrange 1..2
+runtime error: value 3 is outside subrange 1..2 at line 11 column 42

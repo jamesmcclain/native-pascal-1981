@@ -16,7 +16,8 @@
 void pas_concat_error(uint64_t length, int32_t capacity, int32_t line, int32_t column)
 {
     fflush(stdout);
-    fprintf(stderr, "runtime error: RANGECK CONCAT length %" PRIu64 " exceeds capacity %" PRId32 " at line %" PRId32 " column %" PRId32 "\n", length, capacity, line, column);
+    fprintf(stderr, "runtime error: RANGECK CONCAT length %" PRIu64 " exceeds capacity %" PRId32 " at line %" PRId32 " column %" PRId32 "%s\n", length, capacity, line, column,
+            pas_diag_where());
     fflush(stderr);
     abort();
 }
@@ -24,7 +25,8 @@ void pas_concat_error(uint64_t length, int32_t capacity, int32_t line, int32_t c
 void pas_copylst_error(uint64_t length, int32_t capacity, int32_t line, int32_t column)
 {
     fflush(stdout);
-    fprintf(stderr, "runtime error: RANGECK COPYLST length %" PRIu64 " exceeds capacity %" PRId32 " at line %" PRId32 " column %" PRId32 "\n", length, capacity, line, column);
+    fprintf(stderr, "runtime error: RANGECK COPYLST length %" PRIu64 " exceeds capacity %" PRId32 " at line %" PRId32 " column %" PRId32 "%s\n", length, capacity, line, column,
+            pas_diag_where());
     fflush(stderr);
     abort();
 }
@@ -32,7 +34,8 @@ void pas_copylst_error(uint64_t length, int32_t capacity, int32_t line, int32_t 
 void pas_copystr_error(uint64_t length, int32_t capacity, int32_t line, int32_t column)
 {
     fflush(stdout);
-    fprintf(stderr, "runtime error: COPYSTR length %" PRIu64 " exceeds capacity %" PRId32 " at line %" PRId32 " column %" PRId32 "\n", length, capacity, line, column);
+    fprintf(stderr, "runtime error: COPYSTR length %" PRIu64 " exceeds capacity %" PRId32 " at line %" PRId32 " column %" PRId32 "%s\n", length, capacity, line, column,
+            pas_diag_where());
     fflush(stderr);
     abort();
 }
@@ -40,7 +43,8 @@ void pas_copystr_error(uint64_t length, int32_t capacity, int32_t line, int32_t 
 void pas_insert_error(uint64_t length, int32_t capacity, int32_t line, int32_t column)
 {
     fflush(stdout);
-    fprintf(stderr, "runtime error: INSERT length %" PRIu64 " exceeds capacity %" PRId32 " at line %" PRId32 " column %" PRId32 "\n", length, capacity, line, column);
+    fprintf(stderr, "runtime error: INSERT length %" PRIu64 " exceeds capacity %" PRId32 " at line %" PRId32 " column %" PRId32 "%s\n", length, capacity, line, column,
+            pas_diag_where());
     fflush(stderr);
     abort();
 }
@@ -50,7 +54,8 @@ void pas_insert_position_error(int32_t position, int32_t count, int32_t length, 
 {
     (void) count;
     fflush(stdout);
-    fprintf(stderr, "runtime error: INSERT position %" PRId32 " is outside 1..%" PRId32 " at line %" PRId32 " column %" PRId32 "\n", position, length + 1, line, column);
+    fprintf(stderr, "runtime error: INSERT position %" PRId32 " is outside 1..%" PRId32 " at line %" PRId32 " column %" PRId32 "%s\n", position, length + 1, line, column,
+            pas_diag_where());
     fflush(stderr);
     abort();
 }
@@ -58,8 +63,8 @@ void pas_insert_position_error(int32_t position, int32_t count, int32_t length, 
 void pas_delete_error(int32_t position, int32_t count, int32_t length, int32_t line, int32_t column)
 {
     fflush(stdout);
-    fprintf(stderr, "runtime error: DELETE position %" PRId32 " count %" PRId32 " is outside length %" PRId32 " at line %" PRId32 " column %" PRId32 "\n", position, count, length,
-            line, column);
+    fprintf(stderr, "runtime error: DELETE position %" PRId32 " count %" PRId32 " is outside length %" PRId32 " at line %" PRId32 " column %" PRId32 "%s\n", position, count,
+            length, line, column, pas_diag_where());
     fflush(stderr);
     abort();
 }
@@ -67,7 +72,8 @@ void pas_delete_error(int32_t position, int32_t count, int32_t length, int32_t l
 void pas_lstring_length_error(uint64_t length, int32_t capacity, int32_t line, int32_t column)
 {
     fflush(stdout);
-    fprintf(stderr, "runtime error: RANGECK LSTRING length %" PRIu64 " exceeds capacity %" PRId32 " at line %" PRId32 " column %" PRId32 "\n", length, capacity, line, column);
+    fprintf(stderr, "runtime error: RANGECK LSTRING length %" PRIu64 " exceeds capacity %" PRId32 " at line %" PRId32 " column %" PRId32 "%s\n", length, capacity, line, column,
+            pas_diag_where());
     fflush(stderr);
     abort();
 }
@@ -76,9 +82,10 @@ void pas_chr_error(int64_t value, int32_t value_unsigned, int32_t line, int32_t 
 {
     fflush(stdout);
     if (value_unsigned)
-        fprintf(stderr, "runtime error: RANGECK CHR argument %" PRIu64 " is outside 0..255 at line %" PRId32 " column %" PRId32 "\n", (uint64_t) value, line, column);
+        fprintf(stderr, "runtime error: RANGECK CHR argument %" PRIu64 " is outside 0..255 at line %" PRId32 " column %" PRId32 "%s\n", (uint64_t) value, line, column,
+                pas_diag_where());
     else
-        fprintf(stderr, "runtime error: RANGECK CHR argument %" PRId64 " is outside 0..255 at line %" PRId32 " column %" PRId32 "\n", value, line, column);
+        fprintf(stderr, "runtime error: RANGECK CHR argument %" PRId64 " is outside 0..255 at line %" PRId32 " column %" PRId32 "%s\n", value, line, column, pas_diag_where());
     fflush(stderr);
     abort();
 }
@@ -87,9 +94,10 @@ void pas_byword_error(int64_t value, int32_t value_unsigned, int32_t line, int32
 {
     fflush(stdout);
     if (value_unsigned)
-        fprintf(stderr, "runtime error: RANGECK BYWORD argument %" PRIu64 " is outside 0..255 at line %" PRId32 " column %" PRId32 "\n", (uint64_t) value, line, column);
+        fprintf(stderr, "runtime error: RANGECK BYWORD argument %" PRIu64 " is outside 0..255 at line %" PRId32 " column %" PRId32 "%s\n", (uint64_t) value, line, column,
+                pas_diag_where());
     else
-        fprintf(stderr, "runtime error: RANGECK BYWORD argument %" PRId64 " is outside 0..255 at line %" PRId32 " column %" PRId32 "\n", value, line, column);
+        fprintf(stderr, "runtime error: RANGECK BYWORD argument %" PRId64 " is outside 0..255 at line %" PRId32 " column %" PRId32 "%s\n", value, line, column, pas_diag_where());
     fflush(stderr);
     abort();
 }
@@ -98,20 +106,27 @@ void pas_case_error(int64_t value, int32_t value_unsigned, int32_t line, int32_t
 {
     fflush(stdout);
     if (value_unsigned)
-        fprintf(stderr, "runtime error: RANGECK CASE selector %" PRIu64 " has no matching label at line %" PRId32 " column %" PRId32 "\n", (uint64_t) value, line, column);
+        fprintf(stderr, "runtime error: RANGECK CASE selector %" PRIu64 " has no matching label at line %" PRId32 " column %" PRId32 "%s\n", (uint64_t) value, line, column,
+                pas_diag_where());
     else
-        fprintf(stderr, "runtime error: RANGECK CASE selector %" PRId64 " has no matching label at line %" PRId32 " column %" PRId32 "\n", value, line, column);
+        fprintf(stderr, "runtime error: RANGECK CASE selector %" PRId64 " has no matching label at line %" PRId32 " column %" PRId32 "%s\n", value, line, column, pas_diag_where());
     fflush(stderr);
     abort();
 }
 
-void pas_subrange_error(int64_t value, int32_t value_unsigned, int64_t lo, int64_t hi)
+void pas_subrange_error(int64_t value, int32_t value_unsigned, int64_t lo, int64_t hi, int32_t line, int32_t column)
 {
     fflush(stdout);
     if (value_unsigned)
-        fprintf(stderr, "runtime error: value %" PRIu64 " is outside subrange %" PRId64 "..%" PRId64 "\n", (uint64_t) value, lo, hi);
+        fprintf(stderr, "runtime error: value %" PRIu64 " is outside subrange %" PRId64 "..%" PRId64, (uint64_t) value, lo, hi);
     else
-        fprintf(stderr, "runtime error: value %" PRId64 " is outside subrange %" PRId64 "..%" PRId64 "\n", value, lo, hi);
+        fprintf(stderr, "runtime error: value %" PRId64 " is outside subrange %" PRId64 "..%" PRId64, value, lo, hi);
+    /* A store with no source location (a program-heading parameter, or a
+     * legacy node without one) stays unlocated, like INITCK's name-only
+     * report. */
+    if (line > 0 && column > 0)
+        fprintf(stderr, " at line %" PRId32 " column %" PRId32 "%s", line, column, pas_diag_where());
+    fputc('\n', stderr);
     fflush(stderr);
     abort();
 }

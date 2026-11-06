@@ -113,8 +113,8 @@ function, a builtin call consumer, and CPU DEVICE. Each enabled case rejects wit
 line and no published IR at O0/O2; its disabled counterpart must compile cleanly
 but is never executed. Late, disabled and untaken escapes still exclude
 storage for the whole routine (`ADR` of a local or formal is a release at its
-evaluation instead: `initck_external.sh`). Actual enclosing-local captures remain a separate
-native compiler limitation, not a supported alias case. Broader producer, alias,
+evaluation instead: `initck_external.sh`). Enclosing-local captures (static
+links, NEW-26) are captured storage outside the slice, not a supported alias case. Broader producer, alias,
 result and representation enforcement remains outstanding.
 
 `./tests/contract/initck_producers.sh` (in `make test`) covers scalar
@@ -175,8 +175,11 @@ routine. The suite owns `tests/contract/fixtures/initck_routines_{withread,neste
 for these three failures: retain body line 9 and nested declaration line 4,
 which feed the exact diagnostic oracle. Do not run their unchecked bad twins.
 An enabled captured read is the exact `global or captured storage`
-boundary. With INITCK disabled, the pre-existing capture limitation still
-rejects the program, and INITCK adds nothing to that error.
+boundary. With INITCK disabled the capture compiles and runs (both dialects,
+O0/O2), and an enabled read of the captured local in its own routine is the
+`escaped local or formal` boundary. Golden fixtures pin the rest:
+`uplevel_result_initck_bad.pas` (a nested assignment produces the enclosing
+FUNCTION's result state) and the `uplevel_initck_*_boundary.pas` pair.
 
 `./tests/contract/initck_aggregates.sh` (in `make test`) covers INITCK
 aggregates: fixed ARRAYs and RECORDs of INTEGER/BOOLEAN/CHAR leaves, nested
@@ -382,7 +385,7 @@ Scripts: S = `initck_scalar.sh`, P = `initck_producers.sh`, R =
 | Untracked binding / escaped formal | R var-ok (global, zap) | n/a (assumed initialized) |
 | Uninstrumented C caller/callee | R cinterop (mutation-checked) | R cinterop `[C]` actual |
 | Nested redeclaration, WITH locals | R scope-ok | R withread/nestedread/nestedother |
-| Captures, untracked results | n/a | R capture; S boundaries |
+| Captures, untracked results | R capture (INITCK-) | R capture, capture owner; S boundaries |
 | `[C]` VAR/CONST binding, C-implemented EXTERN | X cwrite, modok | X sibling/other, modvar/modres/modptr, mutations |
 | `ADR` release, ADRMEM values, descriptors to C | X raw | X before/untaken/other/adrmem/transport, mutations |
 | File names, buffer fill/EOF/PUT, buffer writes | X files | X unwritten/put/putput/partialput/partialread/eof; S filereal |

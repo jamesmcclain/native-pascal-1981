@@ -1,0 +1,3 @@
+Type checking failed:
+Unary minus requires a numeric operand at line 8 column 7
+Unary minus requires a numeric operand at line 10 column 14

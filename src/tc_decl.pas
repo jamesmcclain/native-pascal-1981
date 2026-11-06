@@ -337,6 +337,42 @@ BEGIN
   END;
 END;
 
+PROCEDURE CheckConstValueNames(node: ADRMEM);
+{ A CONST value is a constant expression (IBM manual 5-9): every name in
+  it must be a constant -- a CONST, an enumeration member or a predeclared
+  constant such as MAXINT. A variable, parameter or routine name used to
+  pass here and abort codegen ("IntLiteralValue: not a foldable integer
+  constant"). The other names were reported by CheckExpr already. }
+VAR
+  nt, nm: Str255;
+  si, i: INTEGER32;
+  args: ADRMEM;
+BEGIN
+  IF node = NIL THEN RETURN;
+  nt := NodeType(node);
+  IF (nt = 'Identifier') OR (nt = 'Designator') THEN
+  BEGIN
+    nm := GetStr(node, 'name');
+    si := LookupSymbol(nm);
+    IF si <> 0 THEN
+      IF symbols[si].kind <> 'CONST' THEN
+        AddError2('CONST value is not a constant: ', nm);
+  END
+  ELSE IF nt = 'UnaryOp' THEN
+    CheckConstValueNames(GetObj(node, 'operand'))
+  ELSE IF nt = 'BinOp' THEN
+  BEGIN
+    CheckConstValueNames(GetObj(node, 'left'));
+    CheckConstValueNames(GetObj(node, 'right'));
+  END
+  ELSE IF nt = 'FuncCall' THEN
+  BEGIN
+    args := GetObj(node, 'args');
+    FOR i := 0 TO cJSON_GetArraySize(args) - 1 DO
+      CheckConstValueNames(cJSON_GetArrayItem(args, i));
+  END;
+END;
+
 PROCEDURE CheckDeclBody(decl: ADRMEM);
 VAR
   nt, dname: Str255;
@@ -369,6 +405,7 @@ BEGIN
     FOR i := 0 TO n - 1 DO
     BEGIN
       nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, i)));
+      DeclareName(nm, DECL_OTHER);
       si := DefineSymbol(nm, 'VAR', tk, aux, aux2, aux3, idx_tk);
       IF tk = TK_SET THEN symbols[si].set_sem_base := SemanticSetBaseType(type_expr);
       IF IsOrdinal(tk) THEN symbols[si].scalar_sem_base := SemanticBaseOfOrdinalType(type_expr);
@@ -379,13 +416,24 @@ BEGIN
   ELSE IF nt = 'ConstDecl' THEN
   BEGIN
     dname := GetStr(decl, 'name');
+    DeclareName(dname, DECL_OTHER);
+    { A CONST value is a constant expression: a call in it is the
+      intrinsic (UserDeclarationShadows). }
+    const_expr_level := const_expr_level + 1;
     IF HasExtendedConstIntrinsic(GetObj(decl, 'value')) AND
        NOT active_features.extended_const_intrinsics THEN
       AddError('CONST intrinsic calls require the extended-const-intrinsics feature');
     tk := CheckExpr(GetObj(decl, 'value'));
+    CheckConstValueNames(GetObj(decl, 'value'));
     CheckConstOrdinalBounds(GetObj(decl, 'value'));
     CheckConstByteDomain(GetObj(decl, 'value'));
     si := DefineSymbol(dname, 'CONST', tk, 0, 0, 0, 0);
+    { A multi-character string CONST, or an alias of one (whose Identifier
+      CheckExpr has already rewritten to the literal): references to it
+      become that literal (InlineStringConst). }
+    IF (tk = TK_STRING) AND
+       (NodeType(GetObj(decl, 'value')) = 'StringLiteral') THEN
+      symbols[si].const_str_node := GetObj(decl, 'value');
     IF tk = TK_SET THEN symbols[si].set_sem_base := last_sem_set_base;
     IF IsOrdinal(tk) THEN symbols[si].scalar_sem_base := last_sem_scalar_base;
     IF FoldConstInt(GetObj(decl, 'value'), const_value) THEN
@@ -393,10 +441,12 @@ BEGIN
       symbols[si].has_const_int := TRUE;
       symbols[si].const_int := const_value;
     END;
+    const_expr_level := const_expr_level - 1;
   END
   ELSE IF nt = 'TypeDecl' THEN
   BEGIN
     dname := GetStr(decl, 'name');
+    DeclareName(dname, DECL_OTHER);
     type_expr := GetObj(decl, 'type_expr');
     IF NOT FwdCachedType(type_expr, tk, aux, aux2, aux3, idx_tk) THEN
       ResolveTypeExpr(type_expr, tk, aux, aux2, aux3, idx_tk);
@@ -419,20 +469,9 @@ BEGIN
       types[ntypes].type_node := type_expr;
       types[ntypes].is_super := IsSuperTypeExpr(type_expr);
     END;
-    IF NodeType(type_expr) = 'EnumType' THEN
-    BEGIN
-      { An enum's member identifiers are constants of the enum type, in
-        declaration order -- registered here so a member resolves as a
-        value wherever an identifier is legal (the typechecker half of
-        what codegen.pas's const_tbl registration does for folding). }
-      names_arr := GetObj(type_expr, 'values');
-      n := cJSON_GetArraySize(names_arr);
-      FOR i := 0 TO n - 1 DO
-      BEGIN
-        nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, i)));
-        si := DefineSymbol(nm, 'CONST', TK_ENUM, aux, 0, 0, 0);
-      END;
-    END;
+    { An enumeration's members were declared as constants when its
+      EnumType node was resolved (ResolveTypeExprBody), as for an
+      anonymous one. }
   END
   ELSE IF (nt = 'ProcDecl') OR (nt = 'FuncDecl') THEN
   BEGIN
@@ -476,6 +515,8 @@ BEGIN
       IF symbols[prior].is_extern THEN
         IF has_block_body THEN
           AddError2('EXTERN routine cannot be defined here (use FORWARD): ', dname);
+    IF has_block_body THEN DeclareName(dname, DECL_ROUTINE_BODY)
+    ELSE DeclareName(dname, DECL_ROUTINE_HEADING);
 
     si := DefineSymbol(dname, nt, TK_UNKNOWN, 0, 0, 0, 0);
     IF nt = 'FuncDecl' THEN
@@ -559,6 +600,8 @@ BEGIN
     IF has_block_body THEN
     BEGIN
       PushScope;
+      { The parameters and the block's own declarations share one scope. }
+      BeginDeclScope;
       saved_func_name := cur_func_name;
       saved_func_ret_tk := cur_func_ret_tk;
       saved_func_aux := cur_func_aux;
@@ -584,6 +627,7 @@ BEGIN
         FOR pj := 0 TO pn - 1 DO
         BEGIN
           nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(pnames, pj)));
+          DeclareName(nm, DECL_OTHER);
           si := DefineSymbol(nm, 'VAR', ptk, paux, paux2, paux3, pidx);
           symbols[si].type_node := GetObj(param, 'type_expr');
           symbols[si].is_ref_param :=
@@ -603,7 +647,20 @@ BEGIN
       cur_func_aux := saved_func_aux;
       cur_func_aux2 := saved_func_aux2;
       cur_func_set_sem_base := saved_func_set_sem_base;
+      EndDeclScope;
       PopScope;
+    END;
+  END
+  ELSE IF nt = 'LabelDecl' THEN
+  BEGIN
+    { An identifier label shares the block's name space; a numeric label
+      (a JSON number, read here as '') does not. }
+    names_arr := GetObj(decl, 'labels');
+    n := cJSON_GetArraySize(names_arr);
+    FOR i := 0 TO n - 1 DO
+    BEGIN
+      nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, i)));
+      IF nm <> '' THEN DeclareName(nm, DECL_OTHER);
     END;
   END;
 END;
@@ -613,10 +670,11 @@ PROCEDURE CheckDecl(decl: ADRMEM);
   checked. }
 VAR
   saved_line, saved_col: INTEGER32;
+  saved_loc: ADRMEM;
 BEGIN
-  TcEnterLocation(decl, saved_line, saved_col);
+  TcEnterLocation(decl, saved_line, saved_col, saved_loc);
   CheckDeclBody(decl);
-  TcLeaveLocation(saved_line, saved_col);
+  TcLeaveLocation(saved_line, saved_col, saved_loc);
 END;
 
 PROCEDURE BeginTypeSection(decls_arr: ADRMEM; first: INTEGER32);
@@ -941,7 +999,6 @@ VAR
   impl_decl: ADRMEM;
   k: INTEGER32;
   mismatch: BOOLEAN;
-  msg: Str255;
 BEGIN
   ResolveRoutineSignature(iface_decl);
   a_is_func := rs_is_func;
@@ -954,9 +1011,7 @@ BEGIN
   impl_decl := FindProcFuncDeclByName(impl_decls, name);
   IF impl_decl = NIL THEN
   BEGIN
-    msg := 'missing implementation for exported routine: ';
-    CONCAT(msg, name);
-    AddError(msg);
+    AddError2('missing implementation for exported routine: ', name);
   END
   ELSE
   BEGIN
@@ -973,9 +1028,7 @@ BEGIN
     IF rs_is_vararg <> a_is_vararg THEN mismatch := TRUE;
     IF mismatch THEN
     BEGIN
-      msg := 'implementation signature does not match its interface declaration for: ';
-      CONCAT(msg, name);
-      AddError(msg);
+      AddError2('implementation signature does not match its interface declaration for: ', name);
     END;
   END;
 END;
@@ -992,24 +1045,19 @@ VAR
   a_tk, a_aux, a_aux2, a_aux3, a_idx_tk: INTEGER;
   b_tk, b_aux, b_aux2, b_aux3, b_idx_tk: INTEGER;
   impl_decl: ADRMEM;
-  msg: Str255;
 BEGIN
   ResolveTypeExpr(iface_type_expr, a_tk, a_aux, a_aux2, a_aux3, a_idx_tk);
   impl_decl := FindVarDeclContainingName(impl_decls, name);
   IF impl_decl = NIL THEN
   BEGIN
-    msg := 'missing implementation for exported VAR: ';
-    CONCAT(msg, name);
-    AddError(msg);
+    AddError2('missing implementation for exported VAR: ', name);
   END
   ELSE
   BEGIN
     ResolveTypeExpr(GetObj(impl_decl, 'type_expr'), b_tk, b_aux, b_aux2, b_aux3, b_idx_tk);
     IF (b_tk <> a_tk) OR (b_aux <> a_aux) OR (b_aux2 <> a_aux2) OR (b_aux3 <> a_aux3) OR (b_idx_tk <> a_idx_tk) THEN
     BEGIN
-      msg := 'implementation type does not match its interface declaration for: ';
-      CONCAT(msg, name);
-      AddError(msg);
+      AddError2('implementation type does not match its interface declaration for: ', name);
     END;
   END;
 END;
@@ -1060,6 +1108,26 @@ BEGIN
   END;
 END;
 
+PROCEDURE DeclarePredeclaredFiles;
+{ INPUT and OUTPUT are predeclared TEXT files of every host PROGRAM (manual
+  13-5), the same two that codegen's DeclarePredeclaredFiles declares, so
+  EOF(INPUT), READ(INPUT, x), WRITELN(OUTPUT, x) and INPUT^ name them. They
+  are defined before the program's own declarations: a user declaration of
+  either name, in any visible scope, hides them (codegen declares each
+  only when the top level does not). Naming them in the program
+  heading is not required (see the dialect notes). }
+VAR
+  si: INTEGER32;
+  text_node: ADRMEM;
+BEGIN
+  text_node := CreateNode('NamedType');
+  AddStringField(text_node, 'name', 'TEXT');
+  si := DefineSymbol('INPUT', 'VAR', TK_FILE, TK_CHAR, 1, 0, 0);
+  symbols[si].type_node := text_node;
+  si := DefineSymbol('OUTPUT', 'VAR', TK_FILE, TK_CHAR, 1, 0, 0);
+  symbols[si].type_node := text_node;
+END;
+
 PROCEDURE CheckUnit(root: ADRMEM);
 { Only ProgramUnit nests its decls/body inside a 'block' object -- see
   ast_nodes.py's ProgramUnit vs ModuleUnit/InterfaceUnit/ImplementationUnit:
@@ -1080,8 +1148,12 @@ BEGIN
   saved_device := is_device_compiland;
   is_device_compiland := GetBool(root, 'is_device');
   nt := NodeType(root);
+  BeginDeclScope;
   IF nt = 'ProgramUnit' THEN
-    CheckBlock(GetObj(root, 'block'))
+  BEGIN
+    IF NOT is_device_compiland THEN DeclarePredeclaredFiles;
+    CheckBlock(GetObj(root, 'block'));
+  END
   ELSE BEGIN
     CheckDeclList(GetObj(root, 'decls'));
     IF nt = 'ImplementationUnit' THEN
@@ -1092,6 +1164,7 @@ BEGIN
       IF init_body <> NIL THEN CheckStmtList(init_body);
     END;
   END;
+  EndDeclScope;
   is_device_compiland := saved_device;
 END;
 
@@ -1120,6 +1193,7 @@ BEGIN
     symbols[ai].set_sem_base := symbols[si].set_sem_base;
     symbols[ai].scalar_sem_base := symbols[si].scalar_sem_base;
     symbols[ai].type_node := symbols[si].type_node;
+    symbols[ai].type_bound := symbols[si].type_bound;
     FOR pi := 1 TO symbols[si].nparams DO
     BEGIN
       symbols[ai].param_tk[pi] := symbols[si].param_tk[pi];
@@ -1201,7 +1275,9 @@ BEGIN
       iface := cJSON_GetArrayItem(ifaces, ni);
       saved_device := is_device_compiland;
       is_device_compiland := GetBool(iface, 'is_device');
+      BeginDeclScope;
       CheckDeclList(GetObj(iface, 'decls'));
+      EndDeclScope;
       is_device_compiland := saved_device;
     END;
   END;

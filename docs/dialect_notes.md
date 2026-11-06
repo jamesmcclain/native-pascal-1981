@@ -30,6 +30,9 @@ its [unsafe raw boundary](#descriptor-unsafe-raw-boundary) and ownership limits.
 - [Initialization checking: host storage](#initialization-checking-host-storage-native)
 - [Enumerated and BOOLEAN I/O](#enumerated-and-boolean-io)
 - [Niladic EOF and EOLN](#niladic-eof-and-eoln-both)
+- [Predeclared INPUT and OUTPUT](#predeclared-input-and-output-both)
+- [Identifier length](#identifier-length-both)
+- [Duplicate declarations](#duplicate-declarations-both)
 - [Selecting from a niladic function result](#selecting-from-a-niladic-function-result-both)
 - [File control fields F.TRAP and F.ERRS](#file-control-fields-ftrap-and-ferrs-both)
 - [Wide signed integer input](#wide-signed-integer-input-extended)
@@ -41,20 +44,27 @@ its [unsafe raw boundary](#descriptor-unsafe-raw-boundary) and ownership limits.
 - [Vectors (SIMD)](#vectors-simd-extended)
 - [BOOLEAN set constructors](#boolean-set-constructors-native)
 - [Set base compatibility](#set-base-compatibility-native)
+- [Set base type range](#set-base-type-range-both)
 - [Set constructor element range](#set-constructor-element-range-native)
 - [BOOLEAN membership](#boolean-membership-native)
 - [AND THEN and OR ELSE](#and-then-and-or-else-both)
+- [Statement separators](#statement-separators-both)
 - [Host SUPER ARRAY descriptor ABI](#host-super-array-descriptor-abi-native)
 - [Bound expressions](#bound-expressions-native)
 - [Subrange range checks](#subrange-range-checks-native)
 - [Constant calls in subrange bounds](#constant-calls-in-subrange-bounds-both)
+- [Integer subrange hosts](#integer-subrange-hosts-both)
 - [Named ordinal array index types](#named-ordinal-array-index-types-native)
+- [Enumeration identity and anonymous enumerations](#enumeration-identity-and-anonymous-enumerations-native)
 - [MATHCK: integer overflow and division checks](#mathck-integer-overflow-and-division-checks-both)
+- [STACKCK: stack overflow probing and reporting](#stackck-stack-overflow-probing-and-reporting-native)
 - [Integer widths](#integer-widths)
 - [Integer constants and context](#integer-constants-and-context)
 - [`TRUNC` and `ROUND` return `INTEGER`, so they narrow to 16 bits](#trunc-and-round-return-integer-so-they-narrow-to-16-bits-both)
 - [Differences from the Python compiler](#differences-from-the-python-compiler)
+- [Source locations in included files](#source-locations-in-included-files-native)
 - [Native limitations](#native-limitations-native)
+  - [Nested routines and up-level access](#nested-routines-and-up-level-access-native)
 - [Other things that cost time](#other-things-that-cost-time-both-unless-marked-otherwise)
 - [Checklist before committing Pascal in this tree](#checklist-before-committing-pascal-in-this-tree)
 
@@ -170,8 +180,9 @@ before pointer-derived address formation or pointee access. Failure flushes
 stdout and stderr, reports `runtime error: NILCK NIL pointer dereference at
 line L column C`, and aborts. Initialized NIL copies/comparisons are legal.
 Legacy/malformed snapshots without boolean enablement are unchecked; enabled
-snapshots without coordinates report 0:0. As with INITCK, include-file identity
-is not available and is not claimed by the diagnostic.
+snapshots without coordinates report 0:0. A location in an included file
+adds ` of file NAME` (see
+[Source locations in included files](#source-locations-in-included-files-native)).
 
 Builtin DISPOSE uses the NILCK snapshot and location at the procedure name,
 not in its actual. After any supported INITCK check and one pointer/descriptor
@@ -232,9 +243,10 @@ prints `runtime error: INITCK uninitialized local <name> at line <line> column
 including inside parentheses, not the declaration or enclosing statement.
 Expression factors carry optional `read_location` metadata through typechecking.
 Checked older ASTs without positive line/column coordinates retain the name-only
-diagnostic; missing coordinates never suppress an enabled guard. Tokens do not
-currently carry filenames: include coordinates are local to the included token
-run, so this diagnostic does not claim a source-file identity or include stack.
+diagnostic; missing coordinates never suppress an enabled guard. Coordinates in
+an included file are that file's own and add ` of file NAME` (see
+[Source locations in included files](#source-locations-in-included-files-native));
+the diagnostic names no include stack.
 INITCK errors are distinct from existing NIL-pointer and array-bounds runtime
 errors; INITCK does not substitute for the separate null-only NILCK checks
 above. Zero, FALSE, and `-32768`
@@ -322,11 +334,17 @@ boundary.
 
 Nested routines and WITH. A nested routine that redeclares a name (as a formal
 or local, at any depth) owns separate storage, so the enclosing routine's local
-of that name stays tracked. There is no static link, so a nested routine can
-reach an enclosing local only by capturing it. That is unsupported by this
-compiler (see the known deviations below): an enabled read of a captured local
-is the `global or captured storage` boundary, and any mention disqualifies the
-local. Inside a WITH body, a name that is not a field of any target is still the
+of that name stays tracked. A nested routine reaches an enclosing routine's
+locals and formals through its static link (see
+[Nested routines and up-level access](#nested-routines-and-up-level-access-native)).
+Such captured storage is outside the slice: an enabled read of it in the
+nested routine is the `global or captured storage` boundary, and any mention
+in a nested routine disqualifies the local in its own routine too, where an
+enabled read is then the `escaped local or formal` boundary (a VAR/CONST
+formal so named releases its caller's slot as initialized). An enclosing
+FUNCTION's tracked scalar result is different: a nested routine's assignment
+to it is a producer of the result's state, so the FUNCTION's RETURN/END check
+sees it. Inside a WITH body, a name that is not a field of any target is still the
 routine's own tracked local. This holds only when every target's record type is
 evident before lowering: its root is a variable or formal not nested in another
 WITH, and its INDEX/FIELD/DEREF selectors resolve statically. A same-name field
@@ -422,7 +440,8 @@ written (by `NEW(p, n)`, `UNSAFESUPER`, a copy or NIL); the state of the
 elements it locates is separate (below).
 
 The referent of an ordinary `NEW` whose type is tracked (built only from the
-leaves above, through fixed ARRAYs and RECORDs) has per-leaf state too. It
+leaves above, through fixed ARRAYs and RECORDs, with at most 65,536 leaves:
+see the cap below) has per-leaf state too. It
 belongs to the allocation, not to a name: `NEW` records it with every leaf
 unset after the allocation succeeds and before the pointer is published, and a
 dereference finds it by the referent's address (`runtime/initck_heap.c`), so
@@ -475,6 +494,18 @@ untracked storage: an enabled read of it is the `heap storage` boundary, as is
 an enabled dereference of a pointer stored there. Every dereference of a
 tracked referent looks its state up, also with INITCK off, so NEW-heavy
 programs pay a runtime call per heap access.
+
+Heap state has a size cap of 65,536 leaves per referent (or per SUPER ARRAY
+element). Each lookup site reserves its own run of initialized leaves in
+its frame for an untracked or released referent, also under INITCK-, and
+that run is as long as the referent's leaf count. A referent type with more
+leaves, such as `^ARRAY [0..2147483646] OF CHAR` or a 100,000-CHAR element,
+is therefore an untracked type: `NEW` registers no state, a dereference
+looks nothing up and reserves nothing, and an enabled read of it is the
+`heap storage` boundary. Stores through it are unchecked writes, as for any
+untracked storage. At most 64 KiB of stack is reserved per lookup site.
+Before this cap, a dereference of a 2 GiB pointee reserved a 2 GiB stack
+slot even with INITCK off (`initck_heap.sh`, leaf cap).
 
 External boundaries: C calls. Nothing outside the compiled Pascal tells
 INITCK what it reads or writes, and an opaque call never marks storage
@@ -563,15 +594,21 @@ part of g^`), and PUT consumes the whole component: an enabled PUT requires
 every leaf initialized (`uninitialized part of f^`). A buffer handed to an
 unmodeled effect (a builtin, a `[C]` VAR) is initialized until its next
 transition. A buffer whose component type is untracked (FILE OF REAL, ...) is
-the `file buffer` boundary for enabled reads and PUTs. There is no other
-aggregate I/O: the typechecker rejects READ/WRITE of typed files ("file
-selector must be a TEXT file") and selecting a field of a file buffer
-(`g^.a`), so record buffers are written and read whole; codegen rejects WRITE
+the `file buffer` boundary for enabled reads and PUTs. Selectors on a
+record or array buffer (`g^.a`, `g^.b[i]`, `g^.pos.x`, `WITH g^ DO`) reach
+its leaves like those of any other record: a store initializes the leaf it
+writes, an enabled read checks it (`uninitialized component g^.b[2]`), and
+a read of any leaf of a buffer with an untracked leaf is the `file buffer`
+boundary (fixtures `tests/corpus/golden/file_buffer_fields_initck_*.pas`).
+There is no other aggregate I/O: the typechecker rejects READ/WRITE of
+typed files ("file selector must be a TEXT file"); codegen rejects WRITE
 of an array other than a one-dimensional CHAR array, which is read whole
 like a copy source (see
 [WRITE of a CHAR array](#write-of-a-char-array-both)); strings and sets read
-or written by READ/WRITE/READSET stay untracked storage. INPUT and OUTPUT are not identifiers the typechecker
-knows, so `INPUT^` is not reachable.
+or written by READ/WRITE/READSET stay untracked storage. The predeclared
+INPUT is a TEXT file like any other here: `INPUT^` is a CHAR buffer that a
+fill initializes (see
+[Predeclared INPUT and OUTPUT](#predeclared-input-and-output-both)).
 
 DEVICE code. INITCK is host-only. A DEVICE compiland, CPU-targeted or
 NVPTX, has no shadow state, no side channel and no guards, and nothing in
@@ -601,7 +638,7 @@ the first such read. Disabling INITCK at that read is the opt-out. Categories:
 | `escaped local or formal` | a local or formal of a tracked type that the routine disqualifies elsewhere: a builtin that writes through it, the `ADR` of a WITH-bound field, a VAR actual of an untracked formal type, a mention under a WITH whose target is not evident | avoid that use, or INITCK- |
 | `untracked WITH target` | a field bound by WITH over storage without state (an untracked record, a global, a released heap referent) | as for the target |
 | `unresolved WITH target` | a name under a WITH whose target's type cannot be resolved (a function call) | qualify the name |
-| `heap storage` | a referent of an untracked type, or one released at this read | INITCK- |
+| `heap storage` | a referent of an untracked type (including one over the 65,536-leaf heap cap), or one released at this read | INITCK- |
 | `file buffer` | `F^` or PUT of a file whose component type is untracked | INITCK- |
 | `function result` | an enabled RETURN or closing END of a function whose result type is not tracked | INITCK- at the return |
 | `call consumer` | a builtin function outside the modeled ones (ORD, CHR, ODD, ABS, EOF, EOLN, UNSAFERAW, UNSAFESUPER, DEVALLOC) | INITCK- at the call |
@@ -689,6 +726,88 @@ gives no warning for niladic `EOF` or `EOLN`, as for a bare `READ` or
 `WRITE`. It does not require INPUT in the heading. Fixtures:
 `tests/corpus/golden/niladic_eof_eoln.pas`, `niladic_eof_shadow.pas`,
 `niladic_eoln_at_eof.pas` and `niladic_eof_no_input_param.pas`.
+
+## Predeclared INPUT and OUTPUT **[both]**
+
+`INPUT` and `OUTPUT` are predeclared `TEXT` variables of every host
+`PROGRAM` (manual 13-5). A program can name them wherever a `TEXT`
+variable can appear: `EOF(INPUT)`, `EOLN(INPUT)`, `READ(INPUT, x)`,
+`READLN(INPUT)`, `WRITE(OUTPUT, x)`, `WRITELN(OUTPUT)`, `GET(INPUT)`, the
+buffer variable `INPUT^`, and a `VAR f: TEXT` actual. They are attached to
+standard input and output before the first statement of the main body.
+
+The named forms and the bare forms (`READ(x)`, niladic `EOF` and `EOLN`)
+read one character stream, in any order: `INPUT^` shows the character
+that a following bare `READ` reads. `INPUT^` is a blank at a line marker,
+as for any TEXT file.
+
+A user declaration named `INPUT` or `OUTPUT` hides the predeclared file in
+its scope, as for any predeclared identifier (manual 3-7). A declaration at
+the program's top level replaces it for the whole program, and the bare
+forms still use standard input and output. MODULE, IMPLEMENTATION and
+DEVICE compilands have no predeclared files.
+
+Deliberate difference: as for the niladic forms above, native does not
+require `INPUT` or `OUTPUT` in the program heading and gives no warning
+when they are missing (the IBM manual warns, 6-27, 13-5). Fixtures:
+`tests/corpus/golden/predeclared_files_io.pas`,
+`predeclared_files_shadow.pas` and `predeclared_files_actual.pas`.
+
+## Identifier length **[both]**
+
+An identifier has at most 255 characters, and every character is
+significant (letters compared without regard to case). Two identifiers that
+differ only in their 255th character are different names, in every stage
+and in the generated code. A longer identifier is a located lexer error at
+its first character:
+
+    Lexer Error: identifier longer than 255 characters at line 2 column 5
+
+Deliberate differences: the IBM manual (Aug. 1981, p. 5-3) says identifiers
+"can be of any length, but must fit on one line" (142 characters, message
+102), that "only the first 31 characters of an identifier are significant",
+and that a longer one "causes a warning" (message 103, "Identifier Too Long
+Truncated"). Native neither warns at 32 characters nor folds names that
+share their first 31: a modern program would get spurious warnings and
+silently merged names. Every identifier a 142-character IBM line can hold
+is accepted. Past 255 characters native rejects rather than truncates,
+because each stage carries a name in a `Str255` and cutting it used to
+merge two long names silently.
+
+A diagnostic naming a long identifier is still one line of at most 255
+characters: the typechecker and codegen shorten the middle of the name to
+`...` and keep the location. An LLVM symbol built from a long name (a
+unit's `pascal_init_` initializer, a routine-qualified global, a kernel
+launch thunk) keeps its first 246 characters and adds `.` and eight hex
+digits of a hash of the whole name. Regression:
+`tests/contract/lexer_identifier_limits.sh`.
+
+## Duplicate declarations **[both]**
+
+An identifier is declared at most once in a block: "An identifier's
+association must be unique within its scope" (IBM Pascal, Aug. 1981,
+p. 5-4; enumeration constants likewise must "be unique within their
+declaration level"). Constants, types, variables, enumeration members,
+routines and identifier labels of a block, and the parameters of a routine
+together with its block's own declarations, share one name space, compared
+case-insensitively. A second declaration is a located typechecker error:
+
+    Identifier already declared in this scope: w at line 3 column 3
+
+`CONST W = 1; VAR w: INTEGER;`, `TYPE t = ...; VAR t: ...`, an enumeration
+member that repeats another name, a parameter repeated or redeclared as a
+local, and a routine that repeats a variable are all rejected. Before, the
+typechecker accepted every such pair. Codegen stopped some of them without a
+location (`duplicate declaration`, `duplicate const declaration`, `duplicate
+routine declaration`) and let the later declaration win for the rest, among
+them `CONST W` with `VAR w`.
+
+These are not duplicates: a declaration in an inner block or a `WITH` scope
+that hides an outer one; a routine body that completes a `FORWARD` heading
+(a body after `EXTERN` keeps its own error); a user declaration of a
+predeclared name such as `MAXINT`, `INPUT` or `THREADIDX_X`; and a name an
+`IMPLEMENTATION` redeclares from its `INTERFACE` (each spliced interface is
+its own scope). Numeric labels are not checked here.
 
 ## Selecting from a niladic function result **[both]**
 
@@ -883,10 +1002,57 @@ usable as the variable or field it is.
 Shadowing does not reach a constant expression. `ParseConstant` admits
 `WRD`, `BYWORD`, `ORD`, `CHR`, `SUCC`, and `PRED` followed by `(` by name and
 nothing else can appear in that position, so `CONST K = ORD('a')` is the
-intrinsic whatever else is in scope, matching the reference. A call in ordinary
+intrinsic whatever else is in scope, matching the reference. The same holds
+for a subrange or array bound. A call in ordinary
 expression position is not a constant expression and does honor shadowing, so
 the same call text can mean the intrinsic in a `CONST` and the user's routine
-in a statement.
+in a statement. Both stages apply this. Before, the typechecker typed such a
+`CONST` as a call to the user's routine and did not treat its value as
+constant, while codegen folded the intrinsic.
+
+The predeclared constants `MAXINT`, `MAXWORD`, `MAXINT32`, `MAXWORD32`,
+`MAXINT64` and `MAXWORD64` are shadowed the same way. A visible user variable,
+parameter, `WITH` field, `CONST` or routine of that spelling takes the name
+over. Before, codegen always used the predeclared value. For example, a local
+`VAR maxint` was read as 32767.
+
+The DEVICE index builtins `THREADIDX_X`, `THREADIDX_Y`, `THREADIDX_Z`,
+`BLOCKIDX_X` .. `_Z`, `BLOCKDIM_X` .. `_Z` and `GRIDDIM_X` .. `_Z` are
+shadowed the same way, in host and DEVICE code alike. A visible user
+variable, parameter, `WITH` field, `CONST` or routine of that spelling is
+what the name means; only an undeclared one reads the launch geometry (and
+is rejected outside DEVICE code). Before, the typechecker rejected a host
+`VAR threadidx_x` as a device builtin, and codegen lowered every such name
+as the builtin whatever was declared.
+
+The typechecker's and codegen's integer constant folders apply one rule
+(`FoldConstInt` in `src/tc_types.pas` and `FoldConstIntIn` in
+`src/cg_types.pas`). A name is an integer constant when its innermost
+visible declaration is an integer, `CHAR` or `BOOLEAN` `CONST` whose value
+folds, or an unshadowed predeclared maximum other than `MAXWORD64`. An
+enumeration member is not an integer constant, and neither is a `CONST`
+computed from one, so an operation on them is checked at run time. A call
+of `ORD`, `CHR`, `SUCC`, `PRED`, `ABS`, `SQR` or `BYWORD` folds in a general
+expression only when no user declaration of that name is visible. In a
+constant expression it always folds as the intrinsic. `CONST W = MAXWORD` is
+now accepted. Before, codegen stopped with "IntLiteralValue: not a foldable
+integer constant". Before, codegen also treated an enumeration member as a
+constant operand where the typechecker did not. For example, under
+`$MATHCK-` the index `a[ORD(blue) * 20000]` wraps to -25536 at run time, but
+codegen indexed with the folded value 40000. There is one deliberate
+difference. Under
+`$RANGECK+`, codegen does not fold an out-of-domain `CHR` or `BYWORD`. It
+lowers the call with its runtime guard. Every constant context and every
+folded operation around such a call reports it first. The differential test
+`tests/contract/const_fold_shadowing.sh` checks the two folders against each
+other.
+
+The previous codegen also compared an `INTEGER64` value with `MAXWORD` as an
+unsigned compare against all-ones, so the compare was always false. The
+compiler's own array-bound check used that compare, so it never rejected a
+high bound. A vintage array bound above 65535 is now rejected with "codegen:
+array index bound is outside -32768..65535". An extended bound can go up to
+the `INTEGER32` maximum.
 
 `VECTOR` types are not available in DEVICE code compiled for NVPTX. Use
 scalar kernel code instead. This restriction does not apply to host code or
@@ -917,17 +1083,19 @@ The compiler rejects both operations before it emits invalid PTX.
 ## GPU (NVPTX) kernels need `{$MATHCK-}` for integer arithmetic **[extended]**
 
 `$MATHCK` is on
-by default, and NVPTX code has no way to report a run-time error to the host,
-so an integer operation MATHCK would check (`+ - * DIV MOD`, unary `-`,
+by default, and NVPTX code cannot stop at a failing MATHCK check the way host
+code does, so an integer operation MATHCK would check (`+ - * DIV MOD`, unary `-`,
 `SUCC`, `PRED`, signed `ABS`, `SQR`) is a compile-time error there:
 `MATHCK unsupported boundary: DEVICE arithmetic at line L column C`, with no
 PTX emitted. Put `{$MATHCK-}` at the top of the device implementation (or
 around the arithmetic) to get ordinary wrapping arithmetic. Constant
 expressions, REAL arithmetic, WORD `ABS` and conversions are unaffected.
 `DIV`/`MOD` stay unavailable on NVPTX under either setting, because their
-zero-divisor failure also needs a host path. TRUNC/ROUND saturate on NVPTX
-instead of failing. CPU (serial) DEVICE code shares the host failure path and
-gets the same checks as host code, including inside `LAUNCH`ed kernels.
+zero-divisor failure also needs a host path. TRUNC/ROUND are different:
+they stay checked on NVPTX through the
+[device error channel](#nvptx-device-error-channel-extended). CPU (serial)
+DEVICE code shares the host failure path and gets the same checks as host
+code, including inside `LAUNCH`ed kernels.
 
 ```pascal
 (*$INCLUDE:'vadd.inc'*)
@@ -948,6 +1116,47 @@ not an oversight: a check the compiler cannot
 enforce on the GPU is never silently dropped. Overflow in such a kernel wraps
 at the type's width with no diagnostic, so validate index ranges on the host
 or run the kernel as CPU DEVICE code (which is checked) while debugging.
+
+### NVPTX device error channel **[extended]**
+
+NVPTX code cannot call the host runtime's failure routines, so a device check
+reports through a cell in device memory instead. Each NVPTX module that has
+such a check defines the global `__pas_dev_error` (24 bytes: `i32` code, line,
+column, file index, then the operand as a `REAL`; `pas_dev_error_cell` in
+`runtime/pascalrt.h`). A failing check claims the cell with an atomic
+compare-and-swap of the code from 0, so the first failure wins, across all
+threads and nested device routines; the claiming thread then stores the
+location and operand. The failing thread does not stop: it continues with a
+defined value (for TRUNC/ROUND, the saturated conversion), so the kernel runs
+to completion and later failures leave the first one in place. After the
+launch completes, the CUDA launch shim (`runtime/cuda_launch.c`) reads the
+cell, clears it, and, if it is set, prints the same located `runtime error:`
+line the host check prints, after flushing stdout, and aborts, as the host
+check does. A module without the cell has nothing to report. The output of
+the kernel that failed is never copied back.
+
+Device code cannot hand the host a pointer to a host string, so a check in an
+`$INCLUDE`d file names its file by a small index. Each distinct included file
+with a device check gets a constant, NUL-terminated string global
+`__pas_dev_file_K` in the module (K = 1, 2, ... in order of first use; the
+include path as written), and the claiming thread stores K in the cell's file
+field. A check in the primary file stores nothing there, so the field stays 0
+and its IR is unchanged. The launch shim reads `__pas_dev_file_K` with
+`cuModuleGetGlobal`, and the report ends ` at line L column C of file NAME`,
+exactly as the host diagnostic does (see
+[Source locations in included files](#source-locations-in-included-files-native)).
+If that global cannot be read, the report is still made, without the file
+name. One NVPTX module can name at most 64 included files this way; codegen
+rejects a module that needs more.
+
+Today only TRUNC/ROUND use the channel (codes 1 and 2). The MATHCK, INDEXCK,
+NILCK and RANGECK device boundaries above are unchanged; a later check can
+reuse the channel by adding a code to `pascalrt.h` and a case to
+`pas_dev_error_report` (`runtime/dev_error.c`), which already fails with
+`runtime error: device check N failed at line L column C` (plus ` of file
+NAME`) for a code it does not know. The run-time behavior is tested on real hardware by `make test-gpu`
+(`tests/optional/gpu/convck.*`) and the emitted IR by
+`tests/contract/trunc_round_range.sh`.
 
 ## Vectors (SIMD) **[extended]**
 
@@ -1058,13 +1267,26 @@ This is **host compatibility**, not the separate rule that every member
 assigned to a declared set fits its *declared* base range (IBM diagnostic
 2181, `$RANGECK`); that value-range check is deferred. PACKED set
 compatibility is also deferred: the parser discards PACKED on set types and
-the representation is unchanged. `SET OF WORD` still shares codegen's
-INTEGER representation despite distinct semantic identities; the manual's
-INTEGER-constant-to-WORD exception needs separate treatment. Wide integer
-set bases/membership and compile-time diagnostics for constant ordinals
-outside the 0..255 representation are not implemented. The existing runtime
-0..255 constructor guards remain, including their reversed-range and
-device-code exclusions.
+the representation is unchanged. Compile-time diagnostics for constant
+constructor elements outside the 0..255 representation are not
+implemented. The existing runtime 0..255 constructor guards remain,
+including their reversed-range and device-code exclusions.
+
+## Set base type range **[both]**
+
+As the IBM manual says (6-24), the ordinals of a set's base type must be in
+0..255: `SET OF CHAR` is valid, `SET OF 1942..1984` is not. A base outside
+that range is a type error at the declaration, however its bounds are
+written (a literal, a `CONST`, a signed `CONST` name, a named subrange):
+
+    SET base type ordinals -3..3 are outside 0..255 at line L column C
+
+This includes `SET OF INTEGER` (-32768..32767), `SET OF WORD` (0..65535)
+and the wider integer types. `SET OF -3..3` used to compile and fail at run
+time on its first negative element, and `SET OF -N..N` gave `Cannot
+determine set element base type` at each use. A signed `CONST` name is now
+a set base or array index bound like a literal: `SET OF -K..N` with
+`K = -1` is `SET OF 1..3`, and `ARRAY [R]` for `R = -N..N` has bounds -3..3.
 
 ## Set constructor element range **[native]**
 
@@ -1101,8 +1323,53 @@ loosely than every other operator and are evaluated from left to right, so
 AND THEN Z`. A right operand that the left one decides is not evaluated.
 The parser rejects any other use with `Parser Error: AND THEN/OR ELSE can
 only join the operands of an IF, WHILE or UNTIL condition, not in
-parentheses or another expression`. `pretty81` prints a chain without
-parentheses, so its output parses again.
+parentheses or another expression at line L column C`. `pretty81` prints a
+chain without parentheses, so its output parses again.
+
+## Statement separators **[both]**
+
+As the 1981 manual says (Compound Statement), `;` separates statements; it
+does not end them. The parser requires one between any two statements of a
+`BEGIN..END` list (a program, routine, unit init or DEVICE body, or a
+nested compound statement) and of a `REPEAT..UNTIL` list, between two
+`CASE` arms, and between a record's fixed part and its variant part.
+`BEGIN WRITELN('one') WRITELN('two') END` is rejected at the second
+statement:
+
+```
+Parser Error: Expected token match failed. Expected:
+SEMICOLON
+Got:
+IDENTIFIER at line L column C
+```
+
+A token that cannot follow a statement there, such as a `.` before the
+`END`, or a stray `)`, `UNTIL` or `OTHERWISE`, gets the same report. The
+empty statement keeps `BEGIN ; ; END`, `BEGIN X := 1; END`, `REPEAT X :=
+1; UNTIL B`, `1: ;` as a `CASE` arm and `IF B THEN ELSE X := 1` legal.
+Declarations, parameter groups and record fields already required their
+`;` and still report the token they expected there (`SEMICOLON`, `RPAREN`
+or `END`). Before NEW-13 the native parser took a statement list's `;` as
+optional; pasboot always required it and reports `expected 'end', found
+'X'`. Tests: `tests/corpus/checklit/parser/should_fail/22`..`32`,
+`should_pass/35_empty_statements.pas` and pasboot's
+`err_missing_semicolon`.
+
+`OTHERWISE` takes a statement list up to the `CASE`'s `END`, as the
+manual allows (`CASE X OF 1: A; OTHERWISE B; C END`), with the same rules:
+`;` between two statements, and an optional `;` before `END`
+(`OTHERWISE A; END`). `OTHERWISE B C END` is rejected at `C` with the
+report above. Before NEW-19 the parser took one statement there and
+rejected both forms with `Expected: END`. A single statement keeps its
+AST; two or more parse to the same AST as `OTHERWISE BEGIN B; C END`, and
+`pretty81` prints them that way. pasboot has no `CASE` statement at all.
+Tests: `tests/corpus/golden/case_otherwise_list.pas` (both dialects),
+`should_fail/33_otherwise_missing_semicolon.pas` and the
+`pretty81_otherwise` contract.
+
+Known difference that remains: a `;` before `OTHERWISE` is optional, as
+in `docs/ebnf_grammar.md`. A `USES` clause needs its closing `;`, as in
+the IBM manual and pasboot (`should_fail/34_uses_missing_semicolon.pas`).
 
 ## Host SUPER ARRAY descriptor ABI **[native]**
 
@@ -1231,7 +1498,8 @@ require element zero-initialization.
 
 Strides/alignment use LLVM allocation layout, not narrow SIZEOF arithmetic.
 Array layouts beyond signed host size are rejected before an overflowing LLVM
-layout query; records retain 32-bit field-offset limits. Nested non-pointer SUPER
+layout query; records retain 32-bit field-offset limits ([type layout
+size](#native-limitations-native)). Nested non-pointer SUPER
 ARRAY elements have no static extent and are rejected. These checks also govern
 unsafe-import spans. NEW elements aligned beyond 16 bytes are rejected. Allocation
 must return the exact recoverable base compatible with free; no adjusted data
@@ -1288,9 +1556,29 @@ set, enumerated and subrange operands, subject to these native ABI limits:
 The result type for static set, enumerated and subrange bounds is the base
 ordinal type (for example, `LOWER(e)` for an enum is an enum value, and
 `LOWER(SET OF BOOLEAN)` is BOOLEAN). Fixed-array bounds use their declared
-index type, including CHAR and enum index types. The established STRING,
-LSTRING and VECTOR bound results remain INTEGER; dynamic super-array bounds
-remain INTEGER64. A set constructor without a declared base uses the local
+index type, including CHAR and enum index types. An integer index range
+`lo..hi` has the narrowest of INTEGER, WORD and INTEGER32 that holds `hi`,
+whether the bounds are literals, CONSTs or constant calls: `0..32767` is
+INTEGER, `0..40000` and `Z..H` with `H = 40000` are WORD, and (extended
+only, since vintage bounds stop at 65535) `0..70000` and `-5..70000` are
+INTEGER32, so `UPPER` of `ARRAY [0..70000]` is the INTEGER32 70000. A range
+named by a CONST of a wider type keeps that type. A subrange type's host
+follows the same rule ([Integer subrange hosts](#integer-subrange-hosts-both)).
+Before, the typechecker
+read only a literal upper bound and codegen only a literal lower one, so
+`UPPER` of `ARRAY [Z..40000]` printed -25536, `UPPER` of
+`ARRAY [0..70000]` printed 4464, and `-5..70000` silently became
+`65531..70000`. A SUPER ARRAY lower bound keeps its INTEGER, WORD, CHAR,
+BOOLEAN or enumeration domain (see the descriptor notes), so
+`SUPER ARRAY [70000..*]` is still rejected. `LOWER` and `UPPER` of a
+`STRING(n)` or `LSTRING(n)` follow the same rule for the capacity `n`,
+however the string is reached (variable, named type, field, element,
+pointer target, function result): `STRING(5)` gives INTEGER,
+`LSTRING(40000)` gives WORD and (extended only) `LSTRING(70000)` gives
+INTEGER32, `LOWER` included. Before, both were INTEGER, so `UPPER` of an
+`LSTRING(40000)` printed -25536. VECTOR bound results remain INTEGER (a
+lane count never approaches 32767); dynamic super-array bounds remain
+INTEGER64. A set constructor without a declared base uses the local
 generic SET representation (`INTEGER` index bounds 0..255). A set union,
 intersection or difference whose operands share a base type keeps that base,
 with bounds that cover both operands' declared ranges (`UPPER(bs + bs)` is
@@ -1312,9 +1600,11 @@ behavior. Dangling pointers after `DISPOSE` are not detected.
 A type identifier (unlike `SIZEOF`), an undereferenced pointer, a non-pointer
 super-array value without a supported dynamic-bound ABI, and arithmetic or
 literal expressions outside the permitted types are rejected. Standalone
-subrange type declarations are supported for vintage INTEGER bounds within
-`-32768..32767`, CHAR, BOOLEAN, and a pair of members from one enumerated
-type; stores into them are range-checked as described under
+subrange type declarations are supported for integer bounds (with the
+INTEGER, WORD or INTEGER32 host described under
+[Integer subrange hosts](#integer-subrange-hosts-both)), CHAR, BOOLEAN,
+and a pair of members from one enumerated type; stores into them are
+range-checked as described under
 [Subrange range checks](#subrange-range-checks-native). Function call
 postfix selectors are supported only inside a bound operand; this does not
 make `f(x)^` a general expression elsewhere. Pointer descriptor formals preserve
@@ -1332,11 +1622,18 @@ Under `$RANGECK`, which is on by default, a value stored into a subrange
 (an `INTEGER`, `CHAR`, `BOOLEAN` or enumerated one, named or anonymous)
 must lie inside its declared bounds. Otherwise the program stops with
 
-    runtime error: value 12 is outside subrange 0..9
+    runtime error: value 12 is outside subrange 0..9 at line 10 column 20
 
 on stderr and aborts (exit status 134), like the other runtime range
 errors. The value and bounds are ordinals: a `CHAR` subrange reports
-character codes and an enumerated one reports member positions.
+character codes and an enumerated one reports member positions. The
+location is the store's site: an assignment's statement (its target), a
+value or `CONST` actual's own expression, a `READ` argument, each `FOR`
+bound's own expression, and the `SUCC`/`PRED` call for a domain failure.
+In an included file it adds ` of file NAME` (see
+[Source locations in included files](#source-locations-in-included-files-native)).
+A subrange program parameter has no source position, so its report ends
+after the bounds, as does a node from an older parser without one.
 
 The check covers:
 
@@ -1678,7 +1975,8 @@ is `CHAR` for `CHR`, the argument's type for `SUCC`/`PRED`, and `INTEGER`
 for `ORD`, `WRD` and `BYWORD`; both ends must still agree (`Subrange bounds
 must be of the same ordinal type`). The typechecker and codegen fold the
 same bounds, so `LOWER`/`UPPER`, a `FOR` over the subrange, the `$RANGECK`
-store check (`runtime error: value 249 is outside subrange 250..255`) and
+store check (`runtime error: value 249 is outside subrange 250..255 at line
+L column C`) and
 the `$INDEXCK` guard (`runtime error: array index 249 is outside bounds
 250..255 at line L column C`) all use them. An enabled out-of-domain `CHR`
 (or `BYWORD`) in a bound is rejected where a `CONST` value would be, at type
@@ -1699,6 +1997,55 @@ Fixtures: `tests/corpus/golden/chr_subrange_bounds.pas`,
 `chr_subrange_rangeck_bad.pas`, `chr_subrange_indexck_bad.pas` and
 `chr_subrange_bound_domain.pas`; `tests/contract/chr_constant_folding.sh`
 pins the `$RANGECK-` bound value.
+
+## Integer subrange hosts **[both]**
+
+An integer subrange's host type is the narrowest of INTEGER, WORD and
+INTEGER32 that holds its upper bound, the rule an array index range and a
+string's `LOWER`/`UPPER` follow ([Bound expressions](#bound-expressions-native)).
+The IBM manual (5-7) gives the 16-bit part of it: `0..20000` is an INTEGER
+subrange, `0..50000` a WORD subrange, and `0..80000` is invalid. So:
+
+| Declaration | Host | Dialect |
+| --- | --- | --- |
+| `0..32767`, `-5..5` | INTEGER | both |
+| `0..32768`, `0..40000`, `32768..65535`, `0..65535` | WORD | both |
+| `0..65536`, `0..100000` | INTEGER32 | extended |
+| `0..65536`, `0..80000` | error: `Subrange upper bound is above 65535` | vintage |
+| `-1..50000` | error: `Subrange lower bound is negative in a WORD subrange` | both |
+| `-40000..0` | error: `Subrange lower bound is below -32768` | both |
+| `5..1` | error: `Subrange lower bound exceeds upper bound` | both |
+
+The bounds may be spelled as literals, CONSTs or constant calls. A low
+bound that is a CONST of another integer type keeps that type. A value of
+a WORD subrange behaves as a WORD: `b := 40000` is accepted for
+`b: 0..40000`, `WRITE` prints it unsigned, and it does not narrow into an
+INTEGER. A value of an INTEGER32 subrange behaves as an INTEGER32: `r :=
+i32` is accepted for `r: 0..100000` and an INTEGER32 `i32`, and `r` does
+not narrow into an INTEGER or WORD without `RETYPE`. Comparisons,
+arithmetic, value and `VAR` parameters, function results, record fields,
+`FOR` and `CASE` work at the host's width, an array may be indexed by the
+subrange type, and `$RANGECK` checks stores, value parameters and `READ`
+against the declared bounds at full width (`runtime error: value 40001 is
+outside subrange 0..40000 at line L column C`). As for any WORD, a `SET`
+base must stay within 0..255.
+
+Before NEW-32 the typechecker gave every integer subrange the host
+INTEGER, so `b := 40000` was rejected ("Positive integer constant out of
+range for INTEGER"), and codegen stopped at any bound above 32767
+("INTEGER subrange bounds must fit vintage INTEGER"); a vintage bound above
+65535 was reported as an array index bound. Both stages now share one
+rule (tc_types `SubrangeHostKind`/`BoundValueKind`, cg_types
+`WidenBoundHostTid`/`BoundValueTid`). Two choices were made without the
+operator, failing closed: `-1..50000` is an error in the extended dialect
+too, as in the manual, rather than an INTEGER32 subrange, and a lower bound
+below -32768 stays an error in both dialects, as it is for an array bound.
+Fixtures: `tests/corpus/dialect/word_subrange_hosts.pas`,
+`word_subrange_rangeck_bad.pas`, `word_subrange_read_rangeck_bad.pas`,
+`word_subrange_bound_errors.pas`, `vintage_subrange_too_wide.pas`,
+`extended_wide_subrange_hosts.pas`, `extended_wide_subrange_rangeck_bad.pas`,
+`extended_wide_subrange_read_rangeck_bad.pas` and
+`extended_wide_subrange_narrowing.pas`.
 
 ## Named ordinal array index types **[native]**
 
@@ -1749,6 +2096,37 @@ enumerations are known to the checker. Integer widths mix freely
 (`INTEGER`, `WORD`, `INTEGER32` into `1..4`): a constant is held to the
 index kind's range at compile time, and the `$INDEXCK` runtime guard
 holds the declared domain.
+
+## Enumeration identity and anonymous enumerations **[native]**
+
+An enumeration may be written where it is used, not only in a `TYPE`
+declaration: a variable, record field, array element or pointer target
+type such as `color: (red, green, blue)`. As in a `TYPE` declaration, its
+members are constants of that type, declared in the enclosing scope.
+Before, the typechecker declared the members only for a `TYPE`
+declaration, so `VAR c: (a, b); ... c := b` failed with
+`Undefined identifier: b`.
+
+Each enumeration declaration is a distinct type, and a subrange of an
+enumeration (`green..blue`) has its host's identity. When the checker knows
+both identities, a value of another enumeration is a located typecheck
+error at a store (`Cannot assign a value of a different enumeration type:
+V`), a comparison (`Comparison operands are of different enumeration
+types`), a `CASE` label (`CASE label is of a different enumeration type
+than the selector`) and an array index (above). Before, such a store
+compiled, and such a comparison failed only in codegen
+(`mixed-type operands`).
+
+A selection keeps the declared type of what it reaches at any depth. The
+typechecker carries a designator's type as flat metadata that keeps only
+three levels below a pointer, array or file, and it reads the slots lost
+below that back from the declared type node: a record (CMP-23), and also an
+enumeration's identity, a subrange's shape (so `LOWER`/`UPPER` give its
+bounds), a `VECTOR`'s element kind and lane count, and a set's base. So
+`l^[0]^.color`, `m^[0]^[1]` of an inline enumeration or subrange, and the
+lanes of `m^[0]^[1][7]` type-check as their declarations say, and `$RANGECK`
+checks stores into subranges there (fixtures
+`tests/corpus/golden/deep_select_{enum,subrange,vector}*.pas`).
 
 ## MATHCK: integer overflow and division checks **[both]**
 
@@ -2022,7 +2400,8 @@ User function results retain their declared domain with actual arguments or
 as bare/parenthesized niladic calls; recovery does not evaluate the call again.
 WITH-bound fields use their declared storage types, and user routines named
 SUCC/PRED remain ordinary calls. Both domain checks use the existing
-`runtime error: value V is outside subrange LO..HI` text. This does not expand
+`runtime error: value V is outside subrange LO..HI at line L column C` text,
+located at the `SUCC` or `PRED`. This does not expand
 expression syntax or NVPTX checking: function-call postfix selectors remain
 limited to bound operands, and NVPTX retains its existing RANGECK exclusion.
 
@@ -2130,15 +2509,14 @@ it does not erase an enabled bad-argument check or broaden constant syntax.
 dialects at O0–O3 and the CONST/label/bound consumers.
 
 The other checks keep their own texts and never use the MATHCK stem: RANGECK
-prints `value V is outside subrange LO..HI`, INDEXCK `array index V is outside
+prints `value V is outside subrange LO..HI at line L column C`, INDEXCK `array index V is outside
 bounds LO..HI at line L column C`, INITCK `INITCK uninitialized ...`, and TRUNC/ROUND their
 [conversion error](#trunc-and-round-return-integer-so-they-narrow-to-16-bits-both).
-Existing subrange RANGECK messages stay unlocated, and SUCC/PRED domain failures say
-"subrange" even for CHAR, BOOLEAN and enumeration domains. Adding coordinates
-or domain-specific wording would change the `pas_subrange_error` runtime
-interface and every store-check caller; that is RANGECK's own diagnostics
-work (located classes, file/include identity, runtime ABI compatibility), not
-a MATHCK change.
+Subrange RANGECK messages are located like the others (`pas_subrange_error`
+takes the line and column after its bounds, as the other located runtime
+errors do), and SUCC/PRED domain failures say "subrange" even for CHAR,
+BOOLEAN and enumeration domains. Domain-specific wording would be RANGECK's
+own diagnostics work, not a MATHCK change.
 
 *Implementation:* `pas_math_zero` and `pas_math_overflow` in
 `runtime/mathck.c`.
@@ -2167,10 +2545,10 @@ is an ordinary call, outside this classification.
 | Separate contract | `INSERT` | Admitted string source and bare LSTRING destination; the position (1..length + 1) and the new length are checked before any move or length publication, always (IBM error 2151), whatever the RANGECK setting. NVPTX remains unchecked ([above](#insert-admission-and-always-caught-position-and-capacity-checks-native)). |
 | Separate contract | `ENCODE` | WRITE-style formatting into a bare LSTRING ([below](#encode-both)); the capacity check is the FALSE result, never a trap, whatever RANGECK says. |
 | Separate contract | `DECODE` | READ-style conversion from a string ([below](#decode-both)); a malformed or out-of-range text, a subrange's bounds included, is the FALSE result, never a trap, whatever RANGECK says. |
-| Separate contract | `NEW` bounds, `DEVALLOC`, `SIZEOF`, `LOWER`, `UPPER` | Descriptor and layout arithmetic; layouts above 2147483647 bytes are rejected (`TypeSizeBytes`). |
+| Separate contract | `NEW` bounds, `DEVALLOC`, `SIZEOF`, `LOWER`, `UPPER` | Descriptor and layout arithmetic; layouts above 2147483647 bytes, and a `SIZEOF` above 65535, are compile errors ([type layout size](#native-limitations-native)). |
 | Separate contract | `READ`/`READLN` of integers | Text conversion, checked independently of MATHCK (G29). |
 | No check | `ORD` | Same value and width; an enumeration gives its ordinal as INTEGER, so `ORD(e) * 20000` is checked 16-bit arithmetic. [`ORD(WORD)`](#deferred-ordword-conversion-gap-g25) stays WORD (G25). |
-| No check | `WRD`, `WRD8` | Bit-pattern conversion: `WRD(-2)` is 65534 (IBM 11-8). |
+| No check | `WRD`, `WRD8` | Bit-pattern conversion: `WRD(-2)` is 65534 (IBM 11-8). At run time as in a `CONST`, `WRD` is the value modulo 65536 at any source width: a 32- or 64-bit integer or an enumeration keeps its low 16 bits (`WRD(70000)` is 4464), an `INTEGER8` sign-extends, and RANGECK does not check it. `WRD8` is the value modulo 256. |
 | No check | `ODD` | Low-bit test. |
 | No check | `HIBYTE`, `LOBYTE` | Byte extraction, never above 255. As in IBM, they return the argument's type (INTEGER or WORD). |
 | RANGECK | `BYWORD` | Both original ordinal operands must be in 0..255 before packing under host/CPU RANGECK+. Disabled checking and NVPTX retain low-byte packing. Domain checking is not MATHCK overflow. |
@@ -2343,9 +2721,10 @@ overflow lanes; only on failure does a cold path redo the operation lane by
 lane, in lane order, through the scalar checked paths (`CodegenLanewiseIntOp`,
 `CodegenLanesIntOp` and `CodegenCheckedVReduce` in `src/cg_expr.pas`).
 
-**DEVICE.** NVPTX code has no host failure path, and no device-side error
-channel (state in device memory, transport across LAUNCH, a non-trapping way
-to stop the failing thread) is planned. An operation that its MATHCK+
+**DEVICE.** NVPTX code has no host failure path. The
+[device error channel](#nvptx-device-error-channel-extended) reports
+TRUNC/ROUND only; MATHCK does not use it (a failing thread would have to go on
+with a wrapped value). An operation that its MATHCK+
 snapshot would check there (`+ - * DIV MOD`, unary minus, SUCC/PRED, signed
 ABS, SQR; not a fully constant fold and not WORD ABS) is therefore rejected as
 a `DEVICE arithmetic` boundary. MATHCK- at the operation is the opt-out and
@@ -2455,6 +2834,120 @@ REAL arithmetic and TRUNC/ROUND conversion errors remain outside MATHCK;
 that separation is retained from IBM, not a new difference (IBM's always-on
 REAL function checks are not reproduced; TRUNC/ROUND's range check is).
 
+## STACKCK: stack overflow probing and reporting **[native]**
+
+IBM `$STACKCK` (manual 4-34, default `+`) "checks for stack overflow at
+procedure and function entry, and when pushing parameters larger than four
+bytes onto the stack"; the failure is error 2000, "Overflow" (A-42). The
+native compiler has no software stack limit to compare against. It makes the
+operating system's stack limit trustworthy instead, and reports reaching it.
+
+- **Probes.** Every host function compiled under STACKCK+ gets the LLVM
+  function attribute `"probe-stack"="inline-asm"`, the mechanism behind
+  clang's `-fstack-clash-protection`. The backend then reserves a frame
+  larger than a page one page at a time, touching each page, before the
+  routine's first ordinary instruction. A frame can therefore never jump over
+  the guard area below the stack: running out of stack becomes a fault at the
+  first page past the limit, before any later use of the frame. This covers
+  everything in the routine's own frame: locals, INITCK shadows, file
+  buffers, aggregate argument and result temporaries (codegen keeps them in
+  the entry block, `EntryAlloca`), spills, and the outgoing argument area.
+  It covers every optimization level: when a routine is inlined, LLVM keeps
+  the probes on the merged frame.
+- **Reporter.** A compiland with at least one probed function registers
+  `pas_stackck_init` (`runtime/stackck.c`) as a module constructor, so it runs
+  before `main` and before any probed frame. It records the main thread's
+  stack extent: the `/proc/self/maps` mapping that holds the stack pointer,
+  extended down by `RLIMIT_STACK`, as glibc's `pthread_getattr_np` computes
+  it. It reads the file with `open`/`read` and allocates nothing, so the heap
+  a program sees is unchanged. Then it installs a SIGSEGV handler on a
+  64 KiB alternate signal stack (`sigaltstack`), so reporting does not need
+  the exhausted stack. The handler treats a fault as a stack overflow only when the
+  interrupted stack pointer is on the main thread's stack and the fault
+  address lies in that stack's extent, or up to 64 KiB below it, within
+  64 KiB of the stack pointer. It then flushes stdout, writes exactly
+
+  ```text
+  runtime error: STACKCK stack overflow
+  ```
+
+  to stderr and calls `abort()`, like the other runtime errors. Tests require
+  a failing status and this line, not a signal number or exit status. Any
+  other SIGSEGV gets the default action back and faults again as it would
+  without STACKCK.
+- **Setting.** The setting at a routine's name token decides that routine:
+  the identifier after `PROCEDURE`/`FUNCTION`. For `main` it is the program
+  name after `PROGRAM`, and for a unit's initialization function the name
+  after `MODULE` or `IMPLEMENTATION OF`. A directive between the heading and
+  `BEGIN`, or inside the body, does not change the routine it is in. The
+  parser records the snapshot as a `stackck` field on `ProcDecl`, `FuncDecl`,
+  `ProgramUnit`, `ModuleUnit` and `ImplementationUnit`. The usual directive
+  machinery applies (default `+`, `$DEBUG` coupling, PUSH/POP, includes). A
+  typed AST from an older parser has no `stackck` field; its routines are not
+  probed.
+- **STACKCK-** routines have no probes, which is today's behavior: a frame
+  larger than the guard area can jump over it and fault elsewhere, or
+  silently use memory that is not stack. A compiland with no STACKCK+
+  function gets neither probes nor the reporter.
+
+### STACKCK limits
+
+These are the edges of the checked slice. Do not describe STACKCK as more.
+
+- **Main thread only.** The extent and the alternate signal stack belong to
+  the main thread. Pascal programs here run on it: CPU DEVICE code (the
+  serial shim behind `LAUNCH`) is probed and covered. A thread started by C
+  code has no alternate signal stack; its overflow ends with the default
+  SIGSEGV, unreported.
+- **Foreign frames.** C code, including C that a Pascal callback calls or
+  is called from, is probed only if it was compiled with stack-clash
+  protection (most Linux distributions build libc that way). An unprobed
+  foreign frame can jump over the guard. A fault at the stack limit is
+  reported no matter which frame caused it, including a STACKCK- routine or C
+  code, once any compiland of the program installed the reporter.
+- **Output on failure.** The stdout flush is best effort. If the overflow
+  struck inside the C library's output code, buffered output can be lost or
+  garbled. If the flush itself faults, the handler still writes the line and
+  aborts.
+- **Location.** The diagnostic has no line or column. The fault comes from
+  the hardware at a page probe, not from a source operation. Under
+  optimization the frame of an inlined routine belongs to its caller, so the
+  failure can happen at the caller's entry, before output the caller would
+  have written. For example, at `-O1` and above a non-recursive routine with
+  a 16 MiB local that is inlined into `main` fails before `main`'s first
+  `WRITELN`.
+- **Limit and platform.** The bound is the soft `RLIMIT_STACK` at program
+  start. With an unlimited stack limit, the fault, if
+  any, may not be recognized and then ends with the default SIGSEGV. The
+  reporter needs Linux (`/proc`, `sigaltstack`); the stack-pointer test is
+  x86-64. A SIGSEGV
+  handler that a library installs later replaces the reporter.
+- **NVPTX.** DEVICE code compiled for NVPTX gets no probes, no reporter and
+  no diagnostic. The GPU has no host stack and cannot call the runtime. The
+  directive is accepted there and has no effect; it is not a compile-time
+  error, because STACKCK is on by default.
+- **Not covered by STACKCK.** Stack canaries and stack-smashing detection,
+  heap exhaustion (NEW's error 2001 is separate and always caught), and the
+  compiler's own depth ceilings (`src/cg_util.pas`) are different
+  mechanisms.
+
+### Explicit STACKCK differences from IBM Pascal 1981
+
+- **The real stack limit, not a shared stack/heap arena.** IBM's stack and
+  heap grow toward each other. Native stack and heap are separate, and the
+  limit is the operating system's.
+- **No four-byte parameter rule.** Probing covers the whole frame,
+  including argument copies in the caller's frame, so there is no separate
+  check for parameters larger than four bytes.
+- **Detected at the fault.** The check is the page fault that the probes
+  make certain, not a comparison at entry. The failing frame is never used.
+- **Native diagnostic presentation.** The line names the switch, not IBM
+  error 2000, and has no source position (see above).
+
+Tests: `tests/contract/stackck.sh` (IR attribute and per-routine settings,
+O0 page probes, overflow and fitting runs at O0–O3 under a reduced
+`ulimit -s`, declined ordinary SIGSEGV).
+
 ## Integer widths
 
 `INTEGER` and `WORD` are **[both]**. Every wide type in this table is
@@ -2547,6 +3040,17 @@ constant `+ - * DIV MOD` whose value fits its integer context is checked as
 one constant, so `i := 0 - 32768` is also `-32768`, and `40000 - 10000` is
 the INTEGER `30000`; every intermediate value must still fit its own type,
 and a value outside the context is an error.
+
+The context reaches the argument of `ORD`, `SUCC`, `PRED`, `ABS` and `SQR`
+only when a constant argument fits it, so `i32 := SQR(1000)` is checked at
+32 bits; an argument that does not fit takes its own type, so
+`w8 := ABS(-5)` is 5. `HIBYTE` and `LOBYTE` take an `INTEGER` or `WORD`
+argument, so the context reaches their argument only when it is `INTEGER`
+or `WORD`, and `BYWORD` and `CHR` arguments never take it:
+`i32 := HIBYTE(258)` is 1. Before, the literal took the context's type,
+so `HIBYTE(258)` in an `INTEGER32` assignment was rejected as an
+`INTEGER32` argument and `ABS(-5)` in a `WORD8` one as a negative `WORD8`.
+`HIBYTE(70000)`, which needs an `INTEGER32`, is still rejected.
 
 An `INTEGER` constant can adapt to a `WORD` context. This includes negative
 constants. The conversion keeps the 16-bit pattern, so `-1` becomes `65535`.
@@ -2654,6 +3158,50 @@ The compiler also rejects implicit narrowing, such as assigning an
 is intentional. Assignment, value-parameter, array-index, and `FOR`-bound
 contexts apply the same constant range checks.
 
+### REAL literal values
+
+A `REAL` literal has the correctly rounded IEEE-754 double value of its
+whole decimal text, in both dialects: `0.30000000000000004 = 0.1 + 0.2` is
+TRUE, and `1.7976931348623157E308`, `2.2250738585072014E-308` and
+`5.0E-324` are the largest, smallest normal and smallest subnormal doubles.
+The value crosses every compiler stage bit for bit (the stages print JSON
+numbers with their shortest exact spelling, `runtime/json_helpers.c`).
+A literal below the smallest subnormal is zero. A literal above the largest
+double is an error, not an infinity:
+`Lexer Error: REAL literal out of range at line L column C`.
+`tests/corpus/golden/real_literal_exact_bits.pas` and
+`tests/corpus/golden/real_literal_out_of_range_bad.pas` pin this.
+`pretty81` prints each REAL literal as the shortest literal with the same
+value: plain decimal for decimal exponents from -5 to 15 (`0.1`,
+`1500.0`), otherwise with an `E` exponent (`1.0E-6`, `5.0E-324`,
+`1.2345678901234568E22`). `tests/contract/pretty81_reals.sh` pins this.
+
+### Negative zero and signed CONST names
+
+REAL and REAL32 unary minus is an IEEE-754 negation (LLVM `fneg`): it
+flips the sign bit, so `-0.0` is negative zero and `-x` of `0.0` is
+`-0.0`, at run time and in a CONST (`CONST Z = -0.0` gives `1.0 / Z`
+equal to `-INF`). Negation used to be `0.0 - x`, which turns both zeros
+into `+0.0`. Negative zero compares equal to `0.0`. `ABS` of either zero
+is `+0.0`. The IBM manual says nothing about signed zeros; this is
+plain IEEE arithmetic.
+
+A numeric CONST name may take a sign wherever a constant is expected
+(IBM manual 5-9: "Any numeric constant (literal or identifier) can be
+given a + or - sign"): `CONST MZ = -Z; MN = -N;`, `ARRAY [-N .. N]`,
+`TYPE T = -N .. N` and the CASE label `-N:`. `-N` is checked like
+unary minus in an expression, so a negated integer CONST is
+range-checked, and `+N` is `N`. Unary minus on a CHAR, BOOLEAN,
+enumeration, set or pointer, as a constant or in an expression, is the
+type error `Unary minus requires a numeric operand` (it used to fold
+`-'A'`-valued CONST names to `-65` and abort codegen in a statement). A
+CONST may also name a REAL CONST (`CONST AZ = Z`). `pretty81` prints a
+signed name or literal in these places without parentheses. Pinned by
+`tests/corpus/golden/real_negative_zero.pas`,
+`real32_negative_zero.pas`, `signed_const_name_bad.pas`,
+`tests/corpus/checklit/real_negation_fneg.pas` and
+`tests/contract/pretty81_reals.sh`.
+
 ### Constant DIV/MOD and consumer invariants
 
 Integer constant DIV truncates toward zero; MOD has the dividend's sign,
@@ -2711,14 +3259,18 @@ n := ROUND(r);     { the same, naming ROUND }
 rounds halves away from zero first, so `ROUND(32767.5)` fails and
 `ROUND(-32768.4)` is `-32768`. The location is the function name's. A
 constant argument is checked at run time too. CPU `DEVICE` code fails the
-same way. NVPTX `DEVICE` code has no host failure path, so there the
-conversion saturates instead (`TRUNC(1.0E10)` is `32767`, NaN gives `0`);
-this is defined, but it is not IBM's error, and it is recorded as a device
-gap. *Implementation:* `CodegenCheckedRealToInt` (`src/cg_expr.pas`) guards
+same way. NVPTX `DEVICE` code fails the same way too, but only after the
+kernel: a failing conversion records itself in the
+[device error channel](#nvptx-device-error-channel-extended) and the thread
+goes on with the saturated value (`TRUNC(1.0E10)` is `32767`, NaN gives `0`);
+when the launch completes, the program prints the same diagnostic, naming
+the device source's line and column, and aborts. The check is always on there
+as well; `{$RANGECK-}` does not turn it off. *Implementation:* `CodegenCheckedRealToInt` (`src/cg_expr.pas`) guards
 `fptosi` with ordered compares, which also reject NaN, so no out-of-range
 conversion reaches LLVM poison; failures go through `pas_conversion_error`
 (`runtime/numeric.c`) at the parser's `op_location`, with no MATHCK
-snapshot. NVPTX uses `llvm.fptosi.sat`.
+snapshot. NVPTX records the failure with `EmitDeviceError` and converts with
+`llvm.fptosi.sat`.
 
 Do not use `TRUNC` to read a number out of JSON, a file, or anything else that
 can exceed 32767. The runtime provides `pas_cjson_int32`, `pas_cjson_int64`
@@ -2771,17 +3323,76 @@ the whole value, including when argument registers are exhausted. Larger
 strings retain the existing MEMORY-class transport. Regression:
 `tests/corpus/golden/small_string_abi.pas`.
 
+## Source locations in included files **[native]**
+
+The lexer reads an `$INCLUDE`d file as its own token run: lines and
+columns start at 1 in that file, and the including file's position resumes
+after the directive. Every token and AST location from an included file
+also names the file, so a diagnostic there is not mistaken for a position
+in the file being compiled. The rules:
+
+- A location in the file given to the compiler (the primary file) has no
+  file name. Its token JSON, AST and diagnostics are unchanged.
+- A token from an included file carries `"file": "NAME"`, and so does every
+  location the parser builds from it (`location`, `op_location`,
+  `read_location`). NAME is the include path exactly as written in the
+  directive, which is also the path the lexer opens. Include paths still
+  resolve relative to the working directory, also inside an included file:
+  this change does not alter which file is read.
+- Nested includes work: each included file names itself, and the
+  including file's name and position are restored when it ends.
+- Every located diagnostic ends ` at line L column C`, and a location in
+  an included file adds ` of file NAME`. This covers the lexer's located
+  errors, parser errors, typechecker errors, codegen's compile-time
+  errors (for example
+  `INITCK unsupported boundary: ... at line 5 column 23 of file x.inc`),
+  and the runtime check failures that print a location (INDEXCK, RANGECK,
+  MATHCK, NILCK, INITCK, CASE, subrange stores, TRUNC/ROUND (also through
+  the [NVPTX device error channel](#nvptx-device-error-channel-extended))
+  and the string-capacity errors). For a run-time failure, the code that reports it first stores
+  the file name in the thread-local runtime variable `pas_diag_file`; code
+  in the primary file stores nothing, so its IR is unchanged.
+- A parser error is located at the token where the parser stopped (the
+  token it could not accept, or the token it had reached for a nesting
+  limit). Its report is `Parser Error: ...` plus the suffix; a report of
+  several lines (an expected token, or an invalid factor) puts the suffix
+  on its last line, the token found:
+
+      Parser Error: Expected token match failed. Expected:
+      DO
+      Got:
+      IDENTIFIER at line 7 column 5 of file parser_error.inc
+
+  This is the same in both dialects. The parser's command-line and
+  token-JSON errors have no source position and print none.
+- `USES` units: an `INTERFACE` header that comes from an included file
+  (the usual `(*$INCLUDE:'unit.inc'*)` before `PROGRAM`) is parsed from that
+  file's tokens, so its declarations keep that file's name when the parser
+  copies them into `local_interfaces` or a unit's `interface`. A unit
+  compiled from another source file in the same driver run is a separate
+  compilation and is that run's primary file.
+- An AST from an older parser has no `file` fields. Its locations are
+  treated as primary-file locations; no file name is invented.
+
+Regressions: `tests/corpus/dialect/include_origin/` (lexer, parser,
+typechecker, codegen and run-time diagnostics, nested includes, a subrange
+store in and after an include, and a primary-file error after an include)
+and `tests/corpus/checklit/include_origin/` (the `file` fields in the token
+JSON, the parsed AST and the typed AST).
+
 ## Native limitations **[native]**
 
 These are implementation limitations, not vintage-language restrictions.
 
-- **Compile-time diagnostic positions [both].** Typechecker errors end with
-  ` at line L column C`, the same suffix codegen's located errors use. The
+- **Compile-time diagnostic positions [both].** Lexer and parser errors
+  end with ` at line L column C` at the offending token. Typechecker errors
+  end with the same suffix, as do codegen's located errors. Their
   position is the innermost node that carries one: an operator, a read, a
-  designator, a statement's first token, or a declaration's name. It is a
-  line and column only, with no file name, so an error inside an included
-  file is ambiguous. Typed ASTs from older parsers without `location` fields
-  get positions only where `read_location`/`op_location` exist.
+  designator, a statement's first token, or a declaration's name. A
+  position inside an `$INCLUDE`d file also names that file (see
+  [Source locations in included files](#source-locations-in-included-files-native)).
+  Typed ASTs from older parsers without `location` fields get positions
+  only where `read_location`/`op_location` exist.
 
 - **Very large unsigned literals [extended].** The JSON AST stores numbers as
   `REAL`, so decimal `WORD64` literals above `2^53` cannot preserve every bit.
@@ -2789,6 +3400,24 @@ These are implementation limitations, not vintage-language restrictions.
 - **Array allocation size [both].** Vintage `WORD` bounds through `65535` are
   retained. A large valid range can still request a correspondingly large
   object from LLVM and the linker.
+- **Type layout size [both].** Codegen keeps field offsets, sizes, array
+  strides and INITCK leaf counts as `INTEGER32`. A type whose layout needs
+  more than 2147483647 bytes is a compile error, `codegen: type layout
+  exceeds the supported 2147483647-byte size at line L column C`, whether
+  one array is too large, a `RECORD`'s fields (or one variant
+  alternative's) sum past it although each fits, or aligning the next field
+  rounds past it. The position is the declaration or statement that first
+  needed the layout: the `TYPE` or `VAR` declaration for a `RECORD`, and
+  for an `ARRAY` possibly a later `NEW` or `SIZEOF`, since an array type is
+  sized only when something needs its size (a pointer to a huge array type
+  stays usable). An index bound above 2147483647 is rejected (`array index
+  bound exceeds the supported INTEGER32 range`) instead of being clamped.
+  `SIZEOF` is a `WORD`, as in the IBM manual, so `SIZEOF` of a type larger
+  than 65535 bytes is rejected (`codegen: SIZEOF exceeds 65535, the largest
+  WORD value`) instead of keeping the low 16 bits. INITCK gives variant
+  alternatives disjoint leaves, so a record can have more leaves than bytes;
+  one with more than 2147483647 leaves is untracked, like an array of that
+  many. Fixtures: `tests/corpus/checklit/layout_limits/`.
 - **At most 2000 names in scope at once [both].** The typechecker keeps one
   symbol table of `MAX_SYMBOLS = 2000` entries (`src/tc_base.inc`). Types,
   constants, enumeration values, variables, parameters and WITH-bound fields
@@ -2798,6 +3427,27 @@ These are implementation limitations, not vintage-language restrictions.
   never the first limit. A routine's locals are released when the routine
   ends, so the limit is on the names visible at one point (globals plus the
   enclosing routines' locals), not on a program's total.
+
+### Nested routines and up-level access **[native]**
+
+As in the IBM manual, a `PROCEDURE` or `FUNCTION` declared inside another
+routine can read and write the enclosing routines' locals and parameters
+(value, VAR and CONST), at any depth, pass them as VAR actuals, and assign
+an enclosing FUNCTION's result (`Outer := v`, or `Outer.f := v` for a
+RECORD result). Each activation sees its own enclosing activation, so
+recursion of the inner or the outer routine works. The native compiler
+gives every host routine nested in another routine a hidden last LLVM
+parameter, its static link: a pointer to an array, in the parent's entry
+block, of pointers to the parent's variables that nested routines use (and
+to the parent's own static link, when a deeper routine reaches past it).
+Only code inside the enclosing routine can call a nested routine, so the
+extra parameter changes no interface a program uses. RANGECK, INDEXCK and NILCK check
+captured storage like any other; INITCK treats it as described under
+[nested routines and WITH](#initialization-checking-host-storage-native).
+Limits: 32 nested routine levels, and 256 captured variables per routine;
+beyond them compilation fails with a located `codegen:` error. DEVICE
+routines have no static link (see the deviation below). pasboot's
+bootstrap subset has no nested routines at all.
 
 ## Other things that cost time **[both, unless marked otherwise]**
 
@@ -2814,6 +3464,14 @@ least once:
   quoted literal exceeds 255-byte token limit`, not silently truncated;
   unterminated literals are rejected too. Build longer LSTRING values from
   shorter pieces. Regression: `tests/contract/quoted_literal_limits.sh`.
+- **Numeric literals and labels have no length limit.** An integer, radix or
+  REAL literal, or a numeric label, may be longer than 255 characters (many
+  leading zeros, a long fraction). Its value comes from the whole text, and
+  its token keeps the whole text as its lexeme; no stage reads a value from
+  a 255-character copy. Regression: `tests/contract/lexer_numeric_limits.sh`.
+- **Identifiers have at most 255 characters**, all significant; a longer
+  one is a lexer error, not a silently shortened name. See
+  [Identifier length](#identifier-length-both).
 - **Comments do not nest.** A `{ }` comment containing a brace — including in
   prose, or in an example — ends early, and the failure is reported as "Lexer
   Error: unrecognized character" somewhere further down.
@@ -2845,13 +3503,49 @@ least once:
   capacity`. Use `LSTRING(n)`, which carries a length byte in element `0` and
   accepts any length up to `n`; a `STRING(n)` or `CHAR` value converts to
   `LSTRING` automatically on assignment.
+- **A string capacity is an integer constant in range [both].** The `n` of
+  `STRING(n)` or `LSTRING(n)` may be a literal, a `CONST` name, a signed
+  `CONST` name or a constant call (`WRD(4)`). A `STRING` needs `n >= 1` and
+  an `LSTRING` `n >= 0` (its length byte alone). The upper limit is that
+  of an array bound: 65535 in the vintage dialect, the `INTEGER32` maximum
+  in the extended one. Anything else is a type error at the declaration,
+  `STRING capacity -3 is outside 1..65535 at line L column C` or `STRING
+  capacity must be an integer constant`. This is a deliberate difference:
+  the IBM manual (6-15, 6-16) limits `STRING(n)` to `1..MAXINT-1` and an
+  `LSTRING` to 255, but this compiler already accepts and runs larger
+  capacities (`STRING(32768)`, `LSTRING(40000)`) as pinned by tests, so
+  only capacities with no array representation are rejected.
 - **`CONST` accepts literals, named constants, and `WRD`/`BYWORD` constant
-  constructors.** Multi-character string constants are supported. `WRD(x)`
+  constructors.** Multi-character string constants are supported (see
+  the next item). `WRD(x)`
   and `BYWORD(hi, lo)` are the only function-shaped forms in the vintage
   `CONST` section; ordinary calls, including `ORD`, `CHR`, `SUCC`, and
   `PRED`, are not valid vintage `CONST` values. Subrange and array index
   bounds do take them in both dialects (see
   [Constant calls in subrange bounds](#constant-calls-in-subrange-bounds-both)).
+  `WRD(x)` folds to its WORD bit pattern (`WRD(-2)` is 65534), and a `CONST`
+  naming it, signed or not, is a constant too. Every name in a `CONST`
+  value must be a constant: a variable, parameter or function name is a
+  type error, `CONST value is not a constant: v at line L column C`,
+  located at the `CONST` name.
+- **A string `CONST` is the literal it names [both].** As the IBM manual
+  says (5-10, 6-18), `CONST S = 'abc'` is a `STRING(3)` that is allowed
+  wherever a string literal is and converts to `LSTRING` as needed: it
+  assigns to a `STRING(3)` or to any `LSTRING` that holds it, compares
+  with either, is written by `WRITE` (with a field width), and passes as
+  a value or `CONST` parameter of a matching type, exactly as `'abc'`
+  would. A `CONST` naming another (`CONST T = S`) is the same literal,
+  quotes double as usual (`'it''s'` has length 4), a one-character
+  string is a `CHAR` constant, and a local or exported string `CONST`
+  shadows and is shadowed like any other. A string `CONST` takes no
+  selector (`S[1]` is `Selector on a string constant: S`), has no
+  capacity for `UPPER`/`LOWER`, and is not an ordinal or a `STRING`
+  capacity. Two differences from the IBM manual: `CONST E = ''` is
+  accepted and is the empty string, because this compiler already
+  accepts the literal `''` everywhere (the manual forbids the null
+  string and offers `NULL`); and the `*` concatenation of string
+  constants (`CONST H = S * CHR(13)`) is not implemented, since a `CONST`
+  value is a single constant here: it is a parser error.
 - **A `CASE` label range (`1 .. 3:`) is not lowered [both].** The selector
   itself may be any ordinal — every integer width, `CHAR`, `BOOLEAN`, an
   enumerated type — and labels of a narrower type than the selector are
@@ -2864,12 +3558,14 @@ least once:
   The native typechecker has no `REAL32` of its own — it models it as `REAL`
   — so the rejection comes from codegen, as `assignment type mismatch for:
   <name>` with no line number.
-- **A nested routine cannot read an enclosing routine's local [both].**
-  Neither compiler emits a static link, so an inner `PROCEDURE`/`FUNCTION`
-  reaches only its own parameters and locals and the compiland's file-level
-  variables. Reading an outer local fails in LLVM verification ("Referring
-  to an instruction in another function"), naming neither routine. Pass the
-  value as a parameter, or lift it to a file-level variable.
+- **A nested DEVICE routine cannot use its enclosing routine's variables
+  [extended].** DEVICE routines keep their declared signatures and have no
+  static link (see
+  [Nested routines and up-level access](#nested-routines-and-up-level-access-native)),
+  so naming an enclosing routine's local or parameter, or assigning its
+  FUNCTION result, is a compile error, `codegen: routine N cannot use local
+  X of enclosing routine P in DEVICE code at line L column C`. Pass the
+  value as a parameter.
 - **There is no implicit `INTEGER64` to `REAL` conversion [extended]**, and
   `FLOAT()` is an explicit numeric-to-REAL conversion, not an implicit one.
   The runtime's

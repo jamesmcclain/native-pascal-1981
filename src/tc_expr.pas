@@ -12,6 +12,8 @@ FUNCTION cJSON_GetArrayItem(arr: ADRMEM; index: CINT): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_CreateObject: ADRMEM [C]; EXTERN;
 FUNCTION cJSON_GetStringValue(item: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION pas_double_to_int64(x: REAL): CLONG [C]; EXTERN;
+FUNCTION cJSON_CreateString(s: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION cJSON_ReplaceItemInObject(obj: ADRMEM; key: ADRMEM; newitem: ADRMEM): CINT [C]; EXTERN;
 
 FUNCTION CheckExpr(node: ADRMEM): INTEGER; FORWARD;
 FUNCTION CheckFuncCall(node: ADRMEM): INTEGER; FORWARD;
@@ -23,6 +25,20 @@ VAR
   last_set_base_tk: INTEGER; { bounds-only base; see SetBoundsBaseAfterCheck. }
   expr_context_set_base: INTEGER; { expected SET base, independent of bounds }
   last_sem_set_base, last_sem_scalar_base: INTEGER;
+
+PROCEDURE InlineStringConst(node, literal: ADRMEM);
+{ A string CONST is the literal it names (IBM 5-10: a string constant is
+  allowed wherever a string literal is), so a reference to one is rewritten
+  in place into a copy of its StringLiteral. Every later check, and
+  codegen, which reads the typed AST, then treat it as that literal:
+  STRING(n) and LSTRING assignment, comparison, WRITE and parameters. }
+VAR
+  rc: CINT;
+BEGIN
+  rc := cJSON_ReplaceItemInObject(node, MakeCStr('__node_type__'),
+    cJSON_CreateString(MakeCStr('StringLiteral')));
+  AddStringField(node, 'value', GetStr(literal, 'value'));
+END;
 
 FUNCTION IsDeviceIndexName(name: Str255): BOOLEAN;
 VAR
@@ -300,6 +316,30 @@ BEGIN
   CheckExprForTarget := CheckExprForSetTarget(node, target_tk, SB_UNKNOWN);
 END;
 
+FUNCTION CheckIntrinsicArg(arg: ADRMEM; keep_context: BOOLEAN): INTEGER;
+{ Check an intrinsic's argument (NEW-6). The integer context of the call
+  (the assignment target's type) reaches the argument only when
+  keep_context holds and a constant argument fits that type, so that
+  `i32 := SQR(1000)' is checked at 32 bits. Otherwise the argument is
+  checked with no context and an integer literal takes its natural type:
+  `i32 := HIBYTE(258)' passes an INTEGER, not an INTEGER32 that HIBYTE
+  rejects, and `w := ABS(-5)' does not reject -5 as a WORD. }
+VAR
+  saved_context: INTEGER;
+  folded_value: INTEGER64;
+BEGIN
+  saved_context := expr_context_tk;
+  IF IsInteger(expr_context_tk) THEN
+  BEGIN
+    IF NOT keep_context THEN expr_context_tk := TK_UNKNOWN
+    ELSE IF FoldConstInt(arg, folded_value) THEN
+      IF NOT IntegerConstantFits(expr_context_tk, folded_value) THEN
+        expr_context_tk := TK_UNKNOWN;
+  END;
+  CheckIntrinsicArg := CheckExpr(arg);
+  expr_context_tk := saved_context;
+END;
+
 PROCEDURE CheckConstructorMember(node: ADRMEM; VAR base: INTEGER;
                                  ordinal_error: Str255);
 VAR
@@ -404,8 +444,11 @@ VAR
   sem_node: ADRMEM;
   sem_set, sem_scalar, idx_sem, expr_sem: INTEGER;
   msg: Str255;
+  type_bound: INTEGER32;
 BEGIN
   last_designator_set_sem_base := SB_UNKNOWN;
+  last_designator_sem_node := NIL;
+  type_bound := -1;
   last_designator_scalar_sem_base := SB_UNKNOWN;
   IF NodeType(node) = 'PostfixExpr' THEN
   BEGIN
@@ -433,6 +476,7 @@ BEGIN
     sem_node := symbols[si].ret_type_node;
     sem_set := symbols[si].ret_set_sem_base;
     sem_scalar := symbols[si].ret_scalar_sem_base;
+    type_bound := symbols[si].type_bound;
     END;
   END
   ELSE BEGIN
@@ -471,9 +515,26 @@ BEGIN
       sem_set := symbols[si].set_sem_base;
       sem_scalar := symbols[si].scalar_sem_base;
     END;
+    type_bound := symbols[si].type_bound;
   END;
   sel_arr := GetObj(node, 'selectors');
   nsel := cJSON_GetArraySize(sel_arr);
+  IF NodeType(node) <> 'PostfixExpr' THEN
+    IF symbols[si].const_str_node <> NIL THEN
+    BEGIN
+      { A string CONST is a literal, not storage: it takes no selector. }
+      IF nsel > 0 THEN
+      BEGIN
+        AddError2('Selector on a string constant: ', name);
+        CheckDesignator := TK_UNKNOWN;
+      END
+      ELSE
+      BEGIN
+        InlineStringConst(node, symbols[si].const_str_node);
+        CheckDesignator := TK_STRING;
+      END;
+      RETURN;
+    END;
   FOR i := 0 TO nsel - 1 DO
   BEGIN
     sel := cJSON_GetArrayItem(sel_arr, i);
@@ -548,8 +609,8 @@ BEGIN
     END
     ELSE IF skind = 'INDEX' THEN
     BEGIN
-      idx_sem := ArrayIndexSemBase(sem_node);
-      sem_node := SemanticChildTypeNode(sem_node);
+      idx_sem := ArrayIndexSemBase(sem_node, type_bound);
+      sem_node := SemanticChildTypeNode(sem_node, type_bound);
       sem_set := SemanticSetBaseType(sem_node);
       sem_scalar := SemanticBaseOfOrdinalType(sem_node);
       IF tk = TK_STRING THEN
@@ -641,13 +702,13 @@ BEGIN
           the element's type node, so UPPER/LOWER of an inner array and
           its index expressions are typed here. TK_UNKNOWN still leaves
           the decision to codegen, which has the full type. }
-        IF new_tk = TK_ARRAY THEN current_idx_tk := ElementIndexKind(sem_node)
+        IF new_tk = TK_ARRAY THEN current_idx_tk := ElementIndexKind(sem_node, type_bound)
         ELSE current_idx_tk := TK_UNKNOWN;
       END;
     END
     ELSE IF skind = 'DEREF' THEN
     BEGIN
-      sem_node := SemanticChildTypeNode(sem_node);
+      sem_node := SemanticChildTypeNode(sem_node, type_bound);
       sem_set := SemanticSetBaseType(sem_node);
       sem_scalar := SemanticBaseOfOrdinalType(sem_node);
       IF tk = TK_FILE THEN
@@ -685,8 +746,15 @@ BEGIN
         aux3 := 0;
       END;
     END;
+    { The flat metadata keeps three levels below a pointer, array or file
+      (a file buffer keeps none): a record id lost on the way (f^ of a
+      FILE OF R, l^[i]^ through a SUPER ARRAY of pointers) is read back
+      from the type node the chain reached. }
+    RefineFromTypeNode(sem_node, type_bound, tk, aux, aux2, aux3, current_idx_tk);
   END;
   last_designator_super := super_value;
+  last_designator_type_bound := type_bound;
+  last_designator_sem_node := sem_node;
   last_designator_idx_tk := current_idx_tk;
   last_designator_aux := aux;
   last_designator_aux2 := aux2;
@@ -958,7 +1026,7 @@ BEGIN
     ELSE
       FOR i := 0 TO nargs - 1 DO
       BEGIN
-        atk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
+        atk := CheckIntrinsicArg(cJSON_GetArrayItem(args_arr, i), FALSE);
         IF NOT IsOrdinal(atk) AND (atk <> TK_UNKNOWN) THEN
           AddError('BYWORD argument must be an ordinal type');
       END;
@@ -970,7 +1038,7 @@ BEGIN
     IF nargs <> 1 THEN
       AddError('ORD requires exactly one argument')
     ELSE BEGIN
-      atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
+      atk := CheckIntrinsicArg(cJSON_GetArrayItem(args_arr, 0), TRUE);
       IF NOT IsOrdinal(atk) AND (atk <> TK_UNKNOWN) THEN
         AddError('ORD argument must be an ordinal type');
     END;
@@ -985,7 +1053,7 @@ BEGIN
     IF nargs <> 1 THEN
       AddError('CHR requires exactly one argument')
     ELSE BEGIN
-      atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
+      atk := CheckIntrinsicArg(cJSON_GetArrayItem(args_arr, 0), FALSE);
       IF NOT IsInteger(atk) AND (atk <> TK_UNKNOWN) THEN
         AddError('CHR argument must be an integer type');
     END;
@@ -1025,7 +1093,7 @@ BEGIN
     END
     ELSE BEGIN
       errors_before := nerrors;
-      atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
+      atk := CheckIntrinsicArg(cJSON_GetArrayItem(args_arr, 0), TRUE);
       IF NOT IsOrdinal(atk) AND (atk <> TK_UNKNOWN) THEN
         AddError('SUCC/PRED argument must be an ordinal type');
       CheckFoldedOperation(node, atk, errors_before);
@@ -1042,7 +1110,7 @@ BEGIN
     END
     ELSE BEGIN
       errors_before := nerrors;
-      atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
+      atk := CheckIntrinsicArg(cJSON_GetArrayItem(args_arr, 0), TRUE);
       IF NOT IsNumeric(atk) AND (atk <> TK_UNKNOWN) THEN
         AddError('ABS/SQR argument must be numeric');
       CheckFoldedOperation(node, atk, errors_before);
@@ -1075,7 +1143,9 @@ BEGIN
     IF nargs <> 1 THEN
       AddError('HIBYTE/LOBYTE requires exactly one argument')
     ELSE BEGIN
-      atk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
+      { The argument is INTEGER or WORD whatever the call's context. }
+      atk := CheckIntrinsicArg(cJSON_GetArrayItem(args_arr, 0),
+        (expr_context_tk = TK_INTEGER) OR (expr_context_tk = TK_WORD));
       IF (atk <> TK_INTEGER) AND (atk <> TK_WORD) AND (atk <> TK_UNKNOWN) THEN
         AddError('HIBYTE/LOBYTE argument must be INTEGER or WORD');
     END;
@@ -1371,7 +1441,8 @@ VAR
   si: INTEGER32;
   left_node, right_node, operand_node, type_node: ADRMEM;
   lt, rt, ot, op_kind, aux, aux2, aux3, idx_tk, bound_base_tk: INTEGER;
-  set_base_l, set_base_r, sem_set_l, sem_set_r, sem_scalar_l: INTEGER;
+  bound_str_kind: INTEGER;
+  set_base_l, set_base_r, sem_set_l, sem_set_r, sem_scalar_l, sem_scalar_r: INTEGER;
   op: Str255;
   elems_arr, elem_node, bound_selectors, bound_sel: ADRMEM;
   n_elems, ei, bound_n: INTEGER32;
@@ -1465,7 +1536,10 @@ BEGIN
   ELSE IF nt = 'Identifier' THEN
   BEGIN
     name := GetStr(node, 'name');
-    IF IsDeviceIndexName(name) THEN
+    { A user declaration of the same spelling hides a device index
+      builtin, as it hides any predeclared identifier (NEW-8); codegen's
+      DeviceIndexVisible agrees. }
+    IF IsDeviceIndexName(name) AND (LookupSymbol(name) = 0) THEN
     BEGIN
       IF NOT is_device_compiland THEN
       BEGIN
@@ -1502,6 +1576,8 @@ BEGIN
         CheckExprBody := symbols[si].tk;
         last_sem_set_base := symbols[si].set_sem_base;
         last_sem_scalar_base := symbols[si].scalar_sem_base;
+        IF symbols[si].const_str_node <> NIL THEN
+          InlineStringConst(node, symbols[si].const_str_node);
       END;
     END;
   END
@@ -1565,9 +1641,13 @@ BEGIN
     bound_super := FALSE;
     bound_base_tk := TK_INTEGER;
     bound_idx_unknown := FALSE;
+    bound_str_kind := TK_UNKNOWN;
     IF (NodeType(operand_node) = 'Designator') OR
        (NodeType(operand_node) = 'PostfixExpr') THEN
     BEGIN
+      IF ot = TK_STRING THEN
+        bound_str_kind := StringBoundKind(last_designator_sem_node,
+          last_designator_type_bound);
       bound_subrange := last_designator_aux = -1;
       bound_super := last_designator_super;
       IF ot = TK_SET THEN bound_base_tk := last_designator_aux
@@ -1587,7 +1667,16 @@ BEGIN
       bound_subrange := symbols[si].aux = -1;
       bound_super := symbols[si].is_super;
       IF ot = TK_SET THEN bound_base_tk := symbols[si].aux
-      ELSE IF ot = TK_ARRAY THEN bound_base_tk := symbols[si].idx_tk;
+      ELSE IF ot = TK_ARRAY THEN bound_base_tk := symbols[si].idx_tk
+      ELSE IF ot = TK_STRING THEN
+      BEGIN
+        IF symbols[si].kind = 'FUNC' THEN
+          bound_str_kind := StringBoundKind(symbols[si].ret_type_node,
+            symbols[si].type_bound)
+        ELSE
+          bound_str_kind := StringBoundKind(symbols[si].type_node,
+            symbols[si].type_bound);
+      END;
     END;
     IF (NodeType(operand_node) = 'BinOp') AND (ot = TK_SET) THEN
       bound_base_tk := last_set_base_tk;
@@ -1618,7 +1707,10 @@ BEGIN
         bound_subrange := symbols[si].ret_aux = -1;
         bound_super := symbols[si].ret_is_super;
         IF ot = TK_SET THEN bound_base_tk := symbols[si].ret_aux
-        ELSE IF ot = TK_ARRAY THEN bound_base_tk := symbols[si].ret_idx_tk;
+        ELSE IF ot = TK_ARRAY THEN bound_base_tk := symbols[si].ret_idx_tk
+        ELSE IF ot = TK_STRING THEN
+          bound_str_kind := StringBoundKind(symbols[si].ret_type_node,
+            symbols[si].type_bound);
       END;
     END;
     IF bound_base_tk = TK_UNKNOWN THEN bound_base_tk := TK_INTEGER;
@@ -1646,6 +1738,15 @@ BEGIN
       END
       ELSE IF (ot = TK_ENUM) OR bound_subrange THEN
         CheckExprBody := ot
+      ELSE IF ot = TK_STRING THEN
+      BEGIN
+        { The narrowest of INTEGER, WORD and INTEGER32 that holds the
+          capacity (StringBoundKind, NEW-24); TK_UNKNOWN leaves it to
+          codegen, which has the full type, as for an array. }
+        CheckExprBody := bound_str_kind;
+        IF bound_str_kind <> TK_UNKNOWN THEN
+          last_sem_scalar_base := SemanticOrdinalBase(bound_str_kind, 0);
+      END
       ELSE
         CheckExprBody := TK_INTEGER;
     END
@@ -1711,6 +1812,7 @@ BEGIN
       expr_context_tk := TK_UNKNOWN;
     rt := CheckExpr(right_node);
     expr_context_tk := saved_operand_context;
+    sem_scalar_r := last_sem_scalar_base;
     IF rt = TK_SET THEN
     BEGIN
       set_base_r := SetBoundsBaseAfterCheck(right_node);
@@ -1770,7 +1872,12 @@ BEGIN
           CheckCompatibleSetBases(sem_set_l, sem_set_r);
       END
       ELSE IF NOT (IsNumeric(lt) AND IsNumeric(rt)) AND (lt <> rt) THEN
-        AddError('Comparison operands are not comparable');
+        AddError('Comparison operands are not comparable')
+      { Values of two enumerations never compare (codegen has no common
+        type for them); both identities must be known. }
+      ELSE IF (lt = TK_ENUM) AND (rt = TK_ENUM) AND
+              SemanticBasesConflict(sem_scalar_l, sem_scalar_r) THEN
+        AddError('Comparison operands are of different enumeration types');
       CheckExprBody := TK_BOOLEAN;
       last_sem_scalar_base := TK_BOOLEAN;
     END
@@ -1909,6 +2016,12 @@ BEGIN
       END;
     END
     ELSE BEGIN
+      { Only a number has a negation; CHAR, BOOLEAN, enumerations, sets
+        and pointers reached codegen, which aborted (or, in a CONST,
+        folded -'A' to -65). }
+      IF (op = 'MINUS') AND NOT IsInteger(ot) AND (ot <> TK_REAL) AND
+         (ot <> TK_REAL32) AND (ot <> TK_VECTOR) AND (ot <> TK_UNKNOWN) THEN
+        AddError('Unary minus requires a numeric operand');
       CheckExprBody := ot;
       IF IsOrdinal(ot) AND (ot <> TK_ENUM) THEN
         last_sem_scalar_base := SemanticOrdinalBase(ot, 0);
@@ -1929,10 +2042,11 @@ FUNCTION CheckExpr(node: ADRMEM): INTEGER;
 { CheckExprBody with the error position at this node while it is checked. }
 VAR
   saved_line, saved_col: INTEGER32;
+  saved_loc: ADRMEM;
 BEGIN
-  TcEnterLocation(node, saved_line, saved_col);
+  TcEnterLocation(node, saved_line, saved_col, saved_loc);
   CheckExpr := CheckExprBody(node);
-  TcLeaveLocation(saved_line, saved_col);
+  TcLeaveLocation(saved_line, saved_col, saved_loc);
 END;
 
 BEGIN

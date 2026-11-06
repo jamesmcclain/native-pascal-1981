@@ -6,13 +6,13 @@ PROGRAM const_scope_nested(OUTPUT);
   WITH field hides a local CONST, and a local enumeration may reuse an
   outer CONST's name for a member. }
 TYPE
-  R = RECORD x: INTEGER END;
+  TR = RECORD x: INTEGER END;
 CONST
   k = 1;
   f = 100;
   Red = 50;
 VAR
-  r: R;
+  r: TR;
 
 PROCEDURE Outer;
 CONST k = 2;

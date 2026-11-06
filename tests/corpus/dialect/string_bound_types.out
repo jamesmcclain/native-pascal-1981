@@ -1,0 +1,12 @@
+variable 0 40000
+const capacity 40000
+fixed 1 32768
+field 40000 1 50000
+element 40000
+pointer 40000
+function 40000 40000
+word 40000
+word 50000
+word 1
+integer 32767 0
+integer 5 1

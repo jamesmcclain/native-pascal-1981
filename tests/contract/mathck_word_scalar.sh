@@ -28,13 +28,13 @@ for dialect in vintage extended; do
     echo 'unexpected WORD membership acceptance' >&2; exit 1
   fi
   grep -q 'Incompatible set base types' "$work/reject.err"
-  # Even with a matching declared WORD set, the current codegen rejects
-  # WORD membership. Record this adjacent admission gap, not a result oracle.
+  # A WORD set is rejected at its declaration: a set base's ordinals must
+  # be in 0..255 (IBM manual 6-24), so WORD membership never arises.
   if bin/pascal1981 --dialect "$dialect" -S "$fixtures/word_set_membership_reject.pas" \
        -o "$work/word-set.ll" > "$work/reject.out" 2> "$work/reject.err"; then
-    echo 'WORD set membership gap changed; update audit coverage' >&2; exit 1
+    echo 'SET OF WORD was accepted; update audit coverage' >&2; exit 1
   fi
-  grep -q 'IN requires an INTEGER, CHAR, BOOLEAN or enum left operand' "$work/reject.err"
+  grep -q 'SET base type ordinals 0..65535 are outside 0..255' "$work/reject.err"
 done
 # At O0 use variable operands so LLVM cannot constant-fold the instructions.
 for name in word_scalar word_scalar_wide; do

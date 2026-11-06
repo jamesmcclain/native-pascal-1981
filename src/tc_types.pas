@@ -24,6 +24,19 @@ BEGIN
     (tk = TK_REAL) OR (tk = TK_REAL32) OR (tk = TK_BOOLEAN) OR (tk = TK_CHAR);
 END;
 
+FUNCTION EnumIdOfNode(node: ADRMEM): INTEGER;
+{ The id an already resolved EnumType node was given, or 0. Pure. }
+VAR
+  k: INTEGER32;
+  id: INTEGER;
+BEGIN
+  id := 0;
+  k := nenum_nodes;
+  WHILE (k >= 1) AND THEN (enum_nodes[k] <> node) DO k := k - 1;
+  IF k >= 1 THEN id := enum_node_ids[k];
+  EnumIdOfNode := id;
+END;
+
 FUNCTION FoldVectorLanes(node: ADRMEM): INTEGER;
 { The lane count is a full constant-expression AST node. The acceptance rule
   both stages implement identically: an integer literal, or an identifier
@@ -156,6 +169,13 @@ BEGIN
 END;
 
 FUNCTION FoldConstInt(node: ADRMEM; VAR folded_value: INTEGER64): BOOLEAN;
+{ The integer constant folder. Codegen's FoldConstIntIn (cg_types.pas)
+  applies the same rule when it decides what is an integer constant, and
+  states it with its one deliberate difference: a name folds when its
+  innermost visible declaration is a CONST with has_const_int (never an
+  enumeration member), and an intrinsic call when no user declaration of
+  its name is visible or, in a constant expression, always
+  (UserDeclarationShadows). }
 VAR
   nt, op, name, ch: Str255;
   left, right: INTEGER64;
@@ -258,6 +278,18 @@ BEGIN
       folded_value := LowByte(left) * 256 + LowByte(right);
       FoldConstInt := TRUE;
     END
+    ELSE IF (name = 'WRD') AND (const_expr_level > 0) AND
+       (cJSON_GetArraySize(args) = 1) AND
+       FoldConstInt(cJSON_GetArrayItem(args, 0), folded_value) THEN
+    BEGIN
+      { WRD is a constant function only in a constant expression (a CONST
+        value or a bound), where it folds to its WORD bit pattern: WRD(-2)
+        is 65534 (IBM 11-8). Elsewhere it stays a conversion, as codegen's
+        FoldConstIntIn keeps it outside a constant expression. }
+      folded_value := folded_value MOD 65536;
+      IF folded_value < 0 THEN folded_value := folded_value + 65536;
+      FoldConstInt := TRUE;
+    END
     ELSE IF NOT UserDeclarationShadows(name) AND
        ((name = 'ORD') OR (name = 'CHR') OR (name = 'SUCC') OR (name = 'PRED') OR
         (name = 'ABS') OR (name = 'SQR')) AND
@@ -295,6 +327,7 @@ VAR
   i: INTEGER32;
   hi, lo: INTEGER64;
   saved_line, saved_col: INTEGER32;
+  saved_loc: ADRMEM;
   bad: BOOLEAN;
 BEGIN
   IF NodeType(node) = 'UnaryOp' THEN
@@ -324,10 +357,10 @@ BEGIN
         bad := (lo < 0) OR (lo > 255);
     IF bad THEN
     BEGIN
-      TcEnterLocation(node, saved_line, saved_col);
+      TcEnterLocation(node, saved_line, saved_col, saved_loc);
       IF nm = 'BYWORD' THEN AddError('RANGECK constant BYWORD argument outside 0..255')
       ELSE AddError('RANGECK constant CHR argument outside 0..255');
-      TcLeaveLocation(saved_line, saved_col);
+      TcLeaveLocation(saved_line, saved_col, saved_loc);
     END;
   END;
 END;
@@ -395,6 +428,66 @@ BEGIN
   END;
 END;
 
+FUNCTION BoundValueKind(bound_value: INTEGER64): INTEGER;
+{ The narrowest of INTEGER, WORD and INTEGER32 that holds a non-negative
+  bound: the one rule (NEW-5) for an integer index range, a STRING(n)
+  capacity's LOWER/UPPER and an integer subrange's host. Codegen's
+  cg_types BoundValueTid is the same rule. INTEGER32 arises only in the
+  extended dialect, where bounds may exceed 65535. }
+BEGIN
+  IF bound_value > 65535 THEN BoundValueKind := TK_INTEGER32
+  ELSE IF bound_value > 32767 THEN BoundValueKind := TK_WORD
+  ELSE BoundValueKind := TK_INTEGER;
+END;
+
+FUNCTION WidenBoundHostKind(kind: INTEGER; high_node: ADRMEM): INTEGER;
+{ The host kind of an integer range `low..high' whose low bound alone
+  gives kind: an INTEGER or WORD host widens to hold the folded upper
+  bound (BoundValueKind), however it is spelled, so 0..40000 is a WORD
+  range and (extended only) 0..70000 an INTEGER32 one, as the IBM manual
+  types `0..50000' (5-7). Any other kind, or a bound that does not fold,
+  is kept. Codegen's cg_types WidenBoundHostTid is the same rule. }
+VAR
+  bound_value: INTEGER64;
+BEGIN
+  WidenBoundHostKind := kind;
+  IF high_node = NIL THEN RETURN;
+  IF (kind <> TK_INTEGER) AND (kind <> TK_WORD) THEN RETURN;
+  IF NOT FoldConstInt(high_node, bound_value) THEN RETURN;
+  IF BoundValueKind(bound_value) <> TK_INTEGER THEN
+    WidenBoundHostKind := BoundValueKind(bound_value);
+END;
+
+FUNCTION SubrangeHostKind(range_node: ADRMEM): INTEGER;
+{ The host kind of a subrange or array index range `low..high': the low
+  bound's kind (a literal's, a named constant's or enumeration member's,
+  a constant call's; a signed CONST name is an integer), widened to hold
+  the upper bound when it is an integer (WidenBoundHostKind). TK_UNKNOWN when
+  the low bound names nothing. No diagnostics: the declaration's own
+  check (CheckSubrangeEndpoints) reports bad endpoints. }
+VAR
+  low_node: ADRMEM;
+  nt: Str255;
+  si: INTEGER32;
+  kind: INTEGER;
+BEGIN
+  low_node := GetObj(range_node, 'low');
+  nt := NodeType(low_node);
+  kind := TK_INTEGER;
+  IF nt = 'CharLiteral' THEN kind := TK_CHAR
+  ELSE IF nt = 'BoolLiteral' THEN kind := TK_BOOLEAN
+  ELSE IF nt = 'Identifier' THEN
+  BEGIN
+    si := LookupSymbol(GetStr(low_node, 'name'));
+    IF si <> 0 THEN kind := symbols[si].tk ELSE kind := TK_UNKNOWN;
+  END
+  ELSE IF nt = 'FuncCall' THEN
+    kind := ConstCallBoundKind(low_node)
+  ELSE IF (nt = 'IntLiteral') AND (GetInt(low_node, 'value') > 32767) THEN
+    kind := TK_WORD;
+  SubrangeHostKind := WidenBoundHostKind(kind, GetObjOrNil(range_node, 'high'));
+END;
+
 FUNCTION SemanticBaseOfOrdinalType(node: ADRMEM): INTEGER;
 { Resolve the semantic host without re-running ResolveTypeExpr (which can
   emit diagnostics and allocate enum ids). This also handles the SubrangeType
@@ -403,6 +496,7 @@ VAR
   nt, name: Str255;
   ti: INTEGER32;
   low_node: ADRMEM;
+  host: INTEGER;
 BEGIN
   SemanticBaseOfOrdinalType := SB_UNKNOWN;
   nt := NodeType(node);
@@ -433,8 +527,29 @@ BEGIN
         SemanticBaseOfOrdinalType := symbols[ti].scalar_sem_base;
     END
     ELSE IF nt = 'FuncCall' THEN
-      SemanticBaseOfOrdinalType := SemanticOrdinalBase(ConstCallBoundKind(low_node), 0);
-  END;
+      SemanticBaseOfOrdinalType := SemanticOrdinalBase(ConstCallBoundKind(low_node), 0)
+    ELSE IF nt = 'UnaryOp' THEN
+    BEGIN
+      { A signed bound (-N): its operand is a numeric CONST name (only a
+        word64 literal keeps its sign as an operator). }
+      low_node := GetObj(low_node, 'operand');
+      IF NodeType(low_node) = 'Identifier' THEN
+      BEGIN
+        ti := LookupSymbol(GetStr(low_node, 'name'));
+        IF ti <> 0 THEN
+          SemanticBaseOfOrdinalType := symbols[ti].scalar_sem_base;
+      END
+      ELSE SemanticBaseOfOrdinalType := TK_INTEGER;
+    END;
+    { An integer range widens to hold its bounds, as its host does
+      (SubrangeHostKind): 0..40000 has the WORD identity. }
+    host := SubrangeHostKind(node);
+    IF (host = TK_WORD) OR (host = TK_INTEGER32) THEN
+      SemanticBaseOfOrdinalType := host;
+  END
+  ELSE IF nt = 'EnumType' THEN
+    { An anonymous enumeration: the id its node was resolved to. }
+    SemanticBaseOfOrdinalType := SemanticOrdinalBase(TK_ENUM, EnumIdOfNode(node));
 END;
 
 FUNCTION SemanticSetBaseType(node: ADRMEM): INTEGER;
@@ -454,11 +569,12 @@ BEGIN
   END;
 END;
 
-FUNCTION SemanticChildTypeNode(node: ADRMEM): ADRMEM;
+FUNCTION SemanticChildTypeNode(node: ADRMEM; bound: INTEGER32): ADRMEM;
 { Follow exactly one array index, pointer/file dereference. A NamedType
   is expanded only on demand, so forward pointer targets can be resolved
   after their TYPE section is complete; do not recursively expand records
-  here (self-referential records are legal). }
+  here (self-referential records are legal). Names resolve among
+  types[1..bound] (LookupTypeBefore), the types the declaration saw. }
 VAR
   nt: Str255;
   ti: INTEGER32;
@@ -468,8 +584,8 @@ BEGIN
   nt := NodeType(node);
   IF (nt = 'NamedType') OR (nt = 'BuiltinType') THEN
   BEGIN
-    ti := LookupType(GetStr(node, 'name'));
-    IF ti <> 0 THEN SemanticChildTypeNode := SemanticChildTypeNode(types[ti].type_node);
+    ti := LookupTypeBefore(GetStr(node, 'name'), bound);
+    IF ti <> 0 THEN SemanticChildTypeNode := SemanticChildTypeNode(types[ti].type_node, bound);
   END
   ELSE IF nt = 'ArrayType' THEN
     SemanticChildTypeNode := GetObj(node, 'element_type')
@@ -477,6 +593,209 @@ BEGIN
     SemanticChildTypeNode := GetObj(node, 'base')
   ELSE IF nt = 'FileType' THEN
     SemanticChildTypeNode := GetObj(node, 'element_type');
+END;
+
+FUNCTION RecordIdOfNode(node: ADRMEM): INTEGER;
+{ The record id an already resolved RecordType node was given, or 0. Each
+  field entry keeps its declared type node, a child of exactly one record
+  node, so the field whose type node is this record's first field (or tag)
+  type node names the record. Pure: no id is reserved, no field added. }
+VAR
+  probe, arms, arm_fields: ADRMEM;
+  k: INTEGER32;
+  rid: INTEGER;
+BEGIN
+  probe := NIL;
+  IF cJSON_GetArraySize(GetObj(node, 'fields')) > 0 THEN
+    probe := cJSON_GetArrayItem(GetObj(cJSON_GetArrayItem(GetObj(node, 'fields'), 0), 'items'), 1)
+  ELSE IF GetBool(node, 'has_tag') THEN
+    probe := GetObj(node, 'tag_type')
+  ELSE
+  BEGIN
+    arms := GetObj(node, 'variants');
+    FOR k := cJSON_GetArraySize(arms) - 1 DOWNTO 0 DO
+    BEGIN
+      arm_fields := GetObj(cJSON_GetArrayItem(arms, k), 'fields');
+      IF cJSON_GetArraySize(arm_fields) > 0 THEN
+        probe := cJSON_GetArrayItem(GetObj(cJSON_GetArrayItem(arm_fields, 0), 'items'), 1);
+    END;
+  END;
+  rid := 0;
+  IF probe <> NIL THEN
+  BEGIN
+    k := nfields;
+    WHILE (k >= 1) AND THEN (fields[k].type_node <> probe) DO k := k - 1;
+    IF k >= 1 THEN rid := fields[k].record_id;
+  END;
+  RecordIdOfNode := rid;
+END;
+
+FUNCTION TypeNodeMetadata(node: ADRMEM; bound: INTEGER32;
+                          VAR tk, aux, aux2, aux3, idx_tk: INTEGER): BOOLEAN;
+{ The flat (tk, aux, aux2, aux3, idx_tk) metadata of an already declared
+  type node, composed the way ResolveTypeExpr composes it but without its
+  effects: no diagnostics, no new record or enumeration ids, no fields.
+  Anonymous enumerations (by the id their node was given), subranges,
+  vectors and sets are read too. FALSE when the node cannot be read that
+  way (an unresolved enumeration or an unknown record). A name means the TYPE among
+  types[1..bound], as for SemanticChildTypeNode. The flat model
+  keeps only three levels below a pointer, array or file, so selectors use
+  this to recover the metadata a deeper level lost (CheckDesignator). }
+VAR
+  nt: Str255;
+  ok: BOOLEAN;
+  saved_errors, ti: INTEGER32;
+  inner_tk, inner_aux, inner_aux2, inner_aux3, inner_idx, lanes: INTEGER;
+BEGIN
+  tk := TK_UNKNOWN;
+  aux := 0;
+  aux2 := 0;
+  aux3 := 0;
+  idx_tk := 0;
+  ok := FALSE;
+  IF node <> NIL THEN
+  BEGIN
+    nt := NodeType(node);
+    IF nt = 'NamedType' THEN
+    BEGIN
+      ti := 0;
+      IF GetObjOrNil(node, 'param') = NIL THEN
+        ti := LookupTypeBefore(GetStr(node, 'name'), bound);
+      IF ti <> 0 THEN
+      BEGIN
+        tk := types[ti].tk;
+        aux := types[ti].aux;
+        aux2 := types[ti].aux2;
+        aux3 := types[ti].aux3;
+        idx_tk := types[ti].idx_tk;
+        ok := TRUE;
+      END
+      ELSE IF (GetObjOrNil(node, 'param') <> NIL) OR
+              (LookupType(GetStr(node, 'name')) = 0) THEN
+      BEGIN
+        { A predeclared name (INTEGER, TEXT, STRING(n), ...) that no user
+          TYPE hides: ResolveTypeExpr only spells it out. Its diagnostics
+          were reported at the declaration, so a repeat is dropped. }
+        saved_errors := nerrors;
+        ResolveTypeExpr(node, tk, aux, aux2, aux3, idx_tk);
+        nerrors := saved_errors;
+        ok := tk <> TK_UNKNOWN;
+      END;
+    END
+    ELSE IF nt = 'RecordType' THEN
+    BEGIN
+      aux := RecordIdOfNode(node);
+      IF aux <> 0 THEN
+      BEGIN
+        tk := TK_RECORD;
+        ok := TRUE;
+      END;
+    END
+    ELSE IF (nt = 'PointerType') OR (nt = 'ArrayType') OR (nt = 'FileType') THEN
+    BEGIN
+      IF nt = 'PointerType' THEN
+        ok := TypeNodeMetadata(GetObj(node, 'base'), bound, inner_tk, inner_aux,
+                               inner_aux2, inner_aux3, inner_idx)
+      ELSE
+        ok := TypeNodeMetadata(GetObj(node, 'element_type'), bound, inner_tk, inner_aux,
+                               inner_aux2, inner_aux3, inner_idx);
+      IF ok THEN
+      BEGIN
+        aux := inner_tk;
+        IF nt = 'FileType' THEN
+        BEGIN
+          tk := TK_FILE;
+          IF GetStr(node, 'structure') = 'ASCII' THEN aux2 := 1;
+        END
+        ELSE
+        BEGIN
+          IF (inner_tk = TK_STRING) AND (inner_aux2 = 1) THEN aux2 := 1
+          ELSE aux2 := inner_aux;
+          aux3 := inner_aux2;
+          IF nt = 'PointerType' THEN
+          BEGIN
+            tk := TK_POINTER;
+            idx_tk := inner_idx;
+          END
+          ELSE
+          BEGIN
+            tk := TK_ARRAY;
+            idx_tk := ElementIndexKind(node, bound);
+            IF idx_tk = TK_UNKNOWN THEN idx_tk := TK_INTEGER;
+          END;
+        END;
+      END;
+    END
+    ELSE IF nt = 'EnumType' THEN
+    BEGIN
+      { An anonymous enumeration: the id its node was resolved to. }
+      aux := EnumIdOfNode(node);
+      IF aux <> 0 THEN
+      BEGIN
+        tk := TK_ENUM;
+        ok := TRUE;
+      END;
+    END
+    ELSE IF nt = 'SubrangeType' THEN
+    BEGIN
+      { As ResolveTypeExprBody: the host kind is SubrangeHostKind's, and
+        aux -1 marks the subrange declaration shape. }
+      tk := SubrangeHostKind(node);
+      IF IsOrdinal(tk) THEN
+      BEGIN
+        aux := -1;
+        ok := TRUE;
+      END
+      ELSE tk := TK_UNKNOWN;
+    END
+    ELSE IF nt = 'VectorType' THEN
+    BEGIN
+      { VECTOR [n] OF scalar: the element kind in aux, the lanes in aux2. }
+      lanes := FoldVectorLanes(GetObj(node, 'lanes'));
+      IF TypeNodeMetadata(GetObj(node, 'element_type'), bound, inner_tk, inner_aux,
+                          inner_aux2, inner_aux3, inner_idx) THEN
+        IF VectorScalarElemTk(inner_tk) AND (lanes >= 2) AND (lanes <= 64) THEN
+        BEGIN
+          tk := TK_VECTOR;
+          aux := inner_tk;
+          aux2 := lanes;
+          ok := TRUE;
+        END;
+    END
+    ELSE IF nt = 'SetType' THEN
+    BEGIN
+      IF TypeNodeMetadata(GetObj(node, 'base'), bound, inner_tk, inner_aux,
+                          inner_aux2, inner_aux3, inner_idx) THEN
+        IF IsOrdinal(inner_tk) THEN
+        BEGIN
+          tk := TK_SET;
+          aux := inner_tk;
+          ok := TRUE;
+        END;
+    END;
+  END;
+  TypeNodeMetadata := ok;
+END;
+
+PROCEDURE RefineFromTypeNode(node: ADRMEM; bound: INTEGER32;
+                             VAR tk, aux, aux2, aux3, idx_tk: INTEGER);
+{ Fill the metadata slots a selector chain lost (left 0) from the type
+  node it reached, when the node agrees on the kind. Slots the chain still
+  carries are kept, so this only ever adds what the flat model dropped:
+  a record id, an element's slots, an enumeration id, a VECTOR's element
+  kind and lanes, a subrange's aux -1 marker. }
+VAR
+  rtk, raux, raux2, raux3, ridx: INTEGER;
+BEGIN
+  IF tk <> TK_UNKNOWN THEN
+    IF TypeNodeMetadata(node, bound, rtk, raux, raux2, raux3, ridx) THEN
+      IF rtk = tk THEN
+      BEGIN
+        IF aux = 0 THEN aux := raux;
+        IF aux2 = 0 THEN aux2 := raux2;
+        IF aux3 = 0 THEN aux3 := raux3;
+        IF idx_tk = TK_UNKNOWN THEN idx_tk := ridx;
+      END;
 END;
 
 FUNCTION SubrangeEndpointClass(node: ADRMEM): INTEGER;
@@ -596,11 +915,11 @@ BEGIN
     END
     ELSE ArrayIndexBound := FALSE;
   END
-  ELSE IF nt = 'FuncCall' THEN
+  ELSE
     { A constant call folds to its converted ordinal (CHR(250) is 250), as
-      codegen's ResolveIntLiteral folds the same bound. }
-    ArrayIndexBound := FoldConstInt(node, ordinal_value)
-  ELSE ArrayIndexBound := FALSE;
+      codegen's ResolveIntLiteral folds the same bound; so does a signed
+      CONST name (-N). }
+    ArrayIndexBound := FoldConstInt(node, ordinal_value);
 END;
 
 FUNCTION NamedArrayIndexBounds(node: ADRMEM; tk, enum_id: INTEGER;
@@ -782,38 +1101,22 @@ BEGIN
 END;
 
 FUNCTION SubrangeIndexKind(index_node: ADRMEM): INTEGER;
-{ The coarse scalar kind of an explicit `low..high` array index range,
-  from its bounds' spelling. No diagnostics: ResolveTypeExpr checks the
-  endpoints itself. }
+{ The coarse scalar kind of an explicit `low..high` array index range:
+  SubrangeHostKind, the rule a subrange's host follows, so an integer
+  index takes the narrowest of INTEGER, WORD and INTEGER32 that holds its
+  bounds (NEW-5): `0..70000' (extended only) is an INTEGER32 index, so
+  UPPER is 70000, not its low 16 bits. A low bound naming nothing is
+  INTEGER. No diagnostics: ResolveTypeExpr checks the endpoints itself.
+  Codegen's cg_types ResolveTypeExpr applies the same rule to index_tid. }
 VAR
-  bound_node: ADRMEM;
-  bound_si: INTEGER32;
   kind: INTEGER;
 BEGIN
-  kind := TK_INTEGER;
-  bound_node := GetObj(index_node, 'low');
-  IF NodeType(bound_node) = 'CharLiteral' THEN kind := TK_CHAR
-  ELSE IF NodeType(bound_node) = 'BoolLiteral' THEN kind := TK_BOOLEAN
-  ELSE IF NodeType(bound_node) = 'Identifier' THEN
-  BEGIN
-    bound_si := LookupSymbol(GetStr(bound_node, 'name'));
-    IF bound_si <> 0 THEN kind := symbols[bound_si].tk;
-  END
-  ELSE IF NodeType(bound_node) = 'FuncCall' THEN
-  BEGIN
-    IF ConstCallBoundKind(bound_node) <> TK_UNKNOWN THEN
-      kind := ConstCallBoundKind(bound_node);
-  END
-  ELSE IF (NodeType(bound_node) = 'IntLiteral') AND
-          (GetInt(bound_node, 'value') > 32767) THEN kind := TK_WORD;
-  bound_node := GetObjOrNil(index_node, 'high');
-  IF bound_node <> NIL THEN
-    IF (NodeType(bound_node) = 'IntLiteral') AND
-       (GetInt(bound_node, 'value') > 32767) THEN kind := TK_WORD;
+  kind := SubrangeHostKind(index_node);
+  IF kind = TK_UNKNOWN THEN kind := TK_INTEGER;
   SubrangeIndexKind := kind;
 END;
 
-FUNCTION ElementIndexKind(node: ADRMEM): INTEGER;
+FUNCTION ElementIndexKind(node: ADRMEM; bound: INTEGER32): INTEGER;
 { The index kind of an array type node (an element reached through an
   INDEX selector), or TK_UNKNOWN when node is not an array or its index
   cannot be read without resolving the type again. Pure: the declaration
@@ -828,7 +1131,7 @@ BEGIN
   nt := NodeType(node);
   IF (nt = 'NamedType') OR (nt = 'BuiltinType') THEN
   BEGIN
-    ti := LookupType(GetStr(node, 'name'));
+    ti := LookupTypeBefore(GetStr(node, 'name'), bound);
     IF ti <> 0 THEN
       IF types[ti].tk = TK_ARRAY THEN ElementIndexKind := types[ti].idx_tk;
   END
@@ -838,7 +1141,7 @@ BEGIN
     IF (NodeType(index_node) = 'NamedType') OR
        (NodeType(index_node) = 'BuiltinType') THEN
     BEGIN
-      ti := LookupType(GetStr(index_node, 'name'));
+      ti := LookupTypeBefore(GetStr(index_node, 'name'), bound);
       IF ti <> 0 THEN
         IF IsOrdinal(types[ti].tk) THEN ElementIndexKind := types[ti].tk;
     END
@@ -847,7 +1150,7 @@ BEGIN
   END;
 END;
 
-FUNCTION ArrayIndexSemBase(node: ADRMEM): INTEGER;
+FUNCTION ArrayIndexSemBase(node: ADRMEM; bound: INTEGER32): INTEGER;
 { The semantic base (SemanticOrdinalBase identity) of an array type node's
   index, so two enumerations can be told apart where idx_tk only says
   TK_ENUM. SB_UNKNOWN when node is not an array or the index base cannot
@@ -861,16 +1164,235 @@ BEGIN
   nt := NodeType(node);
   IF (nt = 'NamedType') OR (nt = 'BuiltinType') THEN
   BEGIN
-    ti := LookupType(GetStr(node, 'name'));
+    ti := LookupTypeBefore(GetStr(node, 'name'), bound);
     IF ti <> 0 THEN
       IF types[ti].tk = TK_ARRAY THEN
-        ArrayIndexSemBase := ArrayIndexSemBase(types[ti].type_node);
+        ArrayIndexSemBase := ArrayIndexSemBase(types[ti].type_node, bound);
   END
   ELSE IF nt = 'ArrayType' THEN
     ArrayIndexSemBase := SemanticBaseOfOrdinalType(GetObj(node, 'index_range'));
 END;
 
-PROCEDURE ResolveTypeExpr(node: ADRMEM; VAR tk, aux, aux2, aux3, idx_tk: INTEGER);
+FUNCTION Int64Text(n: INTEGER64): Str255;
+{ Decimal text of n, sign included, for a diagnostic. }
+VAR
+  digits, t: Str255;
+  d: INTEGER64;
+  i: INTEGER;
+  neg, first: BOOLEAN;
+BEGIN
+  neg := n < 0;
+  digits := '';
+  first := TRUE;
+  WHILE first OR (n <> 0) DO
+  BEGIN
+    first := FALSE;
+    d := n MOD 10;
+    IF d < 0 THEN d := -d;
+    digits[0] := CHR(ORD(digits[0]) + 1);
+    digits[ORD(digits[0])] := CHR(RETYPE(INTEGER, ORD('0') + d));
+    n := n DIV 10;
+  END;
+  t := '';
+  IF neg THEN
+  BEGIN
+    t[0] := CHR(1);
+    t[1] := '-';
+  END;
+  FOR i := ORD(digits[0]) DOWNTO 1 DO
+  BEGIN
+    t[0] := CHR(ORD(t[0]) + 1);
+    t[ORD(t[0])] := digits[i];
+  END;
+  Int64Text := t;
+END;
+
+PROCEDURE CheckStringCapacity(node: ADRMEM; uname: Str255);
+{ The capacity n of STRING(n) or LSTRING(n) is an integer constant: a
+  literal, a CONST name, or a signed name or constant call, which the
+  parser keeps as an expression (`param'). A STRING needs at least one
+  character and an LSTRING at least its length byte; neither goes past
+  the limit of an array bound (vintage 65535, extended the INTEGER32
+  maximum). STRING(-3) used to become a 4 GiB array and STRING(-N) a bare
+  STRING. }
+VAR
+  param: ADRMEM;
+  pname, msg: Str255;
+  si: INTEGER32;
+  cap, low, high: INTEGER64;
+  ok: BOOLEAN;
+  ptk: INTEGER;
+BEGIN
+  param := GetObjOrNil(node, 'param');
+  IF param = NIL THEN RETURN;
+  ok := FALSE;
+  pname := GetStr(node, 'param');
+  IF pname <> '' THEN
+  BEGIN
+    si := LookupSymbol(pname);
+    IF si <> 0 THEN
+      IF (symbols[si].kind = 'CONST') AND IsInteger(symbols[si].tk) AND
+         symbols[si].has_const_int THEN
+      BEGIN
+        cap := symbols[si].const_int;
+        ok := TRUE;
+      END;
+    IF si = 0 THEN
+    BEGIN
+      AddError2('Undefined identifier: ', pname);
+      RETURN;
+    END;
+  END
+  ELSE IF NodeType(param) <> '' THEN
+  BEGIN
+    { ParseConstant's other shapes: a signed name, a constant call, or a
+      non-integer literal. }
+    IF NodeType(param) = 'UnaryOp' THEN
+      ptk := SubrangeEndpointClass(GetObj(param, 'operand'))
+    ELSE
+      ptk := SubrangeEndpointClass(param);
+    IF ptk = TK_INTEGER THEN ok := FoldConstInt(param, cap);
+  END
+  ELSE
+  BEGIN
+    cap := GetInt64(node, 'param');
+    ok := TRUE;
+  END;
+  msg := uname;
+  IF NOT ok THEN
+  BEGIN
+    CONCAT(msg, ' capacity must be an integer constant');
+    AddError(msg);
+    RETURN;
+  END;
+  IF uname = 'STRING' THEN low := 1 ELSE low := 0;
+  IF active_features.wide_integers THEN high := 2147483647 ELSE high := 65535;
+  IF (cap < low) OR (cap > high) THEN
+  BEGIN
+    CONCAT(msg, ' capacity ');
+    CONCAT(msg, Int64Text(cap));
+    CONCAT(msg, ' is outside ');
+    CONCAT(msg, Int64Text(low));
+    CONCAT(msg, '..');
+    CONCAT(msg, Int64Text(high));
+    AddError(msg);
+  END;
+END;
+
+FUNCTION StringBoundKind(node: ADRMEM; bound: INTEGER32): INTEGER;
+{ The type of LOWER and UPPER of a STRING(n) or LSTRING(n) type node:
+  the narrowest of INTEGER, WORD and INTEGER32 that holds its capacity n,
+  as for an array index range (SubrangeIndexKind), so UPPER of an
+  LSTRING(40000) is the WORD 40000, not -25536 (NEW-24). Codegen's
+  UpperExpr applies the same rule to the capacity it has. TK_UNKNOWN when
+  node is not a sized string type or n does not fold; the declaration was
+  already diagnosed (CheckStringCapacity). Names resolve among
+  types[1..bound]; a named type's own node among the types before it. }
+VAR
+  nt, pname: Str255;
+  ti, si: INTEGER32;
+  param: ADRMEM;
+  cap: INTEGER64;
+  ok: BOOLEAN;
+BEGIN
+  StringBoundKind := TK_UNKNOWN;
+  IF node = NIL THEN RETURN;
+  nt := NodeType(node);
+  IF (nt <> 'NamedType') AND (nt <> 'BuiltinType') THEN RETURN;
+  ti := LookupTypeBefore(GetStr(node, 'name'), bound);
+  IF ti <> 0 THEN
+  BEGIN
+    StringBoundKind := StringBoundKind(types[ti].type_node, ti - 1);
+    RETURN;
+  END;
+  IF (UpperStr(GetStr(node, 'name')) <> 'STRING') AND
+     (UpperStr(GetStr(node, 'name')) <> 'LSTRING') THEN RETURN;
+  param := GetObjOrNil(node, 'param');
+  IF param = NIL THEN RETURN;
+  ok := FALSE;
+  pname := GetStr(node, 'param');
+  IF pname <> '' THEN
+  BEGIN
+    si := LookupSymbol(pname);
+    IF si <> 0 THEN
+      IF (symbols[si].kind = 'CONST') AND symbols[si].has_const_int THEN
+      BEGIN
+        cap := symbols[si].const_int;
+        ok := TRUE;
+      END;
+  END
+  ELSE IF NodeType(param) <> '' THEN
+    ok := FoldConstInt(param, cap)
+  ELSE
+  BEGIN
+    cap := GetInt64(node, 'param');
+    ok := TRUE;
+  END;
+  IF NOT ok THEN RETURN;
+  StringBoundKind := BoundValueKind(cap);
+END;
+
+PROCEDURE CheckIntegerSubrangeBounds(node: ADRMEM; host: INTEGER);
+{ The folded bounds of an integer subrange, checked here rather than in
+  codegen. They stay within an array bound's limits (-32768 up to 65535
+  in vintage, which has no INTEGER32, and up to the INTEGER32 maximum in
+  extended), so a vintage `0..70000' is an error, as the IBM manual says
+  of `0..80000' (5-7). The lower bound must not exceed the upper. A
+  negative lower bound in a WORD subrange is reversed too: the IBM manual
+  reads `-1..50000' as `65535..50000', and the extended dialect follows
+  it rather than widening to INTEGER32 (only an upper bound above 65535
+  does that). }
+VAR
+  low, high, limit: INTEGER64;
+BEGIN
+  IF NOT IsInteger(host) THEN RETURN;
+  IF NOT FoldConstInt(GetObj(node, 'low'), low) THEN RETURN;
+  IF NOT FoldConstInt(GetObj(node, 'high'), high) THEN RETURN;
+  IF active_features.wide_integers THEN limit := 2147483647 ELSE limit := 65535;
+  IF low < -32768 THEN
+    AddError('Subrange lower bound is below -32768')
+  ELSE IF high > limit THEN
+  BEGIN
+    IF active_features.wide_integers THEN
+      AddError('Subrange upper bound is above 2147483647')
+    ELSE
+      AddError('Subrange upper bound is above 65535');
+  END
+  ELSE IF (host = TK_WORD) AND (low < 0) THEN
+    AddError('Subrange lower bound is negative in a WORD subrange')
+  ELSE IF low > high THEN
+    AddError('Subrange lower bound exceeds upper bound');
+END;
+
+PROCEDURE CheckSetBaseRange(base_node: ADRMEM; base_tk, base_aux: INTEGER);
+{ "The ORD value of the base type can range from 0 to 255, allowing SET
+  OF CHAR but not SET OF 1942..1984" (IBM manual 6-24). The base's
+  ordinal bounds are resolved as an array index type's are, so a literal,
+  CONST, signed CONST or named subrange bound, an enumeration and a
+  predeclared type (INTEGER, WORD) all get the same diagnostic. SET OF
+  -3..3 used to fail only at run time, and SET OF -N..N with an unrelated
+  type error. }
+VAR
+  low, high: INTEGER64;
+  msg: Str255;
+BEGIN
+  IF NamedArrayIndexBounds(base_node, base_tk, base_aux, low, high) THEN
+  BEGIN
+    IF (low < 0) OR (high > 255) THEN
+    BEGIN
+      msg := 'SET base type ordinals ';
+      CONCAT(msg, Int64Text(low));
+      CONCAT(msg, '..');
+      CONCAT(msg, Int64Text(high));
+      CONCAT(msg, ' are outside 0..255');
+      AddError(msg);
+    END;
+  END
+  ELSE IF IsInteger(base_tk) AND (IntegerBits(base_tk) = 64) THEN
+    AddError('SET base type ordinals are outside 0..255');
+END;
+
+PROCEDURE ResolveTypeExprBody(node: ADRMEM; VAR tk, aux, aux2, aux3, idx_tk: INTEGER);
 VAR
   nt, name, uname: Str255;
   base_node, elem_node, index_node, bound_node, fields_arr, tup, items, names_arr, ftype_node: ADRMEM;
@@ -919,7 +1441,11 @@ BEGIN
     ELSE IF uname = 'REAL' THEN tk := TK_REAL
     ELSE IF uname = 'BOOLEAN' THEN tk := TK_BOOLEAN
     ELSE IF uname = 'CHAR' THEN tk := TK_CHAR
-    ELSE IF uname = 'STRING' THEN tk := TK_STRING
+    ELSE IF uname = 'STRING' THEN
+    BEGIN
+      tk := TK_STRING;
+      CheckStringCapacity(node, uname);
+    END
     { LSTRING shares TK_STRING with the fixed STRING -- this v1 type-kind
       model does not track a string's capacity or flavor -- but the two are
       not interchangeable for .LEN or a COPYLST destination: both require
@@ -928,6 +1454,7 @@ BEGIN
     BEGIN
       tk := TK_STRING;
       aux2 := 1;
+      CheckStringCapacity(node, uname);
     END
     { Wide integer names retain exact width and signedness. INTEGER16 and
       WORD16 are extension spellings for the vintage 16-bit kinds. }
@@ -1219,27 +1746,19 @@ BEGIN
   END
   ELSE IF (nt = 'SubrangeType') OR (nt = 'BuiltinType') THEN
   BEGIN
-    { Only reachable today from a SetType's `base` field (ParseSetBase's own
-      output shapes) -- SubrangeType elsewhere (e.g. an ARRAY index range)
-      is read directly by its own caller, not through ResolveTypeExpr. A
-      SubrangeType base's ordinal kind follows its low bound's literal kind
-      (CharLiteral -> TK_CHAR, BoolLiteral -> TK_BOOLEAN, else TK_INTEGER),
-      a named constant's kind, or a constant call's (CHR(250) -> TK_CHAR);
-      a BuiltinType base is a reserved-word ordinal type name. }
+    { A subrange type (a VAR, TYPE, field or parameter type, or a SetType's
+      `base') or a BuiltinType SET base, a reserved-word ordinal type name.
+      An ARRAY index range is read by its own caller (SubrangeIndexKind).
+      A SubrangeType's host is SubrangeHostKind's: the low bound's kind
+      (CHAR for CHR(250), a named constant's kind), and an integer host
+      widens to the narrowest of INTEGER, WORD and INTEGER32 that holds
+      both bounds (NEW-32), as codegen's subrange types do: `0..40000' is
+      a WORD subrange, so `b := 40000' is accepted. }
     IF nt = 'SubrangeType' THEN
     BEGIN
       CheckSubrangeEndpoints(node);
-      IF NodeType(GetObj(node, 'low')) = 'CharLiteral' THEN tk := TK_CHAR
-      ELSE IF NodeType(GetObj(node, 'low')) = 'BoolLiteral' THEN tk := TK_BOOLEAN
-      ELSE IF NodeType(GetObj(node, 'low')) = 'Identifier' THEN
-      BEGIN
-        ti := LookupSymbol(GetStr(GetObj(node, 'low'), 'name'));
-        IF ti <> 0 THEN tk := symbols[ti].tk
-        ELSE tk := TK_UNKNOWN;
-      END
-      ELSE IF NodeType(GetObj(node, 'low')) = 'FuncCall' THEN
-        tk := ConstCallBoundKind(GetObj(node, 'low'))
-      ELSE tk := TK_INTEGER;
+      tk := SubrangeHostKind(node);
+      CheckIntegerSubrangeBounds(node, tk);
       { A declared subrange retains its base scalar kind but marks its
         declaration shape for type-only LOWER/UPPER classification. }
       aux := -1;
@@ -1275,19 +1794,53 @@ BEGIN
   END
   ELSE IF nt = 'EnumType' THEN
   BEGIN
-    next_enum_id := next_enum_id + 1;
+    { A node gets its id, and its members, once. The members are constants
+      of the enumeration in declaration order, declared here so that an
+      anonymous enumeration (a field, variable or element type written
+      inline) has them as well as a TYPE declaration does: codegen declares
+      the members of every EnumType it lowers. }
     tk := TK_ENUM;
-    aux := next_enum_id;
+    aux := EnumIdOfNode(node);
+    IF aux = 0 THEN
+    BEGIN
+      next_enum_id := next_enum_id + 1;
+      aux := next_enum_id;
+      IF nenum_nodes < MAX_ENUM_NODES THEN
+      BEGIN
+        nenum_nodes := nenum_nodes + 1;
+        enum_nodes[nenum_nodes] := node;
+        enum_node_ids[nenum_nodes] := aux;
+      END;
+      names_arr := GetObj(node, 'values');
+      FOR ni := 0 TO cJSON_GetArraySize(names_arr) - 1 DO
+      BEGIN
+        nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, ni)));
+        DeclareName(nm, DECL_OTHER);
+        bound_si := DefineSymbol(nm, 'CONST', TK_ENUM, aux, 0, 0, 0);
+      END;
+    END;
   END
   ELSE IF nt = 'SetType' THEN
   BEGIN
     base_node := GetObj(node, 'base');
     ResolveTypeExpr(base_node, inner_tk, inner_aux, inner_aux2, inner_aux3, inner_idx);
     IF NOT IsOrdinal(inner_tk) THEN
-      AddError('SET OF <base> requires an ordinal base type');
+      AddError('SET OF <base> requires an ordinal base type')
+    ELSE
+      CheckSetBaseRange(base_node, inner_tk, inner_aux);
     tk := TK_SET;
     aux := inner_tk;
   END;
+END;
+
+PROCEDURE ResolveTypeExpr(node: ADRMEM; VAR tk, aux, aux2, aux3, idx_tk: INTEGER);
+{ Every expression inside a type -- a subrange or array bound, a VECTOR
+  lane count -- is a constant expression, so a call there is the intrinsic
+  (UserDeclarationShadows), as codegen's FoldConstInt folds it. }
+BEGIN
+  const_expr_level := const_expr_level + 1;
+  ResolveTypeExprBody(node, tk, aux, aux2, aux3, idx_tk);
+  const_expr_level := const_expr_level - 1;
 END;
 
 BEGIN

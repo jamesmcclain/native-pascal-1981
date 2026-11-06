@@ -315,17 +315,9 @@ PROCEDURE MathckDeviceBoundary(site: ADRMEM);
   and is checked normally. }
 VAR
   msg: Str255;
-  line, column: INTEGER32;
 BEGIN
   msg := 'MATHCK unsupported boundary: DEVICE arithmetic';
-  OperationLocation(site, line, column);
-  IF (line > 0) AND (column > 0) THEN
-  BEGIN
-    CONCAT(msg, ' at line ');
-    CONCAT(msg, InitckIntText(line));
-    CONCAT(msg, ' column ');
-    CONCAT(msg, InitckIntText(column));
-  END;
+  AppendLocation(msg, GetObjOrNil(site, 'op_location'));
   AbortWith(msg);
 END;
 
@@ -373,6 +365,7 @@ BEGIN
   ELSE SetPtrArrayElem(args, 3, MathReportOperand(rval, tk));
   SetPtrArrayElem(args, 4, LLVMConstInt(i32ty, line, 0));
   SetPtrArrayElem(args, 5, LLVMConstInt(i32ty, column, 0));
+  EmitDiagFile(GetObjOrNil(site, 'op_location'));
   discard := LLVMBuildCall2(builder, fnty, fn, args, 6, MakeCStr(''));
   discard := LLVMBuildUnreachable(builder);
   LLVMPositionBuilderAtEnd(builder, ok_bb);
@@ -489,7 +482,7 @@ BEGIN
     LLVMConstInt(LLVMTypeForTk(tk), 0, 0), v, v, 4, tk, site);
 END;
 
-PROCEDURE EmitSuccPredDomainCheck(v: ADRMEM; tid: INTEGER; is_succ: BOOLEAN);
+PROCEDURE EmitSuccPredDomainCheck(v: ADRMEM; tid: INTEGER; is_succ: BOOLEAN; site: ADRMEM);
 { $RANGECK for SUCC/PRED of a CHAR, BOOLEAN or enumeration value: the
   result has the argument's type (IBM 11-8), so stepping past its last
   (SUCC) or first (PRED) ordinal fails before the step. The report uses
@@ -519,7 +512,8 @@ BEGIN
   LLVMBuildCondBr(builder, at_edge, bad_bb, ok_bb);
   LLVMPositionBuilderAtEnd(builder, bad_bb);
   IF is_succ THEN edge := edge + 1 ELSE edge := edge - 1;
-  EmitSubrangeFailure(LLVMConstInt(i64ty, edge, 1), FALSE, lo, hi);
+  EmitSubrangeFailure(LLVMConstInt(i64ty, edge, 1), FALSE, lo, hi,
+    GetObjOrNil(site, 'op_location'));
   LLVMPositionBuilderAtEnd(builder, ok_bb);
 END;
 
@@ -611,7 +605,7 @@ BEGIN
     END
     ELSE
     BEGIN
-      IF cur_rangeck AND NOT is_nvptx_device THEN EmitSuccPredDomainCheck(v, argtk, is_succ);
+      IF cur_rangeck AND NOT is_nvptx_device THEN EmitSuccPredDomainCheck(v, argtk, is_succ, site);
       IF argtk = TK_CHAR THEN one := LLVMConstInt(i8ty, 1, 0)
       ELSE IF argtk = TK_BOOLEAN THEN one := LLVMConstInt(i1ty, 1, 0)
       ELSE one := LLVMConstInt(i32ty, 1, 0);
@@ -619,7 +613,8 @@ BEGIN
       ELSE res := LLVMBuildSub(builder, v, one, MakeCStr(''));
     END;
     dom_tid := SuccPredDomainTid(ArrItem(GetObj(site, 'args'), 0));
-    IF dom_tid >= 14 THEN EmitSubrangeCheck(res, argtk, dom_tid);
+    IF dom_tid >= 14 THEN
+      EmitSubrangeCheck(res, argtk, dom_tid, GetObjOrNil(site, 'op_location'));
     last_val_tk := argtk;
   END;
   CodegenSuccPred := res;
@@ -702,6 +697,7 @@ BEGIN
   END;
   IF op = 'MOD' THEN SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 1, 0))
   ELSE SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 0, 0));
+  EmitDiagFile(GetObjOrNil(site, 'op_location'));
   discard := LLVMBuildCall2(builder, fnty, fn, args, 6, MakeCStr(''));
   discard := LLVMBuildUnreachable(builder);
   LLVMPositionBuilderAtEnd(builder, ok_bb);
@@ -1435,8 +1431,10 @@ BEGIN
     ELSE IF (tk = TK_INTEGER8) OR (tk = TK_WORD8) THEN res := LLVMBuildSub(builder, LLVMConstInt(i8ty, 0, 1), v, MakeCStr(''))
     ELSE IF (tk = TK_INTEGER32) OR (tk = TK_WORD32) THEN res := LLVMBuildSub(builder, LLVMConstInt(i32ty, 0, 1), v, MakeCStr(''))
     ELSE IF (tk = TK_INTEGER64) OR (tk = TK_WORD64) THEN res := LLVMBuildSub(builder, LLVMConstInt(i64ty, 0, 1), v, MakeCStr(''))
-    ELSE IF tk = TK_REAL THEN res := LLVMBuildFSub(builder, LLVMConstReal(dblty, 0.0), v, MakeCStr(''))
-    ELSE IF tk = TK_REAL32 THEN res := LLVMBuildFSub(builder, LLVMConstReal(f32ty, 0.0), v, MakeCStr(''))
+    ELSE IF (tk = TK_REAL) OR (tk = TK_REAL32) THEN
+      { A true IEEE negation that flips the sign bit: 0.0 - v would turn
+        -0.0 into +0.0 and 0.0 into +0.0 instead of -0.0. }
+      res := LLVMBuildFNeg(builder, v, MakeCStr(''))
     ELSE
     BEGIN
       AbortWith('codegen: unary MINUS requires an integer-family or REAL/REAL32 operand');
@@ -1519,7 +1517,8 @@ BEGIN
   ELSE
   BEGIN
     v := CodegenExpr(arg_node);
-    v := CoerceCheckedForAssign(v, last_val_tk, tk, arg_node, name);
+    v := CoerceCheckedForAssign(v, last_val_tk, tk, arg_node, name,
+      NodeDiagLocation(arg_node));
     LLVMBuildStore(builder, v, tmp);
   END;
   last_val_tk := tk;
@@ -1603,7 +1602,7 @@ BEGIN
       IF ret_class <> 0 THEN
         ClassifyAggregate(routines[ri].ret_tk, ret_class, ret_npieces, ret_pk, ret_pb);
     END;
-    call_args := AllocPtrArray(nargs * 2 + 1);
+    call_args := AllocPtrArray(nargs * 2 + 2);
     transports := InitckTransports(ri);
     FOR i := 1 TO MAX_PARAMS DO arg_state[i] := NIL;
     FOR i := 1 TO MAX_PARAMS DO ptr_actual[i] := NIL;
@@ -1904,7 +1903,8 @@ BEGIN
           reuse CoerceForAssign rather than a bare tid-equality check. A
           subrange parameter is range-checked like an assignment. }
         initck_defer_conv := TRUE;
-        v := CoerceCheckedForAssign(v, last_val_tk, routines[ri].param_tk[i + 1], arg_node, name);
+        v := CoerceCheckedForAssign(v, last_val_tk, routines[ri].param_tk[i + 1], arg_node, name,
+          NodeDiagLocation(arg_node));
         initck_defer_conv := FALSE;
         { A pointer handed to a [C] routine exposes its referent to writes
           whose state is not modeled. }
@@ -1964,6 +1964,12 @@ BEGIN
       END
       ELSE
         LLVMBuildStore(builder, LLVMConstNull(i8ptrty), InitckTls('pas_initck_ack', i8ptrty));
+    END;
+    { A nested routine's static link: its parent frame's environment. }
+    IF routines[ri].env_depth > 0 THEN
+    BEGIN
+      SetPtrArrayElem(call_args, llvm_ai, FrameEnvFor(routines[ri].env_depth, name));
+      llvm_ai := llvm_ai + 1;
     END;
     res := LLVMBuildCall2(builder, routines[ri].fnty, routines[ri].fn, call_args, llvm_ai, MakeCStr(''));
     { A Pascal callee clears its slots on entry; clear again in case an
@@ -2128,6 +2134,7 @@ BEGIN
   SetPtrArrayElem(args, 3, hi);
   SetPtrArrayElem(args, 4, LLVMConstInt(i32ty, line, 0));
   SetPtrArrayElem(args, 5, LLVMConstInt(i32ty, column, 0));
+  EmitDiagFile(GetObjOrNil(site, 'op_location'));
   discard := LLVMBuildCall2(builder, fnty, fn, args, 6, MakeCStr(''));
   discard := LLVMBuildUnreachable(builder);
 END;
@@ -2146,13 +2153,7 @@ BEGIN
   IF is_device_compiland THEN
   BEGIN
     msg := 'NILCK unsupported boundary: DEVICE pointer dereference';
-    IF (line > 0) AND (column > 0) THEN
-    BEGIN
-      CONCAT(msg, ' at line ');
-      CONCAT(msg, InitckIntText(line));
-      CONCAT(msg, ' column ');
-      CONCAT(msg, InitckIntText(column));
-    END;
+    AppendLocation(msg, location);
     AbortWith(msg);
   END;
   bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('nilck.bad'));
@@ -2171,6 +2172,7 @@ BEGIN
   args := AllocPtrArray(2);
   SetPtrArrayElem(args, 0, LLVMConstInt(i32ty, line, 0));
   SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, column, 0));
+  EmitDiagFile(location);
   discard := LLVMBuildCall2(builder, fnty, fn, args, 2, MakeCStr(''));
   discard := LLVMBuildUnreachable(builder);
   LLVMPositionBuilderAtEnd(builder, ok_bb);
@@ -2228,6 +2230,8 @@ VAR
   file_state: ADRMEM; { the whole tracked file buffer state the last DEREF
     reached, or NIL }
   file_state_tid: INTEGER;
+  res_frame: INTEGER32; { the enclosing FUNCTION frame whose result this
+    names, or 0 }
   lstring_capacity: INTEGER32; { local until the full address is selected;
     recursive index expressions must not overwrite the target's capacity }
   lstring_is_length: ADRMEM;
@@ -2245,6 +2249,9 @@ BEGIN
   symi := LookupSym(nm);
   selectors := GetObj(node, 'selectors');
   nsel := ArrSize(selectors);
+  res_frame := 0;
+  IF (symi = 0) AND (nsel > 0) AND (NodeType(node) <> 'PostfixExpr') THEN
+    res_frame := EnclosingResultFrame(nm);
   IF NodeType(node) = 'PostfixExpr' THEN
   BEGIN
     { Materialize one function result before walking its selectors. }
@@ -2264,6 +2271,14 @@ BEGIN
       to the call below like the bare name does. }
     base_ptr := cur_func_ret_slot;
     cur_tid := cur_func_ret_tk;
+  END
+  ELSE IF (res_frame <> 0) AND THEN (frame_ret_state[res_frame] = NIL) THEN
+  BEGIN
+    { The same selection of an enclosing FUNCTION's aggregate result, from
+      a nested routine, through the static link. }
+    base_ptr := CapturedFramePtr(res_frame, ENV_KEY_RESULT,
+                                 frame_ret_slot[res_frame], 'the result');
+    cur_tid := frame_ret_tk[res_frame];
   END
   ELSE IF (symi = 0) AND RoutineIsFunc(LookupRoutine(nm)) THEN
   BEGIN
@@ -2797,20 +2812,135 @@ BEGIN
   ELSE RealArgToDouble := IntToFloat(v, argtk, dblty);
 END;
 
+FUNCTION DeviceErrorCell: ADRMEM;
+{ The NVPTX device error channel's cell, defined once per device module on
+  first use: a zeroed 24-byte, 8-aligned global in the CUDA global address
+  space, laid out as runtime/pascalrt.h's pas_dev_error_cell (i32 code at 0,
+  i32 line at 4, i32 column at 8, i32 file index at 12 (DeviceFileIndex; 0
+  for the primary file), REAL operand at 16). External linkage keeps
+  it visible to cuModuleGetGlobal; the CUDA launch shim reads it after each
+  launch. }
+VAR
+  cell: ADRMEM;
+BEGIN
+  cell := LLVMGetNamedGlobal(modl, MakeCStr('__pas_dev_error'));
+  IF cell = NIL THEN
+  BEGIN
+    cell := LLVMAddGlobalInAddressSpace(modl, LLVMArrayType(i64ty, 3),
+                                        MakeCStr('__pas_dev_error'), 1);
+    LLVMSetInitializer(cell, LLVMConstNull(LLVMArrayType(i64ty, 3)));
+    LLVMSetAlignment(cell, 8);
+  END;
+  DeviceErrorCell := cell;
+END;
+
+FUNCTION DeviceFileIndex(name: Str255): INTEGER;
+{ The device error channel's index for an $INCLUDEd file name, 1-based:
+  index k is the module global __pas_dev_file_k (PAS_DEV_FILE_SYMBOL in
+  runtime/pascalrt.h), a NUL-terminated constant string in the CUDA global
+  address space that the launch shim reads with cuModuleGetGlobal when a
+  failure's cell names it. Each distinct name gets one global, defined on
+  first use, so a module whose device checks are all in the primary file
+  defines none. }
+VAR
+  k, n: INTEGER;
+  g, str: ADRMEM;
+  sym: Str255;
+BEGIN
+  FOR k := 1 TO ndev_files DO
+    IF dev_file_names[k] = name THEN
+    BEGIN
+      DeviceFileIndex := k;
+      RETURN;
+    END;
+  IF ndev_files >= MAX_DEV_FILES THEN
+    AbortWith('codegen: too many included files with NVPTX device checks (more than 64)');
+  ndev_files := ndev_files + 1;
+  dev_file_names[ndev_files] := name;
+  n := ORD(name[0]);
+  sym := '__pas_dev_file_';
+  AppendText(sym, IntToStr255(ndev_files));
+  str := LLVMConstStringInContext(ctx, MakeCStr(name), n, 0);
+  g := LLVMAddGlobalInAddressSpace(modl, LLVMArrayType(i8ty, n + 1), MakeCStr(sym), 1);
+  LLVMSetInitializer(g, str);
+  LLVMSetGlobalConstant(g, 1);
+  DeviceFileIndex := ndev_files;
+END;
+
+FUNCTION DeviceErrorField(cell: ADRMEM; offset: INTEGER): ADRMEM;
+{ Byte offset into the device error cell. }
+VAR
+  idx: ADRMEM;
+BEGIN
+  idx := AllocPtrArray(1);
+  SetPtrArrayElem(idx, 0, LLVMConstInt(i64ty, offset, 0));
+  DeviceErrorField := LLVMBuildGEP2(builder, i8ty, cell, idx, 1, MakeCStr(''));
+END;
+
+PROCEDURE EmitDeviceError(code: INTEGER; operand: ADRMEM; site: ADRMEM);
+{ Record a failed NVPTX device check in the device error cell; the caller
+  has already branched here on the failing condition and continues with a
+  defined value afterwards. The thread whose compare-and-swap moves code
+  from 0 to this check's code owns the cell and stores the location and the
+  REAL operand, and for a site in an $INCLUDEd file its DeviceFileIndex
+  (the zeroed cell already says primary file otherwise, so primary-file IR
+  is unchanged); later failures, in this thread or any other, leave the
+  first error in place. Codes are runtime/pascalrt.h's PAS_DEV_ERROR_*, and the
+  host reports the cell with the host check's own diagnostic after the
+  launch. }
+VAR
+  cell, cas, won, rec_bb, done_bb, location: ADRMEM;
+  line, column: INTEGER32;
+BEGIN
+  cell := DeviceErrorCell;
+  cas := LLVMBuildAtomicCmpXchg(builder, cell, LLVMConstInt(i32ty, 0, 0),
+                                LLVMConstInt(i32ty, code, 0), 7, 7, 0);
+  won := LLVMBuildExtractValue(builder, cas, 1, MakeCStr('deverr.won'));
+  rec_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('deverr.record'));
+  done_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('deverr.done'));
+  LLVMBuildCondBr(builder, won, rec_bb, done_bb);
+  LLVMPositionBuilderAtEnd(builder, rec_bb);
+  OperationLocation(site, line, column);
+  LLVMBuildStore(builder, LLVMConstInt(i32ty, line, 0), DeviceErrorField(cell, 4));
+  LLVMBuildStore(builder, LLVMConstInt(i32ty, column, 0), DeviceErrorField(cell, 8));
+  location := GetObjOrNil(site, 'op_location');
+  IF location <> NIL THEN
+    IF HasKey(location, 'file') THEN
+      LLVMBuildStore(builder, LLVMConstInt(i32ty,
+        DeviceFileIndex(GetStr(location, 'file')), 0), DeviceErrorField(cell, 12));
+  LLVMBuildStore(builder, operand, DeviceErrorField(cell, 16));
+  LLVMBuildBr(builder, done_bb);
+  LLVMPositionBuilderAtEnd(builder, done_bb);
+END;
+
 FUNCTION CodegenCheckedRealToInt(t, arg: ADRMEM; kind: INTEGER; site: ADRMEM): ADRMEM;
 { TRUNC (kind 0) and ROUND (kind 1): t is the value to truncate toward zero
   (ROUND has already added its signed half). IBM checks the INTEGER range
-  unconditionally, so this is independent of MATHCK: t must lie strictly
-  between -32769 and 32768, and the ordered compares also reject NaN; the
-  failure reports the argument at the function name. A bare fptosi would be
-  LLVM poison out of range. NVPTX has no host failure path, so device code
-  saturates (llvm.fptosi.sat; NaN gives 0) instead of failing. }
+  unconditionally, so this is independent of MATHCK and RANGECK: t must lie
+  strictly between -32769 and 32768, and the ordered compares also reject
+  NaN; the failure reports the argument at the function name. A bare fptosi
+  would be LLVM poison out of range. NVPTX has no host failure path: there a
+  failure records itself in the device error channel (EmitDeviceError, code
+  kind + 1) and the thread continues with the saturated conversion
+  (llvm.fptosi.sat; NaN gives 0); the CUDA launch shim then fails the
+  program after the launch with the host diagnostic. }
 VAR
   in_range, bad_bb, ok_bb, ps, fnty, fn, args, discard: ADRMEM;
   line, column: INTEGER32;
 BEGIN
+  in_range := LLVMBuildAnd(builder,
+    LLVMBuildFCmp(builder, LLVMRealOGT, t, LLVMConstReal(dblty, -32769.0), MakeCStr('')),
+    LLVMBuildFCmp(builder, LLVMRealOLT, t, LLVMConstReal(dblty, 32768.0), MakeCStr('')),
+    MakeCStr('conv.in'));
   IF is_nvptx_device THEN
   BEGIN
+    bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('conv.dev.bad'));
+    ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('conv.dev.sat'));
+    LLVMBuildCondBr(builder, in_range, ok_bb, bad_bb);
+    LLVMPositionBuilderAtEnd(builder, bad_bb);
+    EmitDeviceError(kind + 1, arg, site);
+    LLVMBuildBr(builder, ok_bb);
+    LLVMPositionBuilderAtEnd(builder, ok_bb);
     ps := AllocPtrArray(1);
     SetPtrArrayElem(ps, 0, dblty);
     fnty := LLVMFunctionType(i16ty, ps, 1, 0);
@@ -2819,10 +2949,6 @@ BEGIN
     CodegenCheckedRealToInt := LLVMBuildCall2(builder, fnty, fn, MakeArgs1(t), 1, MakeCStr(''));
     RETURN;
   END;
-  in_range := LLVMBuildAnd(builder,
-    LLVMBuildFCmp(builder, LLVMRealOGT, t, LLVMConstReal(dblty, -32769.0), MakeCStr('')),
-    LLVMBuildFCmp(builder, LLVMRealOLT, t, LLVMConstReal(dblty, 32768.0), MakeCStr('')),
-    MakeCStr('conv.in'));
   bad_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('conv.bad'));
   ok_bb := LLVMAppendBasicBlockInContext(ctx, cur_fn, MakeCStr('conv.ok'));
   LLVMBuildCondBr(builder, in_range, ok_bb, bad_bb);
@@ -2841,6 +2967,7 @@ BEGIN
   SetPtrArrayElem(args, 1, arg);
   SetPtrArrayElem(args, 2, LLVMConstInt(i32ty, line, 0));
   SetPtrArrayElem(args, 3, LLVMConstInt(i32ty, column, 0));
+  EmitDiagFile(GetObjOrNil(site, 'op_location'));
   discard := LLVMBuildCall2(builder, fnty, fn, args, 4, MakeCStr(''));
   discard := LLVMBuildUnreachable(builder);
   LLVMPositionBuilderAtEnd(builder, ok_bb);
@@ -2895,6 +3022,7 @@ BEGIN
   ELSE SetPtrArrayElem(args, 1, LLVMConstInt(i32ty, 0, 0));
   SetPtrArrayElem(args, 2, LLVMConstInt(i32ty, line, 0));
   SetPtrArrayElem(args, 3, LLVMConstInt(i32ty, column, 0));
+  EmitDiagFile(GetObjOrNil(site, 'op_location'));
   discard := LLVMBuildCall2(builder, fnty, fn, args, 4, MakeCStr(''));
   discard := LLVMBuildUnreachable(builder);
   LLVMPositionBuilderAtEnd(builder, ok_bb);
@@ -2980,9 +3108,12 @@ BEGIN
       IF nm = 'SQR' THEN res := LLVMBuildFMul(builder, v, v, MakeCStr(''))
       ELSE
       BEGIN
+        { -v below zero; either zero gives +0.0, as IEEE abs does. }
         is_neg := LLVMBuildFCmp(builder, LLVMRealOLT, v, LLVMConstReal(LLVMTypeForTk(argtk), 0.0), MakeCStr(''));
-        neg := LLVMBuildFSub(builder, LLVMConstReal(LLVMTypeForTk(argtk), 0.0), v, MakeCStr(''));
+        neg := LLVMBuildFNeg(builder, v, MakeCStr(''));
         res := LLVMBuildSelect(builder, is_neg, neg, v, MakeCStr(''));
+        is_neg := LLVMBuildFCmp(builder, LLVMRealOEQ, v, LLVMConstReal(LLVMTypeForTk(argtk), 0.0), MakeCStr(''));
+        res := LLVMBuildSelect(builder, is_neg, LLVMConstReal(LLVMTypeForTk(argtk), 0.0), res, MakeCStr(''));
       END;
       last_val_tk := argtk;
     END
@@ -3046,12 +3177,17 @@ BEGIN
   END
   ELSE IF nm = 'WRD' THEN
   BEGIN
-    { INTEGER/WORD (already i16) pass through unchanged; CHAR/BOOLEAN/
-      INTEGER8 (i8) zero-extend to i16 -- matches the reference's WRD,
-      whose only width this file can ever produce is <=16 bits (no
-      INTEGER32/WORD32 here to exercise its truncating branch). }
-    IF (argtk = TK_INTEGER) OR (argtk = TK_WORD) THEN res := v
-    ELSE res := LLVMBuildZExt(builder, v, i16ty, MakeCStr(''));
+    { The argument's value modulo 65536 as a WORD (IBM 11-8: a negative
+      INTEGER gives "same 16 bit value"), unchecked, as the constant
+      folder's WRD(-2) = 65534: i16 values pass through, an INTEGER8
+      sign-extends (WRD of -2 is 65534 at every width), CHAR, BOOLEAN and
+      WORD8 zero-extend, and an enumeration (i32) or a 32/64-bit integer
+      keeps its low 16 bits (NEW-23; this was a ZExt to the narrower i16,
+      which is invalid IR). }
+    IF SubrangeBaseTid(argtk) = TK_INTEGER8 THEN
+      res := LLVMBuildSExt(builder, v, i16ty, MakeCStr(''))
+    ELSE
+      res := NarrowToI16(v, argtk);
     last_val_tk := TK_WORD;
   END
   ELSE IF nm = 'BYWORD' THEN
@@ -3379,7 +3515,11 @@ BEGIN
     nmu := UpperStr(nm);
     { These unsigned maxima have all bits set.  LLVMConstInt takes the
       machine bit pattern through the signed CLONG binding, so -1 is the
-      correct i32/i64 payload; WRITE chooses %u/%llu from last_val_tk. }
+      correct i32/i64 payload; WRITE chooses %u/%llu from last_val_tk.
+      A user VAR, CONST or routine of the same spelling hides them, as it
+      does for the typechecker and FoldConstInt. }
+    IF IsPredeclaredMaximum(nmu) AND NOT PredeclaredConstVisible(nm) THEN
+      nmu := '';
     IF nmu = 'MAXINT' THEN
     BEGIN
       res := LLVMConstInt(i16ty, 32767, 1);
@@ -3410,10 +3550,7 @@ BEGIN
       res := LLVMConstInt(i64ty, -1, 0);
       last_val_tk := TK_WORD64;
     END
-    ELSE IF (nmu = 'THREADIDX_X') OR (nmu = 'THREADIDX_Y') OR (nmu = 'THREADIDX_Z') OR
-       (nmu = 'BLOCKIDX_X') OR (nmu = 'BLOCKIDX_Y') OR (nmu = 'BLOCKIDX_Z') OR
-       (nmu = 'BLOCKDIM_X') OR (nmu = 'BLOCKDIM_Y') OR (nmu = 'BLOCKDIM_Z') OR
-       (nmu = 'GRIDDIM_X') OR (nmu = 'GRIDDIM_Y') OR (nmu = 'GRIDDIM_Z') THEN
+    ELSE IF DeviceIndexVisible(nm) THEN
       res := CodegenDeviceIndex(nmu)
     ELSE
     BEGIN
@@ -3431,7 +3568,12 @@ BEGIN
       routi := LookupRoutine(nm);
       IF consti <> 0 THEN
       BEGIN
-        IF const_tbl[consti].is_real THEN
+        IF const_tbl[consti].is_string THEN
+        BEGIN
+          AbortWith2('codegen: string CONST reference was not rewritten to its literal: ', nm);
+          res := NIL;
+        END
+        ELSE IF const_tbl[consti].is_real THEN
         BEGIN
           res := LLVMConstReal(dblty, const_tbl[consti].rval);
           last_val_tk := TK_REAL;
@@ -3535,6 +3677,10 @@ BEGIN
     END
     ELSE
       sizeof_bytes := TypeSizeBytes(ResolveTypeExpr(target_item));
+    { SIZEOF is a WORD (IBM manual): a larger size would silently keep only
+      its low 16 bits, and a NEW or copy sized by it would be too small. }
+    IF sizeof_bytes > 65535 THEN
+      AbortAtLayoutSite('codegen: SIZEOF exceeds 65535, the largest WORD value');
     res := LLVMConstInt(i16ty, sizeof_bytes, 0);
     last_val_tk := TK_WORD;
   END
@@ -3617,7 +3763,16 @@ BEGIN
         ELSE IF TypeKind(result_tid) = TK_ARRAY THEN
           static_bound_tid := types[result_tid].index_tid
         ELSE IF (TypeKind(result_tid) = TK_ENUM) OR bound_is_subrange THEN
-          static_bound_tid := result_tid;
+          static_bound_tid := result_tid
+        ELSE IF (TypeKind(result_tid) = TK_STRING) OR
+                (TypeKind(result_tid) = TK_LSTRING) THEN
+        BEGIN
+          { The narrowest of INTEGER, WORD and INTEGER32 that holds the
+            capacity, as for an array index range and as the typechecker's
+            StringBoundKind decides (NEW-24): UPPER of an LSTRING(40000)
+            is the WORD 40000, not -25536. }
+          static_bound_tid := BoundValueTid(types[result_tid].hi);
+        END;
         IF nt = 'UpperExpr' THEN
           res := LLVMConstInt(LLVMTypeForTk(static_bound_tid), types[result_tid].hi, 1)
         ELSE

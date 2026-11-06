@@ -179,7 +179,7 @@ BEGIN
     cond_tk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
 END;
 
-PROCEDURE CheckCaseLabel(label_node: ADRMEM; sel_tk: INTEGER);
+PROCEDURE CheckCaseLabel(label_node: ADRMEM; sel_tk, sel_sem: INTEGER);
 { One CASE label constant, checked against the selector the same way a FOR
   bound is checked against the loop variable: CheckExprForTarget gives a
   bare integer literal the selector's own width -- so `CASE i32 OF 1:` is
@@ -201,7 +201,11 @@ BEGIN
   BEGIN
     label_tk := CheckExprForTarget(label_node, sel_tk);
     IF NOT CanAssign(sel_tk, label_tk) THEN
-      AddError('CASE label type is incompatible with the selector type');
+      AddError('CASE label type is incompatible with the selector type')
+    { sel_sem is the selector's enumeration identity, when known. }
+    ELSE IF (sel_tk = TK_ENUM) AND (label_tk = TK_ENUM) AND
+            SemanticBasesConflict(sel_sem, last_sem_scalar_base) THEN
+      AddError('CASE label is of a different enumeration type than the selector');
   END;
 END;
 
@@ -214,10 +218,11 @@ PROCEDURE CheckCaseStmt(node: ADRMEM);
   to its own type. }
 VAR
   elements_arr, constants_arr, el, otherwise_stmt: ADRMEM;
-  sel_tk: INTEGER;
+  sel_tk, sel_sem: INTEGER;
   n, i, nc, ci: INTEGER32;
 BEGIN
   sel_tk := CheckExpr(GetObj(node, 'expr'));
+  sel_sem := last_sem_scalar_base;
   IF NOT IsOrdinal(sel_tk) AND (sel_tk <> TK_UNKNOWN) THEN
   BEGIN
     AddError('CASE selector must be an ordinal type');
@@ -232,7 +237,7 @@ BEGIN
     constants_arr := GetObj(el, 'constants');
     nc := cJSON_GetArraySize(constants_arr);
     FOR ci := 0 TO nc - 1 DO
-      CheckCaseLabel(cJSON_GetArrayItem(constants_arr, ci), sel_tk);
+      CheckCaseLabel(cJSON_GetArrayItem(constants_arr, ci), sel_tk, sel_sem);
     CheckCompoundOrStmt(GetObjOrNil(el, 'stmt'));
   END;
   otherwise_stmt := GetObjOrNil(node, 'otherwise');
@@ -425,6 +430,7 @@ VAR
   nt, varname: Str255;
   target_node, expr_node, cond_node, args_arr, warg, wexpr: ADRMEM;
   target_tk, expr_tk, cond_tk, vi, target_set_sem_base: INTEGER;
+  target_scalar_sem_base: INTEGER;
   si: INTEGER32;
   nargs, i, start_arg: INTEGER32;
   pname: Str255;
@@ -455,16 +461,23 @@ BEGIN
         same-named callable symbol). }
       target_tk := cur_func_ret_tk;
       target_set_sem_base := cur_func_set_sem_base;
+      target_scalar_sem_base := SB_UNKNOWN;
     END
     ELSE BEGIN
       target_tk := CheckDesignator(target_node);
       target_set_sem_base := last_designator_set_sem_base;
+      target_scalar_sem_base := last_designator_scalar_sem_base;
     END;
     { Snapshot before descending into the RHS: nested designators and calls
       overwrite their global result channels. }
     expr_tk := CheckExprForSetTarget(expr_node, target_tk, target_set_sem_base);
     IF NOT CanAssign(target_tk, expr_tk) THEN
-      AddError2('Cannot assign incompatible type without narrowing: ', varname);
+      AddError2('Cannot assign incompatible type without narrowing: ', varname)
+    { Two enumerations are never assignment compatible. Both identities
+      must be known (a deep selection's is read back from its type node). }
+    ELSE IF (target_tk = TK_ENUM) AND (expr_tk = TK_ENUM) AND
+            SemanticBasesConflict(target_scalar_sem_base, last_sem_scalar_base) THEN
+      AddError2('Cannot assign a value of a different enumeration type: ', varname);
   END
   ELSE IF nt = 'IfStmt' THEN
   BEGIN
@@ -803,6 +816,7 @@ BEGIN
           BEGIN
             si := DefineSymbol(fields[fi].fname, 'VAR', fields[fi].ftk, fields[fi].faux, fields[fi].faux2, fields[fi].faux3, fields[fi].fidx_tk);
             symbols[si].type_node := fields[fi].type_node;
+            symbols[si].type_bound := last_designator_type_bound;
             symbols[si].set_sem_base := fields[fi].set_sem_base;
             symbols[si].scalar_sem_base := fields[fi].scalar_sem_base;
           END;
@@ -823,10 +837,11 @@ PROCEDURE CheckStmt(node: ADRMEM);
   checked. }
 VAR
   saved_line, saved_col: INTEGER32;
+  saved_loc: ADRMEM;
 BEGIN
-  TcEnterLocation(node, saved_line, saved_col);
+  TcEnterLocation(node, saved_line, saved_col, saved_loc);
   CheckStmtBody(node);
-  TcLeaveLocation(saved_line, saved_col);
+  TcLeaveLocation(saved_line, saved_col, saved_loc);
 END;
 
 BEGIN

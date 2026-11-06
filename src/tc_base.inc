@@ -35,11 +35,17 @@ CONST
   MAX_SYMBOLS = 2000;
   MAX_TYPES = 500;
   MAX_FWD_TYPES = 64;
+  MAX_ENUM_NODES = 1000;
   MAX_FIELDS = 2000;
   MAX_ERRORS = 200;
   MAX_PARAMS = 16;
   MAX_EXPR_DEPTH = 64;
   MAX_STMT_DEPTH = 256;
+  { DeclareName kinds: a routine heading without a body (FORWARD, EXTERN)
+    may be completed by a later declaration of the same routine. }
+  DECL_OTHER = 0;
+  DECL_ROUTINE_HEADING = 1;
+  DECL_ROUTINE_BODY = 2;
 
 TYPE
   SymRec = RECORD
@@ -53,6 +59,8 @@ TYPE
     set_sem_base: INTEGER;
     scalar_sem_base: INTEGER;
     type_node: ADRMEM; { original type expression for aggregate selector traversal }
+    type_bound: INTEGER32; { ntypes when declared: type_node's names resolve
+                             among types[1..type_bound] (LookupTypeBefore) }
     nparams: INTEGER;
     param_set_sem_base: ARRAY [1..MAX_PARAMS] OF INTEGER;
     ret_set_sem_base: INTEGER;
@@ -69,6 +77,9 @@ TYPE
                            too); a consumer that needs an integer checks tk }
     const_int: INTEGER64;
     is_ref_param: BOOLEAN; { a formal declared VAR, VARS, CONST or CONSTS }
+    const_str_node: ADRMEM; { a multi-character string CONST: its
+                              StringLiteral value node, which every
+                              reference to the name is rewritten to }
   END;
 
   TypeRec = RECORD
@@ -119,6 +130,9 @@ VAR
   nfields: INTEGER32;
   next_record_id: INTEGER;
   next_enum_id: INTEGER;
+  enum_nodes: ARRAY [1..MAX_ENUM_NODES] OF ADRMEM;
+  enum_node_ids: ARRAY [1..MAX_ENUM_NODES] OF INTEGER;
+  nenum_nodes: INTEGER32;
   fwd_types: ARRAY [1..MAX_FWD_TYPES] OF FwdTypeRec;
   nfwd_types: INTEGER32; { entries of the TYPE section being checked; 0
                             outside one }
@@ -129,6 +143,8 @@ VAR
   last_designator_set_sem_base: INTEGER;
   last_designator_scalar_sem_base: INTEGER;
   last_designator_aux, last_designator_aux2: INTEGER;
+  last_designator_type_bound: INTEGER32; { type_bound of the designator's root }
+  last_designator_sem_node: ADRMEM; { the type node the designator reached, or NIL }
   errors: ARRAY [1..MAX_ERRORS] OF Str255;
   nerrors: INTEGER32;
   expr_depth, stmt_depth: INTEGER;
@@ -138,22 +154,30 @@ VAR
   cur_func_name: Str255;
   active_features: FeatureSet;
   is_device_compiland: BOOLEAN;
+  { Above 0 while a constant expression (a CONST value or a type's bounds)
+    is checked: a call there is always the intrinsic (UserDeclarationShadows). }
+  const_expr_level: INTEGER32;
 
 PROCEDURE TcInit(VAR requested_features: FeatureSet);
 PROCEDURE AddError(msg: Str255);
 PROCEDURE AddError2(msg: Str255; name: Str255);
 PROCEDURE ReportErrorsAndExit;
 PROCEDURE AddUndefinedIdentifier(node: ADRMEM);
-PROCEDURE TcEnterLocation(node: ADRMEM; VAR saved_line, saved_col: INTEGER32);
-PROCEDURE TcLeaveLocation(saved_line, saved_col: INTEGER32);
+PROCEDURE TcEnterLocation(node: ADRMEM; VAR saved_line, saved_col: INTEGER32;
+  VAR saved_loc: ADRMEM);
+PROCEDURE TcLeaveLocation(saved_line, saved_col: INTEGER32; saved_loc: ADRMEM);
 FUNCTION UpperStr(s: Str255): Str255;
 PROCEDURE PushScope;
 PROCEDURE PopScope;
 FUNCTION LookupSymbol(name: Str255): INTEGER32;
 FUNCTION UserDeclarationShadows(name: Str255): BOOLEAN;
 FUNCTION LookupSymbolInScope(name: Str255): INTEGER32;
+PROCEDURE BeginDeclScope;
+PROCEDURE EndDeclScope;
+PROCEDURE DeclareName(name: Str255; kind: INTEGER);
 FUNCTION DefineSymbol(name: Str255; kind: Str255; tk, aux, aux2, aux3, idx_tk: INTEGER): INTEGER32;
 FUNCTION LookupType(name: Str255): INTEGER32;
+FUNCTION LookupTypeBefore(name: Str255; bound: INTEGER32): INTEGER32;
 FUNCTION GetObjOrNil(obj: ADRMEM; key: Str255): ADRMEM;
 PROCEDURE AddFieldEntry(record_id: INTEGER; fname: Str255; ftk, faux, faux2, faux3, fidx_tk: INTEGER);
 FUNCTION LookupField(record_id: INTEGER; fname: Str255): INTEGER32;

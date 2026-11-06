@@ -5,8 +5,8 @@ PROGRAM VectorBadLaneIdent(output);
   from the power-of-two range check. Regression guard for a review finding:
   this used to be misreported as "must be a power of two between 2 and 64". }
 TYPE
-  V = VECTOR [Nope] OF REAL32;
+  TV = VECTOR [Nope] OF REAL32;
 VAR
-  v: V;
+  v: TV;
 BEGIN
 END.

@@ -7,6 +7,8 @@ UNIT cg_decl;
 USES jsonutil, features, cg_base, cg_util, cg_types, cg_symbols, cg_expr, cg_io, cg_stmt;
 
 PROCEDURE ApplyTargetAttrs(fn: ADRMEM);
+PROCEDURE ApplyStackckAttrs(fn, node: ADRMEM);
+PROCEDURE EmitStackckCtor;
 PROCEDURE CodegenDeclList(decls_arr: ADRMEM);
 FUNCTION SameIdentifier(a, b: Str255): BOOLEAN;
 FUNCTION FindUnitIndex(local_ifaces: ADRMEM; unit_name: Str255): INTEGER32;
@@ -16,7 +18,8 @@ PROCEDURE EmitUnitInitCalls;
 PROCEDURE BindUsesAlias(alias, ename: Str255);
 PROCEDURE CheckUsesClauses(root, local_ifaces: ADRMEM);
 PROCEDURE InitFileStorage(slot: ADRMEM; elem_tid: INTEGER; structure: INTEGER32; var_name: Str255);
-PROCEDURE RegisterPredeclaredFiles;
+PROCEDURE DeclarePredeclaredFiles(decls: ADRMEM; VAR in_si, out_si: INTEGER32);
+PROCEDURE InitPredeclaredFiles(in_si, out_si: INTEGER32);
 PROCEDURE CodegenVarDecl(decl: ADRMEM);
 PROCEDURE ApplyLaunchBoundAttrs(decl, fn: ADRMEM);
 FUNCTION IsCForeignDecl(decl: ADRMEM): BOOLEAN;

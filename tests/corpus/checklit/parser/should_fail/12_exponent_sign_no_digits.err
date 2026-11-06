@@ -1,4 +1,4 @@
 Parser Error: Expected token match failed. Expected:
 SEMICOLON
 Got:
-IDENTIFIER
+IDENTIFIER at line 6 column 14

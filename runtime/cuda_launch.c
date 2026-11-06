@@ -22,6 +22,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "pascalrt.h"
+
 /* Fail loudly with the symbolic CUDA error name -- driver errors are terse, so
  * naming the failing call and the error makes layered bring-up tractable. */
 static void pas_cu_fail(const char *what, CUresult rc)
@@ -146,12 +148,70 @@ void *pas_dev_module_get_function(void *module, const char *name)
     return (void *) fn;
 }
 
+/* The NUL-terminated file name the cell's file index names: the module's
+ * constant __pas_dev_file_<k> global (see pascalrt.h), or NULL for the
+ * primary file or a name the module does not define (then the report is
+ * still made, just without a file name).  The copy is never freed: the
+ * report it is read for aborts. */
+static const char *pas_cu_device_error_file(CUmodule module, int32_t file)
+{
+    char symbol[64];
+    CUdeviceptr ptr = 0;
+    size_t size = 0;
+    char *name;
+
+    if (!pas_dev_error_file_symbol(file, symbol, sizeof symbol))
+        return NULL;
+    if (cuModuleGetGlobal(&ptr, &size, module, symbol) != CUDA_SUCCESS || size == 0)
+        return NULL;
+    name = malloc(size + 1);
+    if (!name)
+        return NULL;
+    if (cuMemcpyDtoH(name, ptr, size) != CUDA_SUCCESS) {
+        free(name);
+        return NULL;
+    }
+    name[size] = '\0';
+    return name;
+}
+
+/* Device error channel (see pascalrt.h).  After a launch has completed, read
+ * the kernel module's __pas_dev_error cell; a module whose code has no
+ * device check has no cell (CUDA_ERROR_NOT_FOUND) and nothing to report.  A
+ * set cell is cleared first, then reported in the host check's own format,
+ * which aborts the program as the host check would; a cell naming an
+ * included file is reported with that file's name. */
+static void pas_cu_check_device_error(CUfunction fn)
+{
+    CUmodule module = NULL;
+    CUdeviceptr cell_ptr = 0;
+    size_t cell_size = 0;
+    pas_dev_error_cell cell;
+    CUresult rc;
+
+    CU_CHECK(cuFuncGetModule(&module, fn));
+    rc = cuModuleGetGlobal(&cell_ptr, &cell_size, module, PAS_DEV_ERROR_SYMBOL);
+    if (rc == CUDA_ERROR_NOT_FOUND)
+        return;
+    if (rc != CUDA_SUCCESS)
+        pas_cu_fail("cuModuleGetGlobal(" PAS_DEV_ERROR_SYMBOL ")", rc);
+    if (cell_size != sizeof cell) {
+        fprintf(stderr, "pascal-cuda: %s has %zu bytes, expected %zu\n", PAS_DEV_ERROR_SYMBOL, cell_size, sizeof cell);
+        abort();
+    }
+    CU_CHECK(cuMemcpyDtoH(&cell, cell_ptr, sizeof cell));
+    if (cell.code == PAS_DEV_ERROR_NONE)
+        return;
+    CU_CHECK(cuMemsetD8(cell_ptr, 0, sizeof cell));
+    pas_dev_error_report(&cell, pas_cu_device_error_file(module, cell.file));
+}
+
 /* Launch a resolved entry (cuLaunchKernel).  `argv` is exactly
  * cuLaunchKernel's kernelParams: an array of pointers, each pointing at the cell
  * holding one kernel argument value (scalars by value; device buffers as the
  * CUdeviceptr returned by pas_dev_alloc).  Pass it straight through, then
  * synchronize so D2H copy-back sees completed results and kernel faults surface
- * here. */
+ * here, then report a device check failure recorded during the launch. */
 void pas_dev_launch(void *entry, long long gx, long long gy, long long gz, long long bx, long long by, long long bz, void **argv)
 {
     if (!entry)
@@ -161,4 +221,5 @@ void pas_dev_launch(void *entry, long long gx, long long gy, long long gz, long 
                             argv,       /* kernelParams */
                             NULL));     /* extra */
     CU_CHECK(cuCtxSynchronize());
+    pas_cu_check_device_error((CUfunction) entry);
 }

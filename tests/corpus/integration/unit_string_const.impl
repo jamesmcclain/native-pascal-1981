@@ -1,0 +1,16 @@
+(*$INCLUDE:'unit_string_const.inc'*)
+{ NEW-21: the IMPLEMENTATION restates the interface's string CONST, which
+  is accepted as the same constant; both halves use it. }
+IMPLEMENTATION OF stringconstunit;
+
+CONST Greeting = 'hello, unit';
+
+PROCEDURE Show;
+VAR l: LSTRING(20);
+BEGIN
+  l := Greeting;
+  WRITELN(l, ' ', ORD(l[0]));
+END;
+
+BEGIN
+END.

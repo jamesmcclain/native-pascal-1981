@@ -33,7 +33,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib/harness.sh"
 #                              fixtures needing more than one compilation
 #                              unit: run as `build.sh DRIVER OUTPUT` from
 #                              the fixture's directory
-# The program runs in an empty private directory.
+# The program runs in an empty private directory, with glibc's
+# MALLOC_PERTURB_ set (default 165; FIXTURE_MALLOC_PERTURB overrides, 0
+# turns it off) so that every new malloc block, NEW storage included,
+# holds a nonzero byte pattern: a fixture whose output depends on reading
+# storage it never wrote fails instead of passing by luck.
 #
 # Check mode (any CHECK directive, or a .check file): the fixture is
 # compiled to LLVM IR or PTX text (-S), or run through the stages that
@@ -232,10 +236,11 @@ EOF
     done
   fi
   local run_code=0
+  local perturb="${FIXTURE_MALLOC_PERTURB:-165}"
   if [ -f "$stdin_file" ]; then
-    (cd "$work_dir" && exec "$test_bin" "${run_args[@]}") < "$stdin_file" > "$actual_out" 2> "$actual_err" || run_code=$?
+    (cd "$work_dir" && MALLOC_PERTURB_="$perturb" exec "$test_bin" "${run_args[@]}") < "$stdin_file" > "$actual_out" 2> "$actual_err" || run_code=$?
   else
-    (cd "$work_dir" && exec "$test_bin" "${run_args[@]}") > "$actual_out" 2> "$actual_err" || run_code=$?
+    (cd "$work_dir" && MALLOC_PERTURB_="$perturb" exec "$test_bin" "${run_args[@]}") > "$actual_out" 2> "$actual_err" || run_code=$?
   fi
 
   if [ "$run_code" -ne "$exp_code" ]; then

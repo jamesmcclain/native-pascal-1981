@@ -54,7 +54,7 @@ attribute = "READONLY" | "PUBLIC" | "STATIC" | "EXTERN" | "EXTERNAL" | "PURE"
           | "SPACE" "(" expression ")" | "C" | "CDECL" | "VARARGS"
           | ( "MAXNTID" | "REQNTID" | "MINCTASM" ) "(" expression { "," expression } ")" ;
 
-compound_statement = "BEGIN" { statement [ ";" ] } "END" ;
+compound_statement = "BEGIN" statement { ";" statement } "END" ;
 statement = assignment | procedure_call | compound_statement | if_statement | for_statement
           | repeat_statement | while_statement | case_statement | with_statement | goto_statement
           | label_statement | "RETURN" | ( "BREAK" | "CYCLE" ) [ label ] | empty ;
@@ -64,10 +64,10 @@ procedure_call = ( "WRITE" | "WRITELN" ) [ "(" write_argument { "," write_argume
                | identifier [ "(" [ expression_list ] ")" ] ;
 if_statement = "IF" boolean_expression "THEN" statement [ "ELSE" statement ] ;
 for_statement = "FOR" [ "STATIC" ] identifier ":=" expression ( "TO" | "DOWNTO" ) expression "DO" statement ;
-repeat_statement = "REPEAT" { statement [ ";" ] } "UNTIL" boolean_expression ;
+repeat_statement = "REPEAT" statement { ";" statement } "UNTIL" boolean_expression ;
 while_statement = "WHILE" boolean_expression "DO" statement ;
 case_statement = "CASE" expression "OF" { case_element ";" } [ case_element ]
-                 [ "OTHERWISE" statement ] "END" ;
+                 [ "OTHERWISE" statement { ";" statement } ] "END" ;
 case_element = case_constant_list ":" statement ;
 case_constant_list = case_constant { "," case_constant } ;
 case_constant = constant [ ".." constant ] ;
@@ -116,10 +116,10 @@ vector_type = "VECTOR" "[" constant "]" "OF" type ;
    2..64; the element type must be a scalar (an integer-family type, REAL,
    REAL32, BOOLEAN, or CHAR). "PACKED VECTOR" is rejected. Extended dialect
    only. *)
-record_type = "RECORD" { field_declaration ";" } [ field_declaration ] [ variant_part ] "END" ;
+record_type = "RECORD" { field_declaration ";" } [ field_declaration | variant_part ] "END" ;
 field_declaration = identifier_list ":" type ;
 variant_part = "CASE" [ identifier ":" ] type "OF" { variant_arm ";" } [ variant_arm ] ;
-variant_arm = case_constant_list ":" "(" { field_declaration [ ";" ] } ")" ;
+variant_arm = case_constant_list ":" "(" { field_declaration ";" } [ field_declaration ] ")" ;
 set_type = "SET" "OF" ( type | fixed_index_range ) ;
 file_type = "FILE" "OF" type ;
 enum_type = "(" identifier_list ")" ;
@@ -128,7 +128,8 @@ pointer_type = "^" type | "ADR" "OF" type | "ADS" [ "(" expression ")" ] "OF" ty
 named_type = identifier [ "(" constant ")" ] ;
 builtin_type = "INTEGER" | "REAL" | "BOOLEAN" | "CHAR" | "WORD" | "ADRMEM" ;
 
-constant = [ "+" | "-" ] ( integer_literal | real_literal ) | char_literal | string_literal
+(* A signed identifier must name a numeric constant (typechecker). *)
+constant = [ "+" | "-" ] ( integer_literal | real_literal | identifier ) | char_literal | string_literal
          | boolean_literal | "NIL" | identifier | ( "WRD" | "BYWORD" ) "(" constant { "," constant } ")" ;
 identifier_list = identifier { "," identifier } ;
 label = integer_literal | identifier ;

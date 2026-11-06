@@ -183,6 +183,9 @@ VAR
                                    lowering needs it before routine codegen. }
   is_nvptx_device: BOOLEAN; { true only when this DEVICE compiland targets
                                nvptx64-nvidia-cuda. }
+  dev_file_names: ARRAY [1..MAX_DEV_FILES] OF Str255;
+  ndev_files: INTEGER; { see cg_base.inc }
+  stackck_used: BOOLEAN;
 
   types: ARRAY [1..MAX_TYPES] OF TypeRec;
   ntypes: INTEGER; { MAX_TYPES=200 is well under INTEGER's 16-bit range, so

@@ -66,6 +66,7 @@ FUNCTION pas_double_to_int64(val: REAL): CLONG [C];
 FUNCTION LLVMConstReal(ty: ADRMEM; n: REAL): ADRMEM [C];
 FUNCTION LLVMAddGlobal(m: ADRMEM; ty: ADRMEM; name: ADRMEM): ADRMEM [C];
 FUNCTION LLVMAddGlobalInAddressSpace(m: ADRMEM; ty: ADRMEM; name: ADRMEM; address_space: CINT): ADRMEM [C];
+FUNCTION LLVMConstStringInContext(c: ADRMEM; str: ADRMEM; length: CINT; dont_null_terminate: CINT): ADRMEM [C];
 PROCEDURE LLVMSetInitializer(gvar: ADRMEM; val: ADRMEM) [C];
 { Constant-expression and global-variable shaping, used by the kernel launch
   registry: parallel name/entry tables and the i8**/i8**/i64 struct
@@ -121,6 +122,11 @@ FUNCTION LLVMBuildFPExt(b: ADRMEM; val: ADRMEM; destty: ADRMEM; name: ADRMEM): A
 FUNCTION LLVMBuildFPTrunc(b: ADRMEM; val: ADRMEM; destty: ADRMEM; name: ADRMEM): ADRMEM [C];
 FUNCTION LLVMFloatTypeInContext(ctx: ADRMEM): ADRMEM [C];
 PROCEDURE LLVMBuildBr(b: ADRMEM; dest: ADRMEM) [C];
+{ NVPTX device error cell claim (atom.cas); orderings are LLVMAtomicOrdering
+  values, 7 = seq_cst. }
+FUNCTION LLVMBuildAtomicCmpXchg(b: ADRMEM; ptr: ADRMEM; cmp: ADRMEM; new_val: ADRMEM;
+                                success_ord: CINT; failure_ord: CINT;
+                                single_thread: CINT): ADRMEM [C];
 PROCEDURE LLVMBuildCondBr(b: ADRMEM; cond: ADRMEM; then_bb: ADRMEM; else_bb: ADRMEM) [C];
 FUNCTION LLVMBuildPhi(b: ADRMEM; ty: ADRMEM; name: ADRMEM): ADRMEM [C];
 PROCEDURE LLVMAddIncoming(phi: ADRMEM; vals: ADRMEM; blocks: ADRMEM; count: CINT) [C];
@@ -129,6 +135,14 @@ FUNCTION LLVMGetBasicBlockTerminator(bb: ADRMEM): ADRMEM [C];
 FUNCTION LLVMGetEntryBasicBlock(fn: ADRMEM): ADRMEM [C];
 FUNCTION LLVMGetFirstInstruction(bb: ADRMEM): ADRMEM [C];
 PROCEDURE LLVMPositionBuilderBefore(b: ADRMEM; instr: ADRMEM) [C];
+{ Up-level access (CloseFrame): settle a routine's static-link environment
+  once its body is lowered. }
+FUNCTION LLVMGetNextInstruction(instr: ADRMEM): ADRMEM [C];
+FUNCTION LLVMIsAInstruction(v: ADRMEM): ADRMEM [C];
+FUNCTION LLVMIsConstant(v: ADRMEM): CINT [C];
+FUNCTION LLVMCountParams(fn: ADRMEM): CINT [C];
+PROCEDURE LLVMReplaceAllUsesWith(old_val: ADRMEM; new_val: ADRMEM) [C];
+PROCEDURE LLVMInstructionEraseFromParent(instr: ADRMEM) [C];
 FUNCTION LLVMBuildCall2(b: ADRMEM; fty: ADRMEM; fn: ADRMEM; args: ADRMEM; nargs: CINT; name: ADRMEM): ADRMEM [C];
 FUNCTION LLVMBuildRet(b: ADRMEM; v: ADRMEM): ADRMEM [C];
 PROCEDURE LLVMBuildRetVoid(b: ADRMEM) [C];
@@ -264,6 +278,8 @@ CONST
     and the walker aborts loudly rather than truncating if it is ever hit. }
   MAX_ROUTINES = 512;
   MAX_TYPES = 200;
+  MAX_DEV_FILES = 64; { distinct $INCLUDEd files named by one NVPTX module's
+                        device error sites (DeviceFileIndex in cg_expr) }
   MAX_TYPE_NAMES = 200;
   MAX_FWD_TYPES = 64;
   MAX_FIELDS = 500;
@@ -387,7 +403,18 @@ TYPE
                           its declared enum identity for symbolic I/O. }
     integer_tid: INTEGER; { exact integer width and signedness, or 0 for a
                              non-integer constant }
+    int_const: BOOLEAN; { the typechecker's has_const_int: its FoldConstInt
+                           folded this CONST's value. An enumeration member,
+                           or a CONST computed from one, is not an integer
+                           constant to either folder (FoldConstIntIn). }
     rval: REAL;
+    is_string: BOOLEAN; { a multi-character string CONST. The typechecker
+                           rewrites every reference to one into its
+                           StringLiteral (tc_expr InlineStringConst), so
+                           this entry only claims the name for scoping;
+                           ival is unused and no folder reads it. }
+    str_node: ADRMEM; { that StringLiteral, for an INTERFACE/IMPLEMENTATION
+                         repeat's agreement check; NIL otherwise }
   END;
 
   SymRec = RECORD
@@ -478,6 +505,10 @@ TYPE
                           type is variadic, a call may pass extra trailing
                           arguments, and each of those gets C's default
                           argument promotions applied (CodegenCallCommon). }
+    env_depth: INTEGER32; { 0, or the frame depth (cg_util's frame stack)
+                            of the routine this one is nested in: the routine
+                            then takes that frame's environment as a hidden
+                            last LLVM parameter, its static link. }
   END;
 
   LabelRec = RECORD
@@ -671,6 +702,12 @@ VAR
                                    lowering needs it before routine codegen. }
   is_nvptx_device: BOOLEAN; { true only when this DEVICE compiland targets
                                nvptx64-nvidia-cuda. }
+  dev_file_names: ARRAY [1..MAX_DEV_FILES] OF Str255;
+  ndev_files: INTEGER; { the NVPTX device error channel's file names: index
+                         k is defined as the module global __pas_dev_file_k }
+  stackck_used: BOOLEAN; { some function of this compiland got STACKCK+
+                           stack probes, so its program/unit entry must
+                           install the runtime overflow reporter. }
 
   types: ARRAY [1..MAX_TYPES] OF TypeRec;
   ntypes: INTEGER; { MAX_TYPES=200 is well under INTEGER's 16-bit range, so

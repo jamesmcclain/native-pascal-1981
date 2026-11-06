@@ -6,18 +6,18 @@
   comment-preserving Pascal source text on stdout, instead of compiling.
 
   This is a *canonicalizing* formatter, not a format-preserving one:
-  identifier casing, numeric literal spelling, and whitespace are not
-  retained by the AST (see the lexer/parser survey this was built from),
+  identifier casing, numeric literal spelling (values are exact), and
+  whitespace are not retained by the AST (see the lexer/parser survey this was built from),
   so round-tripping through pretty81 changes cosmetic spelling even
   though it preserves structure and comments. Every ordinary comment
   (captured by the lexer as token trivia and relayed onto AST nodes by
   the parser -- see lexer.pas RecordComment / ps_base.pas
-  CreateTriviaNode) is re-emitted; a comment that was originally on the
-  same source line as its token collapses onto one printed comment line
-  even if it spanned several stacked source comments (CollapseNewlines),
-  and a trailing comment lands on the innermost node built just before
-  its token was consumed, not necessarily the outermost enclosing
-  statement (see the parser-relay commit for why).
+  CreateTriviaNode) that lands on a node printed here is re-emitted, one
+  comment per line (a multi-line comment is joined onto one line, see
+  CommentText); comments on other nodes (expressions, record fields,
+  parameter types, routine blocks) are still dropped. The output is a
+  fixed point: printing it again gives the same text, comments included
+  (tests/contract/pretty81_comments.sh).
 
   Not part of the self-hosting core: gen1..gen4 only bootstrap lexer/
   parser/typechecker/codegen against the out-of-repo Python reference.
@@ -33,10 +33,12 @@ USES jsonutil;
 FUNCTION cJSON_IsString(item: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_IsArray(item: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_IsNull(item: ADRMEM): CINT [C]; EXTERN;
+FUNCTION cJSON_IsNumber(item: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_IsObject(item: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_GetStringValue(item: ADRMEM): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_GetNumberValue(item: ADRMEM): REAL [C]; EXTERN;
 PROCEDURE exit(status: CINT) [C]; EXTERN;
+FUNCTION pas_real_literal_text(v: REAL): ADRMEM [C]; EXTERN;
 
 VAR
   indent_level: INTEGER;
@@ -140,6 +142,23 @@ BEGIN
   IntToStr := result;
 END;
 
+FUNCTION LabelText(item: ADRMEM): Str255;
+{ A label as the parser stores it: an identifier label is a string, a
+  numeric one the number's 16-bit key (ps_base CurLabelKey), printed as
+  0..65535 -- the key of 65535 is -1, which is no label. }
+VAR
+  k: INTEGER64;
+BEGIN
+  IF cJSON_IsString(item) <> 0 THEN
+    LabelText := CStrToStr255(cJSON_GetStringValue(item))
+  ELSE
+  BEGIN
+    k := ROUND(cJSON_GetNumberValue(item));
+    IF k < 0 THEN k := k + 65536;
+    LabelText := IntToStr(k);
+  END;
+END;
+
 FUNCTION Word64BitsToStr(bits: INTEGER64): Str255;
 { The unsigned decimal of a word64 literal's bit pattern (negative as an
   INTEGER64, so the value is 2^64 + bits). 2^64 = 10 * q0 + 6, hence
@@ -167,48 +186,34 @@ BEGIN
 END;
 
 FUNCTION RealToStr(rv: REAL): Str255;
-{ Canonical decimal rendering, 6 fractional digits with trailing zeros
-  trimmed (but at least one kept -- Pascal REAL literals require a digit
-  after the point). Numeric spelling is already lossy in this AST (the
-  lexer/parser normalize literal text away), so this is a fresh rendering,
-  not a reconstruction. }
+{ The shortest REAL literal that reads back as exactly rv, in plain
+  decimal or with an E exponent (runtime pas_real_literal_text). The AST
+  keeps no literal spelling, so this is a fresh rendering; but the value
+  is exact, so formatting is an idempotent round trip. This used to print
+  6 fractional digits through TRUNC, which lost precision, never used an
+  exponent, and aborted on a value past INTEGER's range. A non-finite
+  value (a null JSON number) has no literal and stops the formatter. }
 VAR
-  neg: BOOLEAN;
-  whole: INTEGER32;
-  frac: REAL;
-  digits, result: Str255;
-  i, keep: INTEGER;
-  d: INTEGER;
+  text: Str255;
 BEGIN
-  neg := rv < 0.0;
-  IF neg THEN rv := -rv;
-  whole := TRUNC(rv);
-  frac := rv - whole;
-  digits[0] := CHR(6);
-  FOR i := 1 TO 6 DO
+  text := CStrToStr255(pas_real_literal_text(rv));
+  IF ORD(text[0]) = 0 THEN
   BEGIN
-    frac := frac * 10.0;
-    d := TRUNC(frac);
-    IF d > 9 THEN d := 9;
-    digits[i] := CHR(ORD('0') + d);
-    frac := frac - d;
+    EPrint('pretty81: REAL literal value is not a finite number');
+    exit(1);
   END;
-  keep := 6;
-  WHILE (keep > 1) AND (digits[keep] = '0') DO keep := keep - 1;
-  digits[0] := CHR(keep);
-  result := Join(Join(IntToStr(whole), Ch('.')), digits);
-  IF neg THEN result := Join(Ch('-'), result);
-  RealToStr := result;
+  RealToStr := text;
 END;
 
 FUNCTION CollapseNewlines(s: Str255): Str255;
+{ Line feeds and carriage returns become blanks. }
 VAR
   i: INTEGER;
   r: Str255;
 BEGIN
   r[0] := s[0];
   FOR i := 1 TO ORD(s[0]) DO
-    IF s[i] = CHR(10) THEN r[i] := ' ' ELSE r[i] := s[i];
+    IF (s[i] = CHR(10)) OR (s[i] = CHR(13)) THEN r[i] := ' ' ELSE r[i] := s[i];
   CollapseNewlines := r;
 END;
 
@@ -265,15 +270,45 @@ BEGIN
   CapLen := r;
 END;
 
-PROCEDURE PrintLeadingComments(node: ADRMEM);
-{ Join caps every result at 255 chars by silently dropping the tail of its
-  right-hand operand -- since the comment-delimiter wrapper is applied by
-  nesting Join calls, a comment body long enough to already fill the cap
-  on its own drops the closing delimiter with no error, leaving an
-  unterminated comment that swallows the rest of the file on reparse. Cap
-  the raw text first, leaving room for the wrapper's own characters. }
+FUNCTION CommentText(body: Str255): Str255;
+{ A comment body as printed: newlines become spaces (a comment prints on
+  one line), surrounding blanks are dropped and the body is capped so the
+  delimiters always fit. It is wrapped in braces with one blank inside
+  each, or in the parenthesis-star pair when it contains a closing brace
+  (then it came from such a comment and cannot contain its closer). The
+  lexer hands over the text between the delimiters, blanks included;
+  wrapping it unchanged added two blanks on every pass. Trimming first
+  makes a second pass print the same text. }
 VAR
-  arr, item: ADRMEM;
+  c, b: Str255;
+  i, first, last: INTEGER;
+  brace: BOOLEAN;
+BEGIN
+  c := CollapseNewlines(body);
+  first := 1;
+  WHILE (first <= ORD(c[0])) AND ((c[first] = ' ') OR (c[first] = CHR(9))) DO first := first + 1;
+  last := ORD(c[0]);
+  IF last - first + 1 > 249 THEN last := first + 248;
+  WHILE (last >= first) AND ((c[last] = ' ') OR (c[last] = CHR(9))) DO last := last - 1;
+  brace := FALSE;
+  FOR i := first TO last DO
+    IF c[i] = '}' THEN brace := TRUE;
+  IF brace THEN b := '(* ' ELSE b := '{ ';
+  FOR i := first TO last DO
+  BEGIN
+    b[0] := CHR(ORD(b[0]) + 1);
+    b[ORD(b[0])] := c[i];
+  END;
+  IF brace THEN b := Join(b, ' *)')
+  ELSE IF last >= first THEN b := Join(b, ' }')
+  ELSE b := Join(b, Ch('}'));
+  CommentText := b;
+END;
+
+PROCEDURE PrintLeadingComments(node: ADRMEM);
+{ Each comment on its own line, before the node. }
+VAR
+  arr: ADRMEM;
   n, i: INTEGER32;
 BEGIN
   IF HasKey(node, 'leading_comments') THEN
@@ -282,9 +317,8 @@ BEGIN
     n := ArrSize(arr);
     FOR i := 0 TO n - 1 DO
     BEGIN
-      item := ArrItem(arr, i);
       Ind;
-      OutLn(Join(Join('{ ', CapLen(CollapseNewlines(CStrToStr255(cJSON_GetStringValue(item))), 251)), ' }'));
+      OutLn(CommentText(CStrToStr255(cJSON_GetStringValue(ArrItem(arr, i)))));
     END;
   END;
 END;
@@ -292,7 +326,10 @@ END;
 PROCEDURE PrintTrailingComment(node: ADRMEM);
 BEGIN
   IF HasKey(node, 'trailing_comment') THEN
-    Out(Join(Join(' { ', CapLen(CollapseNewlines(GetStr(node, 'trailing_comment')), 250)), ' }'));
+  BEGIN
+    Out(Ch(' '));
+    Out(CommentText(GetStr(node, 'trailing_comment')));
+  END;
 END;
 
 { ============================ forward declarations ========================= }
@@ -472,6 +509,36 @@ END;
 
 { ================================== types ==================================== }
 
+PROCEDURE PrintConstant(node: ADRMEM);
+{ A constant where the grammar wants a constant, not an expression (CONST
+  value, CASE label, subrange and index bounds): a signed CONST name or
+  literal prints as -X, since a constant cannot be parenthesized. }
+VAR
+  nt: Str255;
+  operand: ADRMEM;
+BEGIN
+  nt := NodeType(node);
+  IF (nt = 'UnaryOp') AND (GetStr(node, 'op') = 'MINUS') THEN
+  BEGIN
+    operand := GetObj(node, 'operand');
+    nt := NodeType(operand);
+    IF (nt = 'Identifier') OR (nt = 'IntLiteral') OR (nt = 'RealLiteral') THEN
+    BEGIN
+      Out(Ch('-'));
+      PrintExpr(operand);
+    END
+    ELSE
+      PrintExpr(node);
+  END
+  ELSE IF nt = 'RangeExpr' THEN
+  BEGIN
+    PrintConstant(GetObj(node, 'low')); Out('..');
+    PrintConstant(GetObj(node, 'high'));
+  END
+  ELSE
+    PrintExpr(node);
+END;
+
 PROCEDURE PrintType(node: ADRMEM);
 VAR
   nt: Str255;
@@ -484,8 +551,18 @@ BEGIN
   ELSE IF nt = 'NamedType' THEN
   BEGIN
     Out(GetStr(node, 'name'));
-    IF GetStr(node, 'param') <> '' THEN
-    BEGIN Out(Ch('(')); Out(GetStr(node, 'param')); Out(Ch(')')); END;
+    { A literal capacity is a JSON number, which GetStr reads as '': it
+      printed as nothing, so LSTRING(40000) came back a bare LSTRING. }
+    IF cJSON_IsNumber(GetObj(node, 'param')) <> 0 THEN
+    BEGIN Out(Ch('(')); Out(IntToStr(GetInt64(node, 'param'))); Out(Ch(')')); END
+    ELSE IF GetStr(node, 'param') <> '' THEN
+    BEGIN Out(Ch('(')); Out(GetStr(node, 'param')); Out(Ch(')')); END
+    ELSE IF NodeType(GetObj(node, 'param')) <> '' THEN
+    BEGIN
+      { A capacity the parser kept as a constant expression (-N, WRD(5)),
+        printed as a constant: (- N) is no constant and did not parse. }
+      Out(Ch('(')); PrintConstant(GetObj(node, 'param')); Out(Ch(')'));
+    END;
   END
   ELSE IF nt = 'ArrayType' THEN
   BEGIN
@@ -498,9 +575,9 @@ BEGIN
   END
   ELSE IF nt = 'IndexRange' THEN
   BEGIN
-    PrintExpr(GetObj(node, 'low'));
+    PrintConstant(GetObj(node, 'low'));
     IF IsPresent(GetObj(node, 'high')) THEN
-    BEGIN Out('..'); PrintExpr(GetObj(node, 'high')); END;
+    BEGIN Out('..'); PrintConstant(GetObj(node, 'high')); END;
   END
   ELSE IF nt = 'RecordType' THEN
   BEGIN
@@ -517,7 +594,7 @@ BEGIN
   END
   ELSE IF nt = 'SubrangeType' THEN
   BEGIN
-    PrintExpr(GetObj(node, 'low')); Out('..'); PrintExpr(GetObj(node, 'high'));
+    PrintConstant(GetObj(node, 'low')); Out('..'); PrintConstant(GetObj(node, 'high'));
   END
   ELSE IF nt = 'EnumType' THEN
   BEGIN
@@ -695,26 +772,29 @@ BEGIN
     FOR i := 0 TO n - 1 DO
     BEGIN
       elt := ArrItem(arr, i);
+      PrintLeadingComments(elt);
       Ind;
       constants := GetObj(elt, 'constants');
       cn := ArrSize(constants);
       FOR ci := 0 TO cn - 1 DO
       BEGIN
         IF ci > 0 THEN Out(', ');
-        PrintExpr(ArrItem(constants, ci));
+        PrintConstant(ArrItem(constants, ci));
       END;
       indent_level := indent_level + 1;
       OutLn(Ch(':'));
       PrintStmt(GetObj(elt, 'stmt'));
+      PrintTrailingComment(elt);
       OutLn(Ch(';'));
       indent_level := indent_level - 1;
     END;
     IF IsPresent(GetObj(node, 'otherwise')) THEN
     BEGIN
-      { No semicolon after this one: the grammar parses OTHERWISE's
-        statement and expects END right after it, not a SEMICOLON
-        (ParseCaseStmt in ps_stmt.pas), unlike every case element above,
-        which the parser accepts a trailing SEMICOLON before. }
+      { One statement, printed without a trailing SEMICOLON (the parser
+        accepts one there, but needs none). A statement list after
+        OTHERWISE parses to a CompoundStmt (ParseOtherwiseList in
+        ps_stmt.pas), printed here as BEGIN..END, which parses back to
+        the same AST. }
       Ind; OutLn('OTHERWISE');
       indent_level := indent_level + 1;
       PrintStmt(GetObj(node, 'otherwise'));
@@ -741,17 +821,21 @@ BEGIN
   END
   ELSE IF nt = 'GotoStmt' THEN
   BEGIN
-    Out('GOTO '); Out(GetStr(node, 'label'));
+    Out('GOTO '); Out(LabelText(GetObj(node, 'label')));
   END
   ELSE IF nt = 'LabelStmt' THEN
   BEGIN
-    Out(GetStr(node, 'label')); OutLn(Ch(':'));
+    Out(LabelText(GetObj(node, 'label'))); OutLn(Ch(':'));
     PrintStmt(GetObj(node, 'stmt'));
   END
-  ELSE IF nt = 'BreakStmt' THEN
-    Out('BREAK')
-  ELSE IF nt = 'CycleStmt' THEN
-    Out('CYCLE')
+  ELSE IF (nt = 'BreakStmt') OR (nt = 'CycleStmt') THEN
+  BEGIN
+    IF nt = 'BreakStmt' THEN Out('BREAK') ELSE Out('CYCLE');
+    IF IsPresent(GetObj(node, 'label')) THEN
+    BEGIN
+      Out(Ch(' ')); Out(LabelText(GetObj(node, 'label')));
+    END;
+  END
   ELSE IF nt = 'ReturnStmt' THEN
     Out('RETURN')
   ELSE IF nt = 'EmptyStmt' THEN
@@ -823,7 +907,7 @@ BEGIN
   END
   ELSE IF nt = 'ConstDecl' THEN
   BEGIN
-    Out(GetStr(node, 'name')); Out(' = '); PrintExpr(GetObj(node, 'value')); Out(Ch(';'));
+    Out(GetStr(node, 'name')); Out(' = '); PrintConstant(GetObj(node, 'value')); Out(Ch(';'));
   END
   ELSE IF nt = 'TypeDecl' THEN
   BEGIN
@@ -837,7 +921,7 @@ BEGIN
     FOR i := 0 TO n - 1 DO
     BEGIN
       IF i > 0 THEN Out(', ');
-      Out(CStrToStr255(cJSON_GetStringValue(ArrItem(arr, i))));
+      Out(LabelText(ArrItem(arr, i)));
     END;
     Out(Ch(';'));
   END
@@ -959,8 +1043,13 @@ END;
 PROCEDURE PrintProgram(node: ADRMEM);
 BEGIN
   PrintLocalInterfaces(node);
-  Out('PROGRAM '); Out(GetStr(node, 'name')); Out(Ch('('));
-  Out('input, output'); OutLn(');');
+  PrintLeadingComments(node);
+  { The heading's parameters as written: none, or the source's own names.
+    Every program used to print `(input, output)', so PROGRAM p; and
+    PROGRAM p(OUTPUT); did not round-trip to the same AST. }
+  Out('PROGRAM '); Out(GetStr(node, 'name'));
+  PrintIdentList(GetObj(node, 'params'));
+  OutLn(Ch(';'));
   WRITELN;
   PrintUses(GetObj(node, 'uses'));
   PrintBlock(GetObj(node, 'block'));
@@ -970,6 +1059,7 @@ END;
 PROCEDURE PrintModuleUnit(node: ADRMEM);
 BEGIN
   PrintLocalInterfaces(node);
+  PrintLeadingComments(node);
   IF GetBool(node, 'is_device') THEN Out('DEVICE ');
   Out('MODULE '); Out(GetStr(node, 'name')); OutLn(Ch(';'));
   WRITELN;
@@ -980,6 +1070,7 @@ END;
 
 PROCEDURE PrintInterfaceUnit(node: ADRMEM);
 BEGIN
+  PrintLeadingComments(node);
   IF GetBool(node, 'is_device') THEN Out('DEVICE ');
   OutLn('INTERFACE;');
   WRITELN;
@@ -1004,6 +1095,7 @@ END;
 PROCEDURE PrintImplementationUnit(node: ADRMEM);
 BEGIN
   PrintLocalInterfaces(node);
+  PrintLeadingComments(node);
   IF GetBool(node, 'is_device') THEN Out('DEVICE ');
   Out('IMPLEMENTATION OF '); Out(GetStr(node, 'name')); OutLn(Ch(';'));
   WRITELN;

@@ -1,1 +1,4 @@
-Parser Error: expected statement
+Parser Error: Expected token match failed. Expected:
+SEMICOLON
+Got:
+DOT at line 9 column 1

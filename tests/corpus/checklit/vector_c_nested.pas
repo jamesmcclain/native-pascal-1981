@@ -14,13 +14,13 @@
 PROGRAM VCNested;
 TYPE
   V2B = VECTOR [2] OF INTEGER8;              { 2 bytes }
-  R   = RECORD f: V2B END;                   { 2 bytes -- COERCED size }
-  A   = ARRAY [1..2] OF V2B;                 { 4 bytes -- COERCED size }
-FUNCTION sink_rec(x: R): CINT [C]; EXTERN;
-FUNCTION sink_arr(x: A): CINT [C]; EXTERN;
+  TR   = RECORD f: V2B END;                   { 2 bytes -- COERCED size }
+  TA   = ARRAY [1..2] OF V2B;                 { 4 bytes -- COERCED size }
+FUNCTION sink_rec(x: TR): CINT [C]; EXTERN;
+FUNCTION sink_arr(x: TA): CINT [C]; EXTERN;
 VAR
-  r: R;
-  a: A;
+  r: TR;
+  a: TA;
 BEGIN
   r := r;
   a := a

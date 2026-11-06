@@ -64,9 +64,9 @@ for dialect in vintage extended; do
     pass "$dialect both evaluated once O$opt"
   done
   # CHAR/BOOLEAN use unsigned ordinals; valid high bytes must not sign-extend.
-  printf '%s\n' 'PROGRAM good; {$INITCK-} TYPE E = (a,b); VAR i: INTEGER; c: CHAR; t: BOOLEAN; e: E;' \
+  printf '%s\n' 'PROGRAM good; {$INITCK-} TYPE E = (a,b); VAR i: INTEGER; c: CHAR; t: BOOLEAN; v: E;' \
     'BEGIN i := 0; WRITELN(BYWORD(i,i)); i := 255; WRITELN(BYWORD(i,i));' \
-    ' c := CHR(255); t := TRUE; e := b; WRITELN(BYWORD(c,t)); WRITELN(BYWORD(e,c));' \
+    ' c := CHR(255); t := TRUE; v := b; WRITELN(BYWORD(c,t)); WRITELN(BYWORD(v,c));' \
     ' IF FALSE AND THEN TRUE THEN WRITELN(BYWORD(300,-1)) END.' > "$work/good.pas"
   for opt in 0 1 2 3; do
     bin/pascal1981 --dialect "$dialect" -O"$opt" "$work/good.pas" -o "$work/good"

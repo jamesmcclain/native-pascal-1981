@@ -1,0 +1,19 @@
+(*$INCLUDE:'cpu_device_index_shadowing.inc'*)
+DEVICE IMPLEMENTATION OF INDEXSHADOWU;
+FUNCTION BLOCKDIM_Y: INTEGER32;
+BEGIN
+  BLOCKDIM_Y := 1000
+END;
+FUNCTION Shadowed: INTEGER32;
+VAR
+  threadidx_x: INTEGER32;
+BEGIN
+  threadidx_x := 100;
+  Shadowed := ThreadIdx_X
+END;
+PROCEDURE TALLY(cell: ADS(GLOBAL) OF INTEGER32);
+BEGIN
+  {$NILCK-} cell^ := cell^ + blockidx_x * 10 + threadidx_x + Shadowed +
+    blockdim_y
+END;
+.

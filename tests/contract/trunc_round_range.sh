@@ -13,13 +13,18 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib/harness.sh"
 #   trunc_round_real32.pas/.err     a REAL32 argument widens first and is
 #                                   checked the same way (extended)
 #   trunc_round_device/             CPU DEVICE code takes the host failure
-#                                   path; NVPTX has no host failure path and
-#                                   saturates (llvm.fptosi.sat), never poison
+#                                   path; NVPTX records the failure in the
+#                                   device error cell (IR here; the run is
+#                                   in tests/optional/gpu_orchestration.sh)
+#                                   and saturates, never poison;
+#                                   conv_incl.impl puts the sites in
+#                                   included files, which the cell names
+#                                   by index (__pas_dev_file_k globals)
 #   trunc_round_ir.pas              the range test precedes the conversion:
 #                                   fptosi only in conv.ok blocks
 # Runtime failure is checked as nonzero, not an exact status.
 fixtures=tests/contract/fixtures/mathck
-declare -A expect=([valid]=16 [invalid]=128 [real32]=8 [device]=4 [nvptx]=2 [ir]=1)
+declare -A expect=([valid]=16 [invalid]=128 [real32]=8 [device]=4 [nvptx]=4 [nvinc]=2 [ir]=1)
 
 
 build() { # dialect opt source exe; never reuse a previous cell's binary
@@ -78,7 +83,7 @@ invalid_unit() { # dialect row-number
 
 device_unit() {
   local value expected opt sat
-  cp "$fixtures"/trunc_round_device/conv.{inc,impl} "$dir/"
+  cp "$fixtures"/trunc_round_device/conv{.inc,.impl,_incl.impl,_round.inc,_body.inc} "$dir/"
   for value in 1234.6 100000.0; do
     sed "s/{VALUE}/$value/" "$fixtures/trunc_round_device/main.pas" > "$dir/main.pas"
     for opt in 0 2; do
@@ -98,16 +103,64 @@ device_unit() {
       count device
     done
   done
+  # CPU DEVICE fails through the host path, never the device error cell.
+  (cd "$dir" && "$ROOT/bin/pascal1981" --dialect extended -O0 -S conv.impl \
+     -o cpu.ll) || die "compile CPU DEVICE -S"
+  ! grep -qF __pas_dev_error "$dir/cpu.ll" || die "CPU DEVICE: device error cell"
+  grep -qF 'call void @pas_conversion_error' "$dir/cpu.ll" ||
+    die "CPU DEVICE: no host failure call"
+  # NVPTX records a failure in the device error channel (code 1 TRUNC, 2
+  # ROUND, claimed by cmpxchg, then line, column and the REAL argument at
+  # offsets 4, 8 and 16) and goes on with the saturated value; the CUDA shim
+  # fails after the launch. Always on, like the host check: RANGECK- too.
   for opt in 0 2; do
-    rm -f "$dir/nvptx.ll"
+    for rangeck in + -; do
+      rm -f "$dir/nvptx.ll"
+      printf '(*$INCLUDE:'"'conv.inc'"'*)\n{$RANGECK%s}\n' "$rangeck" > "$dir/nv.impl"
+      tail -n +2 "$dir/conv.impl" >> "$dir/nv.impl"
+      (cd "$dir" && "$ROOT/bin/pascal1981" --dialect extended -O"$opt" \
+         --device-triple nvptx64-nvidia-cuda -S nv.impl -o nvptx.ll) ||
+        die "compile NVPTX O$opt RANGECK$rangeck"
+      label="NVPTX O$opt RANGECK$rangeck"
+      sat=$(grep -oF 'call i16 @llvm.fptosi.sat.i16.f64' "$dir/nvptx.ll" | wc -l || true)
+      [ "$sat" -eq 2 ] || die "$label: $sat saturating conversions"
+      ! grep -qF 'fptosi double' "$dir/nvptx.ll" || die "$label: fptosi double"
+      ! grep -qF pas_conversion_error "$dir/nvptx.ll" || die "$label: host failure call"
+      grep -qxF '@__pas_dev_error = addrspace(1) global [3 x i64] zeroinitializer, align 8' \
+        "$dir/nvptx.ll" || die "$label: no device error cell"
+      for code in 1 2; do
+        grep -qE "cmpxchg ptr addrspace\(1\) @__pas_dev_error, i32 0, i32 $code " \
+          "$dir/nvptx.ll" || die "$label: no claim of code $code"
+      done
+      for field in 'i32 6, .* i64 4\)' 'i32 12, .* i64 8\)' 'i32 24, .* i64 8\)' \
+                   'double .* i64 16\)'; do
+        grep -qE "store $field" "$dir/nvptx.ll" || die "$label: no store $field"
+      done
+      # Primary-file sites leave the cell's file index (offset 12) zero.
+      ! grep -qF __pas_dev_file_ "$dir/nvptx.ll" || die "$label: file name global"
+      ! grep -qE 'store i32 .* i64 12\)' "$dir/nvptx.ll" || die "$label: file index store"
+      count nvptx
+    done
+  done
+  # Sites in included files: each distinct file is one constant string
+  # global, numbered in first-use order, and the claiming thread stores its
+  # index at offset 12 (two TRUNC sites share conv_body.inc's index 2).
+  for opt in 0 2; do
+    rm -f "$dir/nvinc.ll"
     (cd "$dir" && "$ROOT/bin/pascal1981" --dialect extended -O"$opt" \
-       --device-triple nvptx64-nvidia-cuda -S conv.impl -o nvptx.ll) ||
-      die "compile NVPTX O$opt"
-    sat=$(grep -oF 'call i16 @llvm.fptosi.sat.i16.f64' "$dir/nvptx.ll" | wc -l || true)
-    [ "$sat" -eq 2 ] || die "NVPTX O$opt: $sat saturating conversions"
-    ! grep -qF 'fptosi double' "$dir/nvptx.ll" || die "NVPTX O$opt: fptosi double"
-    ! grep -qF pas_conversion_error "$dir/nvptx.ll" || die "NVPTX O$opt: host failure call"
-    count nvptx
+       --device-triple nvptx64-nvidia-cuda -S conv_incl.impl -o nvinc.ll) ||
+      die "compile NVPTX included O$opt"
+    label="NVPTX included O$opt"
+    grep -qxF '@__pas_dev_file_1 = addrspace(1) constant [15 x i8] c"conv_round.inc\00"' \
+      "$dir/nvinc.ll" || die "$label: no file 1 global"
+    grep -qxF '@__pas_dev_file_2 = addrspace(1) constant [14 x i8] c"conv_body.inc\00"' \
+      "$dir/nvinc.ll" || die "$label: no file 2 global"
+    ! grep -qF __pas_dev_file_3 "$dir/nvinc.ll" || die "$label: a third file global"
+    grep -qF 'store i32 1, ptr addrspace(1) getelementptr (i8, ptr addrspace(1) @__pas_dev_error, i64 12)' \
+      "$dir/nvinc.ll" || die "$label: no file index 1 store"
+    [ "$(grep -cF 'store i32 2, ptr addrspace(1) getelementptr (i8, ptr addrspace(1) @__pas_dev_error, i64 12)' \
+      "$dir/nvinc.ll")" -ge 2 ] || die "$label: file index 2 stores"
+    count nvinc
   done
 }
 
@@ -147,4 +200,5 @@ units_wait
 echo "PASS: TRUNC/ROUND INTEGER range: $(( got[valid] + got[invalid] + got[real32] ))" \
   "runtime cells (${got[valid]} fit, ${got[invalid]} out of range, ${got[real32]} REAL32;" \
   "both dialects, MATHCK+ and MATHCK-, O0-O3); range test before fptosi in IR;" \
-  "$(( got[device] + got[nvptx] )) DEVICE cells (CPU host failure, NVPTX saturates)"
+  "$(( got[device] + got[nvptx] + got[nvinc] )) DEVICE cells (CPU host failure; NVPTX error cell, RANGECK+ and -," \
+  "included-file index)"

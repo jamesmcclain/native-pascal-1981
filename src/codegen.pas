@@ -159,6 +159,7 @@ VAR
   root, block, body: ADRMEM;
   param_arr: ADRMEM;
   ret_val: ADRMEM;
+  predeclared_in, predeclared_out: INTEGER32;
   verify_msg_raw: ADRMEM;
   verify_msg: PAdr;
   ok: CINT;
@@ -255,6 +256,8 @@ BEGIN
   is_device_compiland := is_device_root;
   lowering_host_interface_in_device := FALSE;
   is_nvptx_device := FALSE;
+  stackck_used := FALSE;
+  ndev_files := 0;
   lowering_spliced_interface := FALSE;
   defining_implementation := root_nt = 'ImplementationUnit';
   device_triple_raw := NIL;
@@ -863,8 +866,14 @@ BEGIN
     IF NodeType(block) <> 'Block' THEN
       AbortWith('codegen: expected Block under ProgramUnit');
 
+    predeclared_in := 0;
+    predeclared_out := 0;
+    IF NOT is_device_compiland THEN
+      DeclarePredeclaredFiles(GetObj(block, 'decls'), predeclared_in, predeclared_out);
     CodegenDeclList(GetObj(block, 'decls'));
-    IF NOT is_device_compiland THEN RegisterPredeclaredFiles;
+    ApplyStackckAttrs(main_fn, root);
+    IF NOT is_device_compiland THEN
+      InitPredeclaredFiles(predeclared_in, predeclared_out);
     EmitUnitInitCalls;
     CodegenProgramParameters(root);
 
@@ -917,13 +926,14 @@ BEGIN
       FOR unit_name_i := 1 TO unit_name_len DO
         IF (unit_name[unit_name_i] >= 'A') AND (unit_name[unit_name_i] <= 'Z') THEN
           unit_name[unit_name_i] := CHR(ORD(unit_name[unit_name_i]) + 32);
-      CONCAT(init_name, unit_name);
+      init_name := BoundedSymbol(init_name, unit_name);
       init_fnty := LLVMFunctionType(i32ty, NIL, 0, 0);
       init_fn := LLVMAddFunction(modl, MakeCStr(init_name), init_fnty);
       ApplyTargetAttrs(init_fn);
       init_bb := LLVMAppendBasicBlockInContext(ctx, init_fn, MakeCStr('entry'));
       LLVMPositionBuilderAtEnd(builder, init_bb);
       cur_fn := init_fn;
+      ApplyStackckAttrs(init_fn, root);
       cur_func_name := '';
       IF (init_body <> NIL) AND (ArrSize(init_body) > 0) THEN
       BEGIN
@@ -936,6 +946,8 @@ BEGIN
         ret_val := LLVMBuildRet(builder, LLVMConstInt(i32ty, 0, 0));
     END;
   END;
+
+  EmitStackckCtor;
 
   verify_msg_raw := malloc(8);
   verify_msg := verify_msg_raw;

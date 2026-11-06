@@ -3,14 +3,16 @@ PROGRAM indexck_super_endpoints(OUTPUT);
 { Scalar subscripts through a host descriptor are checked against the
   declared lower (-2) and the actual NEW upper (3). Endpoints read and
   write, a WORD and a WORD64 index stay in bounds, and each subscript
-  evaluates its own index expression exactly once. }
-TYPE Cells = SUPER ARRAY [-2..*] OF INTEGER; P = ^Cells;
-VAR p: P; i: INTEGER; w: WORD; w64: WORD64; evals: INTEGER;
+  evaluates its own index expression exactly once. Every element read
+  is written first: fresh NEW storage has no defined value. }
+TYPE Cells = SUPER ARRAY [-2..*] OF INTEGER; TP = ^Cells;
+VAR p: TP; i: INTEGER; w: WORD; w64: WORD64; evals: INTEGER;
 FUNCTION Idx: INTEGER;
 BEGIN evals := evals + 1; Idx := 3 END;
 BEGIN
   NEW(p, 3);
   p^[-2] := 11; p^[3] := 13;      { constant endpoints }
+  p^[0] := 0;                     { read below through a WORD index }
   i := -2; p^[i] := p^[i] + 1;    { variable endpoints }
   i := 3; p^[i] := p^[i] + 1;
   w := 0; p^[w] := p^[w] + 100;   { unsigned WORD index, in bounds }

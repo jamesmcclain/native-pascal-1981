@@ -5,9 +5,9 @@
   generic INTEGER set bounds, 0..255. Incompatible declared bases are
   rejected; generic bounds do not make them compatible. }
 PROGRAM SetExpressionBounds(output);
-TYPE BoolSet = SET OF BOOLEAN; CS = SET OF CHAR; A = SET OF 3..9; B = SET OF 1..5;
-     Rec = RECORD cs: CS END;
-VAR bs, bt: BoolSet; cs: CS; a: A; b: B; r: Rec; f: BOOLEAN; c: CHAR; i: INTEGER;
+TYPE BoolSet = SET OF BOOLEAN; TCS = SET OF CHAR; TA = SET OF 3..9; TB = SET OF 1..5;
+     Rec = RECORD cs: TCS END;
+VAR bs, bt: BoolSet; cs: TCS; a: TA; b: TB; r: Rec; f: BOOLEAN; c: CHAR; i: INTEGER;
 FUNCTION getb(n: INTEGER): BoolSet; BEGIN getb := bs END;
 BEGIN
   WRITELN(LOWER(bs + bs), ' ', UPPER(bs * bt), ' ', UPPER(bs - getb(0)));

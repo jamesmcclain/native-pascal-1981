@@ -1,0 +1,5 @@
+(*$INCLUDE:'conv.inc'*)
+DEVICE IMPLEMENTATION OF CONVU; {$MATHCK-}{$NILCK-}
+(*$INCLUDE:'conv_round.inc'*)
+(*$INCLUDE:'conv_body.inc'*)
+.

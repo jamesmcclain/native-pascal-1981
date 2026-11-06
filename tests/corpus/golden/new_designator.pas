@@ -2,8 +2,8 @@ PROGRAM new_designator(OUTPUT);
 { NEW and DISPOSE accept any pointer designator, not only a bare variable. }
 { DIALECT: extended }
 TYPE PN = ^N; N = RECORD v: INTEGER; next: PN END;
-     PA = ^A; A = SUPER ARRAY [1..*] OF INTEGER;
-VAR q, t: PN; tbl: ARRAY [1..3] OF PN; i: INTEGER; pa: ARRAY [1..2] OF PA;
+     TPA = ^A; A = SUPER ARRAY [1..*] OF INTEGER;
+VAR q, t: PN; tbl: ARRAY [1..3] OF PN; i: INTEGER; pa: ARRAY [1..2] OF TPA;
     r: RECORD p: PN END;
 BEGIN
   NEW(q); q^.v := 1; NEW(q^.next); q^.next^.v := 2; NEW(q^.next^.next);

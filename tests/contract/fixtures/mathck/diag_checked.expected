@@ -45,13 +45,13 @@ status: nonzero
 stdout:
 prefix
 stderr:
-runtime error: value 5 is outside subrange 0..3
+runtime error: value 5 is outside subrange 0..3 at line 30 column 22
 case 8
 status: nonzero
 stdout:
 prefix
 stderr:
-runtime error: value 3 is outside subrange 0..2
+runtime error: value 3 is outside subrange 0..2 at line 31 column 19
 case 9
 status: nonzero
 stdout:

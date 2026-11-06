@@ -4,8 +4,8 @@
   four unchecked under disabled snapshots, including one whose snapshot was
   captured before an in-expression disabling directive. }
 PROGRAM indexck_super_guard_ir(OUTPUT);
-TYPE Cells = SUPER ARRAY [2..*] OF INTEGER; P = ^Cells;
-VAR p: P; i: INTEGER;
+TYPE Cells = SUPER ARRAY [2..*] OF INTEGER; TP = ^Cells;
+VAR p: TP; i: INTEGER;
 BEGIN
   i := 2;
   p^[i] := 1;              { default snapshot: NIL and bounds guards }

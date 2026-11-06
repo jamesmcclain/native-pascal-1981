@@ -1,9 +1,9 @@
 PROGRAM SetAnonymousBounds(OUTPUT);
 { Semantic hosts constrain compatibility, not the bounds of anonymous sets. }
-TYPE BS = SET OF BOOLEAN; CS = SET OF CHAR;
+TYPE TBS = SET OF BOOLEAN; TCS = SET OF CHAR;
      I1 = SET OF 3..9; I2 = SET OF 1..5;
-VAR bs: BS; cs: CS; a: I1; b: I2; flag: BOOLEAN; ch: CHAR; n: INTEGER;
-FUNCTION GetBS: BS;
+VAR bs: TBS; cs: TCS; a: I1; b: I2; flag: BOOLEAN; ch: CHAR; n: INTEGER;
+FUNCTION GetBS: TBS;
 BEGIN GetBS := bs END;
 BEGIN
   bs := [TRUE]; cs := ['A']; a := [3]; b := [5];

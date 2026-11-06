@@ -89,22 +89,27 @@ BEGIN
     IF NOT types[tid].is_super THEN
     BEGIN
       { More leaves than INTEGER32 can count is outside the tracked slice. }
-      wide_n := InitckShadowSize(types[tid].elem_tid);
-      wide_n := wide_n * (types[tid].hi - types[tid].lo + 1);
+      wide_n := types[tid].hi;
+      wide_n := (wide_n - types[tid].lo + 1) * InitckShadowSize(types[tid].elem_tid);
       IF wide_n <= 2147483647 THEN n := RETYPE(INTEGER32, wide_n);
     END;
   END
   ELSE IF TypeKind(tid) = TK_RECORD THEN
   BEGIN
+    { Variant alternatives get disjoint leaves, so the count can exceed the
+      record's byte size: summed in INTEGER64, and like an ARRAY a record
+      with more leaves than INTEGER32 can count is untracked. }
     bad := FALSE;
+    wide_n := 0;
     FOR fi := 1 TO nfields DO
       IF fields[fi].rec_tid = tid THEN
       BEGIN
         s := InitckShadowSize(fields[fi].field_tid);
         IF s = 0 THEN bad := TRUE;
-        n := n + s;
+        wide_n := wide_n + s;
       END;
-    IF bad THEN n := 0;
+    IF wide_n > 2147483647 THEN bad := TRUE;
+    IF NOT bad THEN n := RETYPE(INTEGER32, wide_n);
   END;
   InitckShadowSize := n;
 END;
@@ -131,13 +136,21 @@ FUNCTION InitckFieldShadowOffset(fi: INTEGER): INTEGER32;
   nor invalidates another (the logical-field model, not a byte model). }
 VAR
   k: INTEGER;
-  off: INTEGER32;
+  off: INTEGER64;
 BEGIN
+  { Only a tracked record's fields have shadow offsets, and its whole leaf
+    count fits INTEGER32 (InitckShadowSize), so every prefix sum does too;
+    the sum is still formed in INTEGER64 so a misuse cannot trap. }
   off := 0;
   FOR k := 1 TO fi - 1 DO
     IF fields[k].rec_tid = fields[fi].rec_tid THEN
       off := off + InitckShadowSize(fields[k].field_tid);
-  InitckFieldShadowOffset := off;
+  IF off > 2147483647 THEN
+  BEGIN
+    AbortWith('codegen: internal error: INITCK field shadow offset of an untracked record');
+    off := 0;
+  END;
+  InitckFieldShadowOffset := RETYPE(INTEGER32, off);
 END;
 
 FUNCTION InitckSelectedTid(tid: INTEGER; selectors: ADRMEM): INTEGER;
@@ -203,20 +216,22 @@ FUNCTION InitckIntText(n: INTEGER32): Str255;
 VAR
   tmp, t: Str255;
   i: INTEGER;
+  m: INTEGER64; { |n| of the INTEGER32 minimum has no INTEGER32 value }
 BEGIN
   tmp := '';
   t := '';
-  IF n < 0 THEN
+  m := n;
+  IF m < 0 THEN
   BEGIN
     AppendChar(t, '-');
-    n := -n;
+    m := -m;
   END;
-  AppendChar(tmp, CHR(RETYPE(INTEGER, ORD('0') + n MOD 10)));
-  n := n DIV 10;
-  WHILE n > 0 DO
+  AppendChar(tmp, CHR(RETYPE(INTEGER, ORD('0') + m MOD 10)));
+  m := m DIV 10;
+  WHILE m > 0 DO
   BEGIN
-    AppendChar(tmp, CHR(RETYPE(INTEGER, ORD('0') + n MOD 10)));
-    n := n DIV 10;
+    AppendChar(tmp, CHR(RETYPE(INTEGER, ORD('0') + m MOD 10)));
+    m := m DIV 10;
   END;
   FOR i := ORD(tmp[0]) DOWNTO 1 DO AppendChar(t, tmp[i]);
   InitckIntText := t;
@@ -231,23 +246,12 @@ PROCEDURE InitckBoundaryAt(category: Str255; node: ADRMEM);
   storage it names. }
 VAR
   msg: Str255;
-  line, column: INTEGER32;
 BEGIN
   IF is_device_compiland THEN category := 'DEVICE code';
-  msg := category;
-  IF node <> NIL THEN
-  BEGIN
-    line := GetInt(GetObj(node, 'read_location'), 'line');
-    column := GetInt(GetObj(node, 'read_location'), 'column');
-    IF (line > 0) AND (column > 0) THEN
-    BEGIN
-      CONCAT(msg, ' at line ');
-      CONCAT(msg, InitckIntText(line));
-      CONCAT(msg, ' column ');
-      CONCAT(msg, InitckIntText(column));
-    END;
-  END;
-  AbortWith2('INITCK unsupported boundary: ', msg);
+  msg := 'INITCK unsupported boundary: ';
+  AppendText(msg, category);
+  IF node <> NIL THEN AppendLocation(msg, GetObjOrNil(node, 'read_location'));
+  AbortWith(msg);
 END;
 
 FUNCTION InitckSymCategory(symi: INTEGER32): Str255;
@@ -278,7 +282,7 @@ BEGIN
     BEGIN
       part := GetStr(sel, 'index_or_field');
       AppendChar(t, '.');
-      CONCAT(t, part);
+      AppendText(t, part);
     END
     ELSE IF GetStr(sel, 'kind') = 'INDEX' THEN
     BEGIN
@@ -289,7 +293,7 @@ BEGIN
         part := GetStr(ix, 'name')
       ELSE part := '...';
       AppendChar(t, '[');
-      CONCAT(t, part);
+      AppendText(t, part);
       AppendChar(t, ']');
     END;
   END;
@@ -712,24 +716,45 @@ BEGIN
   InitckWithUnknown := unknown;
 END;
 
+CONST
+  { Most leaves a heap referent (or one SUPER ARRAY element) may have and
+    still carry heap state. Heap state is kept also under INITCK-, and each
+    lookup site of a tracked referent passes its own run of that many
+    initialized leaves, in its frame, for an unregistered or released
+    address (InitckHeapFallback). A larger referent type is an explicit
+    untracked boundary instead, so no frame ever holds a shadow run
+    proportional to a huge object: NEW registers nothing, a dereference
+    looks nothing up, and an enabled read of it is `heap storage`. }
+  INITCK_HEAP_MAX_LEAVES = 65536;
+
+FUNCTION InitckHeapLeavesTracked(elem_tid: INTEGER): BOOLEAN;
+VAR
+  leaves: INTEGER32;
+BEGIN
+  leaves := InitckShadowSize(elem_tid);
+  InitckHeapLeavesTracked := (leaves > 0) AND (leaves <= INITCK_HEAP_MAX_LEAVES);
+END;
+
 FUNCTION InitckHeapTracked(ptr_tid: INTEGER): BOOLEAN;
 { Does the referent of a pointer of this type carry heap state? A plain host
-  pointer whose target type is tracked (NEW registers it, a dereference
-  looks it up). }
+  pointer whose target type is tracked, with at most INITCK_HEAP_MAX_LEAVES
+  leaves (NEW registers it, a dereference looks it up). }
 BEGIN
   InitckHeapTracked := FALSE;
   IF InitckPointerTk(ptr_tid) AND NOT IsHostDescriptor(ptr_tid) AND
      NOT is_device_compiland THEN
-    InitckHeapTracked := InitckShadowSize(types[ptr_tid].elem_tid) > 0;
+    InitckHeapTracked := InitckHeapLeavesTracked(types[ptr_tid].elem_tid);
 END;
 
 FUNCTION InitckSuperHeapTracked(ptr_tid: INTEGER): BOOLEAN;
 { Do the elements a host SUPER ARRAY descriptor locates carry heap state?
-  Those NEW allocated, when the element type is tracked. }
+  Those NEW allocated, when the element type is tracked (with at most
+  INITCK_HEAP_MAX_LEAVES leaves per element, as for a referent). }
 BEGIN
   InitckSuperHeapTracked := FALSE;
   IF IsHostDescriptor(ptr_tid) AND NOT is_device_compiland THEN
-    InitckSuperHeapTracked := InitckShadowSize(types[types[ptr_tid].elem_tid].elem_tid) > 0;
+    InitckSuperHeapTracked :=
+      InitckHeapLeavesTracked(types[types[ptr_tid].elem_tid].elem_tid);
 END;
 
 FUNCTION ValidateInitckDesignator(node: ADRMEM; read_value: BOOLEAN; ctx: INTEGER;
@@ -1282,7 +1307,7 @@ VAR
   state_name: Str255;
 BEGIN
   state_name := 'initck.';
-  CONCAT(state_name, name);
+  AppendText(state_name, name);
   own := EntryAlloca(i1ty, state_name);
   slot := InitckArgSlot(i);
   p := LLVMBuildLoad2(builder, i8ptrty, slot, MakeCStr('initck.arg'));
@@ -1291,7 +1316,7 @@ BEGIN
     p := LLVMBuildSelect(builder, initck_accept, p, LLVMConstNull(i8ptrty), MakeCStr('initck.argok'));
   LLVMBuildStore(builder, LLVMConstInt(i1ty, 1, 0), own);
   isnull := LLVMBuildICmp(builder, LLVMIntEQ, p, LLVMConstNull(i8ptrty), MakeCStr(''));
-  IF shared THEN CONCAT(state_name, '.ref') ELSE state_name := '';
+  IF shared THEN AppendText(state_name, '.ref') ELSE state_name := '';
   q := LLVMBuildSelect(builder, isnull, own, p, MakeCStr(state_name));
   IF shared THEN ReceiveInitckArg := q
   ELSE
@@ -1314,7 +1339,7 @@ VAR
   state_name: Str255;
 BEGIN
   state_name := 'initck.';
-  CONCAT(state_name, name);
+  AppendText(state_name, name);
   own := EntryAlloca(InitckShadowTy(tid), state_name);
   slot := InitckArgSlot(i);
   p := LLVMBuildLoad2(builder, i8ptrty, slot, MakeCStr('initck.arg'));
@@ -1324,7 +1349,7 @@ BEGIN
   IF shared THEN
   BEGIN
     InitckTransferShadow(own, NIL, tid, LLVMConstInt(i1ty, 1, 0));
-    CONCAT(state_name, '.ref');
+    AppendText(state_name, '.ref');
     ReceiveInitckAggregate := LLVMBuildSelect(builder,
       LLVMBuildICmp(builder, LLVMIntEQ, p, LLVMConstNull(i8ptrty), MakeCStr('')),
       own, p, MakeCStr(state_name));
@@ -1393,6 +1418,7 @@ BEGIN
     GetInt(GetObj(node, 'read_location'), 'line'), 0));
   SetPtrArrayElem(args, nargs - 1, LLVMConstInt(i32ty,
     GetInt(GetObj(node, 'read_location'), 'column'), 0));
+  EmitDiagFile(GetObjOrNil(node, 'read_location'));
   discard := LLVMBuildCall2(builder, fnty, fn, args, nargs, MakeCStr(''));
   discard := LLVMBuildUnreachable(builder);
   LLVMPositionBuilderAtEnd(builder, ok_bb);
@@ -1725,7 +1751,8 @@ END;
 FUNCTION InitckHeapFallback(leaves: INTEGER32): ADRMEM;
 { This lookup site's own run of leaves for an untracked referent: aliases
   bound at different sites never share state bytes, and none outlives the
-  frame that bound it. }
+  frame that bound it. Only a tracked referent type reaches here, so the
+  run is at most INITCK_HEAP_MAX_LEAVES bytes. }
 VAR
   n: INTEGER32;
 BEGIN
@@ -2015,10 +2042,11 @@ BEGIN
       global_name := name;
       IF in_local_scope THEN
       BEGIN
+        { The routine's name and `.' (capped; the hash still sees the
+          whole routine name) then the variable's. }
         global_name := cur_routine_name;
-        global_name[0] := CHR(ORD(global_name[0]) + 1);
-        global_name[ORD(global_name[0])] := '.';
-        CONCAT(global_name, name);
+        AppendChar(global_name, '.');
+        global_name := BoundedSymbol(global_name, name);
       END;
       IF address_space = 0 THEN
         gvar := LLVMAddGlobal(modl, LLVMTypeForTk(tk), MakeCStr(global_name))
@@ -2061,7 +2089,7 @@ BEGIN
        (NOT is_device_compiland) AND (InitckShadowSize(tk) > 0) THEN
     BEGIN
       state_name := 'initck.';
-      CONCAT(state_name, name);
+      AppendText(state_name, name);
       symbols[nsymbols].init_state := EntryAlloca(InitckShadowTy(tk), state_name);
       { Declaration lowering is in the routine prologue. Each invocation,
         including recursion, resets metadata without touching program bytes.

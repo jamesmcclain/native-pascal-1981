@@ -44,9 +44,9 @@ make_statements() {
 make_globals() {
   local count=$1 output=$2 i
   {
-    printf 'PROGRAM S(OUTPUT);\nTYPE R = RECORD\n'
+    printf 'PROGRAM S(OUTPUT);\nTYPE Rec = RECORD\n'
     for ((i = 0; i < 79; i++)); do printf '  f%d: INTEGER;\n' "$i"; done
-    printf '  f79: INTEGER\nEND;\nVAR r: R;\n'
+    printf '  f79: INTEGER\nEND;\nVAR r: Rec;\n'
     for ((i = 0; i < count; i++)); do printf '  v%d: INTEGER;\n' "$i"; done
     printf 'PROCEDURE P(a, b: INTEGER);\nBEGIN\n'
     printf '  WITH r DO BEGIN f79 := a + b; WRITELN(f79) END;\nEND;\n'
@@ -193,7 +193,7 @@ if bin/lexer < "$bounded_source" > "$work/stray.tokens" \
       > "$work/stray.ast" 2> "$work/stray.err"
   ) || status=$?
   if [ "$status" -ne 0 ] && [ "$status" -ne 124 ] &&
-     grep -qF 'Parser Error: expected statement' "$work/stray.err"; then
+     grep -qF 'Parser Error: Expected token match failed.' "$work/stray.err"; then
     pass "stray right parenthesis fails within time and memory limits"
   else
     fail "stray right parenthesis has a bounded parser failure"

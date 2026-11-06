@@ -65,8 +65,8 @@ for opt in 0 1 2 3; do
 done
 # A subrange or index bound folds the same converted ordinal in both
 # dialects: under RANGECK-, CHR(300)..CHR(301) is 44..45.
-printf '%s\n' 'PROGRAM bound;' '{$RANGECK-}' 'TYPE T = CHR(300)..CHR(301);' \
-  'VAR a: ARRAY [T] OF INTEGER; b: ARRAY [CHR(300)..CHR(301)] OF INTEGER; t: T;' \
+printf '%s\n' 'PROGRAM bound;' '{$RANGECK-}' 'TYPE Tail = CHR(300)..CHR(301);' \
+  'VAR a: ARRAY [Tail] OF INTEGER; b: ARRAY [CHR(300)..CHR(301)] OF INTEGER; t: Tail;' \
   'BEGIN t := CHR(45); WRITELN(ORD(LOWER(a)), ORD(UPPER(b)), ORD(t)) END.' > "$work/bound.pas"
 printf '444545\n' > "$work/expected"
 for dialect in vintage extended; do

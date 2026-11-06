@@ -4,15 +4,16 @@
 # {$MATHCK-}{$RANGECK+} (RANGECK owns these domains under either MATHCK
 # setting) and requires stdout "prefix". Color = 0..2, Hue = 1..2 (green..
 # blue), CHAR = 0..255, BOOLEAN = 0..1, Small = 1..10; a SUCC/PRED result
-# has the argument's subrange type before any store.
-c := blue; c := SUCC(c);|value 3 is outside subrange 0..2
-c := red; WRITELN(ORD(PRED(c)));|value -1 is outside subrange 0..2
-ch := CHR(255); ch := SUCC(ch);|value 256 is outside subrange 0..255
-ch := CHR(0); ch := PRED(ch);|value -1 is outside subrange 0..255
-b := TRUE; b := SUCC(b);|value 2 is outside subrange 0..1
-b := FALSE; WRITELN(PRED(b));|value -1 is outside subrange 0..1
-s := 10; s := SUCC(s);|value 11 is outside subrange 1..10
-s := 1; s := PRED(s);|value 0 is outside subrange 1..10
-s := 10; i := SUCC(s);|value 11 is outside subrange 1..10
-s := 10; WRITELN(PRED(SUCC(s)));|value 11 is outside subrange 1..10
-h := green; c := PRED(h);|value 0 is outside subrange 1..2
+# has the argument's subrange type before any store. The statement is line
+# 8 from column 3; the location is the SUCC or PRED that fails.
+c := blue; c := SUCC(c);|value 3 is outside subrange 0..2 at line 8 column 19
+c := red; WRITELN(ORD(PRED(c)));|value -1 is outside subrange 0..2 at line 8 column 25
+ch := CHR(255); ch := SUCC(ch);|value 256 is outside subrange 0..255 at line 8 column 25
+ch := CHR(0); ch := PRED(ch);|value -1 is outside subrange 0..255 at line 8 column 23
+b := TRUE; b := SUCC(b);|value 2 is outside subrange 0..1 at line 8 column 19
+b := FALSE; WRITELN(PRED(b));|value -1 is outside subrange 0..1 at line 8 column 23
+s := 10; s := SUCC(s);|value 11 is outside subrange 1..10 at line 8 column 17
+s := 1; s := PRED(s);|value 0 is outside subrange 1..10 at line 8 column 16
+s := 10; i := SUCC(s);|value 11 is outside subrange 1..10 at line 8 column 17
+s := 10; WRITELN(PRED(SUCC(s)));|value 11 is outside subrange 1..10 at line 8 column 25
+h := green; c := PRED(h);|value 0 is outside subrange 1..2 at line 8 column 20
