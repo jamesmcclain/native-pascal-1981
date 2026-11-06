@@ -33,6 +33,7 @@ its [unsafe raw boundary](#descriptor-unsafe-raw-boundary) and ownership limits.
 - [Predeclared INPUT and OUTPUT](#predeclared-input-and-output-both)
 - [Identifier length](#identifier-length-both)
 - [Duplicate declarations](#duplicate-declarations-both)
+- [Private names of a unit implementation](#private-names-of-a-unit-implementation-both)
 - [Selecting from a niladic function result](#selecting-from-a-niladic-function-result-both)
 - [File control fields F.TRAP and F.ERRS](#file-control-fields-ftrap-and-ferrs-both)
 - [Wide signed integer input](#wide-signed-integer-input-extended)
@@ -808,6 +809,42 @@ that hides an outer one; a routine body that completes a `FORWARD` heading
 predeclared name such as `MAXINT`, `INPUT` or `THREADIDX_X`; and a name an
 `IMPLEMENTATION` redeclares from its `INTERFACE` (each spliced interface is
 its own scope). Numeric labels are not checked here.
+
+## Private names of a unit implementation **[both]**
+
+Only the names a unit's `INTERFACE` declares are visible outside the unit.
+An `IMPLEMENTATION` can declare other, "private" ones (IBM Pascal,
+Aug. 1981, 13-15), and only the interface constituents get the PUBLIC
+attribute automatically (7-8). Native gives each private variable and each
+private routine of an `IMPLEMENTATION` internal linkage. Two units that
+each declare `VAR v` or `FUNCTION Helper` in their implementations link
+together, and neither clashes with a program's own `v` or `Helper`. Before,
+the link failed with a duplicate symbol.
+
+These keep their external symbols:
+
+- interface variables and routines (restated in the implementation or
+  not);
+- the unit's initializer `pascal_init_<name>`;
+- `EXTERN` routines, which name code elsewhere, and `[C]` routines;
+- a private variable or routine that has the `[PUBLIC]` attribute
+  (`VAR [PUBLIC] v: INTEGER;`, `PROCEDURE P [PUBLIC];`), as the IBM manual
+  allows for names at the implementation level (7-5).
+
+Constants and types have no storage of their own, so they cannot clash.
+
+`MODULE` compilands are unchanged: "If no explicit attributes are given,
+[PUBLIC] is assumed" (13-7), so every module-level variable and routine
+keeps its external symbol. A program's globals and routines also keep
+external symbols, which differs from the IBM manual (a program-level name
+is public only with `[PUBLIC]`). A program and a `MODULE` that both declare
+`VAR v` therefore still fail to link with a duplicate symbol. The failure
+is at link time; nothing is merged silently.
+
+Regressions: `tests/corpus/integration/units_private_names.pas` (two units
+and a program with the same private names, run) and
+`tests/corpus/checklit/unit_private_linkage.pas` (the linkage of each kind
+of name).
 
 ## Selecting from a niladic function result **[both]**
 

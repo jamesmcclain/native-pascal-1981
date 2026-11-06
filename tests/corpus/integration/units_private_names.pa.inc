@@ -1,0 +1,5 @@
+INTERFACE;
+UNIT pa (Shared, GetA);
+VAR Shared: INTEGER;
+FUNCTION GetA: INTEGER;
+END;

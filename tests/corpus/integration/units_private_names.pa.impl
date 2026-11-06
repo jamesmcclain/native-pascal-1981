@@ -1,0 +1,26 @@
+(*$INCLUDE:'units_private_names.pa.inc'*)
+IMPLEMENTATION OF pa;
+{ Shared is restated from the INTERFACE. v, Buf, Helper and Later are not
+  in the INTERFACE: they are private to pa. }
+CONST Base = 10;
+VAR
+  Shared, v: INTEGER;
+  Buf: LSTRING(8);
+FUNCTION Later: INTEGER; FORWARD;
+FUNCTION Helper: INTEGER;
+BEGIN
+  Helper := Later + 1;
+END;
+FUNCTION Later: INTEGER;
+BEGIN
+  Later := ORD(Buf.len);
+END;
+FUNCTION GetA: INTEGER;
+BEGIN
+  v := Base + Helper;
+  Shared := Shared + 1;
+  GetA := v;
+END;
+BEGIN
+  Buf := 'alpha';
+END.

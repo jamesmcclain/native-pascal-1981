@@ -662,6 +662,21 @@ BEGIN
                             call_args, 2, MakeCStr(''));
 END;
 
+FUNCTION HasPublicAttribute(decl: ADRMEM): BOOLEAN;
+{ [PUBLIC] among a declaration's attributes (names are canonical
+  uppercase in the AST, as for [C]). }
+VAR
+  attrs_arr: ADRMEM;
+  i: INTEGER32;
+  found: BOOLEAN;
+BEGIN
+  attrs_arr := GetObj(decl, 'attributes');
+  found := FALSE;
+  FOR i := 0 TO ArrSize(attrs_arr) - 1 DO
+    IF GetStr(ArrItem(attrs_arr, i), 'name') = 'PUBLIC' THEN found := TRUE;
+  HasPublicAttribute := found;
+END;
+
 FUNCTION VarResidenceAddressSpace(decl: ADRMEM): INTEGER;
 { Map a validated [SPACE(...)] residence to LLVM's NVPTX address-space
   numbers. CPU-device compilands deliberately collapse every residence to
@@ -720,6 +735,12 @@ BEGIN
   BEGIN
     vname := CStrToStr255(cJSON_GetStringValue(ArrItem(names, i)));
     DeclareVarInSpace(vname, tk, address_space);
+    { [PUBLIC] gives private IMPLEMENTATION storage back its external
+      symbol (IBM Pascal, Aug. 1981, 7-5); DeclareVarInSpace made it
+      internal. }
+    IF defining_implementation AND (NOT in_local_scope) AND
+       (NOT lowering_spliced_interface) AND HasPublicAttribute(decl) THEN
+      LLVMSetLinkage(symbols[LookupSym(vname)].llvm_val, 0); { external }
     IF TypeKind(tk) = TK_FILE THEN
       InitFileStorage(symbols[nsymbols].llvm_val, types[tk].elem_tid, types[tk].hi, vname);
   END;
@@ -1686,6 +1707,15 @@ BEGIN
       fnty := LLVMFunctionType(ret_llvm_ty, param_llvm_types, n_llvm, vararg_flag);
       fn := LLVMAddFunction(modl, MakeCStr(name), fnty);
       ApplyTargetAttrs(fn);
+      { A routine an IMPLEMENTATION declares that is not a constituent of
+        its INTERFACE (those reuse the spliced placeholder above) is
+        private to the unit: internal linkage. EXTERN declarations name
+        code elsewhere, and a [C] or [PUBLIC] routine keeps its symbol. }
+      IF defining_implementation AND (NOT lowering_spliced_interface) AND
+         (NOT is_c) AND (NOT HasCAttribute(decl)) AND
+         (NOT HasPublicAttribute(decl)) AND
+         (NOT IsExternDirectiveDecl(decl)) AND (NOT is_exported_entry) THEN
+        LLVMSetLinkage(fn, 8); { LLVMInternalLinkage }
     END;
 
     { Reusing an init-declared function means the LLVM signature that call

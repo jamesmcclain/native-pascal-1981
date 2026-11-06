@@ -2053,6 +2053,12 @@ BEGIN
       ELSE
         gvar := LLVMAddGlobalInAddressSpace(modl, LLVMTypeForTk(tk),
                                             MakeCStr(global_name), address_space);
+      { An IMPLEMENTATION's own storage that its INTERFACE does not declare
+        is private to the unit (IBM Pascal, Aug. 1981, 13-15): internal
+        linkage, so two units' private `VAR v` never meet at link time.
+        Interface variables took the reuse path above and stay external. }
+      IF defining_implementation AND (NOT lowering_spliced_interface) THEN
+        LLVMSetLinkage(gvar, 8); { LLVMInternalLinkage }
       IF NOT lowering_spliced_interface THEN
       BEGIN
         IF (TypeKind(tk) = TK_ARRAY) OR (TypeKind(tk) = TK_RECORD) OR

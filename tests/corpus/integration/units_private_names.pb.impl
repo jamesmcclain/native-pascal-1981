@@ -1,0 +1,27 @@
+(*$INCLUDE:'units_private_names.pa.inc'*)
+(*$INCLUDE:'units_private_names.pb.inc'*)
+IMPLEMENTATION OF pb;
+USES pa;
+{ The same private names as pa's, with different values. }
+CONST Base = 20;
+VAR
+  v: INTEGER;
+  Buf: LSTRING(8);
+FUNCTION Later: INTEGER; FORWARD;
+FUNCTION Helper: INTEGER;
+BEGIN
+  Helper := Later + 2;
+END;
+FUNCTION Later: INTEGER;
+BEGIN
+  Later := ORD(Buf.len);
+END;
+FUNCTION GetB: INTEGER;
+BEGIN
+  v := Base + Helper;
+  Shared := Shared + 10;
+  GetB := v;
+END;
+BEGIN
+  Buf := 'beta';
+END.
