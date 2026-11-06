@@ -2158,7 +2158,8 @@ is an ordinary call, outside this classification.
 | Separate contract | `COPYSTR` | Admitted string source and bare fixed STRING destination; the source length is checked against the destination's capacity before any copy or blank fill, always (IBM error 2150), whatever the RANGECK setting. NVPTX remains unchecked ([above](#copystr-admission-and-always-caught-capacity-check-native)). |
 | Separate contract | `DELETE` | Admitted bare LSTRING destination; the span is checked against the current length before any move or length publication, always (IBM error 2151), whatever the RANGECK setting. A position below 1 or a negative count also fails. NVPTX remains unchecked ([above](#delete-admission-and-always-caught-span-check-native)). |
 | Separate contract | `INSERT` | Admitted string source and bare LSTRING destination; the position (1..length + 1) and the new length are checked before any move or length publication, always (IBM error 2151), whatever the RANGECK setting. NVPTX remains unchecked ([above](#insert-admission-and-always-caught-position-and-capacity-checks-native)). |
-| Separate contract | `ENCODE`, `DECODE` | **Unreachable:** codegen lowers them, but the typechecker rejects every call as an undefined procedure or function. When enabled, their internal length and position arithmetic (`pos - 1`, `len - pos`) needs capacity and position checks, not MATHCK; DECODE is a text-to-number conversion. |
+| Separate contract | `ENCODE` | WRITE-style formatting into a bare LSTRING ([below](#encode-both)); the capacity check is the FALSE result, never a trap, whatever RANGECK says. |
+| Separate contract | `DECODE` | **Unreachable:** codegen lowers it, but the typechecker rejects every call as an undefined function. DECODE is a text-to-number conversion, not MATHCK arithmetic. |
 | Separate contract | `NEW` bounds, `DEVALLOC`, `SIZEOF`, `LOWER`, `UPPER` | Descriptor and layout arithmetic; layouts above 2147483647 bytes are rejected (`TypeSizeBytes`). |
 | Separate contract | `READ`/`READLN` of integers | Text conversion, checked independently of MATHCK (G29). |
 | No check | `ORD` | Same value and width; an enumeration gives its ordinal as INTEGER, so `ORD(e) * 20000` is checked 16-bit arithmetic. [`ORD(WORD)`](#deferred-ordword-conversion-gap-g25) stays WORD (G25). |
@@ -2244,6 +2245,42 @@ string initialization tracking is not implemented. These scans neither write
 the string nor add MATHCK instrumentation. Tests: `tests/corpus/golden/scan_builtins.pas`
 and `scan_shadow.pas`, `tests/corpus/checklit/scan/`, and
 `tests/unit/runtime_scan.c`.
+
+### ENCODE **[both]**
+
+`ENCODE(D, X:M:N): BOOLEAN` converts `X` to the text that `WRITE(X:M:N)`
+would print and stores it in the LSTRING `D`, setting `D`'s length (manual
+11-14). It returns TRUE when the text fits `D`'s capacity (at most 255
+characters, whatever the declared capacity) and FALSE otherwise, in which
+case `D` is unchanged. The manual leaves a failed destination undefined;
+the native compiler keeps the old value. The formatting is WRITE's own: the
+lowering builds the same printf format and argument list as a WRITE
+argument (`cg_expr_support.pas`'s `EmitScalarWriteArg`) and the runtime
+`pas_encode_fmt` prints it into the string, so every field width, REAL
+form and enumeration spelling agrees with WRITE in the same dialect: an
+enumeration encodes as its member name in the extended dialect and as its
+ordinal in vintage; BOOLEAN is `TRUE`/`FALSE` in both. `M` and `N` are
+INTEGER values; a width smaller than the text does not truncate, and `N`
+only affects REAL, as for WRITE. `X`, `M` and `N` evaluate once each, in
+that order.
+
+`X` may be INTEGER, WORD, an enumeration, a subrange of those, BOOLEAN or
+REAL, as the manual lists, and also CHAR, the wide integers and REAL32,
+which WRITE formats the same way. A pointer value, which the manual
+allows, is rejected at typechecking: the native compiler has no `.R`/`.S`
+address notation. `D` must be a bare LSTRING variable, including type
+aliases, VAR formals and WITH-bound names; a fixed STRING, a selected
+destination such as `a[i]`, a constant or a function is rejected, as is a
+field width on `D`. A user declaration named ENCODE shadows the builtin; a
+`:M:N` suffix in a call to it is an error. DEVICE code rejects ENCODE as
+host-only. Under INITCK+ a call to ENCODE is an explicit `call consumer`
+unsupported boundary, like SCANEQ. Calling ENCODE as a statement is an
+undefined procedure, as for every builtin function.
+
+The parser gives ENCODE and DECODE actuals WRITE's `X:M:N` grammar (the
+same WriteArg nodes), so `P::N` is also accepted. Tests:
+`tests/corpus/golden/encode_*.pas`, `tests/corpus/checklit/encode/` and
+`tests/unit/runtime_encode.c`.
 
 ### MATHCK VECTOR, DEVICE and unsupported boundaries
 

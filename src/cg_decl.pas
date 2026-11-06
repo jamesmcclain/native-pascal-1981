@@ -1541,7 +1541,7 @@ BEGIN
     ELSE IF name = 'positn_from' THEN BEGIN fn := positn_from_fn; fnty := positn_from_fnty; END
     ELSE IF name = 'scaneq' THEN BEGIN fn := scaneq_fn; fnty := scaneq_fnty; END
     ELSE IF name = 'scanne' THEN BEGIN fn := scanne_fn; fnty := scanne_fnty; END
-    ELSE IF name = 'encode_value' THEN BEGIN fn := encode_fn; fnty := encode_fnty; END
+    ELSE IF name = 'pas_encode_fmt' THEN BEGIN fn := encode_fn; fnty := encode_fnty; END
     ELSE IF name = 'decode_value' THEN BEGIN fn := decode_fn; fnty := decode_fnty; END
     ELSE IF name = 'sqrt' THEN BEGIN fn := sqrt_fn; fnty := sqrt_fnty; END
     ELSE IF name = 'sin' THEN BEGIN fn := sin_fn; fnty := sin_fnty; END

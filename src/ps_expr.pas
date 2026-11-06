@@ -219,6 +219,21 @@ BEGIN
   IsConversionBuiltin := StringEqual(up, 'TRUNC') OR StringEqual(up, 'ROUND');
 END;
 
+FUNCTION IsFormattedArgCall(name: Str255): BOOLEAN;
+{ Calls whose actuals take WRITE's `X:M:N` field-width form and are parsed
+  into WriteArg nodes: WRITE/WRITELN themselves and the ENCODE/DECODE
+  intrinsics, which the manual defines as working exactly like WRITE and
+  READ, M and N parameters included (11-14, 11-15). Spelling-based, like
+  WRITE: a user routine of the same name receives wrapped actuals, which the
+  typechecker and codegen unwrap (ShadowedWriteArg). }
+VAR
+  up: Str255;
+BEGIN
+  up := UpperStr(name);
+  IsFormattedArgCall := StringEqual(up, 'WRITE') OR StringEqual(up, 'WRITELN') OR
+    StringEqual(up, 'ENCODE') OR StringEqual(up, 'DECODE');
+END;
+
 FUNCTION IsConstantCallName(name: Str255): BOOLEAN;
 { The function-shaped forms of a constant expression: ParseConstant admits
   exactly these names followed by `(`, and a type clause recognizes one as
@@ -281,6 +296,48 @@ BEGIN
       cJSON_AddItemToArray(args_arr, ParseExpression);
   END;
   ParseActualParameterList := args_arr;
+END;
+
+FUNCTION ParseWriteArg: ADRMEM;
+VAR
+  node: ADRMEM;
+BEGIN
+  node := CreateTriviaNode('WriteArg');
+  AddField(node, 'expr', ParseExpression);
+  IF Match('COLON') THEN
+  BEGIN
+    IF CurKind = 'COLON' THEN
+    BEGIN
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
+      AddNullField(node, 'width');
+      AddField(node, 'precision', ParseExpression);
+    END
+    ELSE
+    BEGIN
+      AddField(node, 'width', ParseExpression);
+      IF Match('COLON') THEN
+        AddField(node, 'precision', ParseExpression)
+      ELSE
+        AddNullField(node, 'precision');
+    END;
+  END
+  ELSE
+  BEGIN
+    AddNullField(node, 'width');
+    AddNullField(node, 'precision');
+  END;
+  ParseWriteArg := node;
+END;
+
+FUNCTION ParseWriteArgList: ADRMEM;
+VAR
+  arr: ADRMEM;
+BEGIN
+  arr := cJSON_CreateArray;
+  cJSON_AddItemToArray(arr, ParseWriteArg);
+  WHILE Match('COMMA') DO
+    cJSON_AddItemToArray(arr, ParseWriteArg);
+  ParseWriteArgList := arr;
 END;
 
 FUNCTION ParseIdentListArr: ADRMEM;
@@ -568,17 +625,20 @@ BEGIN
     BEGIN
       name_tok := GetTok(0);
       pos := pos + 2;
-      IF CurKind <> 'RPAREN' THEN
-        args_arr := ParseActualParameterList
+      IF CurKind = 'RPAREN' THEN
+        args_arr := cJSON_CreateArray
+      ELSE IF IsFormattedArgCall(name) THEN
+        args_arr := ParseWriteArgList
       ELSE
-        args_arr := cJSON_CreateArray;
+        args_arr := ParseActualParameterList;
       Expect('RPAREN');
       node := CreateTriviaNode('FuncCall');
       AddStringField(node, 'name', name);
       IF IsMathckBuiltin(name) THEN AddMathckSnapshot(node, name_tok)
       ELSE IF StringEqual(UpperStr(name), 'CHR') OR StringEqual(UpperStr(name), 'BYWORD') THEN
         AddByteDomainSnapshot(node, name_tok)
-      ELSE IF IsConversionBuiltin(name) THEN AddOpLocation(node, name_tok);
+      ELSE IF IsConversionBuiltin(name) OR IsFormattedArgCall(name) THEN
+        AddOpLocation(node, name_tok);
       AddField(node, 'args', args_arr);
       IF (bound_expr_depth > 0) AND
          ((CurKind = 'LBRACKET') OR (CurKind = 'DOT') OR (CurKind = 'POINTER')) THEN

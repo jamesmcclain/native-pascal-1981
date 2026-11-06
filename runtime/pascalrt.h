@@ -204,9 +204,9 @@ void  pas_readln_skip(void);
 
 /* ---- ENCODE / DECODE (encode_decode.c) ---- */
 
-int32_t encode_value(char *dest_chars, int32_t dest_cap,
-                     char *dest_raw, int32_t value,
-                     int32_t width, int32_t precision, int32_t reserved);
+/* ENCODE: vsnprintf the WRITE-style format into an LSTRING; 1 when it fits. */
+int32_t pas_encode_fmt(char *dest_chars, int32_t dest_cap,
+                       char *dest_raw, const char *fmt, ...);
 
 int32_t decode_value(char *src_chars, int32_t src_len,
                      char *dest_raw, int32_t dest_size,

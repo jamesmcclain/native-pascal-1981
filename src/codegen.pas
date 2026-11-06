@@ -44,11 +44,10 @@
   INSERT/DELETE (in-place shift via memmove, since the shifted range can
   overlap itself), POSITN (1-based substring search), SCANEQ/SCANNE
   (scan for the first character equal/not-equal to a given CHAR), and
-  ENCODE/DECODE (format/parse an INTEGER as decimal text into/out of an
-  LSTRING -- ENCODE's `value:width` argument works via the same WriteArg
-  wrapping WRITE's own width:precision arguments use, since ENCODE/DECODE
-  share that argument-list grammar; `:precision` parses but is ignored,
-  matching the runtime, which has no REAL-formatting path either; DECODE's
+  ENCODE (format a scalar as WRITE would, `X:M:N` included, into an
+  LSTRING through pas_encode_fmt: the parser wraps ENCODE/DECODE actuals
+  in the WriteArg nodes WRITE's own width:precision arguments use) and
+  DECODE (parse an INTEGER as decimal text out of a string; DECODE's
   destination is scoped to INTEGER/CHAR, the two byte-widths its own
   manual documents by name); and, on ordinary WRITE/WRITELN arguments
   (StringLiteral/LSTRING/STRING/INTEGER/REAL/CHAR/BOOLEAN alike), a
@@ -721,16 +720,13 @@ BEGIN
   scanne_fnty := LLVMFunctionType(i32ty, param_arr, 6, 0);
   scanne_fn := LLVMAddFunction(modl, MakeCStr('scanne'), scanne_fnty);
 
-  param_arr := AllocPtrArray(7);
+  param_arr := AllocPtrArray(4);
   SetPtrArrayElem(param_arr, 0, i8ptrty);
   SetPtrArrayElem(param_arr, 1, i32ty);
   SetPtrArrayElem(param_arr, 2, i8ptrty);
-  SetPtrArrayElem(param_arr, 3, i32ty);
-  SetPtrArrayElem(param_arr, 4, i32ty);
-  SetPtrArrayElem(param_arr, 5, i32ty);
-  SetPtrArrayElem(param_arr, 6, i32ty);
-  encode_fnty := LLVMFunctionType(i32ty, param_arr, 7, 0);
-  encode_fn := LLVMAddFunction(modl, MakeCStr('encode_value'), encode_fnty);
+  SetPtrArrayElem(param_arr, 3, i8ptrty);
+  encode_fnty := LLVMFunctionType(i32ty, param_arr, 4, 1);
+  encode_fn := LLVMAddFunction(modl, MakeCStr('pas_encode_fmt'), encode_fnty);
 
   param_arr := AllocPtrArray(7);
   SetPtrArrayElem(param_arr, 0, i8ptrty);

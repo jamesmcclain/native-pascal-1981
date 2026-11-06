@@ -1,3 +1,4 @@
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -6,45 +7,42 @@
 #include "pascalrt.h"
 
 /*
- * ENCODE(dest: LSTRING; value): format `value` into the LSTRING `dest`.
+ * ENCODE(VAR dest: LSTRING; X:M:N): format a WRITE-style argument into the
+ * LSTRING `dest` (manual 11-14).
  *
  *   dest_chars  - pointer to the first character cell (byte [1] of the
  *                 LSTRING aggregate).
  *   dest_cap    - declared capacity of the LSTRING (max characters), NOT its
  *                 current length.
- *   dest_raw    - pointer to the aggregate base (byte [0]); used to write the
+ *   dest_raw    - pointer to the aggregate base (byte [0]); receives the
  *                 LSTRING length-prefix byte once formatting succeeds.
- *   value       - the integer to encode.
- *   width       - optional minimum field width (`value:width`); 0 = none.
- *   precision   - reserved for REAL formatting; ignored on the integer path.
+ *   fmt, ...    - the printf format and arguments the compiler builds for
+ *                 WRITE(X:M:N) of the same value (cg_expr_support.pas's
+ *                 EmitScalarWriteArg), so ENCODE and WRITE agree exactly.
  *
  * Returns 1 on success, 0 if the formatted text would not fit in dest_cap
- * (in which case the destination is left untouched).
+ * (in which case the destination is left untouched). The length byte holds
+ * at most 255 characters, whatever the declared capacity.
  */
-int32_t encode_value(char *dest_chars, int32_t dest_cap, char *dest_raw, int32_t value, int32_t width, int32_t precision, int32_t reserved)
+int32_t pas_encode_fmt(char *dest_chars, int32_t dest_cap, char *dest_raw, const char *fmt, ...)
 {
-    (void) precision;
-    (void) reserved;
-    if (!dest_chars || dest_cap <= 0)
+    if (!dest_chars || !dest_raw || !fmt || dest_cap <= 0)
         return 0;
+    if (dest_cap > 255)
+        dest_cap = 255;
 
-    char tmp[64];
-    int n;
-    if (width > 0) {
-        if (width > (int) sizeof(tmp) - 1)
-            width = (int) sizeof(tmp) - 1;
-        n = snprintf(tmp, sizeof(tmp), "%*d", width, value);
-    } else {
-        n = snprintf(tmp, sizeof(tmp), "%d", value);
-    }
-    if (n < 0)
+    char tmp[512];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(tmp, sizeof(tmp), fmt, ap);
+    va_end(ap);
+    if (n < 0 || n >= (int) sizeof(tmp))
         return 0;
     if (n > dest_cap)
         return 0;               /* would overflow the LSTRING */
 
     memcpy(dest_chars, tmp, (size_t) n);
-    if (dest_raw)
-        dest_raw[0] = (char) n; /* set the LSTRING length prefix */
+    dest_raw[0] = (char) n;     /* set the LSTRING length prefix */
     return 1;
 }
 

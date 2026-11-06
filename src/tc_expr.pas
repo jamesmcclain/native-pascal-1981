@@ -325,6 +325,58 @@ BEGIN
   END;
 END;
 
+FUNCTION ShadowedWriteArg(arg: ADRMEM; pname: Str255): ADRMEM;
+{ The parser wraps the actual arguments of anything spelled WRITE, WRITELN,
+  ENCODE or DECODE in WriteArg nodes (ps_expr.pas's IsFormattedArgCall),
+  case-insensitively and without consulting any declaration -- it has no
+  symbol table to consult. So a call to a *user-declared* WRITELN or ENCODE
+  arrives WriteArg-wrapped too, and the generic argument paths have to see
+  through the wrapper: CheckExpr has no WriteArg case and would return
+  silently, leaving codegen to abort on a node the typechecker had waved
+  through. A `:width:precision' suffix has no meaning for a user routine,
+  so it is rejected rather than dropped. }
+BEGIN
+  IF NodeType(arg) = 'WriteArg' THEN
+  BEGIN
+    IF (GetObjOrNil(arg, 'width') <> NIL) OR (GetObjOrNil(arg, 'precision') <> NIL) THEN
+      AddError2('Field width specifier is not allowed in a call to the user-declared ', pname);
+    ShadowedWriteArg := GetObj(arg, 'expr');
+  END
+  ELSE
+    ShadowedWriteArg := arg;
+END;
+
+FUNCTION IsEncodeValueKind(tk: INTEGER): BOOLEAN;
+{ The value types ENCODE formats and DECODE converts: the manual's INTEGER,
+  WORD, enumerations, their subranges, BOOLEAN and REAL (11-14), plus CHAR,
+  which WRITE and READ already handle. Pointers are not supported. A
+  TK_UNKNOWN operand was already reported. }
+BEGIN
+  IsEncodeValueKind := IsInteger(tk) OR (tk = TK_REAL) OR (tk = TK_REAL32) OR
+    (tk = TK_CHAR) OR (tk = TK_BOOLEAN) OR (tk = TK_ENUM) OR (tk = TK_UNKNOWN);
+END;
+
+PROCEDURE CheckFormatValue(node: ADRMEM; what: Str255);
+{ An M or N value of ENCODE/DECODE: the manual makes them INTEGER value
+  parameters (12-17). Absent values are NIL. }
+VAR
+  tk: INTEGER;
+BEGIN
+  IF node <> NIL THEN
+  BEGIN
+    tk := CheckExprForTarget(node, TK_INTEGER);
+    IF NOT CanAssign(TK_INTEGER, tk) THEN
+      AddError2(what, ' must be INTEGER');
+  END;
+END;
+
+PROCEDURE CheckNoFormatValue(arg: ADRMEM; msg: Str255);
+{ The string operand of ENCODE/DECODE has no field width. }
+BEGIN
+  IF (GetObjOrNil(arg, 'width') <> NIL) OR (GetObjOrNil(arg, 'precision') <> NIL) THEN
+    AddError(msg);
+END;
+
 FUNCTION CheckDesignator(node: ADRMEM): INTEGER;
 { Thread aggregate metadata through selectors. aux3 retains the record id
   through pointer -> array -> record, including pointers stored in fields. }
@@ -697,6 +749,41 @@ BEGIN
       ELSE IF ((NodeType(warg) = 'Identifier') AND (symbols[si].aux = -1)) OR
               ((NodeType(warg) = 'Designator') AND (last_designator_aux = -1)) THEN
         AddError2('VAR argument type mismatch in call to ', orig_name);
+    END;
+    CheckFuncCall := TK_BOOLEAN;
+    RETURN;
+  END;
+  IF name = 'ENCODE' THEN
+  BEGIN
+    { ENCODE(VAR D: LSTRING; X:M:N): BOOLEAN (11-14): formats X as WRITE
+      would, into a bare LSTRING variable (aux2 = 1, including type aliases
+      and formals). The parser wrapped both actuals as WriteArg nodes. }
+    IF is_device_compiland THEN
+      AddError('ENCODE is host-only and cannot appear in DEVICE code');
+    IF nargs <> 2 THEN
+      AddError('ENCODE expects exactly two arguments (D, X)')
+    ELSE
+    BEGIN
+      warg := ArrItem(args_arr, 0);
+      CheckNoFormatValue(warg, 'ENCODE destination takes no field width');
+      warg := GetObj(warg, 'expr');
+      IF NodeType(warg) <> 'Identifier' THEN
+        AddError('ENCODE destination must be a bare LSTRING variable')
+      ELSE
+      BEGIN
+        si := LookupSymbol(GetStr(warg, 'name'));
+        IF si = 0 THEN
+          AddUndefinedIdentifier(warg)
+        ELSE IF (symbols[si].kind <> 'VAR') OR
+                (symbols[si].tk <> TK_STRING) OR (symbols[si].aux2 <> 1) THEN
+          AddError('ENCODE destination must be a bare LSTRING variable');
+      END;
+      warg := ArrItem(args_arr, 1);
+      atk := CheckExpr(GetObj(warg, 'expr'));
+      IF NOT IsEncodeValueKind(atk) THEN
+        AddError('ENCODE value must be INTEGER, WORD, CHAR, BOOLEAN, REAL or an enumeration');
+      CheckFormatValue(GetObjOrNil(warg, 'width'), 'ENCODE field width');
+      CheckFormatValue(GetObjOrNil(warg, 'precision'), 'ENCODE precision');
     END;
     CheckFuncCall := TK_BOOLEAN;
     RETURN;
@@ -1105,11 +1192,12 @@ BEGIN
   ELSE
     FOR i := 0 TO nargs - 1 DO
     BEGIN
+      warg := ShadowedWriteArg(cJSON_GetArrayItem(args_arr, i), orig_name);
       IF i < symbols[si].nparams THEN
-        atk := CheckExprForSetTarget(cJSON_GetArrayItem(args_arr, i),
+        atk := CheckExprForSetTarget(warg,
           symbols[si].param_tk[i + 1], symbols[si].param_set_sem_base[i + 1])
       ELSE
-        atk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
+        atk := CheckExpr(warg);
       IF i < symbols[si].nparams THEN
         IF NOT CanAssign(symbols[si].param_tk[i + 1], atk) THEN
           AddError2('Argument type mismatch or implicit narrowing in call to ', orig_name);

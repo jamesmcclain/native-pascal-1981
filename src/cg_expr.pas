@@ -4102,25 +4102,54 @@ BEGIN
   CodegenScan := LLVMBuildTrunc(builder, res32, i16ty, MakeCStr(''));
 END;
 
-FUNCTION CodegenEncode(args: ADRMEM): ADRMEM;
-{ ENCODE(VAR D: LSTRING; value: INTEGER): BOOLEAN -- formats `value` as
-  decimal text into D via libpascalrt's runtime `encode_value`
-  (encode_decode.c), which also sets D's length-prefix byte on success.
-  WRITE-style `value:width` is supported (the width becomes encode_value's
-  minimum field width); `:precision` is accepted syntactically but ignored,
-  matching the runtime (REAL formatting is not implemented there either).
-  Scoped to an LSTRING destination and an INTEGER value, matching every
-  test/usage this file has verified against; the reference's own signature
-  is looser (dest could in principle be any string kind) but ENCODE always
-  needs to write a length-prefix byte in every real usage, so LSTRING-only
-  is not a meaningful narrowing in practice. }
+FUNCTION CodegenFormatValue(node: ADRMEM): ADRMEM;
+{ An M or N value of ENCODE/DECODE, coerced to the C int that printf's `*`
+  specifier expects, as cg_io's EvalPrintfIntArg does for WRITE: native
+  INTEGER is 16-bit, so it is extended to i32. }
 VAR
-  dest_expr, value_expr: ADRMEM;
+  v: ADRMEM;
+BEGIN
+  v := CodegenExpr(node);
+  IF IntFamilyWidth(last_val_tk) < 32 THEN
+  BEGIN
+    IF IsUnsignedWordTk(last_val_tk) THEN
+      v := LLVMBuildZExt(builder, v, i32ty, MakeCStr(''))
+    ELSE
+      v := LLVMBuildSExt(builder, v, i32ty, MakeCStr(''));
+  END
+  ELSE IF IntFamilyWidth(last_val_tk) > 32 THEN
+    v := LLVMBuildTrunc(builder, v, i32ty, MakeCStr(''));
+  CodegenFormatValue := v;
+END;
+
+FUNCTION IsEncodeValueTk(tid: INTEGER): BOOLEAN;
+{ The value types ENCODE formats: the manual's INTEGER, WORD, enumerations,
+  their subranges, BOOLEAN and REAL (11-14), the wide integers and REAL32
+  that WRITE also formats, and CHAR. Pointers are not supported. }
+BEGIN
+  IsEncodeValueTk := IsIntegerFamilyTk(tid) OR (tid = TK_REAL) OR (tid = TK_REAL32) OR
+    (TypeKind(tid) = TK_CHAR) OR (TypeKind(tid) = TK_BOOLEAN) OR (TypeKind(tid) = TK_ENUM);
+END;
+
+FUNCTION CodegenEncode(args: ADRMEM): ADRMEM;
+{ ENCODE(VAR D: LSTRING; X:M:N): BOOLEAN (manual 11-14) formats X exactly
+  as WRITE(X:M:N) would: EmitScalarWriteArg builds the same printf format
+  and argument list, so every scalar WRITE prints -- INTEGER, WORD, the
+  wide integers, CHAR, BOOLEAN, REAL and enumerations (symbolic in the
+  extended dialect, ordinal in vintage) -- encodes identically. The text
+  goes to libpascalrt's pas_encode_fmt, which publishes D's length byte
+  only when the text fits D's capacity and returns 0 otherwise, leaving D
+  unchanged. The parser wrapped both actuals as WriteArg nodes; the
+  typechecker admitted a bare LSTRING destination and a scalar value. X, M
+  and N evaluate once, in that order. }
+VAR
+  dest_expr, value_node, width_node, prec_node: ADRMEM;
   d_symi: INTEGER32;
-  d_tid: INTEGER;
+  d_tid, v_tid: INTEGER;
   d_addr, dest_chars, dest_len_unused: ADRMEM;
-  val, width_val: ADRMEM;
-  call_args: ADRMEM;
+  val, width_val, prec_val, vals: ADRMEM;
+  fmt: Str255;
+  vi: INTEGER32;
 BEGIN
   IF ArrSize(args) <> 2 THEN
     AbortWith('codegen: ENCODE expects exactly 2 arguments');
@@ -4129,32 +4158,31 @@ BEGIN
   IF TypeKind(d_tid) <> TK_LSTRING THEN
     AbortWith('codegen: ENCODE''s destination must be an LSTRING variable');
 
-  value_expr := GetObj(ArrItem(args, 1), 'expr');
-  val := CodegenExpr(value_expr);
-  IF last_val_tk <> TK_INTEGER THEN
-    AbortWith('codegen: ENCODE''s value argument must be INTEGER');
-  val := LLVMBuildSExt(builder, val, i32ty, MakeCStr(''));
+  value_node := ArrItem(args, 1);
+  val := CodegenExpr(GetObj(value_node, 'expr'));
+  v_tid := last_val_tk;
+  IF NOT IsEncodeValueTk(v_tid) THEN
+    AbortWith('codegen: ENCODE''s value must be INTEGER, WORD, CHAR, BOOLEAN, REAL or an enumeration');
+  width_node := GetObjOrNil(value_node, 'width');
+  prec_node := GetObjOrNil(value_node, 'precision');
+  width_val := NIL;
+  prec_val := NIL;
+  IF width_node <> NIL THEN width_val := CodegenFormatValue(width_node);
+  IF prec_node <> NIL THEN prec_val := CodegenFormatValue(prec_node);
 
-  IF GetObjOrNil(ArrItem(args, 1), 'width') <> NIL THEN
-  BEGIN
-    width_val := CodegenExpr(GetObj(ArrItem(args, 1), 'width'));
-    IF last_val_tk <> TK_INTEGER THEN
-      AbortWith('codegen: ENCODE''s width argument must be INTEGER');
-    width_val := LLVMBuildSExt(builder, width_val, i32ty, MakeCStr(''));
-  END
-  ELSE
-    width_val := LLVMConstInt(i32ty, 0, 0);
-
-  call_args := AllocPtrArray(7);
-  SetPtrArrayElem(call_args, 0, dest_chars);
-  SetPtrArrayElem(call_args, 1, LLVMConstInt(i32ty, types[d_tid].hi, 0));
-  SetPtrArrayElem(call_args, 2, LLVMBuildBitCast(builder, d_addr, i8ptrty, MakeCStr('')));
-  SetPtrArrayElem(call_args, 3, val);
-  SetPtrArrayElem(call_args, 4, width_val);
-  SetPtrArrayElem(call_args, 5, LLVMConstInt(i32ty, 0, 0));
-  SetPtrArrayElem(call_args, 6, LLVMConstInt(i32ty, 0, 0));
+  { pas_encode_fmt(chars, capacity, raw, fmt, ...): the data arguments
+    follow the four fixed ones, as WRITE's follow pas_write_fmt's two. }
+  fmt := '';
+  vals := AllocPtrArray(8);
+  vi := 4;
+  EmitScalarWriteArg(val, v_tid, width_node <> NIL, prec_node <> NIL,
+                     width_val, prec_val, fmt, vals, vi);
+  SetPtrArrayElem(vals, 0, dest_chars);
+  SetPtrArrayElem(vals, 1, LLVMConstInt(i32ty, types[d_tid].hi, 0));
+  SetPtrArrayElem(vals, 2, LLVMBuildBitCast(builder, d_addr, i8ptrty, MakeCStr('')));
+  SetPtrArrayElem(vals, 3, LLVMBuildGlobalStringPtr(builder, MakeCStr(fmt), MakeCStr('encfmt')));
   CodegenEncode := LLVMBuildICmp(builder, LLVMIntNE,
-    LLVMBuildCall2(builder, encode_fnty, encode_fn, call_args, 7, MakeCStr('')),
+    LLVMBuildCall2(builder, encode_fnty, encode_fn, vals, vi, MakeCStr('')),
     LLVMConstInt(i32ty, 0, 0), MakeCStr(''));
 END;
 

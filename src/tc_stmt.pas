@@ -240,26 +240,6 @@ BEGIN
     CheckCompoundOrStmt(otherwise_stmt);
 END;
 
-FUNCTION ShadowedWriteArg(arg: ADRMEM; pname: Str255): ADRMEM;
-{ ps_stmt.pas's ParseAssignOrCallStmt wraps the actual arguments of anything
-  spelled WRITE/WRITELN in WriteArg nodes, case-insensitively and without
-  consulting any declaration -- it has no symbol table to consult. So a call
-  to a *user-declared* WRITELN arrives WriteArg-wrapped too, and the generic
-  argument path has to see through the wrapper: CheckExpr has no WriteArg
-  case and would return silently, leaving codegen to abort on a node the
-  typechecker had waved through. A `:width:precision' suffix has no meaning
-  for a user routine, so it is rejected rather than dropped. }
-BEGIN
-  IF NodeType(arg) = 'WriteArg' THEN
-  BEGIN
-    IF (GetObjOrNil(arg, 'width') <> NIL) OR (GetObjOrNil(arg, 'precision') <> NIL) THEN
-      AddError2('Field width specifier is not allowed in a call to the user-declared ', pname);
-    ShadowedWriteArg := GetObj(arg, 'expr');
-  END
-  ELSE
-    ShadowedWriteArg := arg;
-END;
-
 PROCEDURE CheckNewDispose(args_arr: ADRMEM; pname: Str255);
 { Kept out of CheckStmt so its recursive frame stays small (tests/corpus/depth.sh). }
 VAR

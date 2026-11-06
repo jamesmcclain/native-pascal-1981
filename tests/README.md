@@ -415,6 +415,23 @@ unit suite runs `tests/unit/runtime_positn.c`,
 including nonterminated and binary strings, extreme starts, the retained
 four-argument ABI and exhaustive short binary source/pattern comparisons.
 
+### ENCODE builtin regressions
+
+`tests/corpus/golden/encode_builtins.pas` tests `ENCODE(D, X:M:N)` in both
+dialects at O0-O3 against WRITE's formatting: INTEGER, WORD, REAL (fixed,
+exponent and precision-only forms), BOOLEAN, CHAR, subrange, selected and
+dereferenced values, once-only X and M evaluation, the FALSE result with an
+unchanged destination when the text does not fit, and a VAR LSTRING formal
+destination. `encode_enum_vintage.pas` and `encode_enum_extended.pas` pin
+ordinal versus symbolic enumeration text, and the extended one the wide
+integers and REAL32. `encode_shadow.pas` pins user shadowing.
+`tests/corpus/checklit/encode/` pins bad arity, non-LSTRING and selected
+destinations, a field width on the destination, string and pointer values,
+non-INTEGER M/N, the width suffix on a user-declared ENCODE, the host
+runtime IR call, and the DEVICE and INITCK boundaries. The `runtime` unit
+suite runs `tests/unit/runtime_encode.c` against `pas_encode_fmt`: exact
+fit, overflow leaving the destination untouched, and the 255 clamp.
+
 ### Scan builtin and small-string ABI regressions
 
 `tests/corpus/golden/scan_builtins.pas` (a fixture with a dialect and O0–O3

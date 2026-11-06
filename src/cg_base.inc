@@ -646,7 +646,7 @@ VAR
   encode_fnty, encode_fn: ADRMEM;
   decode_fnty, decode_fn: ADRMEM; { the target program's runtime-library
     string builtins (INSERT/DELETE via libc's memmove; POSITN/SCANEQ/SCANNE/
-    ENCODE/DECODE via libpascalrt's positn/scaneq/scanne/encode_value/
+    ENCODE/DECODE via libpascalrt's positn/scaneq/scanne/pas_encode_fmt/
     decode_value, declared+called exactly like malloc/free/printf above --
     a program built from this file's output must link libpascalrt.a, same
     as one built from the Python reference's output already must. }
