@@ -30,6 +30,7 @@ its [unsafe raw boundary](#descriptor-unsafe-raw-boundary) and ownership limits.
 - [Initialization checking: host storage](#initialization-checking-host-storage-native)
 - [Enumerated and BOOLEAN I/O](#enumerated-and-boolean-io)
 - [Niladic EOF and EOLN](#niladic-eof-and-eoln-both)
+- [Selecting from a niladic function result](#selecting-from-a-niladic-function-result-both)
 - [Wide signed integer input](#wide-signed-integer-input-extended)
 - [String precision](#string-precision)
 - [WRITE of a CHAR array](#write-of-a-char-array-both)
@@ -688,6 +689,18 @@ gives no warning for niladic `EOF` or `EOLN`, as for a bare `READ` or
 `WRITE`. It does not require INPUT in the heading. Fixtures:
 `tests/corpus/golden/niladic_eof_eoln.pas`, `niladic_eof_shadow.pas`,
 `niladic_eoln_at_eof.pas` and `niladic_eof_no_input_param.pas`.
+
+## Selecting from a niladic function result **[both]**
+
+A field, index or pointer selector can follow the name of a function
+without parameters: `mk.f`, `g[2]`, `mk.inner.g`, `p^.k`. Each
+occurrence calls the function once, keeps the result in a temporary and
+selects from it. Inside the body of a function with a record, array or
+string result, the same selected name is the result variable instead.
+Both stores and reads then use the result (`mk.f := mk.f + 1`). A bare
+name read in the body is still a recursive call. A selector after an
+argument list (`mk(1).f`) is not accepted. Fixture:
+`tests/corpus/golden/niladic_result_select.pas`.
 
 ## Wide signed integer input **[extended]**
 

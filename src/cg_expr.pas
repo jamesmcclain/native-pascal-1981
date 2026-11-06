@@ -2252,14 +2252,26 @@ BEGIN
     base_ptr := EntryAlloca(LLVMTypeForTk(cur_tid), '');
     LLVMBuildStore(builder, file_handle, base_ptr);
   END
-  ELSE IF (symi = 0) AND (nsel = 0) AND RoutineIsFunc(LookupRoutine(nm)) THEN
+  ELSE IF (symi = 0) AND (nsel > 0) AND (cur_func_name <> '') AND
+          (nm = cur_func_name) AND (cur_func_ret_state = NIL) THEN
+  BEGIN
+    { `F.f` / `F[i]` inside F's own body selects from F's result variable
+      (the return-value slot, see cur_func_name), for both stores and
+      reads, so `F.f := F.f + 1` builds the result in place. Only an
+      aggregate result takes such selectors, and those never carry a
+      cur_func_ret_state; a tracked scalar (pointer) result falls through
+      to the call below like the bare name does. }
+    base_ptr := cur_func_ret_slot;
+    cur_tid := cur_func_ret_tk;
+  END
+  ELSE IF (symi = 0) AND RoutineIsFunc(LookupRoutine(nm)) THEN
   BEGIN
     { A bare niladic-call Designator (e.g. `CurKind = 'X'`, an aggregate
       Str255-returning FUNCTION called without parens) has no symbol-table
       entry of its own -- materialize the call's result into a fresh
       temporary and hand back that temporary's address, mirroring the
-      reference's get_string_chars_and_len is_bare_func_ref handling. The
-      selector loop below is a no-op since nsel = 0 here. }
+      reference's get_string_chars_and_len is_bare_func_ref handling. Any
+      selectors (`mk.f`, `g[2]`, `mk.inn.g`) then walk that temporary. }
     cur_tid := routines[LookupRoutine(nm)].ret_tk;
     base_ptr := EntryAlloca(LLVMTypeForTk(cur_tid), '');
     LLVMBuildStore(builder, CodegenCallCommon(nm, NIL), base_ptr);
