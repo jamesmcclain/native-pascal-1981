@@ -3455,6 +3455,31 @@ These are implementation limitations, not vintage-language restrictions.
   alternatives disjoint leaves, so a record can have more leaves than bytes;
   one with more than 2147483647 leaves is untracked, like an array of that
   many. Fixtures: `tests/corpus/checklit/layout_limits/`.
+- **Large aggregate copies and results [both].** Codegen moves an
+  aggregate (`STRING`, `LSTRING`, `ARRAY`, `RECORD`, `SET`) as one LLVM
+  value: a whole assignment loads the source and stores it, and a function
+  result is loaded out of its result slot. LLVM splits such a value into
+  one piece per scalar element. Past 65,535 pieces clang crashed at O0
+  (`FUNCTION F: LSTRING(70000)`, or vintage `LSTRING(65535)`), and well
+  before that the split made compiles slow at every level. Codegen now
+  finishes each module with a pass that rewrites every whole copy of an
+  aggregate of 1,024 bytes or more as `llvm.memmove` (a load followed by
+  its store) or `llvm.memcpy` through a temporary (a load whose stores come
+  later), and a store of a constant as `llvm.memset`/`llvm.memcpy`. Smaller
+  aggregates keep their first-class form. The ABI does not change on the
+  host: an aggregate result above 16 bytes already goes through the
+  caller's storage by a hidden `sret` pointer, as the System V ABI says for
+  `[C]` routines. On NVPTX a function result of 1,024 bytes or more now also
+  goes through a hidden `sret` pointer (first parameter) instead of the
+  `.param` return buffer, which the NVPTX backend could not lower at that
+  size (codegen crashed); a smaller device result keeps the buffer. A large
+  value used other than by a whole copy keeps its first-class form; the
+  one known case is a large NVPTX value parameter. INITCK shadows of large
+  tracked aggregates are copied the same way, and the check behaves as for
+  a small aggregate. Fixtures: `tests/corpus/golden/large_aggregate_results.pas`
+  (extended, O0 and O2), `large_aggregate_results_vintage.pas`
+  (`LSTRING(65535)`), and `tests/corpus/checklit/large_aggregate_copies.pas`
+  and `device_aggregate_huge_return.pas`.
 - **At most 2000 names in scope at once [both].** The typechecker keeps one
   symbol table of `MAX_SYMBOLS = 2000` entries (`src/tc_base.inc`). Types,
   constants, enumeration values, variables, parameters and WITH-bound fields

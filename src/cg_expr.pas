@@ -1595,7 +1595,16 @@ BEGIN
       prepends -- which is also why the array is sized nargs * 2 + 1 rather
       than nargs * 2 (an sret call with no real arguments at all still needs
       one slot). }
-    IF is_nvptx_device THEN ret_class := 0
+    IF is_nvptx_device THEN
+    BEGIN
+      { NVPTX: only a large aggregate result takes the hidden sret
+        pointer (see CodegenRoutineDecl). }
+      ret_class := 0;
+      IF routines[ri].is_func THEN
+        IF IsAggregateTk(routines[ri].ret_tk) THEN
+          IF LargeAggregateTy(LLVMTypeForTk(routines[ri].ret_tk)) THEN
+            ret_class := SYSV_CLASS_MEMORY;
+    END
     ELSE
     BEGIN
       ret_class := FuncRetAggClass(ri);

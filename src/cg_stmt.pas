@@ -1866,7 +1866,10 @@ BEGIN
       alloca for COERCED). Mirrors that procedure's own epilogue exactly. }
     ret_class := 0;
     IF IsAggregateTk(cur_func_ret_tk) AND (NOT is_nvptx_device) THEN
-      ClassifyAggregate(cur_func_ret_tk, ret_class, n_pieces, piece_kind, piece_bytes);
+      ClassifyAggregate(cur_func_ret_tk, ret_class, n_pieces, piece_kind, piece_bytes)
+    ELSE IF IsAggregateTk(cur_func_ret_tk) THEN
+      IF LargeAggregateTy(LLVMTypeForTk(cur_func_ret_tk)) THEN
+        ret_class := SYSV_CLASS_MEMORY; { NVPTX large result: sret }
     IF ret_class = SYSV_CLASS_MEMORY THEN
       LLVMBuildRetVoid(builder)
     ELSE IF ret_class = SYSV_CLASS_COERCED THEN

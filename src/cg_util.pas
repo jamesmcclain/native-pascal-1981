@@ -6,6 +6,11 @@
 (*$INCLUDE:'cg_util.inc'*)
 IMPLEMENTATION OF cg_util;
 
+CONST
+  { The size from which LowerLargeAggregateCopies moves an aggregate with
+    memmove/memcpy/memset instead of a first-class load and store. }
+  LARGE_AGGREGATE_BYTES = 1024;
+
 VAR
   expr_depth, stmt_depth: INTEGER;
   layout_line, layout_column: INTEGER32;
@@ -853,6 +858,161 @@ BEGIN
   SetPtrArrayElem(copy_call_args, 1, copy_src);
   SetPtrArrayElem(copy_call_args, 2, LLVMConstInt(i64ty, nbytes, 0));
   copy_result := LLVMBuildCall2(builder, memmove_fnty, memmove_fn, copy_call_args, 3, MakeCStr(''));
+END;
+
+FUNCTION LargeAggregateTy(ty: ADRMEM): BOOLEAN;
+{ An LLVM array or struct type of at least LARGE_AGGREGATE_BYTES. A
+  first-class value of such a type is split by SelectionDAG into one node
+  per scalar leaf; past 65,535 leaves one node gets more operands than it
+  can hold and clang crashes at O0, and long before that the split is slow
+  at every level. }
+VAR
+  kind: CINT;
+BEGIN
+  kind := LLVMGetTypeKind(ty);
+  IF (kind = 10) OR (kind = 11) THEN { LLVMStructTypeKind, LLVMArrayTypeKind }
+    LargeAggregateTy := LLVMABISizeOfType(LLVMGetModuleDataLayout(modl), ty) >=
+                        LARGE_AGGREGATE_BYTES
+  ELSE
+    LargeAggregateTy := FALSE;
+END;
+
+FUNCTION AggregateSizeConst(ty: ADRMEM): ADRMEM;
+BEGIN
+  AggregateSizeConst := LLVMConstInt(i64ty,
+    LLVMABISizeOfType(LLVMGetModuleDataLayout(modl), ty), 0);
+END;
+
+PROCEDURE LowerLargeConstantStore(store: ADRMEM);
+{ store <large constant>, p  ==>  memset(p, 0) for a zero constant, else a
+  memcpy from a private constant global holding the value. }
+VAR
+  v, ty, gv, discard: ADRMEM;
+BEGIN
+  v := LLVMGetOperand(store, 0);
+  ty := LLVMTypeOf(v);
+  LLVMPositionBuilderBefore(builder, store);
+  IF LLVMIsNull(v) <> 0 THEN
+    discard := LLVMBuildMemSet(builder, LLVMGetOperand(store, 1),
+                               LLVMConstInt(i8ty, 0, 0), AggregateSizeConst(ty),
+                               LLVMGetAlignment(store))
+  ELSE
+  BEGIN
+    gv := LLVMAddGlobal(modl, ty, MakeCStr('aggconst'));
+    LLVMSetInitializer(gv, v);
+    LLVMSetGlobalConstant(gv, 1);
+    LLVMSetLinkage(gv, 9); { LLVMPrivateLinkage }
+    discard := LLVMBuildMemCpy(builder, LLVMGetOperand(store, 1),
+                               LLVMGetAlignment(store), gv,
+                               LLVMGetAlignment(gv), AggregateSizeConst(ty));
+  END;
+  LLVMInstructionEraseFromParent(store);
+END;
+
+FUNCTION LowerLargeAggregateLoad(fn, load, next: ADRMEM): ADRMEM;
+{ A large first-class load whose every use stores it whole. A load and
+  the store right after it become one memmove (source and destination may
+  be the same variable). Otherwise the load snapshots its source into an
+  entry-block temporary with memcpy, at the load's own position, and each
+  store copies from that temporary, so writes between the load and a
+  store cannot change the value stored. Returns the instruction the walk
+  continues with. Loads with any other use are left alone. }
+VAR
+  u, user, ty, src, temp, discard, saved_fn: ADRMEM;
+  only_stores: BOOLEAN;
+  nuses: INTEGER32;
+BEGIN
+  only_stores := TRUE;
+  nuses := 0;
+  u := LLVMGetFirstUse(load);
+  WHILE u <> NIL DO
+  BEGIN
+    user := LLVMGetUser(u);
+    IF LLVMIsAStoreInst(user) = NIL THEN only_stores := FALSE
+    ELSE IF LLVMGetOperand(user, 0) <> load THEN only_stores := FALSE;
+    nuses := nuses + 1;
+    u := LLVMGetNextUse(u);
+  END;
+  LowerLargeAggregateLoad := next;
+  IF only_stores THEN
+  BEGIN
+    ty := LLVMTypeOf(load);
+    src := LLVMGetOperand(load, 0);
+    IF (nuses = 1) AND (LLVMGetUser(LLVMGetFirstUse(load)) = next) THEN
+    BEGIN
+      LLVMPositionBuilderBefore(builder, next);
+      discard := LLVMBuildMemMove(builder, LLVMGetOperand(next, 1),
+                                  LLVMGetAlignment(next), src,
+                                  LLVMGetAlignment(load), AggregateSizeConst(ty));
+      LowerLargeAggregateLoad := LLVMGetNextInstruction(next);
+      LLVMInstructionEraseFromParent(next);
+    END
+    ELSE
+    BEGIN
+      IF nuses > 0 THEN
+      BEGIN
+        saved_fn := cur_fn;
+        cur_fn := fn;
+        temp := EntryAlloca(ty, 'aggcopy');
+        cur_fn := saved_fn;
+        LLVMPositionBuilderBefore(builder, load);
+        discard := LLVMBuildMemCpy(builder, temp, LLVMGetAlignment(temp), src,
+                                   LLVMGetAlignment(load), AggregateSizeConst(ty));
+        WHILE LLVMGetFirstUse(load) <> NIL DO
+        BEGIN
+          user := LLVMGetUser(LLVMGetFirstUse(load));
+          LLVMPositionBuilderBefore(builder, user);
+          discard := LLVMBuildMemCpy(builder, LLVMGetOperand(user, 1),
+                                     LLVMGetAlignment(user), temp,
+                                     LLVMGetAlignment(temp), AggregateSizeConst(ty));
+          LLVMInstructionEraseFromParent(user);
+        END;
+      END;
+      LowerLargeAggregateLoad := LLVMGetNextInstruction(load);
+    END;
+    LLVMInstructionEraseFromParent(load);
+  END;
+END;
+
+PROCEDURE LowerLargeAggregateCopies;
+{ Codegen moves aggregates as first-class LLVM values: an assignment is a
+  load of the whole source and a store of it, a function result is loaded
+  out of its sret slot, a result slot is zeroed by a store of
+  zeroinitializer. For a large aggregate (LargeAggregateTy) that shape
+  crashes clang at O0 and is slow at every level, so this pass, run on the
+  finished module, rewrites a large constant store as memset/memcpy and a
+  large load whose only uses are whole stores as memmove/memcpy. A large
+  value used any other way (an NVPTX by-value parameter, for one) keeps
+  its first-class form; host results never travel as one, they go
+  through the hidden sret pointer. }
+VAR
+  fn, bb, inst, next: ADRMEM;
+BEGIN
+  fn := LLVMGetFirstFunction(modl);
+  WHILE fn <> NIL DO
+  BEGIN
+    bb := LLVMGetFirstBasicBlock(fn);
+    WHILE bb <> NIL DO
+    BEGIN
+      inst := LLVMGetFirstInstruction(bb);
+      WHILE inst <> NIL DO
+      BEGIN
+        next := LLVMGetNextInstruction(inst);
+        IF LLVMIsAStoreInst(inst) <> NIL THEN
+        BEGIN
+          IF LargeAggregateTy(LLVMTypeOf(LLVMGetOperand(inst, 0))) THEN
+            IF LLVMIsConstant(LLVMGetOperand(inst, 0)) <> 0 THEN
+              LowerLargeConstantStore(inst);
+        END
+        ELSE IF LLVMIsALoadInst(inst) <> NIL THEN
+          IF LargeAggregateTy(LLVMTypeOf(inst)) THEN
+            next := LowerLargeAggregateLoad(fn, inst, next);
+        inst := next;
+      END;
+      bb := LLVMGetNextBasicBlock(bb);
+    END;
+    fn := LLVMGetNextFunction(fn);
+  END;
 END;
 
 PROCEDURE AppendText(VAR s: Str255; t: Str255);

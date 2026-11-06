@@ -76,6 +76,8 @@ PROCEDURE SetPtrArrayElem(arr: ADRMEM; idx: INTEGER32; v: ADRMEM);
 FUNCTION InitckPendingAt(i: INTEGER32): PInitckPending;
 PROCEDURE InitckQueueRelease(p: ADRMEM; tid: INTEGER);
 PROCEDURE EmitBlockCopy(dst: ADRMEM; src: ADRMEM; nbytes: INTEGER32);
+FUNCTION LargeAggregateTy(ty: ADRMEM): BOOLEAN;
+PROCEDURE LowerLargeAggregateCopies;
 PROCEDURE AppendText(VAR s: Str255; t: Str255);
 FUNCTION CgElide(s: Str255; maxlen: INTEGER): Str255;
 FUNCTION BoundedSymbol(a, b: Str255): Str255;

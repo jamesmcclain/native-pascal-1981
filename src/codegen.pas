@@ -948,6 +948,8 @@ BEGIN
   END;
 
   EmitStackckCtor;
+  { Large aggregate copies become block copies (NEW-35; see the pass). }
+  LowerLargeAggregateCopies;
 
   verify_msg_raw := malloc(8);
   verify_msg := verify_msg_raw;

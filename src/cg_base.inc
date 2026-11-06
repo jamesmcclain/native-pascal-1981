@@ -135,13 +135,34 @@ FUNCTION LLVMGetBasicBlockTerminator(bb: ADRMEM): ADRMEM [C];
 FUNCTION LLVMGetEntryBasicBlock(fn: ADRMEM): ADRMEM [C];
 FUNCTION LLVMGetFirstInstruction(bb: ADRMEM): ADRMEM [C];
 PROCEDURE LLVMPositionBuilderBefore(b: ADRMEM; instr: ADRMEM) [C];
-{ Up-level access (CloseFrame): settle a routine's static-link environment
-  once its body is lowered. }
-FUNCTION LLVMGetNextInstruction(instr: ADRMEM): ADRMEM [C];
+{ Up-level access (CloseFrame) and the large-aggregate copy pass
+  (LowerLargeAggregateCopies): module walk, instruction rewriting and
+  block-copy builders. }
 FUNCTION LLVMIsAInstruction(v: ADRMEM): ADRMEM [C];
-FUNCTION LLVMIsConstant(v: ADRMEM): CINT [C];
 FUNCTION LLVMCountParams(fn: ADRMEM): CINT [C];
 PROCEDURE LLVMReplaceAllUsesWith(old_val: ADRMEM; new_val: ADRMEM) [C];
+FUNCTION LLVMGetFirstFunction(m: ADRMEM): ADRMEM [C];
+FUNCTION LLVMGetNextFunction(fn: ADRMEM): ADRMEM [C];
+FUNCTION LLVMGetFirstBasicBlock(fn: ADRMEM): ADRMEM [C];
+FUNCTION LLVMGetNextBasicBlock(bb: ADRMEM): ADRMEM [C];
+FUNCTION LLVMGetNextInstruction(instr: ADRMEM): ADRMEM [C];
+FUNCTION LLVMIsALoadInst(v: ADRMEM): ADRMEM [C];
+FUNCTION LLVMIsAStoreInst(v: ADRMEM): ADRMEM [C];
+FUNCTION LLVMTypeOf(v: ADRMEM): ADRMEM [C];
+FUNCTION LLVMGetTypeKind(ty: ADRMEM): CINT [C];
+FUNCTION LLVMGetOperand(v: ADRMEM; index: CINT): ADRMEM [C];
+FUNCTION LLVMGetFirstUse(v: ADRMEM): ADRMEM [C];
+FUNCTION LLVMGetNextUse(u: ADRMEM): ADRMEM [C];
+FUNCTION LLVMGetUser(u: ADRMEM): ADRMEM [C];
+FUNCTION LLVMGetAlignment(v: ADRMEM): CINT [C];
+FUNCTION LLVMIsConstant(v: ADRMEM): CINT [C];
+FUNCTION LLVMIsNull(v: ADRMEM): CINT [C];
+FUNCTION LLVMBuildMemCpy(b: ADRMEM; dst: ADRMEM; dst_align: CINT; src: ADRMEM;
+                         src_align: CINT; size: ADRMEM): ADRMEM [C];
+FUNCTION LLVMBuildMemMove(b: ADRMEM; dst: ADRMEM; dst_align: CINT; src: ADRMEM;
+                          src_align: CINT; size: ADRMEM): ADRMEM [C];
+FUNCTION LLVMBuildMemSet(b: ADRMEM; ptr: ADRMEM; val: ADRMEM; len: ADRMEM;
+                         align: CINT): ADRMEM [C];
 PROCEDURE LLVMInstructionEraseFromParent(instr: ADRMEM) [C];
 FUNCTION LLVMBuildCall2(b: ADRMEM; fty: ADRMEM; fn: ADRMEM; args: ADRMEM; nargs: CINT; name: ADRMEM): ADRMEM [C];
 FUNCTION LLVMBuildRet(b: ADRMEM; v: ADRMEM): ADRMEM [C];

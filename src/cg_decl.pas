@@ -1527,6 +1527,11 @@ BEGIN
             ClassifyAggregate(ret_tk, ret_class, ret_npieces, ret_pk, ret_pb);
             IF ret_class = SYSV_CLASS_MEMORY THEN ret_llvm_ty := voidty
             ELSE ret_llvm_ty := SysVCoercedRetType(ret_npieces, ret_pk, ret_pb);
+          END
+          ELSE IF LargeAggregateTy(LLVMTypeForTk(ret_tk)) THEN
+          BEGIN
+            ret_class := SYSV_CLASS_MEMORY;
+            ret_llvm_ty := voidty;
           END;
         END;
       END;
@@ -1588,6 +1593,14 @@ BEGIN
           ClassifyAggregate(ret_tk, ret_class, ret_npieces, ret_pk, ret_pb);
           IF ret_class = SYSV_CLASS_MEMORY THEN ret_llvm_ty := voidty
           ELSE ret_llvm_ty := SysVCoercedRetType(ret_npieces, ret_pk, ret_pb);
+        END
+        ELSE IF LargeAggregateTy(LLVMTypeForTk(ret_tk)) THEN
+        BEGIN
+          { NVPTX returns an aggregate as one first-class value in its
+            .param buffer; a large one (which the NVPTX backend cannot
+            lower) goes through a hidden sret pointer, as on the host. }
+          ret_class := SYSV_CLASS_MEMORY;
+          ret_llvm_ty := voidty;
         END;
       END;
 
