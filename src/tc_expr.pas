@@ -1179,6 +1179,8 @@ VAR
   constructor_errors_before, operands_errors_before: INTEGER32;
   folded_value: INTEGER64;
   bound_subrange, bound_super, bound_idx_unknown: BOOLEAN;
+  const_fits_context: BOOLEAN;
+  saved_operand_context: INTEGER;
 BEGIN
   expr_depth := expr_depth + 1;
   IF expr_depth > MAX_EXPR_DEPTH THEN
@@ -1482,7 +1484,21 @@ BEGIN
     sem_set_l := SB_UNKNOWN;
     sem_set_r := SB_UNKNOWN;
     operands_errors_before := nerrors;
+    { A constant + - * DIV MOD whose value fits the integer context is
+      checked as one constant (CheckFoldedOperation), so its leaf operands
+      take their natural types: `i := 0 - 32768` is -32768, as `-32768` is.
+      A nested operation keeps the context and applies the same rule. }
+    op := GetStr(node, 'op');
+    const_fits_context := FALSE;
+    IF IsInteger(expr_context_tk) AND
+       ((op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') OR (op = 'DIV') OR (op = 'MOD')) THEN
+      IF FoldConstInt(node, folded_value) THEN
+        const_fits_context := IntegerConstantFits(expr_context_tk, folded_value);
+    saved_operand_context := expr_context_tk;
+    IF const_fits_context AND (NodeType(left_node) <> 'BinOp') THEN
+      expr_context_tk := TK_UNKNOWN;
     lt := CheckExpr(left_node);
+    expr_context_tk := saved_operand_context;
     sem_scalar_l := last_sem_scalar_base;
     IF (sem_scalar_l = SB_UNKNOWN) AND IsOrdinal(lt) AND
        (lt <> TK_ENUM) THEN sem_scalar_l := SemanticOrdinalBase(lt, 0);
@@ -1491,7 +1507,10 @@ BEGIN
       set_base_l := SetBoundsBaseAfterCheck(left_node);
       sem_set_l := last_sem_set_base;
     END;
+    IF const_fits_context AND (NodeType(right_node) <> 'BinOp') THEN
+      expr_context_tk := TK_UNKNOWN;
     rt := CheckExpr(right_node);
+    expr_context_tk := saved_operand_context;
     IF rt = TK_SET THEN
     BEGIN
       set_base_r := SetBoundsBaseAfterCheck(right_node);

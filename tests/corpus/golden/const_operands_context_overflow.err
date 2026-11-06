@@ -1,0 +1,5 @@
+Type checking failed:
+Positive integer constant out of range for INTEGER at line 7 column 12
+Positive integer constant out of range for INTEGER at line 8 column 14
+Positive integer constant out of range for INTEGER at line 9 column 8
+Positive integer constant out of range for INTEGER at line 10 column 12

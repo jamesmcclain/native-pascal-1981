@@ -2373,9 +2373,11 @@ is a deliberate modern divergence from IBM: compatibility is for fun, not
 pathology, and INTEGER has no reserved INITCK sentinel. A minus sign applied
 to the `WORD` constant `32768` folds to INTEGER `-32768`, so `-32768`,
 `- 32768`, `-(32768)` and `-W` (with `CONST W = 32768`) all give `-32768`.
-Negating a constant that is already `-32768` is a compile-time error, and so
-is `0 - 32768`: a binary operation mixes a `WORD` constant with an `INTEGER`
-operand only if the constant fits INTEGER.
+Negating a constant that is already `-32768` is a compile-time error. A
+constant `+ - * DIV MOD` whose value fits its integer context is checked as
+one constant, so `i := 0 - 32768` is also `-32768`, and `40000 - 10000` is
+the INTEGER `30000`; every intermediate value must still fit its own type,
+and a value outside the context is an error.
 
 An `INTEGER` constant can adapt to a `WORD` context. This includes negative
 constants. The conversion keeps the 16-bit pattern, so `-1` becomes `65535`.
