@@ -11,6 +11,7 @@ FUNCTION SemanticBaseOfOrdinalType(node: ADRMEM): INTEGER;
 FUNCTION SemanticSetBaseType(node: ADRMEM): INTEGER;
 FUNCTION SemanticChildTypeNode(node: ADRMEM): ADRMEM;
 FUNCTION ElementIndexKind(node: ADRMEM): INTEGER;
+FUNCTION ArrayIndexSemBase(node: ADRMEM): INTEGER;
 FUNCTION FwdCachedType(node: ADRMEM; VAR tk, aux, aux2, aux3, idx_tk: INTEGER): BOOLEAN;
 FUNCTION JsonIntegerValue(node: ADRMEM): INTEGER64;
 FUNCTION FoldConstInt(node: ADRMEM; VAR folded_value: INTEGER64): BOOLEAN;

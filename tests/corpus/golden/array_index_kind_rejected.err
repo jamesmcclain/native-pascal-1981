@@ -1,0 +1,13 @@
+Type checking failed:
+Array index type mismatch: expected INTEGER, got CHAR at line 22 column 3
+Array index type mismatch: expected INTEGER, got CHAR at line 23 column 3
+Array index type mismatch: expected INTEGER, got BOOLEAN at line 24 column 3
+Array index type mismatch: expected INTEGER, got enumeration at line 25 column 3
+Array index type mismatch: expected CHAR, got INTEGER at line 26 column 3
+Array index type mismatch: expected enumeration, got INTEGER at line 27 column 3
+Array index type mismatch: different enumeration types at line 28 column 3
+Array index type mismatch: different enumeration types at line 29 column 3
+Array index type mismatch: expected BOOLEAN, got CHAR at line 30 column 3
+Array index type mismatch: expected BOOLEAN, got INTEGER at line 31 column 3
+Array index type mismatch: expected INTEGER, got enumeration at line 32 column 3
+Array index type mismatch: expected INTEGER, got CHAR at line 33 column 3

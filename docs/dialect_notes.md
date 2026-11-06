@@ -1736,12 +1736,19 @@ knowable bounds) and are rejected by codegen as
 2^32-element fixed array. A `SUPER ARRAY` still requires the explicit
 `lo..*` form, and `PACKED` arrays remain unsupported.
 
-The index **expression** contract is unchanged from explicit ranges: the
-expression must be ordinal (a `REAL` or string index fails
-`Array index must be an ordinal type`), but kind identity is not enforced —
-`e[1]` into the BOOLEAN array above compiles exactly as `ARRAY
-[FALSE..TRUE]` indexed by `1` does, and the `$INDEXCK` runtime guard holds
-the domain.
+The index **expression** contract is the same as for explicit ranges
+(and inner and `SUPER` arrays): the expression must be ordinal (a `REAL`
+or string index fails `Array index must be an ordinal type`) and, as the
+manual's "Indexed Variables and Values" requires, assignment compatible
+with the index type. A CHAR, BOOLEAN, enumeration or integer index into
+an array of another of those kinds is a located typecheck error such as
+`Array index type mismatch: expected BOOLEAN, got INTEGER` (so `e[1]`
+above is rejected), and a value of a different enumeration fails
+`Array index type mismatch: different enumeration types` when both
+enumerations are known to the checker. Integer widths mix freely
+(`INTEGER`, `WORD`, `INTEGER32` into `1..4`): a constant is held to the
+index kind's range at compile time, and the `$INDEXCK` runtime guard
+holds the declared domain.
 
 ## MATHCK: integer overflow and division checks **[both]**
 

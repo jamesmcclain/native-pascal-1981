@@ -62,6 +62,15 @@ BEGIN
   ELSE IntegerTypeName := 'integer type';
 END;
 
+FUNCTION OrdinalKindName(tk: INTEGER): Str255;
+{ A coarse ordinal kind for diagnostics; enum kinds carry no name here. }
+BEGIN
+  IF tk = TK_CHAR THEN OrdinalKindName := 'CHAR'
+  ELSE IF tk = TK_BOOLEAN THEN OrdinalKindName := 'BOOLEAN'
+  ELSE IF tk = TK_ENUM THEN OrdinalKindName := 'enumeration'
+  ELSE OrdinalKindName := IntegerTypeName(tk);
+END;
+
 FUNCTION MaxWord16Value: INTEGER64;
 VAR
   n: INTEGER64;
@@ -393,7 +402,8 @@ VAR
   folded_value: INTEGER64;
   super_value: BOOLEAN;
   sem_node: ADRMEM;
-  sem_set, sem_scalar: INTEGER;
+  sem_set, sem_scalar, idx_sem, expr_sem: INTEGER;
+  msg: Str255;
 BEGIN
   last_designator_set_sem_base := SB_UNKNOWN;
   last_designator_scalar_sem_base := SB_UNKNOWN;
@@ -538,6 +548,7 @@ BEGIN
     END
     ELSE IF skind = 'INDEX' THEN
     BEGIN
+      idx_sem := ArrayIndexSemBase(sem_node);
       sem_node := SemanticChildTypeNode(sem_node);
       sem_set := SemanticSetBaseType(sem_node);
       sem_scalar := SemanticBaseOfOrdinalType(sem_node);
@@ -588,8 +599,29 @@ BEGIN
           itk := CheckExpr(idx_expr)
         ELSE
           itk := CheckExprForTarget(idx_expr, current_idx_tk);
+        expr_sem := last_sem_scalar_base;
         IF NOT IsOrdinal(itk) AND (itk <> TK_UNKNOWN) THEN
-          AddError('Array index must be an ordinal type');
+          AddError('Array index must be an ordinal type')
+        ELSE IF IsOrdinal(itk) AND IsOrdinal(current_idx_tk) THEN
+        BEGIN
+          { The index must be assignment compatible with the index type
+            (manual, Indexed Variables and Values). Integer widths mix
+            freely: CheckExprForTarget already held a constant to the
+            index kind's range, and INDEXCK checks the rest at run time.
+            Two enumerations differ only by semantic base, which is
+            known when both the index type and the expression carry one. }
+          IF (itk <> current_idx_tk) AND
+             NOT (IsInteger(itk) AND IsInteger(current_idx_tk)) THEN
+          BEGIN
+            msg := 'Array index type mismatch: expected ';
+            CONCAT(msg, OrdinalKindName(current_idx_tk));
+            CONCAT(msg, ', got ');
+            CONCAT(msg, OrdinalKindName(itk));
+            AddError(msg);
+          END
+          ELSE IF (itk = TK_ENUM) AND SemanticBasesConflict(idx_sem, expr_sem) THEN
+            AddError('Array index type mismatch: different enumeration types');
+        END;
         new_tk := aux;
         new_aux := aux2;
         new_aux2 := aux3;

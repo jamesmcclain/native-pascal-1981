@@ -417,8 +417,10 @@ BEGIN
     ELSE IF name = 'BOOLEAN' THEN SemanticBaseOfOrdinalType := TK_BOOLEAN
     ELSE IF name = 'CHAR' THEN SemanticBaseOfOrdinalType := TK_CHAR;
   END
-  ELSE IF nt = 'SubrangeType' THEN
+  ELSE IF (nt = 'SubrangeType') OR (nt = 'IndexRange') THEN
   BEGIN
+    { An array's explicit index range (IndexRange) has the same `low`
+      field; a SUPER ARRAY's missing high bound does not matter here. }
     low_node := GetObj(node, 'low');
     nt := NodeType(low_node);
     IF nt = 'IntLiteral' THEN SemanticBaseOfOrdinalType := TK_INTEGER
@@ -843,6 +845,29 @@ BEGIN
     ELSE IF NodeType(index_node) = 'IndexRange' THEN
       ElementIndexKind := SubrangeIndexKind(index_node);
   END;
+END;
+
+FUNCTION ArrayIndexSemBase(node: ADRMEM): INTEGER;
+{ The semantic base (SemanticOrdinalBase identity) of an array type node's
+  index, so two enumerations can be told apart where idx_tk only says
+  TK_ENUM. SB_UNKNOWN when node is not an array or the index base cannot
+  be read without resolving the type again. }
+VAR
+  nt: Str255;
+  ti: INTEGER32;
+BEGIN
+  ArrayIndexSemBase := SB_UNKNOWN;
+  IF node = NIL THEN RETURN;
+  nt := NodeType(node);
+  IF (nt = 'NamedType') OR (nt = 'BuiltinType') THEN
+  BEGIN
+    ti := LookupType(GetStr(node, 'name'));
+    IF ti <> 0 THEN
+      IF types[ti].tk = TK_ARRAY THEN
+        ArrayIndexSemBase := ArrayIndexSemBase(types[ti].type_node);
+  END
+  ELSE IF nt = 'ArrayType' THEN
+    ArrayIndexSemBase := SemanticBaseOfOrdinalType(GetObj(node, 'index_range'));
 END;
 
 PROCEDURE ResolveTypeExpr(node: ADRMEM; VAR tk, aux, aux2, aux3, idx_tk: INTEGER);
