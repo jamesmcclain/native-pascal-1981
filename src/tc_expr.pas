@@ -432,6 +432,28 @@ BEGIN
         aux := 0;
         aux2 := 0;
       END
+      ELSE IF tk = TK_FILE THEN
+      BEGIN
+        { A file's FCB control fields (manual 12-32..12-33): F.TRAP, the
+          trapped-I/O switch, and F.ERRS, the error code (0..15 in the
+          manual; a WORD here). Both are assignable. F.MODE needs the
+          predeclared FILEMODES type, which does not exist yet. }
+        IF fname = 'TRAP' THEN tk := TK_BOOLEAN
+        ELSE IF fname = 'ERRS' THEN tk := TK_WORD
+        ELSE BEGIN
+          IF fname = 'MODE' THEN AddError('File field MODE is not supported')
+          ELSE AddError2('Unknown file field: ',
+            CStrToStr255(cJSON_GetStringValue(GetObj(sel, 'index_or_field'))));
+          tk := TK_UNKNOWN;
+        END;
+        aux := 0;
+        aux2 := 0;
+        aux3 := 0;
+        current_idx_tk := TK_UNKNOWN;
+        sem_node := NIL;
+        sem_set := SB_UNKNOWN;
+        sem_scalar := SB_UNKNOWN;
+      END
       ELSE IF tk <> TK_RECORD THEN
       BEGIN
         AddError('Field selector on non-record value');

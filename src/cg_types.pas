@@ -105,6 +105,32 @@ BEGIN
   LookupField := found;
 END;
 
+FUNCTION FileControlField(fname: Str255; VAR fcb_index: INTEGER32): INTEGER;
+{ A FIELD selector on a FILE names one of its FCB control fields (manual
+  12-32..12-33): F.TRAP, the i8 trap switch at filefcbty index 8, typed
+  BOOLEAN; F.ERRS, the i32 error code at index 9, typed WORD (the
+  manual's 0..15; little-endian, so a WORD load or store addresses the
+  code's low half, and the runtime never sets the high half). Returns
+  the field's type id and sets fcb_index, or returns 0 for any other
+  name (the typechecker has already reported it). }
+VAR
+  u: Str255;
+BEGIN
+  u := UpperStr(fname);
+  fcb_index := 0;
+  FileControlField := 0;
+  IF u = 'TRAP' THEN
+  BEGIN
+    fcb_index := 8;
+    FileControlField := TK_BOOLEAN;
+  END
+  ELSE IF u = 'ERRS' THEN
+  BEGIN
+    fcb_index := 9;
+    FileControlField := TK_WORD;
+  END;
+END;
+
 FUNCTION RegisterType(tk, elem_tid: INTEGER; lo, hi: INTEGER32; llvm_ty: ADRMEM): INTEGER;
 BEGIN
   IF ntypes >= MAX_TYPES THEN AbortWith('codegen: too many types');

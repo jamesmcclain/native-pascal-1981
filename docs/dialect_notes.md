@@ -31,6 +31,7 @@ its [unsafe raw boundary](#descriptor-unsafe-raw-boundary) and ownership limits.
 - [Enumerated and BOOLEAN I/O](#enumerated-and-boolean-io)
 - [Niladic EOF and EOLN](#niladic-eof-and-eoln-both)
 - [Selecting from a niladic function result](#selecting-from-a-niladic-function-result-both)
+- [File control fields F.TRAP and F.ERRS](#file-control-fields-ftrap-and-ferrs-both)
 - [Wide signed integer input](#wide-signed-integer-input-extended)
 - [String precision](#string-precision)
 - [WRITE of a CHAR array](#write-of-a-char-array-both)
@@ -700,6 +701,53 @@ Both stores and reads then use the result (`mk.f := mk.f + 1`). A bare
 name read in the body is still a recursive call. A selector after an
 argument list (`mk(1).f`) is not accepted. Fixture:
 `tests/corpus/golden/niladic_result_select.pas`.
+
+## File control fields F.TRAP and F.ERRS **[both]**
+
+A file variable of any file type (`TEXT` or `FILE OF T`), including a
+`VAR` formal, has two selectable control fields (manual 12-32, 12-33).
+Each one names the runtime's own field in the file control block. A
+program can read it, assign it, or pass it as a `VAR` actual.
+
+- `F.TRAP: BOOLEAN` is initially `FALSE`. When it is `TRUE`, an I/O
+  error that the runtime can trap records a code in `F.ERRS` and
+  abandons the operation. The program does not end. A trapped `READ`
+  leaves its destination unchanged.
+- `F.ERRS` is a `WORD`, initially `0`. It holds the code of the last
+  trapped error. `14` is a malformed or out-of-range formatted `READ`
+  (`INTEGER`, `INTEGER32`, `INTEGER64`, `REAL`, `BOOLEAN`, enumeration,
+  pointer, and a malformed `WORD`; a `WORD` out of range still aborts),
+  `10` a failed `RESET` open, `1` a failed `REWRITE` create, `2` a
+  `GET` or `PUT` in the wrong mode, `3` a `GET` past end of file, `4`
+  and `5` a failed component read or write. A program clears it by
+  assignment (`F.ERRS := 0`).
+
+With `F.TRAP` set to `FALSE`, the same errors abort with their usual
+`runtime error:` or `file runtime:` messages. End of file during a
+formatted `READ` aborts in both cases.
+
+Differences from the IBM manual:
+
+- The manual types `F.ERRS` as `0..15`. Native types it `WORD`, and an
+  assignment is not range-checked against `0..15`.
+- The manual ignores every file operation except `CLOSE` and `DISCARD`
+  while `F.ERRS` is nonzero, and ends the program if `F.TRAP` is
+  `FALSE`. Native does not examine `F.ERRS` before an operation. Each
+  operation runs, and a new trapped error overwrites the code.
+- The manual says that closing a file (also by `RESET` or `REWRITE`)
+  sets `F.TRAP` to `FALSE`. Native keeps `F.TRAP` until the program
+  assigns it.
+- `F.MODE` is not supported. It needs the predeclared `FILEMODES` type,
+  which does not exist. Using it is a typecheck error
+  (`File field MODE is not supported`). Any other field name is
+  `Unknown file field: NAME`. The record type `FCBFQQ` is not
+  predeclared, and `WITH F DO` does not open a file's fields.
+
+Fixtures: `tests/corpus/golden/file_trap_read.pas` (trapped `INTEGER`,
+`BOOLEAN` and enumeration `READ`, a typed-file `PUT` and `GET`, both
+dialects at -O0 and -O2), `file_trap_untrapped.pas` (the abort after
+`F.TRAP := FALSE`) and `file_field_unknown.pas`. The pointer `READ` is in
+`tests/contract/initck_producers.sh`.
 
 ## Wide signed integer input **[extended]**
 

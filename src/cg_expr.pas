@@ -2211,6 +2211,7 @@ VAR
   idx_val, offset, offset_ty: ADRMEM;
   fi: INTEGER;
   file_handle, file_fcb, file_call_args, file_raw_buf, discard: ADRMEM;
+  fcb_field: INTEGER32; { filefcbty index of an F.TRAP/F.ERRS selector }
   folded: INTEGER64;
   indexck, unsigned_idx, super_checked: BOOLEAN;
   idx128, i128ty, in_bounds, upper_ok, bad_bb, ok_bb: ADRMEM;
@@ -2622,6 +2623,29 @@ BEGIN
         IF lstring_capacity > 255 THEN lstring_capacity := 255;
         lstring_is_length := LLVMConstInt(i1ty, 1, 0);
         cur_tid := types[cur_tid].elem_tid;
+      END
+      ELSE IF TypeKind(cur_tid) = TK_FILE THEN
+      BEGIN
+        { F.TRAP / F.ERRS: the field's address inside the FCB the file
+          variable's handle locates (InitFileStorage), so reads, stores
+          and VAR actuals all reach the runtime's own copy. FCB fields
+          have no INITCK state: InitFileStorage initializes them. }
+        shadow := NIL;
+        heap_data := NIL;
+        file_state := NIL;
+        super_leaves := NIL;
+        fname := GetStr(sel, 'index_or_field');
+        fi := FileControlField(fname, fcb_field);
+        IF fi = 0 THEN
+          AbortWith2('codegen: unknown file field: ', fname);
+        file_handle := LLVMBuildLoad2(builder, i8ptrty, base_ptr, MakeCStr(''));
+        file_fcb := LLVMBuildBitCast(builder, file_handle, LLVMPointerType(filefcbty, 0), MakeCStr(''));
+        gep_idx := AllocPtrArray(2);
+        SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+        SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, fcb_field, 0));
+        base_ptr := LLVMBuildGEP2(builder, filefcbty, file_fcb, gep_idx, 2, MakeCStr('file.ctl'));
+        cur_tid := fi;
+        base_ptr := LLVMBuildBitCast(builder, base_ptr, LLVMPointerType(LLVMTypeForTk(cur_tid), 0), MakeCStr(''));
       END
       ELSE BEGIN
         IF TypeKind(cur_tid) <> TK_RECORD THEN

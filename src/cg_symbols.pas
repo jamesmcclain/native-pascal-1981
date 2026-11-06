@@ -346,6 +346,7 @@ VAR
   sel: ADRMEM;
   kind: Str255;
   fi: INTEGER;
+  fcb_field: INTEGER32;
 BEGIN
   FOR si := 0 TO ArrSize(selectors) - 1 DO
     IF tid <> 0 THEN
@@ -354,6 +355,8 @@ BEGIN
       kind := GetStr(sel, 'kind');
       IF (kind = 'INDEX') AND (TypeKind(tid) = TK_ARRAY) THEN tid := types[tid].elem_tid
       ELSE IF (kind = 'DEREF') AND (TypeKind(tid) = TK_POINTER) THEN tid := types[tid].elem_tid
+      ELSE IF (kind = 'FIELD') AND (TypeKind(tid) = TK_FILE) THEN
+        tid := FileControlField(GetStr(sel, 'index_or_field'), fcb_field)
       ELSE IF (kind = 'FIELD') AND (TypeKind(tid) = TK_RECORD) THEN
       BEGIN
         fi := LookupField(tid, GetStr(sel, 'index_or_field'));

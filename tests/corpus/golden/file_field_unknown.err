@@ -1,0 +1,4 @@
+Type checking failed:
+Unknown file field: Status at line 8 column 11
+File field MODE is not supported at line 9 column 3
+File field MODE is not supported at line 9 column 13

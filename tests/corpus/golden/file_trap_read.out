@@ -1,0 +1,10 @@
+errs=0 trap=FALSE
+errs=0 trap=TRUE
+int errs=14 i=7
+bool errs=14 b=TRUE
+enum errs=14 kept=TRUE
+good errs=0 i=42 blue=TRUE
+errs=0 trap=FALSE
+put errs=2
+get errs=3 x=5 eof=TRUE
+cleared=TRUE trap=TRUE
