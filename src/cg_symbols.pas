@@ -755,10 +755,12 @@ END;
 FUNCTION InitckSuperHeapTracked(ptr_tid: INTEGER): BOOLEAN;
 { Do the elements a host SUPER ARRAY descriptor locates carry heap state?
   Those NEW allocated, when the element type is tracked (with at most
-  INITCK_HEAP_MAX_LEAVES leaves per element, as for a referent). }
+  INITCK_HEAP_MAX_LEAVES leaves per element, as for a referent). Super-array
+  STRING/LSTRING referents carry no INITCK state, like all strings. }
 BEGIN
   InitckSuperHeapTracked := FALSE;
-  IF IsHostDescriptor(ptr_tid) AND NOT is_device_compiland THEN
+  IF IsHostDescriptor(ptr_tid) AND NOT is_device_compiland AND
+     (TypeKind(types[ptr_tid].elem_tid) = TK_ARRAY) THEN
     InitckSuperHeapTracked :=
       InitckHeapLeavesTracked(types[types[ptr_tid].elem_tid].elem_tid);
 END;
@@ -2060,10 +2062,13 @@ BEGIN
         gvar := LLVMAddGlobalInAddressSpace(modl, LLVMTypeForTk(tk),
                                             MakeCStr(global_name), address_space);
       { An IMPLEMENTATION's own storage that its INTERFACE does not declare
-        is private to the unit (IBM Pascal, Aug. 1981, 13-15): internal
-        linkage, so two units' private `VAR v` never meet at link time.
-        Interface variables took the reuse path above and stay external. }
-      IF defining_implementation AND (NOT lowering_spliced_interface) THEN
+        is private to the unit (IBM Pascal, Aug. 1981, 13-15), and a
+        PROGRAM's globals are private unless marked [PUBLIC] (7-5): internal
+        linkage, so a PROGRAM and a MODULE (or two units) that both declare
+        `VAR v` never meet at link time. Interface variables took the reuse
+        path above and stay external; MODULE globals stay external (13-7). }
+      IF (defining_implementation OR defining_program) AND
+         (NOT lowering_spliced_interface) THEN
         LLVMSetLinkage(gvar, 8); { LLVMInternalLinkage }
       IF NOT lowering_spliced_interface THEN
       BEGIN

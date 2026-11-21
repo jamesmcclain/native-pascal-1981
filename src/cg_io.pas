@@ -48,7 +48,8 @@ BEGIN
                      OR IsCharArrayTk(tid);
 END;
 
-PROCEDURE EmitStringWriteArg(addr: ADRMEM; tid: INTEGER; have_width, have_prec: BOOLEAN;
+PROCEDURE EmitStringWriteArg(addr: ADRMEM; tid: INTEGER; super_upper: ADRMEM;
+  have_width, have_prec: BOOLEAN;
   width_val, prec_val: ADRMEM; VAR fmt: Str255; vals: ADRMEM; VAR vi: INTEGER32);
 { Appends the bounded string format and arguments for an LSTRING/STRING
   value, or a CHAR array written as a STRING, already resolved to an
@@ -61,27 +62,44 @@ VAR
 BEGIN
   IF TypeKind(tid) = TK_LSTRING THEN
   BEGIN
-    gep_idx := AllocPtrArray(2);
-    SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-    SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
-    len_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(tid), addr, gep_idx, 2, MakeCStr(''));
-    len_val := LLVMBuildLoad2(builder, i8ty, len_ptr, MakeCStr(''));
-    len_val := LLVMBuildZExt(builder, len_val, i32ty, MakeCStr(''));
-    gep_idx := AllocPtrArray(2);
-    SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-    SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 1, 0));
-    chars_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(tid), addr, gep_idx, 2, MakeCStr(''));
+    IF types[tid].is_super THEN
+    BEGIN
+      len_ptr := addr;
+      len_val := LLVMBuildLoad2(builder, i8ty, len_ptr, MakeCStr(''));
+      len_val := LLVMBuildZExt(builder, len_val, i32ty, MakeCStr(''));
+      gep_idx := AllocPtrArray(1);
+      SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 1, 0));
+      chars_ptr := LLVMBuildGEP2(builder, i8ty, addr, gep_idx, 1, MakeCStr(''));
+    END
+    ELSE
+    BEGIN
+      gep_idx := AllocPtrArray(2);
+      SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+      SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
+      len_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(tid), addr, gep_idx, 2, MakeCStr(''));
+      len_val := LLVMBuildLoad2(builder, i8ty, len_ptr, MakeCStr(''));
+      len_val := LLVMBuildZExt(builder, len_val, i32ty, MakeCStr(''));
+      gep_idx := AllocPtrArray(2);
+      SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+      SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 1, 0));
+      chars_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(tid), addr, gep_idx, 2, MakeCStr(''));
+    END;
   END
   ELSE
   BEGIN
     IF TypeKind(tid) = TK_STRING THEN
-      len_val := StringCapacityValue(tid, addr)
+      len_val := StringCapacityValueWithUpper(tid, addr, super_upper)
     ELSE
       len_val := LLVMConstInt(i32ty, types[tid].hi - types[tid].lo + 1, 0);
-    gep_idx := AllocPtrArray(2);
-    SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
-    SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
-    chars_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(tid), addr, gep_idx, 2, MakeCStr(''));
+    IF (TypeKind(tid) = TK_STRING) AND types[tid].is_super THEN
+      chars_ptr := addr
+    ELSE
+    BEGIN
+      gep_idx := AllocPtrArray(2);
+      SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
+      SetPtrArrayElem(gep_idx, 1, LLVMConstInt(i32ty, 0, 0));
+      chars_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(tid), addr, gep_idx, 2, MakeCStr(''));
+    END;
   END;
   IF active_features.string_precision AND have_prec THEN
   BEGIN
@@ -121,7 +139,7 @@ BEGIN
   BEGIN
     tmp := EntryAlloca(LLVMTypeForTk(tid), 'writetmp');
     LLVMBuildStore(builder, in_v, tmp);
-    EmitStringWriteArg(tmp, tid, have_width, have_prec,
+    EmitStringWriteArg(tmp, tid, NIL, have_width, have_prec,
                        width_val, prec_val, fmt, vals, vi);
   END
   ELSE
@@ -256,7 +274,7 @@ BEGIN
       IF (is_lstring OR is_string) AND GetBool(GetObj(expr, 'read_flags'), 'INITCK') THEN
         GuardInitckRead(expr, symi);
       IF is_lstring OR is_string THEN
-        EmitStringWriteArg(addr, lstr_tid, have_width, have_prec,
+        EmitStringWriteArg(addr, lstr_tid, NIL, have_width, have_prec,
                            width_val, prec_val, fmt, vals, vi)
       ELSE
       BEGIN
@@ -290,7 +308,7 @@ BEGIN
         ELSE IF GetBool(GetObj(expr, 'read_flags'), 'INITCK') THEN
           InitckBoundaryAt('selected storage', expr);
       IF IsStringWriteTk(lstr_tid) THEN
-        EmitStringWriteArg(addr, lstr_tid, have_width, have_prec,
+        EmitStringWriteArg(addr, lstr_tid, last_desig_super_upper, have_width, have_prec,
                            width_val, prec_val, fmt, vals, vi)
       ELSE
       BEGIN
@@ -580,6 +598,7 @@ VAR
     is a selected .LEN or index-zero byte, else -1 }
   lstring_is_length: ADRMEM;
   lstring_dyncap: ADRMEM; { a conformant LSTRING formal's run-time bound }
+  super_upper: ADRMEM; { a ^STRING/^LSTRING referent's descriptor upper }
 BEGIN
   nargs := ArrSize(args);
   start_idx := 0;
@@ -612,6 +631,7 @@ BEGIN
     lstring_capacity := -1;
     lstring_is_length := NIL;
     lstring_dyncap := NIL;
+    super_upper := NIL;
     IF NodeType(argnode) = 'Identifier' THEN
       dest_symi := LookupSym(GetStr(argnode, 'name'))
     ELSE IF NodeType(argnode) = 'Designator' THEN
@@ -628,6 +648,7 @@ BEGIN
     BEGIN
       addr := ComputeDesignatorAddress(argnode);
       tid := last_val_tk;
+      super_upper := last_desig_super_upper;
       lstring_capacity := last_desig_lstring_capacity;
       lstring_is_length := last_desig_lstring_is_length;
       lstring_dyncap := last_desig_lstring_dyncap;
@@ -755,7 +776,7 @@ BEGIN
     ELSE IF TypeKind(tid) = TK_LSTRING THEN
     BEGIN
       buf_i8 := LLVMBuildBitCast(builder, addr, i8ptrty, MakeCStr(''));
-      cap := StringCapacityValue(tid, addr);
+      cap := StringCapacityValueWithUpper(tid, addr, super_upper);
       IF using_file THEN
       BEGIN
         call_args := AllocPtrArray(3);
@@ -775,7 +796,7 @@ BEGIN
     ELSE IF TypeKind(tid) = TK_STRING THEN
     BEGIN
       buf_i8 := LLVMBuildBitCast(builder, addr, i8ptrty, MakeCStr(''));
-      cap := StringCapacityValue(tid, addr);
+      cap := StringCapacityValueWithUpper(tid, addr, super_upper);
       IF using_file THEN
       BEGIN
         call_args := AllocPtrArray(3);

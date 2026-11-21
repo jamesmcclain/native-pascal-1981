@@ -1,0 +1,22 @@
+Type checking failed:
+Cannot assign to a CONST parameter: n at line 29 column 3
+Cannot assign to a CONST parameter: s at line 30 column 3
+Cannot assign to a CONST parameter: l at line 31 column 3
+Cannot assign to a CONST parameter: l at line 32 column 3
+Cannot assign to a CONST parameter: r at line 33 column 3
+Cannot assign to a CONST parameter: x at line 35 column 5
+Cannot assign to a CONST parameter: p at line 36 column 3
+Cannot assign to a CONST parameter: ss at line 37 column 3
+Cannot assign to a CONST parameter: sl at line 38 column 3
+A CONST parameter cannot be passed as a VAR parameter in call to TakeVar at line 39 column 3
+A CONST parameter cannot be passed as a VAR parameter in call to TakeVar at line 40 column 3
+A CONST parameter cannot be passed as a VAR parameter in call to TakeVarStr at line 41 column 3
+COPYSTR destination must be a bare STRING variable at line 42 column 3
+COPYLST destination must be a bare LSTRING variable at line 43 column 3
+INSERT destination must be a bare LSTRING variable at line 44 column 3
+DELETE destination must be a bare LSTRING variable at line 45 column 3
+CONCAT destination must be a writable string variable at line 46 column 3
+NEW/DISPOSE argument must be a writable POINTER variable at line 47 column 3
+NEW/DISPOSE argument must be a writable POINTER variable at line 48 column 3
+READ/READLN argument cannot be a CONST parameter at line 49 column 3
+READSET destination must be a writable LSTRING variable at line 50 column 3

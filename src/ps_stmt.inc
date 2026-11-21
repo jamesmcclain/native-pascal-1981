@@ -6,7 +6,7 @@ USES jsonutil, ps_base, ps_expr;
 
 FUNCTION ParseAssignOrCallStmt: ADRMEM;
 FUNCTION ParseCompoundStmt: ADRMEM;
-FUNCTION ParseCompoundStmtList: ADRMEM;
+FUNCTION ParseCompoundStmtList(owner_node: ADRMEM): ADRMEM;
 FUNCTION ParseIfStmt: ADRMEM;
 FUNCTION ParseForStmt: ADRMEM;
 FUNCTION ParseWhileStmt: ADRMEM;

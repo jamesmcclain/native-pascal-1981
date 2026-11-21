@@ -5,6 +5,7 @@ UNIT tc_stmt;
 USES jsonutil, features, tc_base, tc_types, tc_expr;
 
 PROCEDURE CheckStmtList(arr: ADRMEM);
+PROCEDURE CheckRoutineBody(arr: ADRMEM);
 PROCEDURE CheckStmt(node: ADRMEM);
 
 END;

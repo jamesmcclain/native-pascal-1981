@@ -599,6 +599,25 @@ BEGIN
   UpperStr := res;
 END;
 
+FUNCTION IsIntroducerToken(k: Str255): BOOLEAN;
+{ Tokens that open or introduce a following construct: a comment on the same
+  line after one of these belongs ahead of what follows (pending_leading),
+  not trailing on whatever node was created before it. }
+BEGIN
+  IsIntroducerToken :=
+    (k = 'IF') OR (k = 'THEN') OR (k = 'ELSE') OR (k = 'WHILE') OR (k = 'DO') OR
+    (k = 'FOR') OR (k = 'TO') OR (k = 'DOWNTO') OR (k = 'REPEAT') OR (k = 'WITH') OR
+    (k = 'CASE') OR (k = 'OF') OR (k = 'BEGIN') OR (k = 'OTHERWISE') OR
+    (k = 'GOTO') OR (k = 'VAR') OR (k = 'CONST') OR (k = 'TYPE') OR
+    (k = 'LABEL') OR (k = 'USES') OR
+    (k = 'LPAREN') OR (k = 'LBRACKET') OR (k = 'COLON') OR (k = 'COMMA') OR
+    (k = 'ASSIGN') OR
+    (k = 'PLUS') OR (k = 'MINUS') OR (k = 'MUL') OR (k = 'SLASH') OR
+    (k = 'DIV') OR (k = 'MOD') OR (k = 'AND') OR (k = 'OR') OR (k = 'XOR') OR
+    (k = 'IN') OR (k = 'NOT') OR (k = 'EQ') OR (k = 'NEQ') OR (k = 'LT') OR
+    (k = 'LE') OR (k = 'GT') OR (k = 'GE') OR (k = 'RANGE');
+END;
+
 PROCEDURE RelayTokenTrivia;
 { Called just before the cursor steps past the current token (from Expect
   and Match, the only two places pos advances), so every token's trivia is
@@ -606,14 +625,21 @@ PROCEDURE RelayTokenTrivia;
   leading comment queues for whichever node CreateTriviaNode builds next; a
   trailing comment attaches straight onto the most recently created node
   when nothing is already queued (mirroring lexer.pas RecordComment), and
-  falls back to queuing itself otherwise so it is never silently dropped. }
+  falls back to queuing itself otherwise so it is never silently dropped.
+  After an introducer/infix token (THEN, DO, LPAREN, PLUS, ...), a trailing
+  comment always queues for the following node instead, and any earlier
+  inner trailing target is cleared so an enclosing pin cannot hoist it. }
 VAR
   pt: PToken;
   key_ptr, str_ptr: ADRMEM;
   fieldName: Str255;
   ci: INTEGER32;
+  introducer: BOOLEAN;
 BEGIN
   pt := GetTok(0);
+  introducer := IsIntroducerToken(pt^.kind);
+  IF introducer THEN
+    last_trailing_target := NIL;
   IF pt^.has_leading_comment THEN
     FOR ci := 0 TO cJSON_GetArraySize(pt^.leading_comments) - 1 DO
       IF pending_leading_count < 32 THEN
@@ -626,7 +652,7 @@ BEGIN
   BEGIN
     { A node keeps one trailing comment: a second queues for the next node,
       as the lexer does for a second comment after one token. }
-    IF (pending_leading_count = 0) AND (last_created_node <> NIL) AND
+    IF (NOT introducer) AND (pending_leading_count = 0) AND (last_created_node <> NIL) AND
        (cJSON_GetObjectItemCaseSensitive(last_created_node, MakeCStr('trailing_comment')) = NIL) THEN
     BEGIN
       str_ptr := MakeCStr(pt^.trailing_comment);
@@ -668,44 +694,92 @@ BEGIN
   PsIntText := text;
 END;
 
+PROCEDURE PsAppendChar(VAR s: Str255; ch: CHAR);
+{ Append, silently stopping at the 255-character capacity. }
+VAR
+  len: INTEGER;
+BEGIN
+  len := ORD(s[0]);
+  IF len < 255 THEN
+  BEGIN
+    s[len + 1] := ch;
+    s[0] := CHR(len + 1);
+  END;
+END;
+
 PROCEDURE PsAppendText(VAR s: Str255; t: Str255);
 { Append, silently stopping at the 255-character capacity. }
 VAR
-  i, len: INTEGER;
+  i: INTEGER;
 BEGIN
   FOR i := 1 TO ORD(t[0]) DO
+    PsAppendChar(s, t[i]);
+END;
+
+FUNCTION PsElide(s: Str255; maxlen: INTEGER): Str255;
+{ s cut to at most maxlen characters by replacing its middle with `...', so
+  a diagnostic keeps both the start of a long name and the end that tells
+  it apart from a similar one (mirrors tc_base's TcElide). }
+VAR
+  r: Str255;
+  head, tail, i, len: INTEGER;
+BEGIN
+  len := ORD(s[0]);
+  IF len <= maxlen THEN
+    r := s
+  ELSE IF maxlen < 5 THEN
   BEGIN
-    len := ORD(s[0]);
-    IF len < 255 THEN
-    BEGIN
-      s[len + 1] := t[i];
-      s[0] := CHR(len + 1);
-    END;
+    r := s;
+    IF maxlen < 0 THEN r[0] := CHR(0) ELSE r[0] := CHR(maxlen);
+  END
+  ELSE
+  BEGIN
+    head := (maxlen - 3) DIV 2;
+    tail := maxlen - 3 - head;
+    r := '';
+    FOR i := 1 TO head DO PsAppendChar(r, s[i]);
+    PsAppendText(r, '...');
+    FOR i := len - tail + 1 TO len DO PsAppendChar(r, s[i]);
   END;
+  PsElide := r;
 END;
 
 PROCEDURE ParseFail(msg: Str255);
 { Report a parser error at the current token and stop: msg followed by the
   located-diagnostic suffix every stage uses, ` at line L column C', plus
   ` of file NAME' for a token from an $INCLUDEd file. A report of several
-  lines prints the others first and passes its last line here. }
+  lines prints the others first and passes its last line here. A file name
+  or message too long for Str255 is elided in the middle, never the
+  location (NEW-28, matching tc_base's AddError2). }
 VAR
   tok: PToken;
+  suffix, buf: Str255;
+  room: INTEGER;
 BEGIN
   tok := GetTok(0);
+  suffix := '';
   IF (tok^.line > 0) AND (tok^.col > 0) THEN
   BEGIN
-    PsAppendText(msg, ' at line ');
-    PsAppendText(msg, PsIntText(tok^.line));
-    PsAppendText(msg, ' column ');
-    PsAppendText(msg, PsIntText(tok^.col));
+    PsAppendText(suffix, ' at line ');
+    PsAppendText(suffix, PsIntText(tok^.line));
+    PsAppendText(suffix, ' column ');
+    PsAppendText(suffix, PsIntText(tok^.col));
     IF tok^.file_name <> NIL THEN
     BEGIN
-      PsAppendText(msg, ' of file ');
-      PsAppendText(msg, CStrToStr255(tok^.file_name));
+      PsAppendText(suffix, ' of file ');
+      { The file name keeps whatever the message leaves, and at least 150. }
+      room := 255 - ORD(msg[0]) - ORD(suffix[0]);
+      IF room < 150 THEN room := 150;
+      PsAppendText(suffix, PsElide(CStrToStr255(tok^.file_name), room));
     END;
   END;
-  EPrint(msg);
+  room := 255 - ORD(suffix[0]);
+  IF ORD(msg[0]) > room THEN
+    buf := PsElide(msg, room)
+  ELSE
+    buf := msg;
+  PsAppendText(buf, suffix);
+  EPrint(buf);
   exit(1);
 END;
 
@@ -792,16 +866,16 @@ BEGIN
   CreateTriviaNode := node;
 END;
 
-FUNCTION CreateLeadTriviaNode(type_name: Str255): ADRMEM;
-{ CreateTriviaNode for a node built before its first token is consumed (an
-  assignment, a call, RETURN, a labelled or empty statement, a CASE
-  element): it also takes
-  that token's leading comments, now. They used to ride on whatever trivia
-  node came next, often in another statement, and moved again on every
-  pretty81 pass. }
+PROCEDURE DrainCommentsToField(node: ADRMEM; field_name: Str255);
+{ Drain pending_leading and the current token's leading_comments into the
+  array field `field_name' on `node', creating the array only if at least
+  one comment is present. Used for comments right before END/UNTIL
+  (`end_comments') and after the final period (`eof_comments'). }
 VAR
   pt: PToken;
+  comments_arr, key_ptr: ADRMEM;
   ci: INTEGER32;
+  i: INTEGER;
 BEGIN
   pt := GetTok(0);
   IF pt^.has_leading_comment THEN
@@ -815,7 +889,47 @@ BEGIN
       END;
     pt^.has_leading_comment := FALSE;
   END;
-  CreateLeadTriviaNode := CreateTriviaNode(type_name);
+  IF (pending_leading_count > 0) AND (node <> NIL) THEN
+  BEGIN
+    key_ptr := MakeCStr(field_name);
+    comments_arr := cJSON_GetObjectItemCaseSensitive(node, key_ptr);
+    IF comments_arr = NIL THEN
+    BEGIN
+      comments_arr := cJSON_CreateArray;
+      cJSON_AddItemToObject(node, key_ptr, comments_arr);
+    END;
+    FOR i := 1 TO pending_leading_count DO
+      cJSON_AddItemToArray(comments_arr, cJSON_CreateString(MakeCStr(pending_leading[i])));
+    pending_leading_count := 0;
+  END;
+END;
+
+PROCEDURE AttachLeadTrivia(node: ADRMEM);
+{ Drain current token's leading_comments and pending_leading onto `node'
+  without adding __node_type__ (used for RECORD field tuples as well as
+  ordinary AST nodes). }
+BEGIN
+  DrainCommentsToField(node, 'leading_comments');
+  last_created_node := node;
+END;
+
+PROCEDURE ClearTrailingTarget;
+BEGIN
+  last_created_node := NIL;
+  last_trailing_target := NIL;
+END;
+
+FUNCTION CreateLeadTriviaNode(type_name: Str255): ADRMEM;
+{ CreateTriviaNode for a node built before its first token is consumed (an
+  assignment, a call, RETURN, a labelled or empty statement, a CASE
+  element, a Block, a Param, a literal/designator): it also takes that
+  token's leading comments, now. }
+VAR
+  node: ADRMEM;
+BEGIN
+  node := CreateNode(type_name);
+  AttachLeadTrivia(node);
+  CreateLeadTriviaNode := node;
 END;
 
 { Re-point trailing-comment attachment at an enclosing node whose children

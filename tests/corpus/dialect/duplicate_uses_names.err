@@ -1,0 +1,8 @@
+Type checking failed:
+Identifier already declared in this scope: C1 at line 22 column 3
+Identifier already declared in this scope: t1 at line 29 column 3
+Identifier already declared in this scope: v1 at line 31 column 3
+Identifier already declared in this scope: RED at line 32 column 3
+Identifier already declared in this scope: aliasedp2 at line 33 column 3
+Identifier already declared in this scope: p1 at line 35 column 11
+Identifier already declared in this scope: f1 at line 39 column 10

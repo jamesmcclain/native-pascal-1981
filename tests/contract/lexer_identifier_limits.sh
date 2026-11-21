@@ -133,6 +133,20 @@ reject 'duplicate 255-character identifier' $'PROGRAM p;\nVAR '"$A"$': INTEGER;\
   "Type checking failed:
 $(elided 'Identifier already declared in this scope: ' "$A" ' at line 3 column 3')"
 
+# NEW-28: ParseFail elides a very long $INCLUDE file name instead of truncating the location.
+longinc="${X:0:205}_tail.inc"
+printf '  :=\n' > "$work/$longinc"
+printf 'PROGRAM p;\nBEGIN\n{$INCLUDE:\x27%s\x27}\nEND.\n' "$longinc" > "$work/parse_long_inc.pas"
+if (cd "$work" && "$OLDPWD/bin/pascal1981" parse_long_inc.pas -o parse_long_inc) > "$work/stdout" 2> "$work/stderr"; then
+  fail 'ParseFail long include file name accepted'
+elif grep -q 'at line 1 column 3 of file ' "$work/stderr" &&
+     grep -q '\.\.\..*_tail\.inc$' "$work/stderr"; then
+  pass 'ParseFail elides long include file name and keeps location'
+else
+  cat "$work/stderr" >&2
+  fail 'ParseFail elides long include file name and keeps location'
+fi
+
 # A run-time INITCK diagnostic is not a Str255: it names the whole identifier.
 printf '%s\n' 'PROGRAM p(OUTPUT);' '{$INITCK+}' "PROCEDURE q; VAR $A: INTEGER; BEGIN WRITELN($A) END;" \
   'BEGIN q END.' > "$work/initck.pas"

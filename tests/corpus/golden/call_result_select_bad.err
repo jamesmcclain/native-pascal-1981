@@ -1,0 +1,3 @@
+Type checking failed:
+Unknown field: missing at line 18 column 11
+VAR argument must be a variable in call to take_var_str at line 19 column 3

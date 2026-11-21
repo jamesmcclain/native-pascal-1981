@@ -1,0 +1,4 @@
+Type checking failed:
+GOTO to undefined label (routine-local only): 10 at line 13 column 3
+GOTO to undefined label (routine-local only): outer_done at line 14 column 3
+GOTO to undefined label (routine-local only): missing_lbl at line 15 column 3

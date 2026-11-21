@@ -32,9 +32,9 @@ fi
 if compile_ir tests/contract/descriptor/transport.pas "$work/transport.ll"; then
   pass 'transport fixture compiles'
   ir="$work/transport.ll"
-  expect_grep 'descriptor global storage' '^@p = global \{ ptr, i64 \} zeroinitializer' "$ir"
-  expect_grep 'descriptor record storage' '^@h = global \{ \{ ptr, i64 \} \} zeroinitializer' "$ir"
-  expect_grep 'descriptor array storage' '^@a = global \[2 x \{ ptr, i64 \}\] zeroinitializer' "$ir"
+  expect_grep 'descriptor global storage' '^@p = internal global \{ ptr, i64 \} zeroinitializer' "$ir"
+  expect_grep 'descriptor record storage' '^@h = internal global \{ \{ ptr, i64 \} \} zeroinitializer' "$ir"
+  expect_grep 'descriptor array storage' '^@a = internal global \[2 x \{ ptr, i64 \}\] zeroinitializer' "$ir"
   expect_grep 'whole descriptor load' 'load \{ ptr, i64 \}, ptr' "$ir"
   expect_grep 'whole descriptor alias store' 'store \{ ptr, i64 \} .*, ptr @alias' "$ir"
   expect_grep 'whole descriptor NEW publication' 'store \{ ptr, i64 \} .*, ptr @p' "$ir"
@@ -111,7 +111,7 @@ for backend in host nvptx; do
 done
 if compile_ir tests/contract/descriptor/device_interface_thin.pas "$work/device-interface.ll"; then
   pass 'spliced DEVICE interface compiles in host'
-  expect_grep 'DEVICE interface pointer storage stays thin after host restoration' '^@raw = global ptr null' "$work/device-interface.ll"
+  expect_grep 'DEVICE interface pointer storage stays thin after host restoration' '^@raw = internal global ptr null' "$work/device-interface.ll"
   expect_grep 'DEVICE interface kernel signature stays thin' '^declare void @touch\(ptr\)' "$work/device-interface.ll"
 else fail 'spliced DEVICE interface compiles in host'; diagnostic; fi
 if compile_ir tests/contract/descriptor/foreign_recursive_thin.pas "$work/recursive-thin.ll"; then

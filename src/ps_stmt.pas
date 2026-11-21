@@ -9,7 +9,7 @@ USES ps_base, ps_expr;
 
 FUNCTION ParseStatement: ADRMEM; FORWARD;
 FUNCTION ParseCompoundStmt: ADRMEM; FORWARD;
-FUNCTION ParseCompoundStmtList: ADRMEM; FORWARD;
+FUNCTION ParseCompoundStmtList(owner_node: ADRMEM): ADRMEM; FORWARD;
 FUNCTION ParseIfStmt: ADRMEM; FORWARD;
 FUNCTION ParseForStmt: ADRMEM; FORWARD;
 FUNCTION ParseWhileStmt: ADRMEM; FORWARD;
@@ -112,12 +112,13 @@ BEGIN
       ParseFail('Parser Error: statement failed to advance token stream');
     END;
   END;
+  DrainCommentsToField(node, 'end_comments');
   Expect('END');
   AddField(node, 'stmts', stmts_arr);
   ParseCompoundStmt := node;
 END;
 
-FUNCTION ParseCompoundStmtList: ADRMEM;
+FUNCTION ParseCompoundStmtList(owner_node: ADRMEM): ADRMEM;
 VAR
   arr, stmt_node: ADRMEM;
   start_pos: INTEGER32;
@@ -136,6 +137,7 @@ BEGIN
       ParseFail('Parser Error: statement failed to advance token stream');
     END;
   END;
+  DrainCommentsToField(owner_node, 'end_comments');
   Expect('END');
   ParseCompoundStmtList := arr;
 END;
@@ -217,7 +219,7 @@ END;
 
 FUNCTION ParseRepeatStmt: ADRMEM;
 VAR
-  node, stmts_arr: ADRMEM;
+  node, stmts_arr, stmt_node: ADRMEM;
   has_unroll: BOOLEAN;
   unroll_val: INTEGER;
 BEGIN
@@ -228,15 +230,20 @@ BEGIN
   stmts_arr := cJSON_CreateArray;
   IF CurKind <> 'UNTIL' THEN
   BEGIN
-    cJSON_AddItemToArray(stmts_arr, ParseStatement);
+    stmt_node := ParseStatement;
+    PinTrailingCommentTarget(stmt_node);
+    cJSON_AddItemToArray(stmts_arr, stmt_node);
     WHILE Match('SEMICOLON') DO
     BEGIN
       IF CurKind = 'UNTIL' THEN BREAK;
-      cJSON_AddItemToArray(stmts_arr, ParseStatement);
+      stmt_node := ParseStatement;
+      PinTrailingCommentTarget(stmt_node);
+      cJSON_AddItemToArray(stmts_arr, stmt_node);
     END;
     { Name the missing ";" between two statements (NEW-13). }
     IF (CurKind <> 'UNTIL') AND (CurKind <> 'EOF') THEN Expect('SEMICOLON');
   END;
+  DrainCommentsToField(node, 'end_comments');
   Expect('UNTIL');
   AddField(node, 'body', stmts_arr);
   AddField(node, 'cond', ParseBooleanExpression);
@@ -347,6 +354,7 @@ BEGIN
     AddField(node, 'otherwise', ParseOtherwiseList)
   ELSE
     AddNullField(node, 'otherwise');
+  DrainCommentsToField(node, 'end_comments');
   Expect('END');
   { ParseStatement supplies the policy captured at CASE, not after END. }
   ParseCaseStmt := node;

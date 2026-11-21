@@ -10,8 +10,120 @@ IMPLEMENTATION OF tc_stmt;
 
 FUNCTION cJSON_GetArraySize(arr: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_GetArrayItem(arr: ADRMEM; index: CINT): ADRMEM [C]; EXTERN;
+FUNCTION cJSON_IsNumber(item: ADRMEM): CINT [C]; EXTERN;
+
+CONST
+  MAX_ROUTINE_LABELS = 256;
+
+VAR
+  routine_labels: ARRAY [1..MAX_ROUTINE_LABELS] OF Str255;
+  nroutine_labels: INTEGER32;
 
 PROCEDURE CheckStmt(node: ADRMEM); FORWARD;
+
+FUNCTION TcLabelKey(node: ADRMEM; VAR display: Str255): Str255;
+{ Normalize a LabelStmt/GotoStmt 'label' field: a JSON number is a numeric
+  label, and a JSON string is an identifier label matched case-insensitively. }
+VAR
+  item: ADRMEM;
+  v: INTEGER64;
+BEGIN
+  item := GetObj(node, 'label');
+  IF (item <> NIL) AND (cJSON_IsNumber(item) <> 0) THEN
+  BEGIN
+    v := GetInt(node, 'label');
+    IF v < 0 THEN v := v + 65536;
+    display := Int64Text(v);
+    TcLabelKey := display;
+  END
+  ELSE
+  BEGIN
+    display := GetStr(node, 'label');
+    TcLabelKey := UpperStr(display);
+  END;
+END;
+
+PROCEDURE CollectRoutineLabels(stmt: ADRMEM); FORWARD;
+
+PROCEDURE CollectRoutineLabelsArr(arr: ADRMEM);
+VAR
+  n, i: INTEGER32;
+BEGIN
+  IF arr <> NIL THEN
+  BEGIN
+    n := cJSON_GetArraySize(arr);
+    FOR i := 0 TO n - 1 DO
+      CollectRoutineLabels(cJSON_GetArrayItem(arr, i));
+  END;
+END;
+
+PROCEDURE CollectRoutineLabels(stmt: ADRMEM);
+{ Collect every LabelStmt target reachable within the current routine body
+  (matching cg_stmt.pas CollectLabels), so GotoStmt can diagnose undefined
+  or non-local labels with a source location (NEW-42). }
+VAR
+  nt, key, display: Str255;
+  elements, el: ADRMEM;
+  n, i: INTEGER32;
+  found: BOOLEAN;
+BEGIN
+  IF stmt = NIL THEN RETURN;
+  nt := NodeType(stmt);
+  IF nt = 'CompoundStmt' THEN
+    CollectRoutineLabelsArr(GetObj(stmt, 'stmts'))
+  ELSE IF nt = 'IfStmt' THEN
+  BEGIN
+    CollectRoutineLabels(GetObj(stmt, 'then_branch'));
+    CollectRoutineLabels(GetObjOrNil(stmt, 'else_branch'));
+  END
+  ELSE IF nt = 'WhileStmt' THEN
+    CollectRoutineLabels(GetObj(stmt, 'body'))
+  ELSE IF nt = 'RepeatStmt' THEN
+    CollectRoutineLabelsArr(GetObj(stmt, 'body'))
+  ELSE IF nt = 'ForStmt' THEN
+    CollectRoutineLabels(GetObj(stmt, 'body'))
+  ELSE IF nt = 'WithStmt' THEN
+    CollectRoutineLabels(GetObj(stmt, 'body'))
+  ELSE IF nt = 'CaseStmt' THEN
+  BEGIN
+    elements := GetObj(stmt, 'elements');
+    n := cJSON_GetArraySize(elements);
+    FOR i := 0 TO n - 1 DO
+    BEGIN
+      el := cJSON_GetArrayItem(elements, i);
+      CollectRoutineLabels(GetObj(el, 'stmt'));
+    END;
+    CollectRoutineLabels(GetObjOrNil(stmt, 'otherwise'));
+  END
+  ELSE IF nt = 'LabelStmt' THEN
+  BEGIN
+    key := TcLabelKey(stmt, display);
+    found := FALSE;
+    FOR i := 1 TO nroutine_labels DO
+      IF routine_labels[i] = key THEN found := TRUE;
+    IF (NOT found) AND (nroutine_labels < MAX_ROUTINE_LABELS) THEN
+    BEGIN
+      nroutine_labels := nroutine_labels + 1;
+      routine_labels[nroutine_labels] := key;
+    END;
+    CollectRoutineLabels(GetObj(stmt, 'stmt'));
+  END;
+END;
+
+PROCEDURE CheckGotoStmt(node: ADRMEM);
+{ Kept out of CheckStmtBody to preserve its stack headroom (CMP-65). }
+VAR
+  key, display: Str255;
+  i: INTEGER32;
+  found: BOOLEAN;
+BEGIN
+  key := TcLabelKey(node, display);
+  found := FALSE;
+  FOR i := 1 TO nroutine_labels DO
+    IF routine_labels[i] = key THEN found := TRUE;
+  IF NOT found THEN
+    AddError2('GOTO to undefined label (routine-local only): ', display);
+END;
 
 PROCEDURE CheckUnrollHint(node: ADRMEM; loop_name: Str255);
 VAR
@@ -57,6 +169,14 @@ BEGIN
   n := cJSON_GetArraySize(arr);
   FOR i := 0 TO n - 1 DO
     CheckStmt(cJSON_GetArrayItem(arr, i));
+END;
+
+PROCEDURE CheckRoutineBody(arr: ADRMEM);
+BEGIN
+  nroutine_labels := 0;
+  CollectRoutineLabelsArr(arr);
+  CheckStmtList(arr);
+  nroutine_labels := 0;
 END;
 
 FUNCTION IsAddressLikeType(tk: INTEGER): BOOLEAN;
@@ -190,12 +310,8 @@ VAR
 BEGIN
   IF NodeType(label_node) = 'RangeExpr' THEN
   BEGIN
-    { Neither codegen nor the Python reference lowers a label range; say so
-      here, where the whole CASE is still in view and the rest of the
-      compiland's errors are collected, rather than at codegen's abort. }
-    AddError('a CASE label range (lo..hi) is not yet supported');
-    label_tk := CheckExprForTarget(GetObj(label_node, 'low'), sel_tk);
-    label_tk := CheckExprForTarget(GetObj(label_node, 'high'), sel_tk);
+    CheckCaseLabel(GetObj(label_node, 'low'), sel_tk, sel_sem);
+    CheckCaseLabel(GetObj(label_node, 'high'), sel_tk, sel_sem);
   END
   ELSE
   BEGIN
@@ -274,7 +390,9 @@ BEGIN
       { A selected pointer such as q^.next or a[i]. }
       cond_tk := CheckDesignator(warg);
       IF (cond_tk <> TK_POINTER) AND (cond_tk <> TK_UNKNOWN) THEN
-        AddError('NEW/DISPOSE argument must be a POINTER variable');
+        AddError('NEW/DISPOSE argument must be a POINTER variable')
+      ELSE IF (cond_tk = TK_POINTER) AND (last_designator_write_kind <> WRITABLE_OK) THEN
+        AddError('NEW/DISPOSE argument must be a writable POINTER variable');
     END
     ELSE IF NodeType(warg) <> 'Identifier' THEN
       AddError('NEW/DISPOSE argument must be a pointer variable')
@@ -283,7 +401,9 @@ BEGIN
       IF si = 0 THEN
         AddUndefinedIdentifier(warg)
       ELSE IF symbols[si].tk <> TK_POINTER THEN
-        AddError('NEW/DISPOSE argument must be a POINTER variable');
+        AddError('NEW/DISPOSE argument must be a POINTER variable')
+      ELSE IF (symbols[si].kind <> 'VAR') OR symbols[si].is_const_param THEN
+        AddError('NEW/DISPOSE argument must be a writable POINTER variable');
     END;
     IF nargs = 2 THEN
       cond_tk := CheckExpr(cJSON_GetArrayItem(args_arr, 1));
@@ -316,7 +436,7 @@ BEGIN
       si := LookupSymbol(GetStr(arg, 'name'));
       IF si = 0 THEN
         AddUndefinedIdentifier(arg)
-      ELSE IF (symbols[si].kind <> 'VAR') OR
+      ELSE IF (symbols[si].kind <> 'VAR') OR symbols[si].is_const_param OR
               (symbols[si].tk <> TK_STRING) OR (symbols[si].aux2 <> 0) THEN
         AddError('COPYSTR destination must be a bare STRING variable');
     END;
@@ -349,7 +469,7 @@ BEGIN
       si := LookupSymbol(GetStr(arg, 'name'));
       IF si = 0 THEN
         AddUndefinedIdentifier(arg)
-      ELSE IF (symbols[si].kind <> 'VAR') OR
+      ELSE IF (symbols[si].kind <> 'VAR') OR symbols[si].is_const_param OR
               (symbols[si].tk <> TK_STRING) OR (symbols[si].aux2 <> 1) THEN
         AddError('INSERT destination must be a bare LSTRING variable');
     END;
@@ -379,7 +499,7 @@ BEGIN
       si := LookupSymbol(GetStr(arg, 'name'));
       IF si = 0 THEN
         AddUndefinedIdentifier(arg)
-      ELSE IF (symbols[si].kind <> 'VAR') OR
+      ELSE IF (symbols[si].kind <> 'VAR') OR symbols[si].is_const_param OR
               (symbols[si].tk <> TK_STRING) OR (symbols[si].aux2 <> 1) THEN
         AddError('DELETE destination must be a bare LSTRING variable');
     END;
@@ -418,19 +538,149 @@ BEGIN
       si := LookupSymbol(GetStr(arg, 'name'));
       IF si = 0 THEN
         AddUndefinedIdentifier(arg)
-      ELSE IF (symbols[si].kind <> 'VAR') OR
+      ELSE IF (symbols[si].kind <> 'VAR') OR symbols[si].is_const_param OR
               (symbols[si].tk <> TK_STRING) OR (symbols[si].aux2 <> 1) THEN
         AddError('COPYLST destination must be a bare LSTRING variable');
     END;
   END;
 END;
 
+FUNCTION WriteArrayElemTk(expr: ADRMEM): INTEGER;
+{ Element type kind of an expression CheckExpr just typed as TK_ARRAY, for
+  distinguishing a writable one-dimensional ARRAY OF CHAR from an array of
+  non-CHAR (including an array of CHAR arrays, CMP-26r). }
+VAR
+  nt: Str255;
+  si: INTEGER32;
+BEGIN
+  WriteArrayElemTk := TK_UNKNOWN;
+  nt := NodeType(expr);
+  IF nt = 'Designator' THEN
+    WriteArrayElemTk := last_designator_aux
+  ELSE IF nt = 'Identifier' THEN
+  BEGIN
+    si := LookupSymbol(GetStr(expr, 'name'));
+    IF si <> 0 THEN
+    BEGIN
+      IF symbols[si].kind = 'FUNC' THEN
+        WriteArrayElemTk := symbols[si].ret_aux
+      ELSE
+        WriteArrayElemTk := symbols[si].aux;
+    END;
+  END
+  ELSE IF nt = 'FuncCall' THEN
+  BEGIN
+    si := LookupSymbol(GetStr(expr, 'name'));
+    IF si <> 0 THEN
+      WriteArrayElemTk := symbols[si].ret_aux;
+  END;
+END;
+
+PROCEDURE CheckWriteArgType(wexpr: ADRMEM; tk: INTEGER);
+{ Reject non-writable aggregate arguments in the typechecker with a source
+  location instead of failing later in codegen (CMP-26r). One-dimensional
+  ARRAY OF CHAR (or CHAR subrange) stays accepted, matching cg_io.pas. }
+VAR
+  elem_tk: INTEGER;
+  saved_line, saved_col: INTEGER32;
+  saved_loc: ADRMEM;
+  bad: BOOLEAN;
+BEGIN
+  IF (tk = TK_UNKNOWN) OR (tk = TK_VOID) THEN RETURN;
+  bad := FALSE;
+  IF tk = TK_ARRAY THEN
+  BEGIN
+    elem_tk := WriteArrayElemTk(wexpr);
+    IF (elem_tk <> TK_CHAR) AND (elem_tk <> TK_UNKNOWN) THEN bad := TRUE;
+  END
+  ELSE IF (tk = TK_RECORD) OR (tk = TK_SET) OR (tk = TK_FILE) OR (tk = TK_VECTOR) THEN
+    bad := TRUE;
+  IF bad THEN
+  BEGIN
+    TcEnterLocation(wexpr, saved_line, saved_col, saved_loc);
+    AddError('WRITE/WRITELN only supports scalar, string, or one-dimensional ARRAY OF CHAR arguments');
+    TcLeaveLocation(saved_line, saved_col, saved_loc);
+  END;
+END;
+
+PROCEDURE CheckAssignStmt(node: ADRMEM);
+{ Kept out of CheckStmtBody so its recursive frame stays small (tests/corpus/depth.sh). }
+VAR
+  target_node, expr_node: ADRMEM;
+  varname: Str255;
+  target_tk, expr_tk, target_set_sem_base: INTEGER;
+  target_scalar_sem_base, target_write_kind, fn_frame: INTEGER;
+  target_super_str, expr_super_str: INTEGER;
+  target_is_lstring: BOOLEAN;
+BEGIN
+  target_node := GetObj(node, 'target');
+  expr_node := GetObj(node, 'expr');
+  varname := GetStr(target_node, 'name');
+  target_super_str := 0;
+  expr_super_str := 0;
+  fn_frame := ActiveFuncResultFrame(varname);
+  IF (fn_frame <> 0) AND
+     (cJSON_GetArraySize(GetObj(target_node, 'selectors')) = 0) THEN
+  BEGIN
+    { `F := expr` inside F's own body (or a nested routine inside F)
+      assigns through the return-value slot, not any symbol-table entry.
+      Matches case-insensitively (NEW-44) and respects inner shadowing. }
+    target_tk := func_frames[fn_frame].ret_tk;
+    target_set_sem_base := func_frames[fn_frame].set_sem_base;
+    target_scalar_sem_base := func_frames[fn_frame].scalar_sem_base;
+    target_is_lstring := (target_tk = TK_STRING) AND (func_frames[fn_frame].aux2 = 1);
+    target_write_kind := WRITABLE_OK;
+  END
+  ELSE BEGIN
+    target_tk := CheckDesignator(target_node);
+    target_set_sem_base := last_designator_set_sem_base;
+    target_scalar_sem_base := last_designator_scalar_sem_base;
+    target_is_lstring := (target_tk = TK_STRING) AND (last_designator_aux2 = 1);
+    target_write_kind := last_designator_write_kind;
+    target_super_str := last_designator_super_str;
+  END;
+  { Snapshot before descending into the RHS: nested designators and calls
+    overwrite their global result channels. }
+  expr_tk := CheckExprForSetTarget(expr_node, target_tk, target_set_sem_base);
+  IF (NodeType(expr_node) = 'Designator') OR (NodeType(expr_node) = 'PostfixExpr') THEN
+    expr_super_str := last_designator_super_str;
+  IF target_write_kind = WRITABLE_CONST THEN
+    AddError2('Cannot assign to a constant: ', varname)
+  ELSE IF target_write_kind = WRITABLE_CONST_PARAM THEN
+    AddError2('Cannot assign to a CONST parameter: ', varname)
+  ELSE IF target_write_kind = WRITABLE_NON_VAR THEN
+  BEGIN
+    IF varname = '' THEN
+      AddError('Cannot assign to a non-variable')
+    ELSE
+      AddError2('Cannot assign to a non-variable: ', varname);
+  END
+  { A super-array STRING/LSTRING formal or pointer referent is assigned and
+    read only by component (IBM manual 6-15, 6-16, 6-19); COPYLST, COPYSTR
+    and the other string procedures or conformant formals take it whole. }
+  ELSE IF SuperStringRefSym(target_node) <> 0 THEN
+    AddError2('Cannot assign to a super-array STRING/LSTRING parameter as a whole: ', varname)
+  ELSE IF SuperStringRefSym(expr_node) <> 0 THEN
+    AddError2('Cannot assign a super-array STRING/LSTRING parameter as a whole to: ', varname)
+  ELSE IF target_super_str <> 0 THEN
+    AddError2('Cannot assign to a super-array STRING/LSTRING referent as a whole: ', varname)
+  ELSE IF expr_super_str <> 0 THEN
+    AddError2('Cannot assign a super-array STRING/LSTRING referent as a whole to: ', varname)
+  { CHAR converts automatically to LSTRING (IBM manual 6-18, NEW-33). }
+  ELSE IF NOT (CanAssign(target_tk, expr_tk) OR (target_is_lstring AND (expr_tk = TK_CHAR))) THEN
+    AddError2('Cannot assign incompatible type without narrowing: ', varname)
+  { Two enumerations are never assignment compatible. Both identities
+    must be known (a deep selection's is read back from its type node). }
+  ELSE IF (target_tk = TK_ENUM) AND (expr_tk = TK_ENUM) AND
+          SemanticBasesConflict(target_scalar_sem_base, last_sem_scalar_base) THEN
+    AddError2('Cannot assign a value of a different enumeration type: ', varname);
+END;
+
 PROCEDURE CheckStmtBody(node: ADRMEM);
 VAR
   nt, varname: Str255;
-  target_node, expr_node, cond_node, args_arr, warg, wexpr: ADRMEM;
-  target_tk, expr_tk, cond_tk, vi, target_set_sem_base: INTEGER;
-  target_scalar_sem_base: INTEGER;
+  args_arr, warg, wexpr: ADRMEM;
+  expr_tk, cond_tk, vi: INTEGER;
   si: INTEGER32;
   nargs, i, start_arg: INTEGER32;
   pname: Str255;
@@ -447,45 +697,7 @@ BEGIN
   ELSE
     nt := NodeType(node);
   IF nt = 'AssignStmt' THEN
-  BEGIN
-    target_node := GetObj(node, 'target');
-    expr_node := GetObj(node, 'expr');
-    varname := GetStr(target_node, 'name');
-    IF (cur_func_name <> '') AND (varname = cur_func_name) AND
-       (cJSON_GetArraySize(GetObj(target_node, 'selectors')) = 0) THEN
-    BEGIN
-      { `F := expr` inside F's own body assigns through the return-value
-        slot, not any symbol-table entry (see cur_func_name's doc comment
-        -- this must NOT fall through to CheckDesignator, which would
-        either miss it (no such VAR symbol) or, worse, collide with a
-        same-named callable symbol). }
-      target_tk := cur_func_ret_tk;
-      target_set_sem_base := cur_func_set_sem_base;
-      target_scalar_sem_base := SB_UNKNOWN;
-    END
-    ELSE BEGIN
-      target_tk := CheckDesignator(target_node);
-      target_set_sem_base := last_designator_set_sem_base;
-      target_scalar_sem_base := last_designator_scalar_sem_base;
-    END;
-    { Snapshot before descending into the RHS: nested designators and calls
-      overwrite their global result channels. }
-    expr_tk := CheckExprForSetTarget(expr_node, target_tk, target_set_sem_base);
-    { A super-array STRING/LSTRING formal is assigned and read only by
-      component (IBM manual 6-16, 6-19); COPYLST, COPYSTR and the other
-      string procedures take it whole (NEW-29). }
-    IF SuperStringRefSym(target_node) <> 0 THEN
-      AddError2('Cannot assign to a super-array STRING/LSTRING parameter as a whole: ', varname)
-    ELSE IF SuperStringRefSym(expr_node) <> 0 THEN
-      AddError2('Cannot assign a super-array STRING/LSTRING parameter as a whole to: ', varname)
-    ELSE IF NOT CanAssign(target_tk, expr_tk) THEN
-      AddError2('Cannot assign incompatible type without narrowing: ', varname)
-    { Two enumerations are never assignment compatible. Both identities
-      must be known (a deep selection's is read back from its type node). }
-    ELSE IF (target_tk = TK_ENUM) AND (expr_tk = TK_ENUM) AND
-            SemanticBasesConflict(target_scalar_sem_base, last_sem_scalar_base) THEN
-      AddError2('Cannot assign a value of a different enumeration type: ', varname);
-  END
+    CheckAssignStmt(node)
   ELSE IF nt = 'IfStmt' THEN
   BEGIN
     cond_tk := CheckExpr(GetObj(node, 'cond'));
@@ -519,7 +731,9 @@ BEGIN
       AddError2('Undefined identifier: ', varname)
     ELSE BEGIN
       vi := symbols[si].tk;
-      IF symbols[si].is_ref_param THEN
+      IF symbols[si].kind <> 'VAR' THEN
+        AddError2('FOR control variable must be a variable: ', varname)
+      ELSE IF symbols[si].is_ref_param THEN
         AddError2('FOR control variable cannot be a reference parameter: ',
                   varname);
       IF NOT IsOrdinal(vi) THEN
@@ -604,7 +818,22 @@ BEGIN
         IF NodeType(warg) = 'WriteArg' THEN
         BEGIN
           wexpr := GetObj(warg, 'expr');
-          IF wexpr <> NIL THEN cond_tk := CheckExpr(wexpr);
+          IF wexpr <> NIL THEN
+          BEGIN
+            cond_tk := CheckExpr(wexpr);
+            CheckWriteArgType(wexpr, cond_tk);
+          END;
+        END
+        ELSE IF (pname = 'READ') OR (pname = 'READLN') THEN
+        BEGIN
+          cond_tk := CheckExpr(warg);
+          IF cond_tk <> TK_UNKNOWN THEN
+          BEGIN
+            IF ArgWriteKind(warg) = WRITABLE_CONST_PARAM THEN
+              AddError('READ/READLN argument cannot be a CONST parameter')
+            ELSE IF ArgWriteKind(warg) = WRITABLE_CONST THEN
+              AddError('READ/READLN argument cannot be a constant');
+          END;
         END;
       END;
     END
@@ -684,6 +913,8 @@ BEGIN
           si := LookupSymbol(GetStr(warg, 'name'));
           IF si = 0 THEN
             AddUndefinedIdentifier(warg)
+          ELSE IF (symbols[si].kind <> 'VAR') OR symbols[si].is_const_param THEN
+            AddError('READSET destination must be a writable LSTRING variable')
           ELSE IF symbols[si].tk <> TK_STRING THEN
             AddError('READSET destination must be STRING or LSTRING');
         END;
@@ -723,7 +954,14 @@ BEGIN
         AddError('CONCAT requires exactly two arguments')
       ELSE
         FOR i := 0 TO nargs - 1 DO
-          cond_tk := CheckExpr(cJSON_GetArrayItem(args_arr, i));
+        BEGIN
+          warg := cJSON_GetArrayItem(args_arr, i);
+          cond_tk := CheckExpr(warg);
+          IF (i = 0) AND (cond_tk <> TK_UNKNOWN) AND
+             ((ArgWriteKind(warg) = WRITABLE_CONST_PARAM) OR
+              (ArgWriteKind(warg) = WRITABLE_CONST)) THEN
+            AddError('CONCAT destination must be a writable string variable');
+        END;
     END
     ELSE IF IsHostDeviceIntrinsic(pname) THEN
       CheckHostDeviceIntrinsic(node, pname)
@@ -739,9 +977,14 @@ BEGIN
         AddError('VSTORE requires exactly three arguments (an array, an index and a VECTOR value)')
       ELSE
       BEGIN
-        cond_tk := CheckExpr(cJSON_GetArrayItem(args_arr, 0));
+        warg := cJSON_GetArrayItem(args_arr, 0);
+        cond_tk := CheckExpr(warg);
         IF (cond_tk <> TK_ARRAY) AND (cond_tk <> TK_UNKNOWN) THEN
-          AddError('VSTORE first argument must be an array');
+          AddError('VSTORE first argument must be an array')
+        ELSE IF (cond_tk = TK_ARRAY) AND
+                ((ArgWriteKind(warg) = WRITABLE_CONST_PARAM) OR
+                 (ArgWriteKind(warg) = WRITABLE_CONST)) THEN
+          AddError('VSTORE destination must be a writable array');
         cond_tk := CheckExpr(cJSON_GetArrayItem(args_arr, 1));
         IF NOT IsInteger(cond_tk) AND (cond_tk <> TK_UNKNOWN) THEN
           AddError('VSTORE index must be an integer type');
@@ -782,18 +1025,9 @@ BEGIN
   ELSE IF nt = 'CompoundStmt' THEN
     CheckCompoundOrStmt(node)
   ELSE IF nt = 'LabelStmt' THEN
-    { <label>: <stmt> -- the label declaration/target itself isn't checked
-      (matching the Python reference, which builds no label table and
-      leaves GOTO unchecked; codegen.pas is the enforcement point for
-      "GOTO to undefined label", same as the reference), but the *inner*
-      statement must still be walked. Omitting this case previously meant
-      any statement reached only via a label silently skipped type
-      checking -- the same class of bug as the historical CompoundStmt
-      dispatch gap (see this file's header comment / §1.7). }
     CheckStmt(GetObj(node, 'stmt'))
   ELSE IF nt = 'GotoStmt' THEN
-    { No-op: see the LabelStmt case's comment above. }
-    BEGIN END
+    CheckGotoStmt(node)
   ELSE IF nt = 'WithStmt' THEN
   BEGIN
     { WITH t1, t2, ... DO body -- equivalent to WITH t1 DO WITH t2 DO ...
@@ -824,6 +1058,7 @@ BEGIN
             symbols[si].type_bound := last_designator_type_bound;
             symbols[si].set_sem_base := fields[fi].set_sem_base;
             symbols[si].scalar_sem_base := fields[fi].scalar_sem_base;
+            symbols[si].is_const_param := last_designator_write_kind <> WRITABLE_OK;
           END;
       END
       ELSE IF with_tk <> TK_UNKNOWN THEN

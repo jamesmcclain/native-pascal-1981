@@ -196,7 +196,7 @@ END;
 PROCEDURE CodegenAssignStmt(stmt: ADRMEM);
 VAR
   target, sel: ADRMEM;
-  nm: Str255;
+  nm, unm, ufn: Str255;
   symi: INTEGER32;
   v, addr, saved_taint, shadow: ADRMEM;
   target_tid: INTEGER;
@@ -214,7 +214,9 @@ BEGIN
   nm := GetStr(target, 'name');
 
   res_frame := -1;
-  IF (ArrSize(sel) = 0) AND (cur_func_name <> '') AND (nm = cur_func_name) THEN
+  unm := UpperStr(nm);
+  ufn := UpperStr(cur_func_name);
+  IF (ArrSize(sel) = 0) AND (cur_func_name <> '') AND (unm = ufn) THEN
   BEGIN
     res_frame := 0;
     res_tk := cur_func_ret_tk;
@@ -298,6 +300,9 @@ BEGIN
   BEGIN
     addr := ComputeDesignatorAddress(target);
     target_tid := last_val_tk;
+    IF ((TypeKind(target_tid) = TK_STRING) OR (TypeKind(target_tid) = TK_LSTRING)) AND
+       types[target_tid].is_super THEN
+      AbortWith2('codegen: a super-array STRING/LSTRING referent cannot be assigned as a whole: ', nm);
     lstring_capacity := last_desig_lstring_capacity;
     lstring_is_length := last_desig_lstring_is_length;
     lstring_dyncap := last_desig_lstring_dyncap;
@@ -420,14 +425,17 @@ VAR
   n, i, nc, ci: INTEGER32;
   end_bb, cur_test_bb, next_test_bb, body_bb, miss_bb: ADRMEM;
   otherwise_stmt: ADRMEM;
-  check_miss: BOOLEAN;
-  cond_val, one_cond, cval: ADRMEM;
+  check_miss, unsigned_case: BOOLEAN;
+  cond_val, one_cond, cval, low_val, high_val, ge_cond, le_cond: ADRMEM;
 BEGIN
   case_val := CodegenExpr(GetObj(stmt, 'expr'));
   case_tk := last_val_tk;
   IF NOT (IsIntegerFamilyTk(case_tk) OR (case_tk = TK_CHAR)
           OR (case_tk = TK_BOOLEAN) OR (TypeKind(case_tk) = TK_ENUM)) THEN
     AbortWith('codegen: a CASE selector must be an ordinal type');
+  unsigned_case := IsUnsignedWordTk(SubrangeBaseTid(case_tk))
+    OR (TypeKind(case_tk) = TK_CHAR)
+    OR (TypeKind(case_tk) = TK_BOOLEAN);
 
   elements := GetObj(stmt, 'elements');
   n := ArrSize(elements);
@@ -453,13 +461,21 @@ BEGIN
       c := ArrItem(constants, ci);
       IF NodeType(c) = 'RangeExpr' THEN
       BEGIN
-        { The Python reference's codegen_case_stmt does not support a
-          RangeExpr CASE constant either (it raises "Expression type
-          RangeExpr not yet supported"), so rejecting it here too is
-          matching that limitation, not falling short of it -- confirmed by
-          running the same input through both pipelines. }
-        AbortWith('codegen: a CASE label range (lo..hi) is not yet supported');
-        one_cond := NIL;
+        low_val := CodegenExpr(GetObj(c, 'low'));
+        low_val := CoerceForAssign(low_val, last_val_tk, case_tk, GetObj(c, 'low'), 'a CASE label');
+        high_val := CodegenExpr(GetObj(c, 'high'));
+        high_val := CoerceForAssign(high_val, last_val_tk, case_tk, GetObj(c, 'high'), 'a CASE label');
+        IF unsigned_case THEN
+        BEGIN
+          ge_cond := LLVMBuildICmp(builder, LLVMIntUGE, case_val, low_val, MakeCStr(''));
+          le_cond := LLVMBuildICmp(builder, LLVMIntULE, case_val, high_val, MakeCStr(''));
+        END
+        ELSE
+        BEGIN
+          ge_cond := LLVMBuildICmp(builder, LLVMIntSGE, case_val, low_val, MakeCStr(''));
+          le_cond := LLVMBuildICmp(builder, LLVMIntSLE, case_val, high_val, MakeCStr(''));
+        END;
+        one_cond := LLVMBuildAnd(builder, ge_cond, le_cond, MakeCStr(''));
       END
       ELSE
       BEGIN
@@ -1783,7 +1799,8 @@ BEGIN
     IF TypeKind(ptr_tid) <> TK_POINTER THEN
       AbortWith2('codegen: argument is not a POINTER variable: ', name);
     pointee_tid := types[ptr_tid].elem_tid;
-    IF TypeKind(pointee_tid) = TK_ARRAY THEN
+    IF (TypeKind(pointee_tid) = TK_ARRAY) OR (TypeKind(pointee_tid) = TK_STRING) OR
+       (TypeKind(pointee_tid) = TK_LSTRING) THEN
       IF types[pointee_tid].is_super AND NOT IsHostDescriptor(ptr_tid) THEN
         AbortWith('codegen: host NEW/DISPOSE of SUPER ARRAY requires a descriptor pointer');
     IF name = 'NEW' THEN

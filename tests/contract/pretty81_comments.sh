@@ -87,10 +87,13 @@ for dialect in vintage extended; do
   for line in '{ Leading comment of the program. }' '{ A parenthesised leading comment. }' \
       '  K = 3; { trailing after K }' '  L = 4; { trailing star after L }' \
       '  i: INTEGER; { no spaces }' '  j: INTEGER; { lots of spaces }' \
-      '{ one }' '{ two }' '  { leading statement comment }' \
-      "  WRITELN('p') { trailing statement comment };" '  { before an assignment }' \
+      '{ one }' '{ two }' '{ after heading }' '  { after BEGIN }' \
+      '  { leading statement comment }' \
+      "  WRITELN('p') { trailing statement comment };" 'END; { after END }' \
+      '  { before an assignment }' \
       '  f := (x * 2) (* trailing star with a } brace *);' \
-      '  { tab-indented comment }' '    { before an arm }' \
+      '  { tab-indented comment }' '    { then-comment }' '    { else-comment }' \
+      '    { before an arm }' \
       "      WRITELN('zero') { case arm };" '  WRITELN(f(2)) { };'; do
     grep -qxF -- "$line" "$work/p1.pas" || { echo "missing: $line"; missing=1; }
   done
@@ -102,6 +105,85 @@ for dialect in vintage extended; do
     pass "printed comment fixture behaves the same ($dialect)"
   else
     fail "printed comment fixture behaves the same ($dialect)"
+  fi
+done
+
+# NEW-25: comments inside expressions, on record fields, on routine
+# parameters and types, in routine blocks, before END, after the final
+# period, and after THEN (staying in the THEN branch).
+cat > "$work/all_comments.pas" <<'P'
+{ Leading program comment }
+PROGRAM all_comments(OUTPUT);
+TYPE
+  Rec = RECORD
+    { before field a }
+    a: INTEGER; { trailing field a }
+    b: { before field type } CHAR;
+    { before record end }
+  END;
+VAR
+  r: Rec;
+  i, j: INTEGER;
+  z: REAL;
+PROCEDURE p(
+  { before param x } x: { before param type } INTEGER { after param type }; { after param x }
+  VAR y: REAL
+); { after heading }
+VAR
+  k: INTEGER;
+BEGIN { after routine BEGIN }
+  { inside routine }
+  k := { before x } x { after x } + { before 1 } 1 { after 1 };
+  WRITELN(k)
+  { before routine END }
+END; { after routine END }
+BEGIN { after main BEGIN }
+  i := 1;
+  j := 2;
+  z := 1.0;
+  IF i < j THEN { then-comment }
+    p(i, z)
+  ELSE
+    { else-comment }
+    WRITELN('no');
+  WHILE i < 1 DO
+  BEGIN
+    i := i + 1;
+    { before inner END }
+  END;
+  { before final END }
+END. { same-line after period }
+{ after final period line 1 }
+{ after final period line 2 }
+P
+printf '%s\n' 2 > "$work/all_expected"
+
+for dialect in vintage extended; do
+  if twice "$work/all_comments.pas" "$dialect"; then
+    pass "NEW-25 fixture prints identically twice ($dialect)"
+  else
+    fail "NEW-25 fixture prints identically twice ($dialect)"
+  fi
+  missing=0
+  for needle in \
+      '{ Leading program comment }' '{ before field a }' '{ trailing field a }' \
+      '{ before field type }' '{ before record end }' \
+      '{ before param x }' '{ before param type }' '{ after param type }' '{ after param x }' \
+      '{ after heading }' '{ after routine BEGIN }' '{ inside routine }' \
+      '{ before x }' '{ after x }' '{ before 1 }' '{ after 1 }' \
+      '{ before routine END }' '{ after routine END }' '{ after main BEGIN }' \
+      '    { then-comment }' '    { else-comment }' \
+      '{ before inner END }' '{ before final END }' \
+      'END. { same-line after period }' \
+      '{ after final period line 1 }' '{ after final period line 2 }'; do
+    grep -qF -- "$needle" "$work/p1.pas" || { echo "NEW-25 missing: $needle"; missing=1; }
+  done
+  [[ $missing == 0 ]] && pass "NEW-25 comments preserved ($dialect)" || fail "NEW-25 comments preserved ($dialect)"
+  if bin/pascal1981 --dialect "$dialect" "$work/p1.pas" -o "$work/p1_all" &&
+     "$work/p1_all" > "$work/all_stdout" && diff -u "$work/all_expected" "$work/all_stdout"; then
+    pass "NEW-25 printed fixture behaves the same ($dialect)"
+  else
+    fail "NEW-25 printed fixture behaves the same ($dialect)"
   fi
 done
 

@@ -1,0 +1,4 @@
+Type checking failed:
+Cannot assign to a non-variable: Other at line 26 column 3
+Cannot assign to a non-variable: MkPair at line 27 column 3
+Cannot assign to a non-variable: Sibling at line 28 column 3

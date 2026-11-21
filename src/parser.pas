@@ -79,7 +79,7 @@ BEGIN
       iface_node := ParseInterfaceUnit(FALSE)
     ELSE
     BEGIN
-      pos := pos + 1;
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
       iface_node := ParseInterfaceUnit(TRUE);
     END;
     cJSON_AddItemToArray(interfaces_arr, iface_node);
@@ -98,21 +98,21 @@ BEGIN
       ast_root := ParseModuleUnit(FALSE)
     ELSE IF IsAtDevicePrefix('MODULE') THEN
     BEGIN
-      pos := pos + 1;
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
       ast_root := ParseModuleUnit(TRUE);
     END
     ELSE IF CurKind = 'INTERFACE' THEN
       ast_root := ParseInterfaceUnit(FALSE)
     ELSE IF IsAtDevicePrefix('INTERFACE') THEN
     BEGIN
-      pos := pos + 1;
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
       ast_root := ParseInterfaceUnit(TRUE);
     END
     ELSE IF CurKind = 'IMPLEMENTATION' THEN
       ast_root := ParseImplementationUnit(FALSE)
     ELSE IF IsAtDevicePrefix('IMPLEMENTATION') THEN
     BEGIN
-      pos := pos + 1;
+      BEGIN RelayTokenTrivia; pos := pos + 1; END;
       ast_root := ParseImplementationUnit(TRUE);
     END
     ELSE
@@ -158,6 +158,10 @@ BEGIN
     END;
     cJSON_Delete(interfaces_arr);
   END;
+
+  { Capture any comments after the final period (on the EOF token or still
+    queued in pending_leading). }
+  DrainCommentsToField(ast_root, 'eof_comments');
 
   { Exact REAL values; cJSON_Print keeps 15 digits (json_helpers.c). }
   json_out := pas_cjson_print_exact(ast_root, 1);

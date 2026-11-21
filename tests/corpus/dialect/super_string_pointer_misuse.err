@@ -1,0 +1,10 @@
+Type checking failed:
+Cannot assign to a super-array STRING/LSTRING referent as a whole: p at line 19 column 3
+Cannot assign to a super-array STRING/LSTRING referent as a whole: s at line 20 column 3
+Cannot assign a super-array STRING/LSTRING referent as a whole to: l at line 21 column 3
+Cannot assign a super-array STRING/LSTRING referent as a whole to: a at line 22 column 3
+A super-array STRING referent cannot be compared as a whole at line 23 column 3
+A super-array STRING/LSTRING referent can be passed only to a STRING or LSTRING super-array parameter in call to Fixed at line 24 column 3
+A super-array STRING/LSTRING referent can be passed only to a STRING or LSTRING super-array parameter in call to ValS at line 25 column 3
+A super-array STRING referent cannot be passed to an LSTRING parameter in call to PL at line 26 column 3
+A super-array STRING referent cannot be passed to an LSTRING parameter in call to CL at line 27 column 3

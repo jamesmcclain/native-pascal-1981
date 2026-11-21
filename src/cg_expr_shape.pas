@@ -134,7 +134,7 @@ BEGIN
       IsStringShapedExpr := (TypeKind(symbols[symi].tk) = TK_LSTRING) OR
         (TypeKind(symbols[symi].tk) = TK_STRING);
   END
-  ELSE IF NodeType(node) = 'Designator' THEN
+  ELSE IF (NodeType(node) = 'Designator') OR (NodeType(node) = 'PostfixExpr') THEN
   BEGIN
     dtid := StaticDesignatorType(node);
     IsStringShapedExpr := (TypeKind(dtid) = TK_LSTRING) OR

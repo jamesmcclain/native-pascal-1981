@@ -12,11 +12,11 @@
   though it preserves structure and comments. Every ordinary comment
   (captured by the lexer as token trivia and relayed onto AST nodes by
   the parser -- see lexer.pas RecordComment / ps_base.pas
-  CreateTriviaNode) that lands on a node printed here is re-emitted, one
-  comment per line (a multi-line comment is joined onto one line, see
-  CommentText); comments on other nodes (expressions, record fields,
-  parameter types, routine blocks) are still dropped. The output is a
-  fixed point: printing it again gives the same text, comments included
+  CreateTriviaNode) is re-emitted, including comments inside expressions,
+  on record fields, on routine parameters and types, in routine blocks,
+  before END/UNTIL, and after the final period (a multi-line comment is
+  joined onto one line, see CommentText). The output is a fixed point:
+  printing it again gives the same text, comments included
   (tests/contract/pretty81_comments.sh).
 
   Not part of the self-hosting core: gen1..gen4 only bootstrap lexer/
@@ -305,8 +305,44 @@ BEGIN
   CommentText := b;
 END;
 
+PROCEDURE PrintCommentsArray(node: ADRMEM; key_name: Str255);
+{ Each comment in `key_name' on its own indented line. }
+VAR
+  arr: ADRMEM;
+  n, i: INTEGER32;
+BEGIN
+  IF HasKey(node, key_name) THEN
+  BEGIN
+    arr := GetObj(node, key_name);
+    n := ArrSize(arr);
+    FOR i := 0 TO n - 1 DO
+    BEGIN
+      Ind;
+      OutLn(CommentText(CStrToStr255(cJSON_GetStringValue(ArrItem(arr, i)))));
+    END;
+  END;
+END;
+
 PROCEDURE PrintLeadingComments(node: ADRMEM);
 { Each comment on its own line, before the node. }
+BEGIN
+  PrintCommentsArray(node, 'leading_comments');
+END;
+
+PROCEDURE PrintEndComments(node: ADRMEM);
+{ Comments queued right before a closing END or UNTIL. }
+BEGIN
+  PrintCommentsArray(node, 'end_comments');
+END;
+
+PROCEDURE PrintEofComments(node: ADRMEM);
+{ Comments after the final period of a compilation unit. }
+BEGIN
+  PrintCommentsArray(node, 'eof_comments');
+END;
+
+PROCEDURE PrintInlineLeadingComments(node: ADRMEM);
+{ Leading comments inside an inline construct (expression, type, parameter). }
 VAR
   arr: ADRMEM;
   n, i: INTEGER32;
@@ -317,8 +353,8 @@ BEGIN
     n := ArrSize(arr);
     FOR i := 0 TO n - 1 DO
     BEGIN
-      Ind;
-      OutLn(CommentText(CStrToStr255(cJSON_GetStringValue(ArrItem(arr, i)))));
+      Out(CommentText(CStrToStr255(cJSON_GetStringValue(ArrItem(arr, i)))));
+      Out(Ch(' '));
     END;
   END;
 END;
@@ -355,6 +391,7 @@ VAR
   n, i: INTEGER32;
 BEGIN
   nt := NodeType(node);
+  PrintInlineLeadingComments(node);
   IF nt = 'Identifier' THEN
     Out(GetStr(node, 'name'))
   ELSE IF nt = 'IntLiteral' THEN
@@ -419,6 +456,7 @@ BEGIN
     FOR i := 0 TO n - 1 DO
     BEGIN
       item := ArrItem(arr, i);
+      PrintInlineLeadingComments(item);
       tgt := GetObj(item, 'index_or_field');
       IF NOT IsPresent(tgt) THEN
         Out(Ch('^'))
@@ -430,6 +468,7 @@ BEGIN
       BEGIN
         Out(Ch('[')); PrintExpr(tgt); Out(Ch(']'));
       END;
+      PrintTrailingComment(item);
     END;
   END
   ELSE IF nt = 'FuncCall' THEN
@@ -505,6 +544,7 @@ BEGIN
   BEGIN
     Out('(* pretty81: unhandled expr '); Out(nt); Out(' *)');
   END;
+  PrintTrailingComment(node);
 END;
 
 { ================================== types ==================================== }
@@ -524,16 +564,20 @@ BEGIN
     nt := NodeType(operand);
     IF (nt = 'Identifier') OR (nt = 'IntLiteral') OR (nt = 'RealLiteral') THEN
     BEGIN
+      PrintInlineLeadingComments(node);
       Out(Ch('-'));
       PrintExpr(operand);
+      PrintTrailingComment(node);
     END
     ELSE
       PrintExpr(node);
   END
   ELSE IF nt = 'RangeExpr' THEN
   BEGIN
+    PrintInlineLeadingComments(node);
     PrintConstant(GetObj(node, 'low')); Out('..');
     PrintConstant(GetObj(node, 'high'));
+    PrintTrailingComment(node);
   END
   ELSE
     PrintExpr(node);
@@ -546,6 +590,7 @@ VAR
   n, i: INTEGER32;
 BEGIN
   nt := NodeType(node);
+  PrintInlineLeadingComments(node);
   IF nt = 'BuiltinType' THEN
     Out(GetStr(node, 'name'))
   ELSE IF nt = 'NamedType' THEN
@@ -585,6 +630,7 @@ BEGIN
     OutLn('RECORD');
     indent_level := indent_level + 1;
     PrintRecordFields(GetObj(node, 'fields'));
+    PrintEndComments(node);
     indent_level := indent_level - 1;
     Ind; Out('END');
   END
@@ -625,22 +671,13 @@ BEGIN
   BEGIN
     Out('(* pretty81: unhandled type '); Out(nt); Out(' *)');
   END;
+  PrintTrailingComment(node);
 END;
 
 PROCEDURE PrintRecordFields(arr: ADRMEM);
 { Each element is a __tuple__ wrapper: items[0] = names (scalar[]),
-  items[1] = the field type node. Not an ordinary node kind.
-
-  KNOWN GAP: a record field is built by MakeTupleNode (ps_expr.pas), a bare
-  cJSON object, never CreateTriviaNode -- it has no leading_comments or
-  trailing_comment field to print even in principle. Worse, the field
-  separator SEMICOLON is consumed by a raw pos := pos + 1 in ParseType's
-  RECORD branch (ps_expr.pas), which never calls RelayTokenTrivia, so a
-  comment trailing a record field is silently dropped by the parser, not
-  merely misattached -- it never reaches pretty81's input at all. Fixing
-  this needs the field tuple to become trivia-capable and the separator
-  to relay trivia like every other list-parsing loop, not just a change
-  here. }
+  items[1] = the field type node, with optional leading_comments and
+  trailing_comment attached by ParseType's RECORD branch. }
 VAR
   n, i, j, names_n: INTEGER32;
   tup, items, names_arr, type_node: ADRMEM;
@@ -652,6 +689,7 @@ BEGIN
     items := GetObj(tup, 'items');
     names_arr := ArrItem(items, 0);
     type_node := ArrItem(items, 1);
+    PrintLeadingComments(tup);
     Ind;
     names_n := ArrSize(names_arr);
     FOR j := 0 TO names_n - 1 DO
@@ -659,7 +697,9 @@ BEGIN
       IF j > 0 THEN Out(', ');
       Out(CStrToStr255(cJSON_GetStringValue(ArrItem(names_arr, j))));
     END;
-    Out(': '); PrintType(type_node); OutLn(Ch(';'));
+    Out(': '); PrintType(type_node); Out(Ch(';'));
+    PrintTrailingComment(tup);
+    WRITELN;
   END;
 END;
 
@@ -691,6 +731,7 @@ BEGIN
     OutLn('BEGIN');
     indent_level := indent_level + 1;
     PrintCompoundBody(GetObj(node, 'stmts'));
+    PrintEndComments(node);
     indent_level := indent_level - 1;
     Ind; Out('END');
   END
@@ -750,6 +791,7 @@ BEGIN
     OutLn('REPEAT');
     indent_level := indent_level + 1;
     PrintCompoundBody(GetObj(node, 'body'));
+    PrintEndComments(node);
     indent_level := indent_level - 1;
     Ind; Out('UNTIL '); PrintExpr(GetObj(node, 'cond'));
   END
@@ -801,6 +843,7 @@ BEGIN
       WRITELN;
       indent_level := indent_level - 1;
     END;
+    PrintEndComments(node);
     indent_level := indent_level - 1;
     Ind; Out('END');
   END
@@ -860,6 +903,7 @@ BEGIN
     BEGIN
       IF i > 0 THEN Out('; ');
       p := ArrItem(arr, i);
+      PrintInlineLeadingComments(p);
       IF GetStr(p, 'mode') <> '' THEN
       BEGIN Out(GetStr(p, 'mode')); Out(Ch(' ')); END;
       names_arr := GetObj(p, 'names');
@@ -870,6 +914,7 @@ BEGIN
         Out(CStrToStr255(cJSON_GetStringValue(ArrItem(names_arr, j))));
       END;
       Out(': '); PrintType(GetObj(p, 'type_expr'));
+      PrintTrailingComment(p);
     END;
     Out(Ch(')'));
   END;
@@ -877,10 +922,12 @@ END;
 
 PROCEDURE PrintBlock(node: ADRMEM);
 BEGIN
+  PrintLeadingComments(node);
   PrintDeclList(GetObj(node, 'decls'));
   Ind; OutLn('BEGIN');
   indent_level := indent_level + 1;
   PrintCompoundBody(GetObj(node, 'body'));
+  PrintEndComments(node);
   indent_level := indent_level - 1;
   Ind; Out('END');
 END;
@@ -1053,7 +1100,10 @@ BEGIN
   WRITELN;
   PrintUses(GetObj(node, 'uses'));
   PrintBlock(GetObj(node, 'block'));
-  OutLn(Ch('.'));
+  Out(Ch('.'));
+  PrintTrailingComment(node);
+  WRITELN;
+  PrintEofComments(node);
 END;
 
 PROCEDURE PrintModuleUnit(node: ADRMEM);
@@ -1065,7 +1115,11 @@ BEGIN
   WRITELN;
   PrintUses(GetObj(node, 'uses'));
   PrintDeclList(GetObj(node, 'decls'));
-  OutLn('END.');
+  PrintEndComments(node);
+  Out('END.');
+  PrintTrailingComment(node);
+  WRITELN;
+  PrintEofComments(node);
 END;
 
 PROCEDURE PrintInterfaceUnit(node: ADRMEM);
@@ -1080,15 +1134,19 @@ BEGIN
   WRITELN;
   PrintUses(GetObj(node, 'uses'));
   PrintDeclList(GetObj(node, 'decls'));
+  PrintEndComments(node);
   { An INTERFACE unit carries no runtime -- BEGIN..END here is only the
     1981-manual's alternate terminator spelling for "the interface section
     is done" (docs/ebnf_grammar.md), not an executable block, so the parser
     never stores its statements (and rejects it outright if it isn't
     empty). has_init just records which terminator spelling was used. }
   IF GetBool(node, 'has_init') THEN
-    OutLn('BEGIN END;')
+    Out('BEGIN END;')
   ELSE
-    OutLn('END;');
+    Out('END;');
+  PrintTrailingComment(node);
+  WRITELN;
+  PrintEofComments(node);
   WRITELN;
 END;
 
@@ -1109,11 +1167,20 @@ BEGIN
     Ind; OutLn('BEGIN');
     indent_level := indent_level + 1;
     PrintCompoundBody(GetObj(node, 'init_body'));
+    PrintEndComments(node);
     indent_level := indent_level - 1;
-    Ind; OutLn('END.');
+    Ind; Out('END.');
+    PrintTrailingComment(node);
+    WRITELN;
   END
   ELSE
-    OutLn(Ch('.'));
+  BEGIN
+    PrintEndComments(node);
+    Out(Ch('.'));
+    PrintTrailingComment(node);
+    WRITELN;
+  END;
+  PrintEofComments(node);
 END;
 
 VAR

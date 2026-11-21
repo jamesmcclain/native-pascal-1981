@@ -1,0 +1,2 @@
+Type checking failed:
+String constant exceeds 255 characters at line 7 column 26

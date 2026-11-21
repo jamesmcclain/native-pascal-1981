@@ -171,21 +171,69 @@ BEGIN
   END;
 END;
 
+FUNCTION ConstExprIsBool(node: ADRMEM): BOOLEAN;
+VAR
+  nt, op, nm: Str255;
+  ci: INTEGER32;
+  args: ADRMEM;
+BEGIN
+  ConstExprIsBool := FALSE;
+  nt := NodeType(node);
+  IF nt = 'BoolLiteral' THEN
+    ConstExprIsBool := TRUE
+  ELSE IF nt = 'Identifier' THEN
+  BEGIN
+    ci := LookupConst(GetStr(node, 'name'));
+    IF ci <> 0 THEN ConstExprIsBool := const_tbl[ci].integer_tid = TK_BOOLEAN;
+  END
+  ELSE IF nt = 'UnaryOp' THEN
+    ConstExprIsBool := GetStr(node, 'op') = 'NOT'
+  ELSE IF nt = 'BinOp' THEN
+  BEGIN
+    op := GetStr(node, 'op');
+    ConstExprIsBool := (op = 'AND') OR (op = 'OR') OR (op = 'XOR') OR
+      (op = 'EQ') OR (op = 'NEQ') OR (op = 'LT') OR
+      (op = 'LE') OR (op = 'GT') OR (op = 'GE');
+  END
+  ELSE IF nt = 'FuncCall' THEN
+  BEGIN
+    nm := UpperStr(GetStr(node, 'name'));
+    args := GetObj(node, 'args');
+    IF ((nm = 'SUCC') OR (nm = 'PRED')) AND (ArrSize(args) = 1) THEN
+      ConstExprIsBool := ConstExprIsBool(ArrItem(args, 0));
+  END;
+END;
+
 FUNCTION ConstExprIsWord(node: ADRMEM): BOOLEAN;
 { BYWORD, its ordinal-preserving wrappers and aliases retain WORD, even
   for values below MAXINT. Constant magnitude alone loses signedness. }
 VAR
-  nm: Str255;
+  nt, op, nm: Str255;
   ci: INTEGER32;
   args: ADRMEM;
 BEGIN
   ConstExprIsWord := FALSE;
-  IF NodeType(node) = 'Identifier' THEN
+  nt := NodeType(node);
+  IF nt = 'Identifier' THEN
   BEGIN
     ci := LookupConst(GetStr(node, 'name'));
     IF ci <> 0 THEN ConstExprIsWord := const_tbl[ci].integer_tid = TK_WORD;
   END
-  ELSE IF NodeType(node) = 'FuncCall' THEN
+  ELSE IF nt = 'UnaryOp' THEN
+  BEGIN
+    op := GetStr(node, 'op');
+    IF op = 'PLUS' THEN
+      ConstExprIsWord := ConstExprIsWord(GetObj(node, 'operand'));
+  END
+  ELSE IF nt = 'BinOp' THEN
+  BEGIN
+    op := GetStr(node, 'op');
+    IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') OR
+       (op = 'DIV') OR (op = 'MOD') THEN
+      ConstExprIsWord := ConstExprIsWord(GetObj(node, 'left')) OR
+        ConstExprIsWord(GetObj(node, 'right'));
+  END
+  ELSE IF nt = 'FuncCall' THEN
   BEGIN
     nm := UpperStr(GetStr(node, 'name'));
     args := GetObj(node, 'args');
@@ -735,10 +783,10 @@ BEGIN
   BEGIN
     vname := CStrToStr255(cJSON_GetStringValue(ArrItem(names, i)));
     DeclareVarInSpace(vname, tk, address_space);
-    { [PUBLIC] gives private IMPLEMENTATION storage back its external
-      symbol (IBM Pascal, Aug. 1981, 7-5); DeclareVarInSpace made it
-      internal. }
-    IF defining_implementation AND (NOT in_local_scope) AND
+    { [PUBLIC] gives private IMPLEMENTATION or PROGRAM storage back its
+      external symbol (IBM Pascal, Aug. 1981, 7-5); DeclareVarInSpace made
+      it internal. }
+    IF (defining_implementation OR defining_program) AND (NOT in_local_scope) AND
        (NOT lowering_spliced_interface) AND HasPublicAttribute(decl) THEN
       LLVMSetLinkage(symbols[LookupSym(vname)].llvm_val, 0); { external }
     IF TypeKind(tk) = TK_FILE THEN
@@ -1395,7 +1443,7 @@ VAR
   existing: INTEGER32;
   ridx: INTEGER32;
   has_block_body: BOOLEAN;
-  is_c, is_exported_entry, is_vararg: BOOLEAN;
+  is_c, is_exported_entry, is_nvptx_kernel, is_vararg: BOOLEAN;
   vararg_flag: INTEGER32;
   agg_llvm_ty, byval_attr, align_attr: ADRMEM;
   llvm_idx, n_llvm: INTEGER32;
@@ -1435,6 +1483,8 @@ BEGIN
     routine table's own copy is the source of truth once ridx is known. }
   is_vararg := is_c AND IsVarargsDecl(decl);
   is_exported_entry := GetBool(decl, 'is_exported_entry');
+  is_nvptx_kernel := is_nvptx_device AND (NOT is_func) AND
+                     (is_exported_entry OR lowering_spliced_interface);
 
   existing := LookupRoutine(name);
   IF existing <> 0 THEN
@@ -1665,10 +1715,14 @@ BEGIN
           instead, and gets no parameter attribute at all. }
         IF is_nvptx_device THEN
         BEGIN
-          { NVPTX passes a value aggregate as one aligned parameter buffer.
-            Keep it as its LLVM aggregate type; the NVPTX backend emits the
-            PTX .param .b8 form CUDA/NVVM uses, rather than host SysV pieces. }
-          SetPtrArrayElem(param_llvm_types, llvm_idx, LLVMTypeForTk(tks[i]));
+          { NVPTX passes a small value aggregate (and any kernel entry's
+            value aggregate) as one aligned .param buffer; a large non-kernel
+            value aggregate (>= LARGE_AGGREGATE_BYTES) is passed by pointer
+            to a caller-side private copy instead (NEW-35r). }
+          IF (NOT is_nvptx_kernel) AND LargeAggregateTy(LLVMTypeForTk(tks[i])) THEN
+            SetPtrArrayElem(param_llvm_types, llvm_idx, LLVMPointerType(LLVMTypeForTk(tks[i]), 0))
+          ELSE
+            SetPtrArrayElem(param_llvm_types, llvm_idx, LLVMTypeForTk(tks[i]));
           llvm_idx := llvm_idx + 1;
         END
         ELSE
@@ -1796,6 +1850,7 @@ BEGIN
     routines[ridx].is_extern := IsExternDirectiveDecl(decl) OR IsCForeignDecl(decl);
     routines[ridx].is_forward := IsForwardDirectiveDecl(decl);
     routines[ridx].is_vararg := is_vararg;
+    routines[ridx].is_nvptx_kernel := is_nvptx_kernel;
     routines[ridx].env_depth := env_depth;
 
     { Attach byval(ty)/align (and sret(ty)/noalias/align for a MEMORY-class
@@ -1838,7 +1893,19 @@ BEGIN
       IF needs_copy[i] THEN
       BEGIN
         IF is_nvptx_device THEN
-          llvm_idx := llvm_idx + 1
+        BEGIN
+          IF (NOT is_nvptx_kernel) AND LargeAggregateTy(LLVMTypeForTk(tks[i])) THEN
+          BEGIN
+            align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id, TypeAlignBytes(tks[i]));
+            LLVMAddAttributeAtIndex(fn, llvm_idx + 1, align_attr);
+            IF noalias_kind_id <> 0 THEN
+            BEGIN
+              noalias_attr := LLVMCreateEnumAttribute(ctx, noalias_kind_id, 0);
+              LLVMAddAttributeAtIndex(fn, llvm_idx + 1, noalias_attr);
+            END;
+          END;
+          llvm_idx := llvm_idx + 1;
+        END
         ELSE
         BEGIN
           ClassifyParamAt(tks, isvar, needs_copy, i, ret_class = SYSV_CLASS_MEMORY,
@@ -1989,8 +2056,9 @@ BEGIN
       BEGIN
         { A conformant STRING/LSTRING formal (NEW-29): the incoming pointer
           addresses the caller's (data, UPPER) pair. The data pointer is
-          the formal's storage; its UPPER stays in the pair, which outlives
-          the call, and is found again through the data pointer. }
+          the formal's storage; its UPPER stays in the pair, which lives
+          in the caller's frame for the call only, and is found again
+          through the data pointer. }
         view_gep := AllocPtrArray(2);
         SetPtrArrayElem(view_gep, 0, LLVMConstInt(i32ty, 0, 0));
         SetPtrArrayElem(view_gep, 1, LLVMConstInt(i32ty, 0, 0));
@@ -2011,8 +2079,14 @@ BEGIN
           parameter buffer; the host path below retains its SysV lowering. }
         IF is_nvptx_device THEN
         BEGIN
-          palloca := EntryAlloca(LLVMTypeForTk(tks[i]), names[i]);
-          LLVMBuildStore(builder, param_val, palloca);
+          IF (NOT routines[ridx].is_nvptx_kernel) AND
+             LargeAggregateTy(LLVMTypeForTk(tks[i])) THEN
+            palloca := param_val
+          ELSE
+          BEGIN
+            palloca := EntryAlloca(LLVMTypeForTk(tks[i]), names[i]);
+            LLVMBuildStore(builder, param_val, palloca);
+          END;
         END
         ELSE
         BEGIN
@@ -2362,9 +2436,9 @@ BEGIN
         integer_tid := const_tbl[ci].integer_tid;
       END;
     END;
-    IF NodeType(val_node) = 'BoolLiteral' THEN
+    IF ConstExprIsBool(val_node) THEN
     BEGIN
-      IF GetBool(val_node, 'value') THEN ival := 1 ELSE ival := 0;
+      ival := IntLiteralValue(val_node);
       integer_tid := TK_BOOLEAN;
     END
     ELSE IF GetBool(val_node, 'word64') OR (integer_tid = TK_WORD64) AND
@@ -2379,7 +2453,7 @@ BEGIN
     ELSE
     BEGIN
       ival := IntLiteralValue(val_node);
-      IF ConstExprIsWord(val_node) THEN integer_tid := TK_WORD;
+      IF (ival >= 0) AND (ival <= 65535) AND ConstExprIsWord(val_node) THEN integer_tid := TK_WORD;
       IF (NOT is_char) AND (enum_tid = 0) AND (integer_tid = 0) THEN
         integer_tid := ConstIntegerType(ival);
     END;

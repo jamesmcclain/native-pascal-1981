@@ -6,7 +6,8 @@ UNIT cg_io;
 USES jsonutil, features, cg_base, cg_util, cg_types, cg_symbols, cg_expr;
 
 FUNCTION EvalPrintfIntArg(node: ADRMEM): ADRMEM;
-PROCEDURE EmitStringWriteArg(addr: ADRMEM; tid: INTEGER; have_width, have_prec: BOOLEAN;
+PROCEDURE EmitStringWriteArg(addr: ADRMEM; tid: INTEGER; super_upper: ADRMEM;
+  have_width, have_prec: BOOLEAN;
   width_val, prec_val: ADRMEM; VAR fmt: Str255; vals: ADRMEM; VAR vi: INTEGER32);
 FUNCTION GetDefaultInputFcbPtr: ADRMEM;
 PROCEDURE CodegenWriteArgs(args: ADRMEM; newline: BOOLEAN);

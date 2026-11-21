@@ -297,12 +297,14 @@ CONST
     SysV classifier ever walks: it only runs on types of at most 16 bytes and
     the smallest leaf is 1 byte, so 16 is the true maximum; 32 leaves headroom
     and the walker aborts loudly rather than truncating if it is ever hit. }
-  MAX_ROUTINES = 512;
+  MAX_ROUTINES = 768;
   MAX_BORROWED = 1024; { conformant STRING/LSTRING formals in one compiland }
   BORROWED_STRING_HI = 32767; { the placeholder capacity of a conformant
     STRING/LSTRING formal's type: every actual's UPPER is at most this }
   BORROWED_LEN_MARK = -2; { ResolveStringExprStorage's fixed_len for a
     conformant STRING formal: len_ptr is then its i16 upper slot }
+  SUPER_LEN_MARK = -3; { ResolveStringExprStorage's fixed_len for a
+    ^STRING super-array referent: len_ptr is then its i64 descriptor upper }
   MAX_TYPES = 200;
   MAX_DEV_FILES = 64; { distinct $INCLUDEd files named by one NVPTX module's
                         device error sites (DeviceFileIndex in cg_expr) }
@@ -535,6 +537,10 @@ TYPE
                           type is variadic, a call may pass extra trailing
                           arguments, and each of those gets C's default
                           argument promotions applied (CodegenCallCommon). }
+    is_nvptx_kernel: BOOLEAN; { TRUE for an exported NVPTX kernel entry
+                                (ptx_kernel): its value aggregate parameters
+                                stay in the CUDA .param ABI instead of taking
+                                a device pointer (NEW-35r). }
     env_depth: INTEGER32; { 0, or the frame depth (cg_util's frame stack)
                             of the routine this one is nested in: the routine
                             then takes that frame's environment as a hidden
@@ -772,6 +778,7 @@ VAR
   lowering_host_interface_in_device: BOOLEAN; { retain host type ABI metadata;
                                                reject DEVICE use, not thin-retype it }
   defining_implementation: BOOLEAN;
+  defining_program: BOOLEAN;
 
   routines: ARRAY [1..MAX_ROUTINES] OF RoutineRec;
   nroutines: INTEGER32;
@@ -899,6 +906,8 @@ VAR
                           index zero; NIL for non-LSTRING-byte storage }
   last_desig_super_upper: ADRMEM; { selected host descriptor upper, or NIL;
                           committed with the address after recursive traversal }
+  super_string_tid, super_lstring_tid: INTEGER; { canonical ^STRING/^LSTRING referents }
+  ptr_super_string_tid, ptr_super_lstring_tid: INTEGER; { canonical host ^STRING/^LSTRING descriptors }
   last_value_shadow: ADRMEM; { side-channel result of CodegenExpr: the INITCK
                           shadow of the storage a designator or identifier
                           value was loaded from, else NIL. }

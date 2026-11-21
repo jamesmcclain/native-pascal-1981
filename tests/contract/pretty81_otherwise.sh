@@ -7,7 +7,7 @@ src=tests/corpus/golden/case_otherwise_list.pas
 expected=tests/corpus/golden/case_otherwise_list.out
 ignore=()
 for key in location read_location op_location meta_flags read_flags rangeck \
-  indexck mathck stackck leading_comments trailing_comment; do
+  indexck mathck stackck leading_comments trailing_comment end_comments eof_comments; do
   ignore+=(--ignore-key "$key")
 done
 for dialect in vintage extended; do

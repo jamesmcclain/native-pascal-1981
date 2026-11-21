@@ -7,6 +7,7 @@ PROGRAM ExtendedIntrinsicArgumentErrors;
 VAR
   x: INTEGER32;
   i: INTEGER;
+  b: INTEGER8;
   c: CHAR;
 BEGIN
   x := HIBYTE(70000);
@@ -14,5 +15,7 @@ BEGIN
   i := HIBYTE(c);
   i := ABS(70000);
   x := ABS(TRUE);
-  i := ORD(70000)
+  i := ORD(70000);
+  b := HIBYTE(-1);
+  b := HIBYTE(40000)
 END.

@@ -2,11 +2,11 @@
 PROGRAM UnitLStringAlias(output);
 USES aliasstate;
 VAR
-  name: Name;
+  cur_name: Name;
 BEGIN
-  name := 'unit alias';
-  SetName(name);
-  name := '';
-  GetName(name);
-  WRITELN(name);
+  cur_name := 'unit alias';
+  SetName(cur_name);
+  cur_name := '';
+  GetName(cur_name);
+  WRITELN(cur_name);
 END.
