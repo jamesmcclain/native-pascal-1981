@@ -1,0 +1,7 @@
+Type checking failed:
+Cannot assign to a constant: N at line 14 column 3
+Cannot assign to a constant: S at line 15 column 3
+Cannot assign to a constant: R at line 16 column 3
+A constant cannot be passed as a VAR parameter in call to TakeVar at line 17 column 3
+FOR control variable must be a variable: N at line 18 column 3
+READ/READLN argument cannot be a constant at line 20 column 3

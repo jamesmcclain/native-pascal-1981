@@ -110,7 +110,7 @@ bound_cell() { # dialect high expected-status
     [ "$3" = ok ] || die "$1 bound $2 accepted"
   else
     [ "$3" = reject ] || die "$1 bound $2 rejected: $(cat "$work/bound.err")"
-    grep -qxF 'codegen: array index bound is outside -32768..65535' "$work/bound.err" ||
+    grep -qF 'Subrange upper bound is above 65535' "$work/bound.err" ||
       die "$1 bound $2 diagnostic"
   fi
 }

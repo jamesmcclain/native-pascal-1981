@@ -84,6 +84,14 @@ while [[ $# -gt 0 ]]; do
       JOBS="$2"
       shift 2
       ;;
+    -j?*)
+      JOBS="${1#-j}"
+      shift
+      ;;
+    --jobs=*)
+      JOBS="${1#--jobs=}"
+      shift
+      ;;
     -v|--verbose)
       VERBOSE=1
       shift

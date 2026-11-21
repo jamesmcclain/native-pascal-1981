@@ -96,7 +96,7 @@ check_frozen_ast() {
   # (and the routine-level stackck snapshot by stackck.sh),
   # not treated as reference parity.
   if bin/lexer < "$reference.pas" | bin/parser > "$actual_ast" &&
-     bin/astcompare --ignore-key indexck --ignore-key rangeck --ignore-key meta_flags --ignore-key read_flags --ignore-key read_location --ignore-key location --ignore-key mathck --ignore-key stackck --ignore-key op_location --ignore-key leading_comments --ignore-key trailing_comment \
+     bin/astcompare --ignore-key indexck --ignore-key rangeck --ignore-key meta_flags --ignore-key read_flags --ignore-key read_location --ignore-key location --ignore-key mathck --ignore-key stackck --ignore-key op_location --ignore-key leading_comments --ignore-key trailing_comment --ignore-key end_comments --ignore-key eof_comments \
        "$reference.ast.json" "$actual_ast"; then
     pass "native parser matches the frozen $label AST"
   else
@@ -105,7 +105,7 @@ check_frozen_ast() {
 
   if bin/typechecker < "$actual_ast" > "$actual_typed" &&
      bin/astcompare --ignore-key resolved_type --ignore-key indexck --ignore-key rangeck --ignore-key meta_flags --ignore-key read_flags --ignore-key read_location --ignore-key location --ignore-key mathck --ignore-key stackck --ignore-key op_location \
-       --ignore-key leading_comments --ignore-key trailing_comment \
+       --ignore-key leading_comments --ignore-key trailing_comment --ignore-key end_comments --ignore-key eof_comments \
        "$reference.typed.json" "$actual_typed"; then
     pass "native typechecker matches the frozen $label AST"
   else

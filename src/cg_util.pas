@@ -997,9 +997,9 @@ PROCEDURE LowerLargeAggregateCopies;
   crashes clang at O0 and is slow at every level, so this pass, run on the
   finished module, rewrites a large constant store as memset/memcpy and a
   large load whose only uses are whole stores as memmove/memcpy. A large
-  value used any other way (an NVPTX by-value parameter, for one) keeps
-  its first-class form; host results never travel as one, they go
-  through the hidden sret pointer. }
+  value used any other way keeps its first-class form; host results and
+  large NVPTX non-kernel results/value parameters never travel as one,
+  going through sret or a caller-side copy pointer instead. }
 VAR
   fn, bb, inst, next: ADRMEM;
 BEGIN

@@ -21,13 +21,15 @@ for dialect in vintage extended; do
       done
     done
   done
-  # WORD membership in an INTEGER-based set is rejected by the typechecker.
-  # Do not expand set typing as part of the unsigned comparison fix.
-  if bin/pascal1981 --dialect "$dialect" -S "$fixtures/word_membership_reject.pas" \
-       -o "$work/reject.ll" > "$work/reject.out" 2> "$work/reject.err"; then
-    echo 'unexpected WORD membership acceptance' >&2; exit 1
-  fi
-  grep -q 'Incompatible set base types' "$work/reject.err"
+  # WORD membership in an INTEGER-based set (NEW-39): WORD 40000 is outside
+  # 0..255 so IN evaluates to FALSE (zero-extended, not sign-extended).
+  rm -f "$work/word_in"
+  bin/pascal1981 --dialect "$dialect" "$fixtures/word_membership_reject.pas" -o "$work/word_in"
+  timeout 5 "$work/word_in" > "$work/word_in.out" 2> "$work/word_in.err"
+  test ! -s "$work/word_in.err"
+  test "$(cat "$work/word_in.out")" = "FALSE"
+  bin/pascal1981 --dialect "$dialect" -O0 -S "$fixtures/word_membership_reject.pas" -o "$work/word_in.ll"
+  grep -Eq 'zext i16 .* to i64' "$work/word_in.ll"
   # A WORD set is rejected at its declaration: a set base's ordinals must
   # be in 0..255 (IBM manual 6-24), so WORD membership never arises.
   if bin/pascal1981 --dialect "$dialect" -S "$fixtures/word_set_membership_reject.pas" \

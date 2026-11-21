@@ -248,16 +248,41 @@ BEGIN
   BorrowedUpperSlot := found;
 END;
 
-FUNCTION StringCapacityValue(tid: INTEGER; data: ADRMEM): ADRMEM;
+FUNCTION StringCapacityValueWithUpper(tid: INTEGER; data, super_upper: ADRMEM): ADRMEM;
 { The i32 capacity of the STRING/LSTRING storage of type tid at data: its
-  declared n, or for a conformant formal the UPPER its caller passed. }
+  declared n, for a conformant formal the UPPER its caller passed, or for
+  a ^STRING/^LSTRING super-array referent its descriptor upper (NEW-47). }
 BEGIN
   IF IsBorrowedString(tid) THEN
-    StringCapacityValue := LLVMBuildZExt(builder,
+    StringCapacityValueWithUpper := LLVMBuildZExt(builder,
       LLVMBuildLoad2(builder, i16ty, BorrowedUpperSlot(data), MakeCStr('super.upper')),
       i32ty, MakeCStr(''))
+  ELSE IF types[tid].is_super THEN
+  BEGIN
+    IF super_upper = NIL THEN
+      AbortWith('codegen: super-array STRING/LSTRING referent has no descriptor bound');
+    StringCapacityValueWithUpper := LLVMBuildTrunc(builder, super_upper, i32ty, MakeCStr('super.cap'));
+  END
   ELSE
-    StringCapacityValue := LLVMConstInt(i32ty, types[tid].hi, 0);
+    StringCapacityValueWithUpper := LLVMConstInt(i32ty, types[tid].hi, 0);
+END;
+
+FUNCTION StringCapacityValue(tid: INTEGER; data: ADRMEM): ADRMEM;
+BEGIN
+  StringCapacityValue := StringCapacityValueWithUpper(tid, data, NIL);
+END;
+
+FUNCTION SuperLStringLengthCap(super_upper: ADRMEM): ADRMEM;
+{ The i32 bound on a ^LSTRING referent's length byte: min(upper, 255). }
+VAR
+  cap: ADRMEM;
+BEGIN
+  IF super_upper = NIL THEN
+    AbortWith('codegen: super-array LSTRING referent has no descriptor bound');
+  cap := LLVMBuildTrunc(builder, super_upper, i32ty, MakeCStr('super.cap'));
+  SuperLStringLengthCap := LLVMBuildSelect(builder,
+    LLVMBuildICmp(builder, LLVMIntUGT, cap, LLVMConstInt(i32ty, 255, 0), MakeCStr('')),
+    LLVMConstInt(i32ty, 255, 0), cap, MakeCStr('lstring.cap'));
 END;
 
 FUNCTION LStringLengthCap(tid: INTEGER; data: ADRMEM): ADRMEM;
@@ -294,7 +319,9 @@ BEGIN
   DeclaredSetBasesConflict := FALSE;
   IF (TypeKind(a) = TK_SET) AND (TypeKind(b) = TK_SET) AND
      (a <> generic_set_tid) AND (b <> generic_set_tid) THEN
-    DeclaredSetBasesConflict := types[a].elem_tid <> types[b].elem_tid;
+    DeclaredSetBasesConflict := (types[a].elem_tid <> types[b].elem_tid) AND
+      NOT (((types[a].elem_tid = TK_INTEGER) AND (types[b].elem_tid = TK_WORD)) OR
+           ((types[a].elem_tid = TK_WORD) AND (types[b].elem_tid = TK_INTEGER)));
 END;
 
 FUNCTION EnsureBoolVectorType(n: INTEGER32): INTEGER;
@@ -431,6 +458,8 @@ BEGIN
   AggStringTypesInterchangeable :=
     (TypeKind(a) = TypeKind(b)) AND
     ((TypeKind(a) = TK_LSTRING) OR (TypeKind(a) = TK_STRING)) AND
+    (NOT types[a].is_super) AND (NOT types[b].is_super) AND
+    (NOT IsBorrowedString(a)) AND (NOT IsBorrowedString(b)) AND
     (types[a].hi = types[b].hi);
 END;
 
@@ -636,48 +665,101 @@ BEGIN
   ELSE IF nt = 'UnaryOp' THEN
   BEGIN
     op := GetStr(expr_node, 'op');
-    IF ((op = 'PLUS') OR (op = 'MINUS')) AND FoldConstIntIn(GetObj(expr_node, 'operand'), general, typechecked, folded) THEN
+    IF (op = 'PLUS') OR (op = 'MINUS') THEN
     BEGIN
-      IF op = 'MINUS' THEN FoldConstIntIn := FoldArith('MINUS', 0, folded, folded)
-      ELSE FoldConstIntIn := TRUE;
+      IF FoldConstIntIn(GetObj(expr_node, 'operand'), general, typechecked, folded) THEN
+      BEGIN
+        IF op = 'MINUS' THEN FoldConstIntIn := FoldArith('MINUS', 0, folded, folded)
+        ELSE FoldConstIntIn := TRUE;
+      END
+      ELSE IF (op = 'MINUS') AND IsWord64MinLiteral(GetObj(expr_node, 'operand')) THEN
+      BEGIN
+        { -9223372036854775808: the bit pattern of 2^63 is already the
+          INTEGER64 minimum. }
+        folded := GetInt64(GetObj(expr_node, 'operand'), 'value');
+        FoldConstIntIn := TRUE;
+      END;
     END
-    ELSE IF (op = 'MINUS') AND IsWord64MinLiteral(GetObj(expr_node, 'operand')) THEN
+    ELSE IF (op = 'NOT') AND NOT general THEN
     BEGIN
-      { -9223372036854775808: the bit pattern of 2^63 is already the
-        INTEGER64 minimum. }
-      folded := GetInt64(GetObj(expr_node, 'operand'), 'value');
-      FoldConstIntIn := TRUE;
+      IF FoldConstIntIn(GetObj(expr_node, 'operand'), general, typechecked, folded) THEN
+      BEGIN
+        IF folded = 0 THEN folded := 1 ELSE folded := 0;
+        FoldConstIntIn := TRUE;
+      END;
     END;
   END
   ELSE IF nt = 'BinOp' THEN
   BEGIN
     op := GetStr(expr_node, 'op');
-    IF ((op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') OR (op = 'DIV') OR (op = 'MOD')) AND
-       FoldConstIntIn(GetObj(expr_node, 'left'), general, typechecked, left) AND
-       FoldConstIntIn(GetObj(expr_node, 'right'), general, typechecked, right) THEN
+    IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') OR (op = 'DIV') OR (op = 'MOD') THEN
     BEGIN
-      IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') THEN
-        FoldConstIntIn := FoldArith(op, left, right, folded)
-      ELSE IF right = -1 THEN
-      BEGIN
-        { x DIV -1 is -x, which overflows only for the minimum; x MOD -1
-          is 0. }
-        IF op = 'DIV' THEN FoldConstIntIn := FoldArith('MINUS', 0, left, folded)
-        ELSE
+      IF FoldConstIntIn(GetObj(expr_node, 'left'), general, typechecked, left) THEN
+        IF FoldConstIntIn(GetObj(expr_node, 'right'), general, typechecked, right) THEN
         BEGIN
-          folded := 0;
+          IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') THEN
+            FoldConstIntIn := FoldArith(op, left, right, folded)
+          ELSE IF right = -1 THEN
+          BEGIN
+            { x DIV -1 is -x, which overflows only for the minimum; x MOD -1
+              is 0. }
+            IF op = 'DIV' THEN FoldConstIntIn := FoldArith('MINUS', 0, left, folded)
+            ELSE
+            BEGIN
+              folded := 0;
+              FoldConstIntIn := TRUE;
+            END;
+          END
+          ELSE IF right <> 0 THEN
+          BEGIN
+            { Truncate toward zero; MOD has the dividend's sign, like runtime. }
+            IF op = 'DIV' THEN folded := left DIV right
+            ELSE folded := left MOD right;
+            FoldConstIntIn := TRUE;
+          END
+          ELSE
+            AbortWith('codegen: Constant division by zero');
+        END;
+    END
+    ELSE IF NOT general AND
+            ((op = 'AND') OR (op = 'OR') OR (op = 'XOR')) THEN
+    BEGIN
+      IF FoldConstIntIn(GetObj(expr_node, 'left'), general, typechecked, left) THEN
+        IF FoldConstIntIn(GetObj(expr_node, 'right'), general, typechecked, right) THEN
+        BEGIN
+          IF op = 'AND' THEN
+          BEGIN
+            IF (left <> 0) AND (right <> 0) THEN folded := 1 ELSE folded := 0;
+          END
+          ELSE IF op = 'OR' THEN
+          BEGIN
+            IF (left <> 0) OR (right <> 0) THEN folded := 1 ELSE folded := 0;
+          END
+          ELSE
+          BEGIN
+            IF (left <> 0) <> (right <> 0) THEN folded := 1 ELSE folded := 0;
+          END;
           FoldConstIntIn := TRUE;
         END;
-      END
-      ELSE IF right <> 0 THEN
-      BEGIN
-        { Truncate toward zero; MOD has the dividend's sign, like runtime. }
-        IF op = 'DIV' THEN folded := left DIV right
-        ELSE folded := left MOD right;
-        FoldConstIntIn := TRUE;
-      END
-      ELSE
-        AbortWith('codegen: Constant division by zero');
+    END
+    ELSE IF NOT general AND
+            ((op = 'EQ') OR (op = 'NEQ') OR (op = 'LT') OR
+             (op = 'LE') OR (op = 'GT') OR (op = 'GE')) THEN
+    BEGIN
+      IF FoldConstIntIn(GetObj(expr_node, 'left'), general, FALSE, left) THEN
+        IF FoldConstIntIn(GetObj(expr_node, 'right'), general, FALSE, right) THEN
+        BEGIN
+          IF ((op = 'EQ') AND (left = right)) OR
+             ((op = 'NEQ') AND (left <> right)) OR
+             ((op = 'LT') AND (left < right)) OR
+             ((op = 'LE') AND (left <= right)) OR
+             ((op = 'GT') AND (left > right)) OR
+             ((op = 'GE') AND (left >= right)) THEN
+            folded := 1
+          ELSE
+            folded := 0;
+          FoldConstIntIn := TRUE;
+        END;
     END;
   END
   ELSE IF (nt = 'Identifier') OR
@@ -760,6 +842,19 @@ BEGIN
       folded := folded MOD 65536;
       IF folded < 0 THEN folded := folded + 65536;
       FoldConstIntIn := TRUE;
+    END
+    ELSE IF ((nm = 'HIBYTE') OR (nm = 'LOBYTE')) AND (ArrSize(args) = 1) THEN
+    BEGIN
+      IF FoldConstIntIn(ArrItem(args, 0), general, typechecked, left) THEN
+        IF (left >= -32768) AND (left <= 65535) THEN
+        BEGIN
+          IF nm = 'LOBYTE' THEN folded := LowByte(left)
+          ELSE BEGIN
+            IF left < 0 THEN left := left + 65536;
+            folded := left DIV 256;
+          END;
+          FoldConstIntIn := TRUE;
+        END;
     END
     ELSE IF ((nm = 'ORD') OR (nm = 'CHR') OR (nm = 'SUCC') OR (nm = 'PRED') OR
         (nm = 'ABS') OR (nm = 'SQR')) AND (ArrSize(args) = 1) AND
@@ -917,6 +1012,8 @@ FUNCTION CoerceForAssignHost(v: ADRMEM; from_tid, to_tid: INTEGER; expr_node: AD
   same as the reference (use WRD(...) / an INTEGER8-typed expression
   explicitly). Reached through CoerceForAssign, which passes a
   subrange's host. }
+VAR
+  lstr_val: ADRMEM;
 BEGIN
   IF IsHostDescriptor(to_tid) AND (NodeType(expr_node) = 'NilLiteral') THEN
     CoerceForAssignHost := LLVMConstNull(LLVMTypeForTk(to_tid))
@@ -996,6 +1093,17 @@ BEGIN
       CoerceForAssignHost := LLVMBuildZExt(builder, v, LLVMTypeForTk(to_tid), MakeCStr(''))
     ELSE
       CoerceForAssignHost := LLVMBuildSExt(builder, v, LLVMTypeForTk(to_tid), MakeCStr(''));
+  END
+  ELSE IF (from_tid = TK_CHAR) AND (TypeKind(to_tid) = TK_LSTRING) THEN
+  BEGIN
+    { CHAR converts automatically to a length-1 LSTRING (IBM manual 6-18,
+      NEW-33). }
+    IF types[to_tid].hi < 1 THEN
+      AbortWith('codegen: CHAR value exceeds LSTRING(0) capacity');
+    lstr_val := LLVMConstNull(LLVMTypeForTk(to_tid));
+    lstr_val := LLVMBuildInsertValue(builder, lstr_val, LLVMConstInt(i8ty, 1, 0), 0, MakeCStr(''));
+    lstr_val := LLVMBuildInsertValue(builder, lstr_val, v, 1, MakeCStr(''));
+    CoerceForAssignHost := lstr_val;
   END
   ELSE
   BEGIN
@@ -1372,8 +1480,18 @@ BEGIN
       END;
     TypeSizeBytes := RoundUpBytes(end_off, TypeAlignBytes(tid));
   END
-  ELSE IF TypeKind(tid) = TK_LSTRING THEN TypeSizeBytes := types[tid].hi + 1
-  ELSE IF TypeKind(tid) = TK_STRING THEN TypeSizeBytes := types[tid].hi
+  ELSE IF TypeKind(tid) = TK_LSTRING THEN
+  BEGIN
+    IF types[tid].is_super THEN
+      AbortWith('codegen: SIZEOF of a super-array LSTRING has no constant value');
+    TypeSizeBytes := types[tid].hi + 1;
+  END
+  ELSE IF TypeKind(tid) = TK_STRING THEN
+  BEGIN
+    IF types[tid].is_super THEN
+      AbortWith('codegen: SIZEOF of a super-array STRING has no constant value');
+    TypeSizeBytes := types[tid].hi;
+  END
   ELSE IF TypeKind(tid) = TK_SET THEN TypeSizeBytes := 32
   ELSE IF IsHostDescriptor(tid) THEN TypeSizeBytes := 16
   ELSE IF TypeKind(tid) = TK_POINTER THEN TypeSizeBytes := 8
@@ -1973,8 +2091,9 @@ BEGIN
       ResolveIntLiteral := 0;
     END;
   END
-  ELSE IF (NodeType(node) = 'UnaryOp') AND FoldConstInt(node, wide) THEN
-    { A signed CONST name, -N (the typechecker checked its range). }
+  ELSE IF ((NodeType(node) = 'UnaryOp') OR (NodeType(node) = 'BinOp')) AND
+          FoldConstInt(node, wide) THEN
+    { A constant expression (the typechecker checked its range). }
     ResolveIntLiteral := CheckedIndexBound(wide)
   ELSE
   BEGIN
@@ -1985,13 +2104,15 @@ END;
 
 FUNCTION BoundHostTid(node: ADRMEM): INTEGER;
 { The host type of a subrange or array index bound: CHAR, BOOLEAN, an
-  enumeration, or INTEGER. A named constant has the type of its value; a
-  constant call has CHR's CHAR, SUCC/PRED's argument type, or INTEGER
-  (ORD, WRD, BYWORD), as the typechecker's ConstCallBoundKind agrees. }
+  enumeration, WORD, or INTEGER. A named constant has the type of its
+  value; a constant call has CHR's CHAR, SUCC/PRED's argument type,
+  WORD (WRD, BYWORD, IBM manual 5-7, NEW-37), or INTEGER (ORD), as the
+  typechecker's ConstCallBoundKind agrees. }
 VAR
   ci: INTEGER32;
-  nm: Str255;
+  nm, op: Str255;
   args: ADRMEM;
+  ltid, rtid: INTEGER;
 BEGIN
   BoundHostTid := TK_INTEGER;
   IF NodeType(node) = 'CharLiteral' THEN BoundHostTid := TK_CHAR
@@ -2004,14 +2125,50 @@ BEGIN
       ELSE IF const_tbl[ci].is_char THEN BoundHostTid := TK_CHAR
       ELSE IF const_tbl[ci].integer_tid <> 0 THEN BoundHostTid := const_tbl[ci].integer_tid;
   END
+  ELSE IF NodeType(node) = 'UnaryOp' THEN
+  BEGIN
+    IF GetStr(node, 'op') = 'NOT' THEN BoundHostTid := TK_BOOLEAN
+    ELSE IF GetStr(node, 'op') = 'MINUS' THEN BoundHostTid := TK_INTEGER
+    ELSE BoundHostTid := BoundHostTid(GetObj(node, 'operand'));
+  END
+  ELSE IF NodeType(node) = 'BinOp' THEN
+  BEGIN
+    op := GetStr(node, 'op');
+    IF (op = 'AND') OR (op = 'OR') OR (op = 'XOR') OR
+       (op = 'EQ') OR (op = 'NEQ') OR (op = 'LT') OR
+       (op = 'LE') OR (op = 'GT') OR (op = 'GE') THEN
+      BoundHostTid := TK_BOOLEAN
+    ELSE
+    BEGIN
+      ltid := BoundHostTid(GetObj(node, 'left'));
+      rtid := BoundHostTid(GetObj(node, 'right'));
+      IF ((ltid = TK_INTEGER) AND (rtid = TK_WORD)) OR
+         ((ltid = TK_WORD) AND (rtid = TK_INTEGER)) THEN
+        BoundHostTid := TK_WORD
+      ELSE
+        BoundHostTid := ltid;
+    END;
+  END
   ELSE IF NodeType(node) = 'FuncCall' THEN
   BEGIN
     nm := UpperStr(GetStr(node, 'name'));
     args := GetObj(node, 'args');
     IF nm = 'CHR' THEN BoundHostTid := TK_CHAR
+    ELSE IF (nm = 'WRD') OR (nm = 'BYWORD') THEN BoundHostTid := TK_WORD
     ELSE IF ((nm = 'SUCC') OR (nm = 'PRED')) AND (ArrSize(args) = 1) THEN
       BoundHostTid := BoundHostTid(ArrItem(args, 0));
   END;
+END;
+
+FUNCTION CombineBoundHostTids(lo_tid, hi_tid: INTEGER): INTEGER;
+{ An INTEGER constant bound adapts to WORD when paired with a WORD bound
+  (IBM manual 5-7, NEW-37). }
+BEGIN
+  IF ((lo_tid = TK_INTEGER) AND (hi_tid = TK_WORD)) OR
+     ((lo_tid = TK_WORD) AND (hi_tid = TK_INTEGER)) THEN
+    CombineBoundHostTids := TK_WORD
+  ELSE
+    CombineBoundHostTids := lo_tid;
 END;
 
 FUNCTION BoundValueTid(bound_value: INTEGER64): INTEGER;
@@ -2315,6 +2472,7 @@ VAR
   values_arr: ADRMEM; { EnumType's member identifier list }
   mi: INTEGER32;
   named_tid: INTEGER;
+  super_str_base: INTEGER;
   idx_host: INTEGER; { named array index: the index type's host tid }
   domain_low, domain_high: INTEGER64;
 BEGIN
@@ -2476,7 +2634,9 @@ BEGIN
         typechecker's SubrangeIndexKind decides: LOWER and UPPER return
         the bound at that width. }
       elem_tid := WidenBoundHostTid(
-        BoundHostTid(GetObj(GetObj(te, 'index_range'), 'low')), hi);
+        CombineBoundHostTids(
+          BoundHostTid(GetObj(GetObj(te, 'index_range'), 'low')),
+          BoundHostTid(GetObj(GetObj(te, 'index_range'), 'high'))), hi);
       IF elem_tid <> TK_INTEGER THEN
         types[tid].index_tid := elem_tid;
     END;
@@ -2618,7 +2778,36 @@ BEGIN
     IF (flavor = 'ADS') AND (NOT is_device_compiland) THEN
       AbortWith('codegen: ADS pointers require a DEVICE compiland');
     fwd_k := PendingFwdType(GetObj(te, 'base'));
-    IF fwd_k <> 0 THEN elem_tid := ResolveFwdType(fwd_k)
+    super_str_base := 0;
+    IF (fwd_k = 0) AND (NodeType(GetObj(te, 'base')) = 'NamedType') THEN
+      IF GetObjOrNil(GetObj(te, 'base'), 'param') = NIL THEN
+        IF LookupNamedType(GetStr(GetObj(te, 'base'), 'name')) = 0 THEN
+        BEGIN
+          unm := UpperStr(GetStr(GetObj(te, 'base'), 'name'));
+          IF unm = 'STRING' THEN super_str_base := 1
+          ELSE IF unm = 'LSTRING' THEN super_str_base := 2;
+        END;
+    IF super_str_base = 1 THEN
+    BEGIN
+      IF super_string_tid = 0 THEN
+      BEGIN
+        super_string_tid := RegisterType(TK_STRING, TK_CHAR, 1, 0, i8ty);
+        types[super_string_tid].is_super := TRUE;
+        types[super_string_tid].index_tid := TK_INTEGER;
+      END;
+      elem_tid := super_string_tid;
+    END
+    ELSE IF super_str_base = 2 THEN
+    BEGIN
+      IF super_lstring_tid = 0 THEN
+      BEGIN
+        super_lstring_tid := RegisterType(TK_LSTRING, TK_CHAR, 0, 0, i8ty);
+        types[super_lstring_tid].is_super := TRUE;
+        types[super_lstring_tid].index_tid := TK_INTEGER;
+      END;
+      elem_tid := super_lstring_tid;
+    END
+    ELSE IF fwd_k <> 0 THEN elem_tid := ResolveFwdType(fwd_k)
     ELSE elem_tid := ResolveTypeExpr(GetObj(te, 'base'));
     { A pointer's flavor and, for ADS, its space are part of its identity for
       assignment compatibility (PTR_SPACE_PLAIN and the PTR_SPACE_* codes are
@@ -2641,6 +2830,21 @@ BEGIN
       END;
     END
     ELSE space_code := PTR_SPACE_PLAIN;
+    IF (super_str_base <> 0) AND
+       ((NOT is_device_compiland) OR lowering_host_interface_in_device) AND
+       (space_code = PTR_SPACE_PLAIN) THEN
+    BEGIN
+      IF (super_str_base = 1) AND (ptr_super_string_tid <> 0) THEN
+      BEGIN
+        ResolveTypeExpr := ptr_super_string_tid;
+        RETURN;
+      END;
+      IF (super_str_base = 2) AND (ptr_super_lstring_tid <> 0) THEN
+      BEGIN
+        ResolveTypeExpr := ptr_super_lstring_tid;
+        RETURN;
+      END;
+    END;
     lo := 0;
     IF is_nvptx_device THEN
     BEGIN
@@ -2658,7 +2862,8 @@ BEGIN
     tid := RegisterType(TK_POINTER, elem_tid, 0, 0, arr_ty);
     types[tid].ptr_space := space_code;
     IF ((NOT is_device_compiland) OR lowering_host_interface_in_device) AND (space_code = PTR_SPACE_PLAIN) THEN
-      IF TypeKind(elem_tid) = TK_ARRAY THEN
+      IF (TypeKind(elem_tid) = TK_ARRAY) OR (TypeKind(elem_tid) = TK_STRING) OR
+         (TypeKind(elem_tid) = TK_LSTRING) THEN
         types[tid].is_descriptor := types[elem_tid].is_super;
     IF IsHostDescriptor(tid) THEN
     BEGIN
@@ -2666,6 +2871,8 @@ BEGIN
       SetPtrArrayElem(arr_ty, 0, i8ptrty);
       SetPtrArrayElem(arr_ty, 1, i64ty);
       types[tid].llvm_ty := LLVMStructTypeInContext(ctx, arr_ty, 2, 0);
+      IF super_str_base = 1 THEN ptr_super_string_tid := tid
+      ELSE IF super_str_base = 2 THEN ptr_super_lstring_tid := tid;
     END;
   END
   ELSE IF nt = 'FileType' THEN
@@ -2696,9 +2903,11 @@ BEGIN
       { An integer subrange's host is the narrowest of INTEGER, WORD and
         INTEGER32 that holds its upper bound (NEW-32), the NEW-5 index rule and
         the typechecker's SubrangeHostKind; a CONST bound of another
-        integer type keeps that type. A negative low in a WORD subrange is
-        the IBM manual's reversed `-1..50000' (the typechecker rejects
+        integer type keeps that type, and INTEGER adapts to WORD when
+        paired with a WORD bound (NEW-37). A negative low in a WORD subrange
+        is the IBM manual's reversed `-1..50000' (the typechecker rejects
         it). }
+      elem_tid := CombineBoundHostTids(elem_tid, BoundHostTid(GetObj(te, 'high')));
       elem_tid := WidenBoundHostTid(elem_tid, hi);
       IF (elem_tid = TK_WORD) AND (lo < 0) THEN
         AbortWith('codegen: subrange lower bound is negative in a WORD subrange');
@@ -2714,8 +2923,11 @@ BEGIN
     IF NodeType(GetObj(te, 'base')) = 'SubrangeType' THEN
     BEGIN
       elem_tid := BoundHostTid(GetObj(GetObj(te, 'base'), 'low'));
-      IF BoundHostTid(GetObj(GetObj(te, 'base'), 'high')) <> elem_tid THEN
+      IF (BoundHostTid(GetObj(GetObj(te, 'base'), 'high')) <> elem_tid) AND
+         NOT (((elem_tid = TK_INTEGER) AND (BoundHostTid(GetObj(GetObj(te, 'base'), 'high')) = TK_WORD)) OR
+              ((elem_tid = TK_WORD) AND (BoundHostTid(GetObj(GetObj(te, 'base'), 'high')) = TK_INTEGER))) THEN
         AbortWith('codegen: SET subrange bounds must share an ordinal host');
+      elem_tid := CombineBoundHostTids(elem_tid, BoundHostTid(GetObj(GetObj(te, 'base'), 'high')));
       lo := ResolveIntLiteral(GetObj(GetObj(te, 'base'), 'low'));
       hi := ResolveIntLiteral(GetObj(GetObj(te, 'base'), 'high'));
       tid := RegisterType(TK_SET, elem_tid, lo, hi, setty);
@@ -2728,6 +2940,7 @@ BEGIN
       BEGIN
         elem_tid := SubrangeBaseTid(named_tid);
         IF (TypeKind(elem_tid) <> TK_ENUM) AND (elem_tid <> TK_INTEGER)
+           AND (elem_tid <> TK_WORD)
            AND (elem_tid <> TK_CHAR) AND (elem_tid <> TK_BOOLEAN) THEN
           AbortWith2('codegen: SET OF <base> requires an ordinal base type, got: ', nm);
         set_base_is_subrange := FALSE;

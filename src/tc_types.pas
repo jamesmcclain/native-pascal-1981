@@ -37,6 +37,33 @@ BEGIN
   EnumIdOfNode := id;
 END;
 
+FUNCTION StrCapKindOfNode(node: ADRMEM): INTEGER;
+{ The bound kind recorded for a STRING(n)/LSTRING(n) type node when its
+  declaration was resolved, or TK_UNKNOWN if not recorded. Pure. }
+VAR
+  k: INTEGER32;
+  kind: INTEGER;
+BEGIN
+  kind := TK_UNKNOWN;
+  k := nstr_cap_nodes;
+  WHILE (k >= 1) AND THEN (str_cap_nodes[k] <> node) DO k := k - 1;
+  IF k >= 1 THEN kind := str_cap_kinds[k];
+  StrCapKindOfNode := kind;
+END;
+
+PROCEDURE RecordStrCapKind(node: ADRMEM; kind: INTEGER);
+{ Record node's declaration-site string bound kind once (NEW-24r). }
+BEGIN
+  IF (node = NIL) OR (kind = TK_UNKNOWN) THEN RETURN;
+  IF StrCapKindOfNode(node) <> TK_UNKNOWN THEN RETURN;
+  IF nstr_cap_nodes < MAX_STR_CAP_NODES THEN
+  BEGIN
+    nstr_cap_nodes := nstr_cap_nodes + 1;
+    str_cap_nodes[nstr_cap_nodes] := node;
+    str_cap_kinds[nstr_cap_nodes] := kind;
+  END;
+END;
+
 FUNCTION FoldVectorLanes(node: ADRMEM): INTEGER;
 { The lane count is a full constant-expression AST node. The acceptance rule
   both stages implement identically: an integer literal, or an identifier
@@ -168,6 +195,33 @@ BEGIN
   LowByte := b;
 END;
 
+FUNCTION FoldConstOrdinal(node: ADRMEM; VAR folded_value: INTEGER64): BOOLEAN;
+{ Like FoldConstInt, plus enumeration members (which FoldConstInt intentionally
+  excludes for runtime MATHCK) for constant relational comparisons. }
+VAR
+  nt: Str255;
+  si: INTEGER32;
+BEGIN
+  IF FoldConstInt(node, folded_value) THEN
+    FoldConstOrdinal := TRUE
+  ELSE
+  BEGIN
+    FoldConstOrdinal := FALSE;
+    nt := NodeType(node);
+    IF (nt = 'Identifier') OR
+       ((nt = 'Designator') AND (cJSON_GetArraySize(GetObj(node, 'selectors')) = 0)) THEN
+    BEGIN
+      si := LookupSymbol(GetStr(node, 'name'));
+      IF si <> 0 THEN
+        IF (symbols[si].kind = 'CONST') AND (symbols[si].const_enum_ord >= 0) THEN
+        BEGIN
+          folded_value := symbols[si].const_enum_ord;
+          FoldConstOrdinal := TRUE;
+        END;
+    END;
+  END;
+END;
+
 FUNCTION FoldConstInt(node: ADRMEM; VAR folded_value: INTEGER64): BOOLEAN;
 { The integer constant folder. Codegen's FoldConstIntIn (cg_types.pas)
   applies the same rule when it decides what is an integer constant, and
@@ -210,44 +264,97 @@ BEGIN
       folded_value := JsonIntegerValue(GetObj(node, 'operand'));
       FoldConstInt := TRUE;
     END
-    ELSE IF ((op = 'PLUS') OR (op = 'MINUS')) AND FoldConstInt(GetObj(node, 'operand'), folded_value) THEN
+    ELSE IF (op = 'PLUS') OR (op = 'MINUS') THEN
     BEGIN
-      IF op = 'MINUS' THEN
-        FoldConstInt := FoldArith('MINUS', 0, folded_value, folded_value)
-      ELSE
+      IF FoldConstInt(GetObj(node, 'operand'), folded_value) THEN
+      BEGIN
+        IF op = 'MINUS' THEN
+          FoldConstInt := FoldArith('MINUS', 0, folded_value, folded_value)
+        ELSE
+          FoldConstInt := TRUE;
+      END;
+    END
+    ELSE IF (op = 'NOT') AND (const_expr_level > 0) THEN
+    BEGIN
+      IF FoldConstInt(GetObj(node, 'operand'), folded_value) THEN
+      BEGIN
+        IF folded_value = 0 THEN folded_value := 1 ELSE folded_value := 0;
         FoldConstInt := TRUE;
+      END;
     END;
   END
   ELSE IF nt = 'BinOp' THEN
   BEGIN
     op := GetStr(node, 'op');
-    IF ((op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') OR
-        (op = 'DIV') OR (op = 'MOD')) AND
-       FoldConstInt(GetObj(node, 'left'), left) AND
-       FoldConstInt(GetObj(node, 'right'), right) THEN
+    IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') OR
+       (op = 'DIV') OR (op = 'MOD') THEN
     BEGIN
-      IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') THEN
-        FoldConstInt := FoldArith(op, left, right, folded_value)
-      ELSE IF right = -1 THEN
-      BEGIN
-        { x DIV -1 is -x, which overflows only for the minimum; x MOD -1
-          is 0. }
-        IF op = 'DIV' THEN FoldConstInt := FoldArith('MINUS', 0, left, folded_value)
-        ELSE
+      IF FoldConstInt(GetObj(node, 'left'), left) THEN
+        IF FoldConstInt(GetObj(node, 'right'), right) THEN
         BEGIN
-          folded_value := 0;
+          IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') THEN
+            FoldConstInt := FoldArith(op, left, right, folded_value)
+          ELSE IF right = -1 THEN
+          BEGIN
+            { x DIV -1 is -x, which overflows only for the minimum; x MOD -1
+              is 0. }
+            IF op = 'DIV' THEN FoldConstInt := FoldArith('MINUS', 0, left, folded_value)
+            ELSE
+            BEGIN
+              folded_value := 0;
+              FoldConstInt := TRUE;
+            END;
+          END
+          ELSE IF right <> 0 THEN
+          BEGIN
+            { Truncate toward zero; MOD has the dividend's sign, like runtime. }
+            IF op = 'DIV' THEN folded_value := left DIV right
+            ELSE folded_value := left MOD right;
+            FoldConstInt := TRUE;
+          END;
+          { A zero divisor does not fold. The BinOp check in CheckExpr reports
+            it once; this folder also answers "is it constant?" for callers. }
+        END;
+    END
+    ELSE IF (const_expr_level > 0) AND
+            ((op = 'AND') OR (op = 'OR') OR (op = 'XOR')) THEN
+    BEGIN
+      IF FoldConstInt(GetObj(node, 'left'), left) THEN
+        IF FoldConstInt(GetObj(node, 'right'), right) THEN
+        BEGIN
+          IF op = 'AND' THEN
+          BEGIN
+            IF (left <> 0) AND (right <> 0) THEN folded_value := 1 ELSE folded_value := 0;
+          END
+          ELSE IF op = 'OR' THEN
+          BEGIN
+            IF (left <> 0) OR (right <> 0) THEN folded_value := 1 ELSE folded_value := 0;
+          END
+          ELSE
+          BEGIN
+            IF (left <> 0) <> (right <> 0) THEN folded_value := 1 ELSE folded_value := 0;
+          END;
           FoldConstInt := TRUE;
         END;
-      END
-      ELSE IF right <> 0 THEN
-      BEGIN
-        { Truncate toward zero; MOD has the dividend's sign, like runtime. }
-        IF op = 'DIV' THEN folded_value := left DIV right
-        ELSE folded_value := left MOD right;
-        FoldConstInt := TRUE;
-      END;
-      { A zero divisor does not fold. The BinOp check in CheckExpr reports
-        it once; this folder also answers "is it constant?" for callers. }
+    END
+    ELSE IF (const_expr_level > 0) AND
+            ((op = 'EQ') OR (op = 'NEQ') OR (op = 'LT') OR
+             (op = 'LE') OR (op = 'GT') OR (op = 'GE')) THEN
+    BEGIN
+      IF FoldConstOrdinal(GetObj(node, 'left'), left) THEN
+        IF FoldConstOrdinal(GetObj(node, 'right'), right) THEN
+        BEGIN
+          IF ((op = 'EQ') AND (left = right)) OR
+             ((op = 'NEQ') AND (left <> right)) OR
+             ((op = 'LT') AND (left < right)) OR
+             ((op = 'LE') AND (left <= right)) OR
+             ((op = 'GT') AND (left > right)) OR
+             ((op = 'GE') AND (left >= right)) THEN
+            folded_value := 1
+          ELSE
+            folded_value := 0;
+          FoldConstInt := TRUE;
+        END;
     END;
   END
   ELSE IF (nt = 'Identifier') OR (nt = 'Designator') THEN
@@ -289,6 +396,21 @@ BEGIN
       folded_value := folded_value MOD 65536;
       IF folded_value < 0 THEN folded_value := folded_value + 65536;
       FoldConstInt := TRUE;
+    END
+    ELSE IF NOT UserDeclarationShadows(name) AND
+       ((name = 'HIBYTE') OR (name = 'LOBYTE')) AND
+       (cJSON_GetArraySize(args) = 1) THEN
+    BEGIN
+      IF FoldConstInt(cJSON_GetArrayItem(args, 0), left) THEN
+        IF (left >= -32768) AND (left <= 65535) THEN
+        BEGIN
+          IF name = 'LOBYTE' THEN folded_value := LowByte(left)
+          ELSE BEGIN
+            IF left < 0 THEN left := left + 65536;
+            folded_value := left DIV 256;
+          END;
+          FoldConstInt := TRUE;
+        END;
     END
     ELSE IF NOT UserDeclarationShadows(name) AND
        ((name = 'ORD') OR (name = 'CHR') OR (name = 'SUCC') OR (name = 'PRED') OR
@@ -381,23 +503,32 @@ BEGIN
   END;
 END;
 
-FUNCTION SuperStringKind(node: ADRMEM): INTEGER;
-{ SUPER_STR_STRING or SUPER_STR_LSTRING when node names the predeclared
-  super-array type STRING or LSTRING itself: no capacity, and no user TYPE
-  of the name shadowing it. Only a reference formal (VAR, VARS, CONST,
-  CONSTS) gives that a conformant meaning (NEW-29); elsewhere a bare name
-  keeps its capacity-256 default. 0 otherwise. }
+FUNCTION SuperStringKindBefore(node: ADRMEM; bound: INTEGER32): INTEGER;
+{ Same as SuperStringKind, resolving user-type shadowing among
+  types[1..bound] so a later local TYPE STRING/LSTRING does not hide an
+  earlier pointer referent's super-array status (NEW-47). }
 VAR
   uname: Str255;
 BEGIN
-  SuperStringKind := 0;
+  SuperStringKindBefore := 0;
   IF node = NIL THEN RETURN;
   IF NodeType(node) <> 'NamedType' THEN RETURN;
   IF GetObjOrNil(node, 'param') <> NIL THEN RETURN;
-  IF LookupType(GetStr(node, 'name')) <> 0 THEN RETURN;
+  IF LookupTypeBefore(GetStr(node, 'name'), bound) <> 0 THEN RETURN;
   uname := UpperStr(GetStr(node, 'name'));
-  IF uname = 'STRING' THEN SuperStringKind := SUPER_STR_STRING
-  ELSE IF uname = 'LSTRING' THEN SuperStringKind := SUPER_STR_LSTRING;
+  IF uname = 'STRING' THEN SuperStringKindBefore := SUPER_STR_STRING
+  ELSE IF uname = 'LSTRING' THEN SuperStringKindBefore := SUPER_STR_LSTRING;
+END;
+
+FUNCTION SuperStringKind(node: ADRMEM): INTEGER;
+{ SUPER_STR_STRING or SUPER_STR_LSTRING when node names the predeclared
+  super-array type STRING or LSTRING itself: no capacity, and no user TYPE
+  of the name shadowing it. A reference formal (VAR, VARS, CONST, CONSTS)
+  gives that a conformant meaning (NEW-29), and a pointer referent
+  (^STRING / ^LSTRING) gives a super-array pointer (NEW-47); elsewhere a
+  bare name keeps its capacity-256 default. 0 otherwise. }
+BEGIN
+  SuperStringKind := SuperStringKindBefore(node, ntypes);
 END;
 
 FUNCTION SemanticOrdinalBase(tk, aux: INTEGER): INTEGER;
@@ -416,9 +547,10 @@ END;
 FUNCTION ConstCallBoundKind(node: ADRMEM): INTEGER;
 { The ordinal kind of a subrange or array index bound written as one of
   the constant calls ParseConstant admits, as codegen's BoundHostTid
-  classifies it: CHAR for CHR, the argument's kind for SUCC and PRED, and
-  INTEGER for ORD, WRD and BYWORD. Any other node is TK_UNKNOWN; the
-  callers keep their own rules for literals and names. }
+  classifies it: CHAR for CHR, the argument's kind for SUCC and PRED,
+  INTEGER for ORD, and WORD for WRD and BYWORD (IBM manual 5-7, NEW-37).
+  Any other node is TK_UNKNOWN; the callers keep their own rules for
+  literals and names. }
 VAR
   nt, name: Str255;
   args, arg: ADRMEM;
@@ -429,8 +561,11 @@ BEGIN
   name := UpperStr(GetStr(node, 'name'));
   args := GetObj(node, 'args');
   IF name = 'CHR' THEN ConstCallBoundKind := TK_CHAR
-  ELSE IF (name = 'ORD') OR (name = 'WRD') OR (name = 'BYWORD') THEN
+  ELSE IF (name = 'ORD') OR (name = 'HIBYTE') OR (name = 'LOBYTE') OR
+          (name = 'ABS') OR (name = 'SQR') THEN
     ConstCallBoundKind := TK_INTEGER
+  ELSE IF (name = 'WRD') OR (name = 'BYWORD') THEN
+    ConstCallBoundKind := TK_WORD
   ELSE IF ((name = 'SUCC') OR (name = 'PRED')) AND (cJSON_GetArraySize(args) = 1) THEN
   BEGIN
     arg := cJSON_GetArrayItem(args, 0);
@@ -442,6 +577,20 @@ BEGIN
     BEGIN
       si := LookupSymbol(GetStr(arg, 'name'));
       IF si <> 0 THEN ConstCallBoundKind := symbols[si].tk;
+    END
+    ELSE IF (nt = 'UnaryOp') OR (nt = 'BinOp') THEN
+    BEGIN
+      IF (nt = 'UnaryOp') AND (GetStr(arg, 'op') = 'NOT') THEN
+        ConstCallBoundKind := TK_BOOLEAN
+      ELSE IF (nt = 'BinOp') AND
+              ((GetStr(arg, 'op') = 'AND') OR (GetStr(arg, 'op') = 'OR') OR
+               (GetStr(arg, 'op') = 'XOR') OR (GetStr(arg, 'op') = 'EQ') OR
+               (GetStr(arg, 'op') = 'NEQ') OR (GetStr(arg, 'op') = 'LT') OR
+               (GetStr(arg, 'op') = 'LE') OR (GetStr(arg, 'op') = 'GT') OR
+               (GetStr(arg, 'op') = 'GE')) THEN
+        ConstCallBoundKind := TK_BOOLEAN
+      ELSE
+        ConstCallBoundKind := TK_INTEGER;
     END
     ELSE ConstCallBoundKind := ConstCallBoundKind(arg);
   END;
@@ -485,10 +634,10 @@ FUNCTION SubrangeHostKind(range_node: ADRMEM): INTEGER;
   the low bound names nothing. No diagnostics: the declaration's own
   check (CheckSubrangeEndpoints) reports bad endpoints. }
 VAR
-  low_node: ADRMEM;
+  low_node, high_node: ADRMEM;
   nt: Str255;
   si: INTEGER32;
-  kind: INTEGER;
+  kind, high_kind: INTEGER;
 BEGIN
   low_node := GetObj(range_node, 'low');
   nt := NodeType(low_node);
@@ -504,7 +653,22 @@ BEGIN
     kind := ConstCallBoundKind(low_node)
   ELSE IF (nt = 'IntLiteral') AND (GetInt(low_node, 'value') > 32767) THEN
     kind := TK_WORD;
-  SubrangeHostKind := WidenBoundHostKind(kind, GetObjOrNil(range_node, 'high'));
+  high_node := GetObjOrNil(range_node, 'high');
+  { An INTEGER constant low bound adapts to WORD when paired with a WORD
+    high bound (IBM manual 5-7, NEW-37). }
+  IF (kind = TK_INTEGER) AND (high_node <> NIL) THEN
+  BEGIN
+    high_kind := TK_UNKNOWN;
+    IF NodeType(high_node) = 'FuncCall' THEN
+      high_kind := ConstCallBoundKind(high_node)
+    ELSE IF NodeType(high_node) = 'Identifier' THEN
+    BEGIN
+      si := LookupSymbol(GetStr(high_node, 'name'));
+      IF si <> 0 THEN high_kind := symbols[si].tk;
+    END;
+    IF high_kind = TK_WORD THEN kind := TK_WORD;
+  END;
+  SubrangeHostKind := WidenBoundHostKind(kind, high_node);
 END;
 
 FUNCTION SemanticBaseOfOrdinalType(node: ADRMEM): INTEGER;
@@ -847,26 +1011,153 @@ BEGIN
     IF IsInteger(kind) THEN SubrangeEndpointClass := TK_INTEGER
     ELSE IF (kind = TK_CHAR) OR (kind = TK_BOOLEAN) OR (kind = TK_ENUM) THEN
       SubrangeEndpointClass := kind;
+  END
+  ELSE IF nt = 'UnaryOp' THEN
+  BEGIN
+    IF GetStr(node, 'op') = 'NOT' THEN SubrangeEndpointClass := TK_BOOLEAN
+    ELSE SubrangeEndpointClass := TK_INTEGER;
+  END
+  ELSE IF nt = 'BinOp' THEN
+  BEGIN
+    IF (GetStr(node, 'op') = 'AND') OR (GetStr(node, 'op') = 'OR') OR
+       (GetStr(node, 'op') = 'XOR') OR (GetStr(node, 'op') = 'EQ') OR
+       (GetStr(node, 'op') = 'NEQ') OR (GetStr(node, 'op') = 'LT') OR
+       (GetStr(node, 'op') = 'LE') OR (GetStr(node, 'op') = 'GT') OR
+       (GetStr(node, 'op') = 'GE') THEN
+      SubrangeEndpointClass := TK_BOOLEAN
+    ELSE
+      SubrangeEndpointClass := TK_INTEGER;
   END;
 END;
 
-PROCEDURE CheckSubrangeEndpoints(range_node: ADRMEM);
-{ Both ends of a subrange must be the same ordinal type: FALSE..2 or
-  'a'..150 used to be accepted, with the type (and storage) taken from the
-  low end alone, so the high bound was silently narrowed. A bound is a
-  constant consumer like a CONST value: an enabled out-of-domain CHR or
-  BYWORD in it (CHR(300)) is a located error here, since codegen would
-  never fold it into a bound. }
+FUNCTION CheckSubrangeEndpoint(node: ADRMEM): INTEGER;
+{ Validate that a subrange or array index endpoint is an ordinal constant
+  (NEW-31) and return its ordinal class (TK_INTEGER, TK_CHAR, TK_BOOLEAN,
+  TK_ENUM), or TK_UNKNOWN after reporting a located diagnostic. }
 VAR
-  high_node: ADRMEM;
+  nt, op, nm: Str255;
+  operand: ADRMEM;
+  si: INTEGER32;
+  kind, lk, rk: INTEGER;
+  folded: INTEGER64;
+  err_before: INTEGER32;
+BEGIN
+  CheckSubrangeEndpoint := TK_UNKNOWN;
+  IF node = NIL THEN RETURN;
+  nt := NodeType(node);
+  IF nt = 'IntLiteral' THEN CheckSubrangeEndpoint := TK_INTEGER
+  ELSE IF nt = 'CharLiteral' THEN CheckSubrangeEndpoint := TK_CHAR
+  ELSE IF nt = 'BoolLiteral' THEN CheckSubrangeEndpoint := TK_BOOLEAN
+  ELSE IF nt = 'UnaryOp' THEN
+  BEGIN
+    op := GetStr(node, 'op');
+    operand := GetObj(node, 'operand');
+    err_before := nerrors;
+    IF (op = 'PLUS') OR (op = 'MINUS') THEN
+    BEGIN
+      kind := CheckSubrangeEndpoint(operand);
+      IF kind = TK_INTEGER THEN CheckSubrangeEndpoint := TK_INTEGER
+      ELSE IF nerrors = err_before THEN
+        AddError('Subrange bound must be an ordinal constant');
+    END
+    ELSE IF op = 'NOT' THEN
+    BEGIN
+      kind := CheckSubrangeEndpoint(operand);
+      IF (kind = TK_BOOLEAN) AND FoldConstInt(node, folded) THEN
+        CheckSubrangeEndpoint := TK_BOOLEAN
+      ELSE IF nerrors = err_before THEN
+        AddError('Subrange bound must be an ordinal constant');
+    END
+    ELSE
+      AddError('Subrange bound must be an ordinal constant');
+  END
+  ELSE IF nt = 'BinOp' THEN
+  BEGIN
+    op := GetStr(node, 'op');
+    err_before := nerrors;
+    lk := CheckSubrangeEndpoint(GetObj(node, 'left'));
+    rk := CheckSubrangeEndpoint(GetObj(node, 'right'));
+    IF (op = 'PLUS') OR (op = 'MINUS') OR (op = 'MUL') OR
+       (op = 'DIV') OR (op = 'MOD') THEN
+    BEGIN
+      IF (lk = TK_INTEGER) AND (rk = TK_INTEGER) AND FoldConstInt(node, folded) THEN
+        CheckSubrangeEndpoint := TK_INTEGER
+      ELSE IF nerrors = err_before THEN
+        AddError('Subrange bound must be an ordinal constant');
+    END
+    ELSE IF (op = 'AND') OR (op = 'OR') OR (op = 'XOR') THEN
+    BEGIN
+      IF (lk = TK_BOOLEAN) AND (rk = TK_BOOLEAN) AND FoldConstInt(node, folded) THEN
+        CheckSubrangeEndpoint := TK_BOOLEAN
+      ELSE IF nerrors = err_before THEN
+        AddError('Subrange bound must be an ordinal constant');
+    END
+    ELSE IF (op = 'EQ') OR (op = 'NEQ') OR (op = 'LT') OR
+            (op = 'LE') OR (op = 'GT') OR (op = 'GE') THEN
+    BEGIN
+      IF (lk <> TK_UNKNOWN) AND (lk = rk) AND FoldConstInt(node, folded) THEN
+        CheckSubrangeEndpoint := TK_BOOLEAN
+      ELSE IF nerrors = err_before THEN
+        AddError('Subrange bound must be an ordinal constant');
+    END
+    ELSE IF nerrors = err_before THEN
+      AddError('Subrange bound must be an ordinal constant');
+  END
+  ELSE IF nt = 'Identifier' THEN
+  BEGIN
+    nm := GetStr(node, 'name');
+    si := LookupSymbol(nm);
+    IF si = 0 THEN
+      AddUndefinedIdentifier(node)
+    ELSE IF symbols[si].kind <> 'CONST' THEN
+      AddError2('Subrange bound must be an ordinal constant: ', nm)
+    ELSE IF symbols[si].tk = TK_UNKNOWN THEN
+      { CONST declaration already reported an error; avoid cascading. }
+    ELSE IF IsInteger(symbols[si].tk) THEN
+      CheckSubrangeEndpoint := TK_INTEGER
+    ELSE IF (symbols[si].tk = TK_CHAR) OR (symbols[si].tk = TK_BOOLEAN) OR
+            (symbols[si].tk = TK_ENUM) THEN
+      CheckSubrangeEndpoint := symbols[si].tk
+    ELSE
+      AddError2('Subrange bound must be an ordinal constant: ', nm);
+  END
+  ELSE IF nt = 'FuncCall' THEN
+  BEGIN
+    kind := ConstCallBoundKind(node);
+    IF kind = TK_ENUM THEN
+      CheckSubrangeEndpoint := TK_ENUM
+    ELSE IF (IsInteger(kind) OR (kind = TK_CHAR) OR (kind = TK_BOOLEAN)) AND
+            FoldConstInt(node, folded) THEN
+    BEGIN
+      IF IsInteger(kind) THEN CheckSubrangeEndpoint := TK_INTEGER
+      ELSE CheckSubrangeEndpoint := kind;
+    END
+    ELSE
+      AddError('Subrange bound must be an ordinal constant');
+  END
+  ELSE
+    AddError('Subrange bound must be an ordinal constant');
+END;
+
+PROCEDURE CheckSubrangeEndpoints(range_node: ADRMEM);
+{ Both ends of a subrange must be ordinal constants of the same ordinal type:
+  FALSE..2 or 'a'..150 used to be accepted, with the type (and storage) taken
+  from the low end alone, so the high bound was silently narrowed; a REAL or
+  string CONST used to slip past to codegen (NEW-31). A bound is a constant
+  consumer like a CONST value: an enabled out-of-domain CHR or BYWORD in it
+  (CHR(300)) is a located error here, since codegen would never fold it into
+  a bound. }
+VAR
+  low_node, high_node: ADRMEM;
   lo_class, hi_class: INTEGER;
 BEGIN
-  CheckConstByteDomain(GetObj(range_node, 'low'));
+  low_node := GetObj(range_node, 'low');
+  CheckConstByteDomain(low_node);
+  lo_class := CheckSubrangeEndpoint(low_node);
   high_node := GetObjOrNil(range_node, 'high');
   IF high_node = NIL THEN RETURN;
   CheckConstByteDomain(high_node);
-  lo_class := SubrangeEndpointClass(GetObj(range_node, 'low'));
-  hi_class := SubrangeEndpointClass(high_node);
+  hi_class := CheckSubrangeEndpoint(high_node);
   IF (lo_class <> TK_UNKNOWN) AND (hi_class <> TK_UNKNOWN) AND (lo_class <> hi_class) THEN
     AddError('Subrange bounds must be of the same ordinal type');
 END;
@@ -1284,6 +1575,7 @@ BEGIN
     AddError(msg);
     RETURN;
   END;
+  RecordStrCapKind(node, BoundValueKind(cap));
   IF uname = 'STRING' THEN low := 1 ELSE low := 0;
   IF active_features.wide_integers THEN high := 2147483647 ELSE high := 65535;
   IF (cap < low) OR (cap > high) THEN
@@ -1310,6 +1602,7 @@ FUNCTION StringBoundKind(node: ADRMEM; bound: INTEGER32): INTEGER;
 VAR
   nt, pname: Str255;
   ti, si: INTEGER32;
+  cached: INTEGER;
   param: ADRMEM;
   cap: INTEGER64;
   ok: BOOLEAN;
@@ -1318,7 +1611,9 @@ BEGIN
   IF node = NIL THEN RETURN;
   nt := NodeType(node);
   IF (nt <> 'NamedType') AND (nt <> 'BuiltinType') THEN RETURN;
-  ti := LookupTypeBefore(GetStr(node, 'name'), bound);
+  ti := 0;
+  IF GetObjOrNil(node, 'param') = NIL THEN
+    ti := LookupTypeBefore(GetStr(node, 'name'), bound);
   IF ti <> 0 THEN
   BEGIN
     StringBoundKind := StringBoundKind(types[ti].type_node, ti - 1);
@@ -1328,6 +1623,12 @@ BEGIN
      (UpperStr(GetStr(node, 'name')) <> 'LSTRING') THEN RETURN;
   param := GetObjOrNil(node, 'param');
   IF param = NIL THEN RETURN;
+  cached := StrCapKindOfNode(node);
+  IF cached <> TK_UNKNOWN THEN
+  BEGIN
+    StringBoundKind := cached;
+    RETURN;
+  END;
   ok := FALSE;
   pname := GetStr(node, 'param');
   IF pname <> '' THEN
@@ -1352,22 +1653,37 @@ BEGIN
 END;
 
 PROCEDURE CheckIntegerSubrangeBounds(node: ADRMEM; host: INTEGER);
-{ The folded bounds of an integer subrange, checked here rather than in
-  codegen. They stay within an array bound's limits (-32768 up to 65535
-  in vintage, which has no INTEGER32, and up to the INTEGER32 maximum in
-  extended), so a vintage `0..70000' is an error, as the IBM manual says
-  of `0..80000' (5-7). The lower bound must not exceed the upper. A
-  negative lower bound in a WORD subrange is reversed too: the IBM manual
-  reads `-1..50000' as `65535..50000', and the extended dialect follows
+{ The folded bounds of an integer subrange or array index range, checked here
+  rather than in codegen (NEW-32, NEW-40). They stay within an array bound's
+  limits (-32768 up to 65535 in vintage, which has no INTEGER32, and up to the
+  INTEGER32 maximum in extended), so a vintage `0..70000' is an error, as the
+  IBM manual says of `0..80000' (5-7). The lower bound must not exceed the
+  upper. A negative lower bound in a WORD subrange is reversed too: the IBM
+  manual reads `-1..50000' as `65535..50000', and the extended dialect follows
   it rather than widening to INTEGER32 (only an upper bound above 65535
   does that). }
 VAR
+  high_node: ADRMEM;
   low, high, limit: INTEGER64;
 BEGIN
   IF NOT IsInteger(host) THEN RETURN;
   IF NOT FoldConstInt(GetObj(node, 'low'), low) THEN RETURN;
-  IF NOT FoldConstInt(GetObj(node, 'high'), high) THEN RETURN;
   IF active_features.wide_integers THEN limit := 2147483647 ELSE limit := 65535;
+  high_node := GetObjOrNil(node, 'high');
+  IF high_node = NIL THEN
+  BEGIN
+    IF low < -32768 THEN
+      AddError('Subrange lower bound is below -32768')
+    ELSE IF low > limit THEN
+    BEGIN
+      IF active_features.wide_integers THEN
+        AddError('Subrange lower bound is above 2147483647')
+      ELSE
+        AddError('Subrange lower bound is above 65535');
+    END;
+    RETURN;
+  END;
+  IF NOT FoldConstInt(high_node, high) THEN RETURN;
   IF low < -32768 THEN
     AddError('Subrange lower bound is below -32768')
   ELSE IF high > limit THEN
@@ -1634,6 +1950,7 @@ BEGIN
     END;
     CheckSubrangeEndpoints(index_node);
     idx_tk := SubrangeIndexKind(index_node);
+    CheckIntegerSubrangeBounds(index_node, idx_tk);
   END
   ELSE IF nt = 'VectorType' THEN
   BEGIN
@@ -1836,6 +2153,7 @@ BEGIN
         nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, ni)));
         DeclareName(nm, DECL_OTHER);
         bound_si := DefineSymbol(nm, 'CONST', TK_ENUM, aux, 0, 0, 0);
+        symbols[bound_si].const_enum_ord := ni;
       END;
     END;
   END

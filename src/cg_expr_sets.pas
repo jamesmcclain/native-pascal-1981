@@ -29,7 +29,9 @@ END;
 
 FUNCTION CodegenSetMember(ordinal_val, set_val: ADRMEM): ADRMEM;
 { Lowers ordinal IN set to a bit test. Semantic host compatibility is
-  checked by the typechecker; the call site also guards declared bases.
+  checked by the typechecker; the call site also guards declared bases
+  and widens ordinal_val to i64 (zero-extended for CHAR, BOOLEAN and
+  WORD; sign-extended for INTEGER and enum).
   The IBM manual lets the ordinal fall outside the set's base range, and
   then the result is FALSE. An ordinal outside 0..255 (unsigned compare,
   so negatives are out too) tests bit 0 instead of reading past the set,
@@ -42,7 +44,7 @@ VAR
 BEGIN
   slot := EntryAlloca(setty, '');
   LLVMBuildStore(builder, set_val, slot);
-  ord64 := LLVMBuildSExt(builder, ordinal_val, i64ty, MakeCStr(''));
+  ord64 := ordinal_val;
   in_range := LLVMBuildICmp(builder, LLVMIntULT, ord64, LLVMConstInt(i64ty, 256, 0), MakeCStr(''));
   safe_ord := LLVMBuildSelect(builder, in_range, ord64, LLVMConstInt(i64ty, 0, 0), MakeCStr(''));
   ord64 := safe_ord;

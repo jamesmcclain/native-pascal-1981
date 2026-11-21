@@ -4,7 +4,9 @@ TYPE R = RECORD v, w: INTEGER END;
      PR = ^R;
      CellArr = SUPER ARRAY [1..*] OF INTEGER;
      P = ^CellArr;
-VAR slot: PR; cells: P; keep: ARRAY [1..46] OF PR; mode: INTEGER32; i: INTEGER;
+VAR [PUBLIC] slot: PR;
+VAR [PUBLIC] cells: P;
+VAR keep: ARRAY [1..46] OF PR; mode: INTEGER32; i: INTEGER;
 PROCEDURE Arm(m: INTEGER32) [C]; EXTERN;
 BEGIN
   READLN(mode);

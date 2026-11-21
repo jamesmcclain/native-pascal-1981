@@ -260,6 +260,7 @@ BEGIN
   ndev_files := 0;
   lowering_spliced_interface := FALSE;
   defining_implementation := root_nt = 'ImplementationUnit';
+  defining_program := root_nt = 'ProgramUnit';
   device_triple_raw := NIL;
   emit_ptx := ArgGetFlag('emit-ptx');
   noalias_kernel_params := ArgGetFlag('noalias-kernel-params');
@@ -823,6 +824,10 @@ BEGIN
   ntypes := 13; { ids 1..13 are the bare TK_INTEGER..TK_ADRMEM scalars, not
                  `types` table entries -- the first RegisterType call must
                  hand out id 14, not 1. }
+  super_string_tid := 0;
+  super_lstring_tid := 0;
+  ptr_super_string_tid := 0;
+  ptr_super_lstring_tid := 0;
   nfields := 0;
   dev_ro_count := 0;
   nkernels := 0;

@@ -107,6 +107,7 @@ VAR
   mode_str: Str255;
   has_mode: BOOLEAN;
 BEGIN
+  node := CreateLeadTriviaNode('Param');
   has_mode := FALSE;
   IF (CurKind = 'VAR') OR (CurKind = 'VARS') OR (CurKind = 'CONST') OR (CurKind = 'CONSTS') THEN
   BEGIN
@@ -117,7 +118,7 @@ BEGIN
   names_arr := ParseIdentListArr;
   Expect('COLON');
   type_expr := ParseType;
-  node := CreateTriviaNode('Param');
+  PinTrailingCommentTarget(node);
   IF has_mode THEN
     AddStringField(node, 'mode', mode_str)
   ELSE
@@ -246,6 +247,7 @@ VAR
   has_directive, stackck: BOOLEAN;
 BEGIN
   Expect('PROCEDURE');
+  node := CreateTriviaNode('ProcDecl');
   location := CurLocation;
   stackck := CurStackCk;
   nm := CurLex;
@@ -257,9 +259,9 @@ BEGIN
     Expect('RPAREN');
   END;
   attrs_arr := ParseAttributeSectionOptional;
+  ClearTrailingTarget;
   Expect('SEMICOLON');
   has_directive := FALSE;
-  node := CreateTriviaNode('ProcDecl');
   AddField(node, 'location', location);
   AddStringField(node, 'name', nm);
   AddBoolField(node, 'stackck', stackck);
@@ -270,12 +272,14 @@ BEGIN
     directive_str := CurKind;
     has_directive := TRUE;
     BEGIN RelayTokenTrivia; pos := pos + 1; END;
+    PinTrailingCommentTarget(node);
     Expect('SEMICOLON');
     AddNullField(node, 'body');
   END
   ELSE
   BEGIN
     body_node := ParseBlock;
+    PinTrailingCommentTarget(node);
     Expect('SEMICOLON');
     AddField(node, 'body', body_node);
   END;
@@ -294,6 +298,7 @@ VAR
   has_directive, stackck: BOOLEAN;
 BEGIN
   Expect('FUNCTION');
+  node := CreateTriviaNode('FuncDecl');
   location := CurLocation;
   stackck := CurStackCk;
   nm := CurLex;
@@ -307,9 +312,9 @@ BEGIN
   Expect('COLON');
   ret_type := ParseType;
   attrs_arr := ParseAttributeSectionOptional;
+  ClearTrailingTarget;
   Expect('SEMICOLON');
   has_directive := FALSE;
-  node := CreateTriviaNode('FuncDecl');
   AddField(node, 'location', location);
   AddStringField(node, 'name', nm);
   AddBoolField(node, 'stackck', stackck);
@@ -321,12 +326,14 @@ BEGIN
     directive_str := CurKind;
     has_directive := TRUE;
     BEGIN RelayTokenTrivia; pos := pos + 1; END;
+    PinTrailingCommentTarget(node);
     Expect('SEMICOLON');
     AddNullField(node, 'body');
   END
   ELSE
   BEGIN
     body_node := ParseBlock;
+    PinTrailingCommentTarget(node);
     Expect('SEMICOLON');
     AddField(node, 'body', body_node);
   END;
@@ -524,11 +531,17 @@ BEGIN
   AddField(node, 'decls', decls_arr);
   IF CurKind = 'END' THEN
   BEGIN
+    DrainCommentsToField(node, 'end_comments');
     Expect('END');
+    PinTrailingCommentTarget(node);
     Expect('DOT');
   END
   ELSE
+  BEGIN
+    DrainCommentsToField(node, 'end_comments');
+    PinTrailingCommentTarget(node);
     Expect('DOT');
+  END;
   AddBoolField(node, 'is_device', is_device);
   AddField(node, 'local_interfaces', cJSON_CreateArray);
   ParseModuleUnit := node;
@@ -577,11 +590,14 @@ BEGIN
     BEGIN
       ParseFail('Parser Error: an INTERFACE unit''s BEGIN..END block must be empty -- put executable init code in the IMPLEMENTATION''s init block instead');
     END;
+    PinTrailingCommentTarget(node);
     Expect('SEMICOLON');
   END
   ELSE
   BEGIN
+    DrainCommentsToField(node, 'end_comments');
     Expect('END');
+    PinTrailingCommentTarget(node);
     Expect('SEMICOLON');
   END;
   AddBoolField(node, 'is_device', is_device);
@@ -612,9 +628,13 @@ BEGIN
   ParseDeclSectionsInto(decls_arr);
   AddField(node, 'decls', decls_arr);
   IF CurKind = 'BEGIN' THEN
-    AddField(node, 'init_body', ParseCompoundStmtList)
+    AddField(node, 'init_body', ParseCompoundStmtList(node))
   ELSE
+  BEGIN
+    DrainCommentsToField(node, 'end_comments');
     AddNullField(node, 'init_body');
+  END;
+  PinTrailingCommentTarget(node);
   Expect('DOT');
   AddBoolField(node, 'is_device', is_device);
   AddNullField(node, 'interface');
@@ -627,14 +647,14 @@ VAR
   node, decls_arr, location: ADRMEM;
   tok: PToken;
 BEGIN
-  node := CreateTriviaNode('Block');
+  node := CreateLeadTriviaNode('Block');
   decls_arr := cJSON_CreateArray;
   ParseDeclSectionsInto(decls_arr);
   AddField(node, 'decls', decls_arr);
 
   IF CurKind = 'BEGIN' THEN
   BEGIN
-    AddField(node, 'body', ParseCompoundStmtList);
+    AddField(node, 'body', ParseCompoundStmtList(node));
     { The closing END is the read site of a function's fallthrough return:
       keep its INITCK snapshot and coordinates (the token just consumed). }
     pos := pos - 1;
@@ -683,6 +703,7 @@ BEGIN
   END;
   AddField(node, 'params', params_arr);
 
+  ClearTrailingTarget;
   Expect('SEMICOLON');
 
   uses_arr := cJSON_CreateArray;
@@ -695,6 +716,7 @@ BEGIN
 
   AddField(node, 'local_interfaces', cJSON_CreateArray);
 
+  PinTrailingCommentTarget(node);
   Expect('DOT');
   ParseProgramUnit := node;
 END;

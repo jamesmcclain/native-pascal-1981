@@ -1,0 +1,6 @@
+Type checking failed:
+Conflicting CONST declaration: BadReal at line 13 column 3
+Conflicting CONST declaration: BadStr at line 14 column 3
+Conflicting CONST declaration: BadChar at line 15 column 3
+Conflicting CONST declaration: BadEnum at line 16 column 3
+Conflicting CONST declaration: BadKind at line 17 column 3

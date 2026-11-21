@@ -1,0 +1,2 @@
+Type checking failed:
+CHR(0) is not supported in string constant concatenation at line 6 column 13

@@ -1,0 +1,5 @@
+Type checking failed:
+Cannot assign incompatible type without narrowing: i at line 24 column 3
+Cannot assign incompatible type without narrowing: i at line 25 column 3
+Cannot assign incompatible type without narrowing: i at line 26 column 3
+Cannot assign incompatible type without narrowing: i at line 35 column 3

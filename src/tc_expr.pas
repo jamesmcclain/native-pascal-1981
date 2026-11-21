@@ -40,6 +40,98 @@ BEGIN
   AddStringField(node, 'value', GetStr(literal, 'value'));
 END;
 
+FUNCTION TcDecodeStringLiteral(raw: Str255): Str255;
+{ Decode a single-quoted StringLiteral lexeme ('it''s' -> it's). }
+VAR
+  res: Str255;
+  len, i, outlen: INTEGER;
+  is_escaped: BOOLEAN;
+BEGIN
+  len := ORD(raw[0]);
+  outlen := 0;
+  i := 2;
+  WHILE i <= len - 1 DO
+  BEGIN
+    is_escaped := FALSE;
+    IF (raw[i] = '''') AND (i + 1 <= len - 1) THEN
+      is_escaped := raw[i + 1] = '''';
+    IF is_escaped THEN
+    BEGIN
+      outlen := outlen + 1;
+      res[outlen] := '''';
+      i := i + 2;
+    END
+    ELSE
+    BEGIN
+      outlen := outlen + 1;
+      res[outlen] := raw[i];
+      i := i + 1;
+    END;
+  END;
+  res[0] := CHR(outlen);
+  TcDecodeStringLiteral := res;
+END;
+
+FUNCTION TcEncodeStringLiteral(raw: Str255; VAR encoded: Str255): BOOLEAN;
+{ Encode raw characters as a single-quoted StringLiteral lexeme, doubling
+  embedded single quotes. Returns FALSE if the encoded form exceeds 255
+  bytes (Str255 limit). }
+VAR
+  len, i, outlen, need: INTEGER;
+BEGIN
+  len := ORD(raw[0]);
+  outlen := 1;
+  encoded[1] := '''';
+  FOR i := 1 TO len DO
+  BEGIN
+    IF raw[i] = '''' THEN need := 2 ELSE need := 1;
+    IF outlen + need + 1 > 255 THEN
+    BEGIN
+      TcEncodeStringLiteral := FALSE;
+      RETURN;
+    END;
+    outlen := outlen + 1;
+    encoded[outlen] := raw[i];
+    IF raw[i] = '''' THEN
+    BEGIN
+      outlen := outlen + 1;
+      encoded[outlen] := '''';
+    END;
+  END;
+  outlen := outlen + 1;
+  encoded[outlen] := '''';
+  encoded[0] := CHR(outlen);
+  TcEncodeStringLiteral := TRUE;
+END;
+
+FUNCTION EvalConstString(node: ADRMEM; tk: INTEGER; VAR out_str: Str255;
+                         VAR has_nul: BOOLEAN): BOOLEAN;
+{ Decode a constant string or CHAR operand of IBM Pascal's `*` string
+  concatenation operator (manual 5-10). String variables, LSTRINGs (including
+  NULL) and non-constant CHAR expressions return FALSE. }
+VAR
+  ord_val: INTEGER64;
+BEGIN
+  EvalConstString := FALSE;
+  has_nul := FALSE;
+  IF NodeType(node) = 'StringLiteral' THEN
+  BEGIN
+    out_str := TcDecodeStringLiteral(GetStr(node, 'value'));
+    EvalConstString := TRUE;
+  END
+  ELSE IF (tk = TK_CHAR) AND FoldConstInt(node, ord_val) THEN
+  BEGIN
+    IF ord_val = 0 THEN
+      has_nul := TRUE
+    ELSE IF (ord_val > 0) AND (ord_val <= 255) THEN
+    BEGIN
+      out_str[0] := CHR(1);
+      out_str[1] := CHR(ord_val);
+      EvalConstString := TRUE;
+    END;
+  END;
+END;
+
 FUNCTION IsDeviceIndexName(name: Str255): BOOLEAN;
 VAR
   upper_name: Str255;
@@ -249,6 +341,18 @@ BEGIN
   ELSE ConstantAdaptsToOperand := IntegerConstantFits(other_tk, folded_value);
 END;
 
+FUNCTION SetBasesCompatible(a, b: INTEGER): BOOLEAN;
+{ INTEGER and WORD share the 0..255 numeric set domain (IBM manual 8-8,
+  NEW-37, NEW-39), while wide integers (INTEGER32, etc.), CHAR, BOOLEAN,
+  and distinct enumerations remain incompatible. }
+BEGIN
+  IF NOT SemanticBasesConflict(a, b) THEN
+    SetBasesCompatible := TRUE
+  ELSE
+    SetBasesCompatible := ((a = TK_INTEGER) AND (b = TK_WORD)) OR
+                          ((a = TK_WORD) AND (b = TK_INTEGER));
+END;
+
 PROCEDURE CheckCompatibleSetBases(a, b: INTEGER);
 { Fail closed when the coarse checker has a SET value but no semantic host.
   Empty constructors are known-unconstrained, not unknown. Codegen's
@@ -256,7 +360,7 @@ PROCEDURE CheckCompatibleSetBases(a, b: INTEGER);
 BEGIN
   IF (a = SB_UNKNOWN) OR (b = SB_UNKNOWN) THEN
     AddError('Cannot determine set element base type')
-  ELSE IF SemanticBasesConflict(a, b) THEN
+  ELSE IF NOT SetBasesCompatible(a, b) THEN
     AddError('Incompatible set base types');
 END;
 
@@ -367,7 +471,7 @@ BEGIN
     base := SB_UNKNOWN;
   END
   ELSE IF base = SB_EMPTY THEN base := member_base
-  ELSE IF SemanticBasesConflict(base, member_base) THEN
+  ELSE IF NOT SetBasesCompatible(base, member_base) THEN
   BEGIN
     AddError('Incompatible set base types');
     base := SB_UNKNOWN; { one mismatch diagnostic per constructor }
@@ -430,6 +534,8 @@ BEGIN
   IF si <> 0 THEN IsSuperStringRef := symbols[si].super_str = kind;
 END;
 
+FUNCTION ArgWriteKind(arg: ADRMEM): INTEGER; FORWARD;
+
 PROCEDURE CheckSuperStringArg(arg: ADRMEM; atk, kind, mode: INTEGER; rname: Str255);
 { An actual for a VAR or CONST formal of the super-array type STRING or
   LSTRING itself (NEW-29). The IBM manual (6-13, 6-17, 6-38, 10-9) allows,
@@ -463,6 +569,14 @@ BEGIN
     RETURN;
   END;
   nt := NodeType(arg);
+  IF ((nt = 'Designator') OR (nt = 'PostfixExpr')) AND
+     (last_designator_super_str <> 0) THEN
+  BEGIN
+    IF (kind = SUPER_STR_LSTRING) AND
+       (last_designator_super_str <> SUPER_STR_LSTRING) THEN
+      AddError2('A super-array STRING referent cannot be passed to an LSTRING parameter in call to ', rname);
+    RETURN;
+  END;
   is_storage := FALSE;
   is_constant := (nt = 'StringLiteral') OR (nt = 'CharLiteral');
   is_result := (nt = 'FuncCall') OR (nt = 'PostfixExpr');
@@ -496,21 +610,34 @@ BEGIN
   END;
   IF is_result THEN
   BEGIN
-    si := 0;
-    IF nt = 'PostfixExpr' THEN si := 0
-    ELSE IF (nt = 'FuncCall') OR (nt = 'Identifier') OR (nt = 'Designator') THEN
-      si := LookupSymbol(GetStr(arg, 'name'));
-    IF si <> 0 THEN
-      IF symbols[si].kind = 'FUNC' THEN
-      BEGIN
-        is_lstring := symbols[si].ret_aux2 = 1;
-        cap_node := symbols[si].ret_type_node;
-        cap_bound := symbols[si].type_bound;
-      END;
+    IF nt = 'PostfixExpr' THEN
+    BEGIN
+      is_lstring := last_designator_aux2 = 1;
+      cap_node := last_designator_sem_node;
+      cap_bound := last_designator_type_bound;
+    END
+    ELSE
+    BEGIN
+      si := 0;
+      IF (nt = 'FuncCall') OR (nt = 'Identifier') OR (nt = 'Designator') THEN
+        si := LookupSymbol(GetStr(arg, 'name'));
+      IF si <> 0 THEN
+        IF symbols[si].kind = 'FUNC' THEN
+        BEGIN
+          is_lstring := symbols[si].ret_aux2 = 1;
+          cap_node := symbols[si].ret_type_node;
+          cap_bound := symbols[si].type_bound;
+        END;
+    END;
   END;
   IF (mode = PARAM_VAR) AND NOT is_storage THEN
   BEGIN
     AddError2('VAR argument must be a variable in call to ', rname);
+    RETURN;
+  END;
+  IF (mode = PARAM_VAR) AND (ArgWriteKind(arg) = WRITABLE_CONST_PARAM) THEN
+  BEGIN
+    AddError2('A CONST parameter cannot be passed as a VAR parameter in call to ', rname);
     RETURN;
   END;
   IF NOT (is_storage OR is_constant OR is_result) THEN
@@ -548,19 +675,61 @@ BEGIN
     END;
 END;
 
+FUNCTION ArgWriteKind(arg: ADRMEM): INTEGER;
+{ Writability of an argument expression immediately after CheckExpr /
+  CheckExprForSetTarget checked it. }
+VAR
+  nt: Str255;
+  si: INTEGER32;
+BEGIN
+  nt := NodeType(arg);
+  IF (nt = 'Designator') OR (nt = 'PostfixExpr') THEN
+    ArgWriteKind := last_designator_write_kind
+  ELSE IF nt = 'Identifier' THEN
+  BEGIN
+    si := LookupSymbol(GetStr(arg, 'name'));
+    IF si = 0 THEN ArgWriteKind := WRITABLE_OK
+    ELSE IF symbols[si].kind = 'CONST' THEN ArgWriteKind := WRITABLE_CONST
+    ELSE IF symbols[si].kind = 'VAR' THEN
+    BEGIN
+      IF symbols[si].is_const_param THEN ArgWriteKind := WRITABLE_CONST_PARAM
+      ELSE ArgWriteKind := WRITABLE_OK;
+    END
+    ELSE ArgWriteKind := WRITABLE_NON_VAR;
+  END
+  ELSE
+    ArgWriteKind := WRITABLE_NON_VAR;
+END;
+
 PROCEDURE CheckRoutineArg(arg: ADRMEM; si, pi: INTEGER32; atk: INTEGER; rname: Str255);
 { The actual arg (already checked, of kind atk) for formal pi of routine
   si. A conformant STRING/LSTRING formal has its own rules
   (CheckSuperStringArg); any other formal takes an assignable value, and
-  never a conformant STRING/LSTRING formal as a whole. }
+  never a conformant STRING/LSTRING formal as a whole. A VAR/VARS formal
+  cannot bind a CONST parameter or constant (NEW-48 / NEW-30). }
+VAR
+  wkind: INTEGER;
 BEGIN
   IF symbols[si].param_super_str[pi] <> 0 THEN
     CheckSuperStringArg(arg, atk, symbols[si].param_super_str[pi],
       symbols[si].param_mode[pi], rname)
-  ELSE IF NOT CanAssign(symbols[si].param_tk[pi], atk) THEN
+  ELSE IF NOT (CanAssign(symbols[si].param_tk[pi], atk) OR
+               ((symbols[si].param_mode[pi] = PARAM_VALUE) AND
+                symbols[si].param_is_lstring[pi] AND (atk = TK_CHAR))) THEN
     AddError2('Argument type mismatch or implicit narrowing in call to ', rname)
   ELSE IF SuperStringRefSym(arg) <> 0 THEN
-    AddError2('A super-array STRING/LSTRING parameter can be passed only to a STRING or LSTRING super-array parameter in call to ', rname);
+    AddError2('A super-array STRING/LSTRING parameter can be passed only to a STRING or LSTRING super-array parameter in call to ', rname)
+  ELSE IF ((NodeType(arg) = 'Designator') OR (NodeType(arg) = 'PostfixExpr')) AND
+          (last_designator_super_str <> 0) THEN
+    AddError2('A super-array STRING/LSTRING referent can be passed only to a STRING or LSTRING super-array parameter in call to ', rname)
+  ELSE IF symbols[si].param_mode[pi] = PARAM_VAR THEN
+  BEGIN
+    wkind := ArgWriteKind(arg);
+    IF wkind = WRITABLE_CONST_PARAM THEN
+      AddError2('A CONST parameter cannot be passed as a VAR parameter in call to ', rname)
+    ELSE IF wkind = WRITABLE_CONST THEN
+      AddError2('A constant cannot be passed as a VAR parameter in call to ', rname);
+  END;
 END;
 
 FUNCTION IsEncodeValueKind(tk: INTEGER): BOOLEAN;
@@ -609,8 +778,9 @@ VAR
   lane_ct: INTEGER;
   folded_value: INTEGER64;
   super_value: BOOLEAN;
+  super_str_deref: INTEGER;
   sem_node: ADRMEM;
-  sem_set, sem_scalar, idx_sem, expr_sem: INTEGER;
+  sem_set, sem_scalar, idx_sem, expr_sem, write_kind: INTEGER;
   msg: Str255;
   type_bound: INTEGER32;
 BEGIN
@@ -618,11 +788,18 @@ BEGIN
   last_designator_sem_node := NIL;
   type_bound := -1;
   last_designator_scalar_sem_base := SB_UNKNOWN;
+  last_designator_write_kind := WRITABLE_OK;
+  last_designator_super_str := 0;
+  super_str_deref := 0;
+  write_kind := WRITABLE_OK;
   IF NodeType(node) = 'PostfixExpr' THEN
   BEGIN
+    write_kind := WRITABLE_NON_VAR;
     name := GetStr(GetObj(node, 'base'), 'name');
     si := LookupSymbol(name);
     tk := CheckFuncCall(GetObj(node, 'base'));
+    IF si <> 0 THEN
+      IF symbols[si].kind <> 'FUNC' THEN si := 0;
     IF si = 0 THEN
     BEGIN
       IF (UpperStr(name) = 'UNSAFESUPER') AND NOT UserDeclarationShadows(name) AND
@@ -659,9 +836,12 @@ BEGIN
     IF symbols[si].kind = 'FUNC' THEN
     BEGIN
       { A function named without an argument list stands for its call's
-        result (the symbol's own tk is TK_UNKNOWN). Assignment to the
-        result inside the function's body never reaches here: AssignStmt
-        handles that through cur_func_ret_tk. }
+        result (the symbol's own tk is TK_UNKNOWN). Inside the function's
+        own body (or a nested routine inside it), selecting into an
+        aggregate result (`F.f := ...`) is writable; outside, it is a
+        call rvalue unless dereferenced through a pointer (NEW-41). }
+      IF ActiveFuncResultFrame(name) = 0 THEN
+        write_kind := WRITABLE_NON_VAR;
       tk := symbols[si].ret_tk;
       aux := symbols[si].ret_aux;
       aux2 := symbols[si].ret_aux2;
@@ -673,6 +853,12 @@ BEGIN
       sem_scalar := symbols[si].ret_scalar_sem_base;
     END
     ELSE BEGIN
+      IF symbols[si].kind = 'CONST' THEN
+        write_kind := WRITABLE_CONST
+      ELSE IF symbols[si].kind = 'PROC' THEN
+        write_kind := WRITABLE_NON_VAR
+      ELSE IF (symbols[si].kind = 'VAR') AND symbols[si].is_const_param THEN
+        write_kind := WRITABLE_CONST_PARAM;
       tk := symbols[si].tk;
       aux := symbols[si].aux;
       aux2 := symbols[si].aux2;
@@ -691,6 +877,7 @@ BEGIN
     IF symbols[si].const_str_node <> NIL THEN
     BEGIN
       { A string CONST is a literal, not storage: it takes no selector. }
+      last_designator_write_kind := WRITABLE_CONST;
       IF nsel > 0 THEN
       BEGIN
         AddError2('Selector on a string constant: ', name);
@@ -710,6 +897,7 @@ BEGIN
     super_value := FALSE;
     IF skind = 'FIELD' THEN
     BEGIN
+      super_str_deref := 0;
       fname := UpperStr(CStrToStr255(cJSON_GetStringValue(GetObj(sel, 'index_or_field'))));
       IF (tk = TK_STRING) AND (aux2 = 1) THEN
       BEGIN
@@ -777,6 +965,7 @@ BEGIN
     END
     ELSE IF skind = 'INDEX' THEN
     BEGIN
+      super_str_deref := 0;
       idx_sem := ArrayIndexSemBase(sem_node, type_bound);
       sem_node := SemanticChildTypeNode(sem_node, type_bound);
       sem_set := SemanticSetBaseType(sem_node);
@@ -884,6 +1073,7 @@ BEGIN
         { F^: the file's buffer variable (the standard READ/WRITE-underlying
           "current component" model, manual ch.13) -- its type is the file's
           own element type, carried in aux exactly like a POINTER's pointee. }
+        super_str_deref := 0;
         new_tk := aux;
         tk := new_tk;
         aux := 0;
@@ -891,12 +1081,14 @@ BEGIN
       END
       ELSE IF tk <> TK_POINTER THEN
       BEGIN
+        super_str_deref := 0;
         AddError('Dereference of non-pointer value');
         tk := TK_UNKNOWN;
         aux := 0;
         aux2 := 0;
       END
       ELSE BEGIN
+        write_kind := WRITABLE_OK;
         new_tk := aux;
         new_aux := aux2;
         new_aux2 := aux3;
@@ -906,10 +1098,12 @@ BEGIN
         BEGIN
           aux := 0;
           aux2 := new_aux;
+          super_str_deref := SuperStringKindBefore(sem_node, type_bound);
         END
         ELSE BEGIN
           aux := new_aux;
           aux2 := new_aux2;
+          super_str_deref := 0;
         END;
         aux3 := 0;
       END;
@@ -921,11 +1115,13 @@ BEGIN
     RefineFromTypeNode(sem_node, type_bound, tk, aux, aux2, aux3, current_idx_tk);
   END;
   last_designator_super := super_value;
+  last_designator_super_str := super_str_deref;
   last_designator_type_bound := type_bound;
   last_designator_sem_node := sem_node;
   last_designator_idx_tk := current_idx_tk;
   last_designator_aux := aux;
   last_designator_aux2 := aux2;
+  last_designator_write_kind := write_kind;
   IF tk = TK_SET THEN last_designator_set_sem_base := sem_set;
   IF IsOrdinal(tk) THEN
   BEGIN
@@ -1608,7 +1804,7 @@ VAR
   si: INTEGER32;
   left_node, right_node, operand_node, type_node: ADRMEM;
   lt, rt, ot, op_kind, aux, aux2, aux3, idx_tk, bound_base_tk: INTEGER;
-  bound_str_kind: INTEGER;
+  bound_str_kind, bound_super_str, left_super_str, right_super_str: INTEGER;
   set_base_l, set_base_r, sem_set_l, sem_set_r, sem_scalar_l, sem_scalar_r: INTEGER;
   op: Str255;
   elems_arr, elem_node, bound_selectors, bound_sel: ADRMEM;
@@ -1619,6 +1815,9 @@ VAR
   bound_subrange, bound_super, bound_idx_unknown: BOOLEAN;
   const_fits_context: BOOLEAN;
   saved_operand_context: INTEGER;
+  str_l, str_r, str_enc: Str255;
+  has_nul_l, has_nul_r: BOOLEAN;
+  rc_inline: CINT;
 BEGIN
   expr_depth := expr_depth + 1;
   IF expr_depth > MAX_EXPR_DEPTH THEN
@@ -1787,7 +1986,7 @@ BEGIN
       CHAR or enum ordinals as INTEGER. [] remains polymorphic. A constructor
       already diagnosed internally needs no second context diagnostic. }
     IF (n_elems > 0) AND (nerrors = constructor_errors_before) AND
-       SemanticBasesConflict(constructor_base, expected_set_base) THEN
+       NOT SetBasesCompatible(constructor_base, expected_set_base) THEN
       AddError('Incompatible set base types');
     IF nerrors <> constructor_errors_before THEN
       last_sem_set_base := SB_UNKNOWN
@@ -1821,9 +2020,11 @@ BEGIN
     bound_base_tk := TK_INTEGER;
     bound_idx_unknown := FALSE;
     bound_str_kind := TK_UNKNOWN;
+    bound_super_str := 0;
     IF (NodeType(operand_node) = 'Designator') OR
        (NodeType(operand_node) = 'PostfixExpr') THEN
     BEGIN
+      bound_super_str := last_designator_super_str;
       IF ot = TK_STRING THEN
         bound_str_kind := StringBoundKind(last_designator_sem_node,
           last_designator_type_bound);
@@ -1909,7 +2110,8 @@ BEGIN
         op := '';
       IF (ot = TK_ARRAY) AND bound_super THEN
         AddError('UPPER/LOWER non-pointer SUPER ARRAY has no runtime bound');
-      IF (ot = TK_ARRAY) AND (op = 'DEREF') THEN
+      IF ((ot = TK_ARRAY) OR ((ot = TK_STRING) AND (bound_super_str <> 0))) AND
+         (op = 'DEREF') THEN
         CheckExprBody := TK_INTEGER64
       ELSE IF (ot = TK_ARRAY) AND bound_idx_unknown THEN
         CheckExprBody := TK_UNKNOWN
@@ -1981,6 +2183,9 @@ BEGIN
     IF const_fits_context AND (NodeType(left_node) <> 'BinOp') THEN
       expr_context_tk := TK_UNKNOWN;
     lt := CheckExpr(left_node);
+    left_super_str := 0;
+    IF (NodeType(left_node) = 'Designator') OR (NodeType(left_node) = 'PostfixExpr') THEN
+      left_super_str := last_designator_super_str;
     expr_context_tk := saved_operand_context;
     sem_scalar_l := last_sem_scalar_base;
     IF (sem_scalar_l = SB_UNKNOWN) AND IsOrdinal(lt) AND
@@ -1993,6 +2198,9 @@ BEGIN
     IF const_fits_context AND (NodeType(right_node) <> 'BinOp') THEN
       expr_context_tk := TK_UNKNOWN;
     rt := CheckExpr(right_node);
+    right_super_str := 0;
+    IF (NodeType(right_node) = 'Designator') OR (NodeType(right_node) = 'PostfixExpr') THEN
+      right_super_str := last_designator_super_str;
     expr_context_tk := saved_operand_context;
     sem_scalar_r := last_sem_scalar_base;
     IF rt = TK_SET THEN
@@ -2036,7 +2244,7 @@ BEGIN
         CheckExprBody := TK_UNKNOWN;
       END;
     END
-    ELSE IF (op = 'AND') OR (op = 'OR') OR (op = 'AND_THEN') OR (op = 'OR_ELSE') THEN
+    ELSE IF (op = 'AND') OR (op = 'OR') OR (op = 'XOR') OR (op = 'AND_THEN') OR (op = 'OR_ELSE') THEN
     BEGIN
       IF (lt <> TK_BOOLEAN) OR (rt <> TK_BOOLEAN) THEN
       BEGIN
@@ -2055,11 +2263,14 @@ BEGIN
       END
       ELSE IF NOT (IsNumeric(lt) AND IsNumeric(rt)) AND (lt <> rt) THEN
         AddError('Comparison operands are not comparable')
-      { The length of a super-array STRING formal varies, so it is never
-        compared as a whole; an LSTRING one compares (manual 6-17, 6-19). }
+      { The length of a super-array STRING formal or referent varies, so it is
+        never compared as a whole; an LSTRING one compares (manual 6-17, 6-19). }
       ELSE IF IsSuperStringRef(left_node, SUPER_STR_STRING) OR
               IsSuperStringRef(right_node, SUPER_STR_STRING) THEN
         AddError('A super-array STRING parameter cannot be compared as a whole')
+      ELSE IF (left_super_str = SUPER_STR_STRING) OR
+              (right_super_str = SUPER_STR_STRING) THEN
+        AddError('A super-array STRING referent cannot be compared as a whole')
       { Values of two enumerations never compare (codegen has no common
         type for them); both identities must be known. }
       ELSE IF (lt = TK_ENUM) AND (rt = TK_ENUM) AND
@@ -2129,6 +2340,52 @@ BEGIN
         ELSE
         BEGIN
           AddError('Pointer arithmetic supports only pointer + integer offset');
+          CheckExprBody := TK_UNKNOWN;
+        END;
+      END
+      ELSE IF (op = 'MUL') AND ((lt = TK_STRING) OR (lt = TK_CHAR)) AND
+              ((rt = TK_STRING) OR (rt = TK_CHAR)) THEN
+      BEGIN
+        { IBM Pascal 5-10: `*` concatenates constant strings and CHARs
+          (including CHR(...) and string CONST identifiers), up to 255
+          characters; variables and NULL are rejected. Fold in place into a
+          StringLiteral so every downstream check and codegen treat it like
+          any string literal. }
+        CheckConstByteDomain(left_node);
+        CheckConstByteDomain(right_node);
+        IF EvalConstString(left_node, lt, str_l, has_nul_l) AND
+           EvalConstString(right_node, rt, str_r, has_nul_r) THEN
+        BEGIN
+          IF ORD(str_l[0]) + ORD(str_r[0]) > 255 THEN
+          BEGIN
+            AddError('String constant exceeds 255 characters');
+            CheckExprBody := TK_UNKNOWN;
+          END
+          ELSE
+          BEGIN
+            CONCAT(str_l, str_r);
+            IF NOT TcEncodeStringLiteral(str_l, str_enc) THEN
+            BEGIN
+              AddError('String constant exceeds 255 characters');
+              CheckExprBody := TK_UNKNOWN;
+            END
+            ELSE
+            BEGIN
+              rc_inline := cJSON_ReplaceItemInObject(node, MakeCStr('__node_type__'),
+                cJSON_CreateString(MakeCStr('StringLiteral')));
+              AddStringField(node, 'value', str_enc);
+              CheckExprBody := TK_STRING;
+            END;
+          END;
+        END
+        ELSE IF has_nul_l OR has_nul_r THEN
+        BEGIN
+          AddError('CHR(0) is not supported in string constant concatenation');
+          CheckExprBody := TK_UNKNOWN;
+        END
+        ELSE
+        BEGIN
+          AddError('String concatenation (*) requires string or CHAR constants');
           CheckExprBody := TK_UNKNOWN;
         END;
       END

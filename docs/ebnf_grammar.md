@@ -81,15 +81,15 @@ boolean_expression = expression { ( "AND" "THEN" | "OR" "ELSE" ) expression } ;
 expression = simple_expression [ relation simple_expression ] ;
 simple_expression = [ "+" | "-" ] term { ( "+" | "-" | "OR" | "XOR" ) term } ;
 term = factor { ( "*" | "/" | "DIV" | "MOD" | "AND" ) factor } ;
-factor = constant | designator | identifier "(" [ expression_list ] ")" | "RETYPE" "(" identifier "," expression ")"
+factor = constant | designator | call_postfix | "RETYPE" "(" identifier "," expression ")"
        | "NOT" factor | "(" expression ")" | set_constructor | "ADR" identifier
        | "SIZEOF" "(" ( identifier | type ) ")" | ( "LOWER" | "UPPER" ) "(" expression ")" ;
-bound_call_postfix = identifier "(" [ expression_list ] ")"
-                     { "[" expression { "," expression } "]" | "." identifier | "^" } ;
-(* bound_call_postfix is a bound-operand-only extension of the FuncCall
-   alternative of factor. Bounds accept typed expressions; outside a bound
-   operand selectors remain identifier-rooted. See dialect_notes.md for
-   permitted types and the static-versus-dynamic evaluation rule. *)
+call_postfix = identifier "(" [ expression_list ] ")"
+               { "[" expression { "," expression } "]" | "." identifier | "^" } ;
+(* call_postfix allows postfix selectors on a function call result in any
+   factor expression, including LOWER/UPPER bound operands. See
+   dialect_notes.md for permitted bound types and the static-versus-dynamic
+   evaluation rule. *)
 designator = identifier { "[" expression { "," expression } "]" | "." identifier | "^" } ;
 with_designator = identifier { "[" expression "]" | "." identifier | "^" } ;
 set_constructor = "[" [ set_element { "," set_element } ] "]" ;

@@ -1,0 +1,5 @@
+Type checking failed:
+Label already declared in this scope: 10 at line 7 column 3
+Label already declared in this scope: 20 at line 7 column 3
+Label already declared in this scope: 65534 at line 7 column 3
+Label already declared in this scope: 40 at line 18 column 3

@@ -1,0 +1,8 @@
+Type checking failed:
+Identifier already declared in this scope: BETA at line 10 column 3
+Identifier already declared in this scope: TWO at line 14 column 3
+Identifier already declared in this scope: Green at line 21 column 3
+Identifier already declared in this scope: red at line 22 column 3
+Identifier already declared in this scope: dupconst at line 23 column 3
+Identifier already declared in this scope: DUPVAR at line 25 column 3
+Identifier already declared in this scope: Violet at line 30 column 3

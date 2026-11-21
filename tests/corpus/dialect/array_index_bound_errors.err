@@ -1,0 +1,4 @@
+Type checking failed:
+Subrange lower bound is negative in a WORD subrange at line 7 column 3
+Subrange lower bound is below -32768 at line 8 column 3
+Subrange lower bound exceeds upper bound at line 9 column 3

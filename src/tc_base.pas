@@ -60,11 +60,16 @@ CONST
   DECL_OTHER = 0;
   DECL_ROUTINE_HEADING = 1;
   DECL_ROUTINE_BODY = 2;
+  DECL_NUMERIC_LABEL = 3;
   SUPER_STR_STRING = 1;
   SUPER_STR_LSTRING = 2;
   PARAM_VALUE = 0;
   PARAM_VAR = 1;
   PARAM_CONST = 2;
+  WRITABLE_OK = 0;
+  WRITABLE_CONST = 1;
+  WRITABLE_CONST_PARAM = 2;
+  WRITABLE_NON_VAR = 3;
   MAX_DECL_NAMES = 2500;
   MAX_DECL_SCOPES = 64;
 
@@ -104,6 +109,9 @@ TYPE
                            knows, of any ordinal type (CHAR and BOOLEAN
                            too); a consumer that needs an integer checks tk }
     const_int: INTEGER64;
+    has_const_real: BOOLEAN; { a CONST whose real value FoldConstReal knows }
+    const_real: REAL;
+    const_enum_ord: INTEGER32; { ordinal of an enum member or enum CONST, or -1 }
     is_ref_param: BOOLEAN; { a formal declared VAR, VARS, CONST or CONSTS }
     const_str_node: ADRMEM; { a multi-character string CONST: its
                               StringLiteral value node, which every
@@ -116,6 +124,8 @@ TYPE
                           formals' super_str }
     param_mode: ARRAY [1..MAX_PARAMS] OF INTEGER; { a routine's formals'
                           PARAM_VALUE, PARAM_VAR or PARAM_CONST }
+    param_is_lstring: ARRAY [1..MAX_PARAMS] OF BOOLEAN; { TRUE when formal
+                          is LSTRING(n) (aux2 = 1), so CHAR converts to it }
   END;
 
   TypeRec = RECORD
@@ -150,6 +160,15 @@ TYPE
     is_super: BOOLEAN;
   END;
 
+  FuncFrameRec = RECORD
+    name: Str255;
+    sym_base: INTEGER32;
+    ret_tk: INTEGER;
+    aux, aux2: INTEGER;
+    set_sem_base: INTEGER;
+    scalar_sem_base: INTEGER;
+  END;
+
 VAR
   symbols: ARRAY [1..MAX_SYMBOLS] OF SymRec;
   nsymbols: INTEGER32;
@@ -169,6 +188,13 @@ VAR
   enum_nodes: ARRAY [1..MAX_ENUM_NODES] OF ADRMEM;
   enum_node_ids: ARRAY [1..MAX_ENUM_NODES] OF INTEGER;
   nenum_nodes: INTEGER32;
+  { The bound kind (INTEGER, WORD or INTEGER32) each resolved STRING(n)/
+    LSTRING(n) type node's capacity folded to at its declaration site
+    (NEW-24r): an inner scope that shadows a CONST capacity name does not
+    change UPPER/LOWER's type for an outer string. }
+  str_cap_nodes: ARRAY [1..MAX_STR_CAP_NODES] OF ADRMEM;
+  str_cap_kinds: ARRAY [1..MAX_STR_CAP_NODES] OF INTEGER;
+  nstr_cap_nodes: INTEGER32;
   fwd_types: ARRAY [1..MAX_FWD_TYPES] OF FwdTypeRec;
   nfwd_types: INTEGER32; { entries of the TYPE section being checked; 0
                             outside one }
@@ -176,6 +202,7 @@ VAR
                             checked; it and every later entry are pending }
 
   last_designator_super: BOOLEAN;
+  last_designator_super_str: INTEGER;
   last_designator_idx_tk: INTEGER;
   last_designator_set_sem_base: INTEGER;
   last_designator_scalar_sem_base: INTEGER;
@@ -186,6 +213,7 @@ VAR
     any existing call site. }
   last_designator_type_bound: INTEGER32; { type_bound of the designator's root }
   last_designator_sem_node: ADRMEM; { the type node the designator reached, or NIL }
+  last_designator_write_kind: INTEGER; { WRITABLE_OK or reason not writable }
 
   { The identifiers declared in each open declaration scope (a program or
     unit, an interface, a routine's parameters and block), for DeclareName.
@@ -227,6 +255,8 @@ VAR
                              shadow VAR entry for the function's own name
                              would hide its FUNC entry from any recursive
                              call within its own body. }
+  func_frames: ARRAY [1..64] OF FuncFrameRec;
+  func_frame_top: INTEGER;
 
 { ============================== utilities ============================== }
 { NodeType/GetObj/GetStr/GetInt/ReadAllStdin now live in jsonutil. }
@@ -469,6 +499,28 @@ BEGIN
   ELSE LookupSymbolInScope := 0;
 END;
 
+FUNCTION ActiveFuncResultFrame(name: Str255): INTEGER;
+{ Innermost active FUNCTION frame whose result `name := ...` assigns, or 0.
+  Matches case-insensitively (NEW-44) and respects inner shadowing by locals,
+  parameters, constants, or nested routines, mirroring cg_util's
+  EnclosingResultFrame. }
+VAR
+  d, found: INTEGER;
+  si: INTEGER32;
+  uname: Str255;
+BEGIN
+  uname := UpperStr(name);
+  found := 0;
+  FOR d := 1 TO func_frame_top DO
+    IF UpperStr(func_frames[d].name) = uname THEN found := d;
+  IF found <> 0 THEN
+  BEGIN
+    si := LookupSymbol(name);
+    IF si > func_frames[found].sym_base THEN found := 0;
+  END;
+  ActiveFuncResultFrame := found;
+END;
+
 PROCEDURE BeginDeclScope;
 BEGIN
   decl_scope_depth := decl_scope_depth + 1;
@@ -505,8 +557,11 @@ BEGIN
     i := i - 1;
   IF i > base THEN
   BEGIN
-    IF (kind <> DECL_OTHER) AND (decl_names[i].kind = DECL_ROUTINE_HEADING) THEN
+    IF (kind <> DECL_OTHER) AND (kind <> DECL_NUMERIC_LABEL) AND
+       (decl_names[i].kind = DECL_ROUTINE_HEADING) THEN
       decl_names[i].kind := kind
+    ELSE IF kind = DECL_NUMERIC_LABEL THEN
+      AddError2('Label already declared in this scope: ', name)
     ELSE
       AddError2('Identifier already declared in this scope: ', name);
   END
@@ -573,6 +628,9 @@ BEGIN
   symbols[nsymbols].is_extern := FALSE;
   symbols[nsymbols].has_const_int := FALSE;
   symbols[nsymbols].const_int := 0;
+  symbols[nsymbols].has_const_real := FALSE;
+  symbols[nsymbols].const_real := 0.0;
+  symbols[nsymbols].const_enum_ord := -1;
   symbols[nsymbols].is_ref_param := FALSE;
   symbols[nsymbols].const_str_node := NIL;
   symbols[nsymbols].super_str := 0;
@@ -727,6 +785,7 @@ BEGIN
   next_record_id := 1;
   next_enum_id := 0;
   nenum_nodes := 0;
+  nstr_cap_nodes := 0;
   nfwd_types := 0;
   fwd_cur := 0;
   nerrors := 0;
@@ -741,7 +800,9 @@ BEGIN
   cur_func_set_sem_base := SB_UNKNOWN;
   last_designator_set_sem_base := SB_UNKNOWN;
   last_designator_scalar_sem_base := SB_UNKNOWN;
+  last_designator_write_kind := WRITABLE_OK;
   cur_func_name := '';
+  func_frame_top := 0;
   si := DefineSymbol('MAXINT', 'CONST', TK_INTEGER, 0, 0, 0, 0);
   symbols[si].has_const_int := TRUE;
   symbols[si].const_int := 32767;

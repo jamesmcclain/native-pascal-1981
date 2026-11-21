@@ -36,6 +36,7 @@ CONST
   MAX_TYPES = 500;
   MAX_FWD_TYPES = 64;
   MAX_ENUM_NODES = 1000;
+  MAX_STR_CAP_NODES = 1000;
   MAX_FIELDS = 2000;
   MAX_ERRORS = 200;
   MAX_PARAMS = 16;
@@ -46,12 +47,18 @@ CONST
   DECL_OTHER = 0;
   DECL_ROUTINE_HEADING = 1;
   DECL_ROUTINE_BODY = 2;
+  DECL_NUMERIC_LABEL = 3;
   { SymRec.super_str / param_super_str and param_mode values. }
   SUPER_STR_STRING = 1;
   SUPER_STR_LSTRING = 2;
   PARAM_VALUE = 0;
   PARAM_VAR = 1;
   PARAM_CONST = 2;
+  { Why a designator is or is not writable (last_designator_write_kind). }
+  WRITABLE_OK = 0;
+  WRITABLE_CONST = 1;
+  WRITABLE_CONST_PARAM = 2;
+  WRITABLE_NON_VAR = 3;
 
 TYPE
   SymRec = RECORD
@@ -82,6 +89,9 @@ TYPE
                            knows, of any ordinal type (CHAR and BOOLEAN
                            too); a consumer that needs an integer checks tk }
     const_int: INTEGER64;
+    has_const_real: BOOLEAN; { a CONST whose real value FoldConstReal knows }
+    const_real: REAL;
+    const_enum_ord: INTEGER32; { ordinal of an enum member or enum CONST, or -1 }
     is_ref_param: BOOLEAN; { a formal declared VAR, VARS, CONST or CONSTS }
     const_str_node: ADRMEM; { a multi-character string CONST: its
                               StringLiteral value node, which every
@@ -94,6 +104,8 @@ TYPE
                           formals' super_str }
     param_mode: ARRAY [1..MAX_PARAMS] OF INTEGER; { a routine's formals'
                           PARAM_VALUE, PARAM_VAR or PARAM_CONST }
+    param_is_lstring: ARRAY [1..MAX_PARAMS] OF BOOLEAN; { TRUE when formal
+                          is LSTRING(n) (aux2 = 1), so CHAR converts to it }
   END;
 
   TypeRec = RECORD
@@ -133,6 +145,15 @@ TYPE
     is_super: BOOLEAN;
   END;
 
+  FuncFrameRec = RECORD
+    name: Str255;
+    sym_base: INTEGER32;
+    ret_tk: INTEGER;
+    aux, aux2: INTEGER;
+    set_sem_base: INTEGER;
+    scalar_sem_base: INTEGER;
+  END;
+
 VAR
   symbols: ARRAY [1..MAX_SYMBOLS] OF SymRec;
   nsymbols: INTEGER32;
@@ -147,18 +168,23 @@ VAR
   enum_nodes: ARRAY [1..MAX_ENUM_NODES] OF ADRMEM;
   enum_node_ids: ARRAY [1..MAX_ENUM_NODES] OF INTEGER;
   nenum_nodes: INTEGER32;
+  str_cap_nodes: ARRAY [1..MAX_STR_CAP_NODES] OF ADRMEM;
+  str_cap_kinds: ARRAY [1..MAX_STR_CAP_NODES] OF INTEGER;
+  nstr_cap_nodes: INTEGER32;
   fwd_types: ARRAY [1..MAX_FWD_TYPES] OF FwdTypeRec;
   nfwd_types: INTEGER32; { entries of the TYPE section being checked; 0
                             outside one }
   fwd_cur: INTEGER32;    { fwd_types index of the TYPE declaration being
                             checked; it and every later entry are pending }
   last_designator_super: BOOLEAN;
+  last_designator_super_str: INTEGER; { SUPER_STR_STRING/LSTRING for ^STRING/^LSTRING deref, else 0 }
   last_designator_idx_tk: INTEGER;
   last_designator_set_sem_base: INTEGER;
   last_designator_scalar_sem_base: INTEGER;
   last_designator_aux, last_designator_aux2: INTEGER;
   last_designator_type_bound: INTEGER32; { type_bound of the designator's root }
   last_designator_sem_node: ADRMEM; { the type node the designator reached, or NIL }
+  last_designator_write_kind: INTEGER; { WRITABLE_OK or reason not writable }
   errors: ARRAY [1..MAX_ERRORS] OF Str255;
   nerrors: INTEGER32;
   expr_depth, stmt_depth: INTEGER;
@@ -166,6 +192,8 @@ VAR
   cur_func_aux, cur_func_aux2: INTEGER;
   cur_func_set_sem_base: INTEGER;
   cur_func_name: Str255;
+  func_frames: ARRAY [1..64] OF FuncFrameRec;
+  func_frame_top: INTEGER;
   active_features: FeatureSet;
   is_device_compiland: BOOLEAN;
   { Above 0 while a constant expression (a CONST value or a type's bounds)
@@ -186,6 +214,7 @@ PROCEDURE PopScope;
 FUNCTION LookupSymbol(name: Str255): INTEGER32;
 FUNCTION UserDeclarationShadows(name: Str255): BOOLEAN;
 FUNCTION LookupSymbolInScope(name: Str255): INTEGER32;
+FUNCTION ActiveFuncResultFrame(name: Str255): INTEGER;
 PROCEDURE BeginDeclScope;
 PROCEDURE EndDeclScope;
 PROCEDURE DeclareName(name: Str255; kind: INTEGER);

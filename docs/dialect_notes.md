@@ -836,16 +836,18 @@ Constants and types have no storage of their own, so they cannot clash.
 
 `MODULE` compilands are unchanged: "If no explicit attributes are given,
 [PUBLIC] is assumed" (13-7), so every module-level variable and routine
-keeps its external symbol. A program's globals and routines also keep
-external symbols, which differs from the IBM manual (a program-level name
-is public only with `[PUBLIC]`). A program and a `MODULE` that both declare
-`VAR v` therefore still fail to link with a duplicate symbol. The failure
-is at link time; nothing is merged silently.
+keeps its external symbol. Program-level globals get internal linkage
+unless marked `[PUBLIC]` (matching the IBM manual, 7-5), so a program and
+a `MODULE` that both declare `VAR v` link cleanly with independent storage.
+A program's routines still keep external symbols.
 
 Regressions: `tests/corpus/integration/units_private_names.pas` (two units
-and a program with the same private names, run) and
-`tests/corpus/checklit/unit_private_linkage.pas` (the linkage of each kind
-of name).
+and a program with the same private names, run),
+`tests/corpus/integration/program_module_shared_var.pas` (a program and a
+`MODULE` both declaring `VAR v`, run),
+`tests/corpus/checklit/unit_private_linkage.pas`, and
+`tests/corpus/checklit/program_private_linkage.pas` (the linkage of each
+kind of name).
 
 ## Selecting from a niladic function result **[both]**
 
@@ -961,8 +963,8 @@ array may be a variable, a selected component (`r.tag`, `m[k]`), a formal or
 a function result.
 
 - An array of CHAR arrays (`ARRAY [1..2] OF Row`) is not a string; writing it
-  whole still fails with `codegen: unsupported WRITE argument type`. Write
-  its rows instead.
+  whole is rejected by the typechecker (`WRITE/WRITELN only supports scalar,
+  string, or one-dimensional ARRAY OF CHAR arguments`). Write its rows instead.
 - Under INITCK a tracked CHAR array is read whole, by the strict copy rule:
   every component must be set (`uninitialized part of a`). A heap or global
   array is the usual INITCK boundary.
@@ -1061,10 +1063,20 @@ Deliberate choices, each a judgment call that fails closed:
 - The manual says both that no side of an `LSTRING` assignment may be the
   super-array type itself (6-19) and that an `LSTRING` formal may be
   assigned as a whole (10-10). Assignment is rejected both ways.
-- Only the predeclared names are conformant. A value formal, a variable or
-  a field declared with a bare `STRING` or `LSTRING`, and a `TYPE` alias of
-  one, keep the capacity-256 default (`tests/corpus/integration/bare_lstring.pas`);
-  the manual allows none of them.
+- Only the predeclared names are conformant. A pointer referent (`^STRING`
+  or `^LSTRING`, unshadowed by a user `TYPE`) is a host super-array
+  descriptor pointer allocated with `NEW(p, n)` and freed with `DISPOSE(p)`
+  (IBM manual 6-14..6-19): `LOWER(p^)` is 1/0, `UPPER(p^)` reads the
+  descriptor's runtime upper bound (`INTEGER64`, with the NIL check),
+  subscripts are `$INDEXCK`-guarded against `LOWER(p^) .. UPPER(p^)`,
+  `.LEN` and index zero are `$RANGECK`-guarded against `min(UPPER(p^), 255)`,
+  `WRITE`/`READ`/string source builtins/LSTRING comparisons and conformant
+  formals accept `p^`, and whole assignment, `^STRING` whole comparison,
+  and passing `p^` to a non-conformant formal are type errors. A value
+  formal, a variable or a field declared with a bare `STRING` or `LSTRING`,
+  and a `TYPE` alias of one, keep the capacity-256 default
+  (`tests/corpus/integration/bare_lstring.pas`); the manual allows none of
+  them.
 - `ARRAY [1..n] OF CHAR` is not a `STRING(n)` here (PACKED arrays are not
   supported), so it is not an actual for a `STRING` formal.
 
@@ -1072,7 +1084,10 @@ Regression: `tests/corpus/dialect/super_string_formals.pas` (every actual
 kind, both dialects, O0 and O2), `super_string_formal_misuse.pas`,
 `extended_super_string_c_formal.pas`, `super_string_indexck_bad.pas`,
 `super_string_rangeck_bad.pas`, `super_string_length_rangeck_bad.pas`,
-`super_string_initck.pas`, `super_string_initck_bad.pas`, and
+`super_string_initck.pas`, `super_string_initck_bad.pas`,
+`super_string_pointers.pas`, `super_string_pointer_misuse.pas`,
+`super_string_pointer_indexck_bad.pas`,
+`super_string_pointer_length_rangeck_bad.pas`, and
 `tests/corpus/integration/unit_super_string.pas` (a unit's interface).
 
 ## READSET and tuning hints
@@ -1725,8 +1740,8 @@ INTEGER, WORD or INTEGER32 host described under
 and a pair of members from one enumerated type; stores into them are
 range-checked as described under
 [Subrange range checks](#subrange-range-checks-native). Function call
-postfix selectors are supported only inside a bound operand; this does not
-make `f(x)^` a general expression elsewhere. Pointer descriptor formals preserve
+postfix selectors (`f(x).field`, `f(x)[i]`, `f(x)^`) are supported in
+general expressions as well as inside bound operands. Pointer descriptor formals preserve
 bounds; borrowed non-pointer super-array formals are explicitly rejected until
 their separate view ABI is implemented (a
 [conformant `STRING`/`LSTRING` formal](#conformant-string-and-lstring-formals-both)
@@ -2119,6 +2134,31 @@ Fixtures: `tests/corpus/golden/chr_subrange_bounds.pas`,
 `chr_subrange_rangeck_bad.pas`, `chr_subrange_indexck_bad.pas` and
 `chr_subrange_bound_domain.pas`; `tests/contract/chr_constant_folding.sh`
 pins the `$RANGECK-` bound value.
+
+## Constant expressions and `*` string concatenation **[both]**
+
+Both dialects parse and fold IBM Pascal constant expressions (manual 5-9..5-10)
+anywhere a constant is expected (`CONST` definitions, subrange and array index
+bounds, `STRING`/`LSTRING` capacities, `SET` bases, and `CASE` labels):
+
+- Integer and `WORD` arithmetic (`+`, `-`, `*`, `DIV`, `MOD`), unary `+`/`-`,
+  parentheses, and constant calls (`WRD`, `BYWORD`, `HIBYTE`, `LOBYTE`, `ABS`,
+  `SQR`; plus `ORD`, `CHR`, `SUCC`, `PRED` under `extended-const-intrinsics` in
+  `CONST` sections and in both dialects in bounds).
+- Boolean and relational constant expressions (`NOT`, `AND`, `OR`, `XOR`, `=`,
+  `<>`, `<`, `<=`, `>`, `>=`), including ordinal and enumeration comparisons.
+- String constant concatenation with `*` over string literals, string `CONST`
+  identifiers, and constant `CHAR` operands (including `CHR(...)`), folded in
+  the typechecker into a `StringLiteral` up to 255 characters. Non-constant
+  strings (variables) and results over 255 characters are rejected.
+- Deliberate difference: `CHR(0)` is rejected in `*` string constant
+  concatenation (`CHR(0) is not supported in string constant concatenation`)
+  because JSON AST string literals are C strings and cannot carry embedded NUL
+  bytes.
+
+Fixtures: `tests/corpus/dialect/const_expr_vintage.pas`,
+`const_expr_extended_chr.pas`, `const_string_concat_var.pas`,
+`const_string_concat_null.pas` and `const_string_concat_too_long.pas`.
 
 ## Integer subrange hosts **[both]**
 
@@ -2523,9 +2563,8 @@ as bare/parenthesized niladic calls; recovery does not evaluate the call again.
 WITH-bound fields use their declared storage types, and user routines named
 SUCC/PRED remain ordinary calls. Both domain checks use the existing
 `runtime error: value V is outside subrange LO..HI at line L column C` text,
-located at the `SUCC` or `PRED`. This does not expand
-expression syntax or NVPTX checking: function-call postfix selectors remain
-limited to bound operands, and NVPTX retains its existing RANGECK exclusion.
+located at the `SUCC` or `PRED`. Function-call postfix selectors also retain
+their selected field/element domain; NVPTX retains its existing RANGECK exclusion.
 
 ### MATHCK runtime diagnostics
 
@@ -3109,7 +3148,7 @@ with an unsigned one merely because WORD data can reach it:
 | Site | Predicate/domain invariant |
 | --- | --- |
 | Scalar ordering | WORD uses unsigned predicates at the adapted/promoted width; INTEGER controls stay signed. A signed/unsigned pair compares exact values (negative below all unsigned), not one shared predicate. |
-| CASE | Labels are coerced to selector type and compared with `icmp eq`; high-bit/max labels work at each width. CASE label ranges remain unsupported. |
+| CASE | Labels and `lo..hi` label ranges are coerced to selector type; single labels compare with `icmp eq`, ranges compare inclusively with unsigned predicates for `WORD`/`CHAR`/`BOOLEAN` and signed predicates for signed integers and enums. High-bit/max labels and ranges work at each width. |
 | Set membership | Admitted ordinals normalize to i16, then sign-extend to i64; unsigned `< 256` excludes negative/high-bit patterns before safe bit lookup. WORD in an INTEGER set is a type error; even a matching WORD set reaches codegen rejection. These are admission limits, not WORD membership support. |
 | Set constructors/ranges | Unsigned i16 `> 255` guards elements. Signed range comparisons operate on admitted INTEGER/CHAR/BOOLEAN/enum bounds, not WORD; equality/subset checks compare bitvectors. |
 | Fixed/SUPER indices, subranges, VECTOR descriptor bounds | Unsigned sources zero-extend into wider signed i128, where signed bounds comparisons are correct even for WORD64. Blind unsigned conversion would break negative lower bounds. |
@@ -3169,7 +3208,9 @@ only when a constant argument fits it, so `i32 := SQR(1000)` is checked at
 `w8 := ABS(-5)` is 5. `HIBYTE` and `LOBYTE` take an `INTEGER` or `WORD`
 argument, so the context reaches their argument only when it is `INTEGER`
 or `WORD`, and `BYWORD` and `CHR` arguments never take it:
-`i32 := HIBYTE(258)` is 1. Before, the literal took the context's type,
+`i32 := HIBYTE(258)` is 1, and constant `HIBYTE`/`LOBYTE` fold to their
+0..255 byte value so fitting results narrow into 8-bit targets
+(`i8 := HIBYTE(258)` is 1, `w8 := HIBYTE(-1)` is 255). Before, the literal took the context's type,
 so `HIBYTE(258)` in an `INTEGER32` assignment was rejected as an
 `INTEGER32` argument and `ABS(-5)` in a `WORD8` one as a negative `WORD8`.
 `HIBYTE(70000)`, which needs an `INTEGER32`, is still rejected.
@@ -3557,14 +3598,16 @@ These are implementation limitations, not vintage-language restrictions.
   `[C]` routines. On NVPTX a function result of 1,024 bytes or more now also
   goes through a hidden `sret` pointer (first parameter) instead of the
   `.param` return buffer, which the NVPTX backend could not lower at that
-  size (codegen crashed); a smaller device result keeps the buffer. A large
-  value used other than by a whole copy keeps its first-class form; the
-  one known case is a large NVPTX value parameter. INITCK shadows of large
+  size (codegen crashed); a smaller device result keeps the buffer. A
+  non-kernel NVPTX by-value aggregate parameter of 1,024 bytes or more is
+  likewise passed by pointer to a caller-side `llvm.memcpy` copy instead of a
+  `.param` buffer (exported `ptx_kernel` entries keep the CUDA `.param` ABI).
+  INITCK shadows of large
   tracked aggregates are copied the same way, and the check behaves as for
   a small aggregate. Fixtures: `tests/corpus/golden/large_aggregate_results.pas`
   (extended, O0 and O2), `large_aggregate_results_vintage.pas`
-  (`LSTRING(65535)`), and `tests/corpus/checklit/large_aggregate_copies.pas`
-  and `device_aggregate_huge_return.pas`.
+  (`LSTRING(65535)`), and `tests/corpus/checklit/large_aggregate_copies.pas`,
+  `device_aggregate_huge_return.pas` and `device_aggregate_huge_param.pas`.
 - **At most 2000 names in scope at once [both].** The typechecker keeps one
   symbol table of `MAX_SYMBOLS = 2000` entries (`src/tc_base.inc`). Types,
   constants, enumeration values, variables, parameters and WITH-bound fields
@@ -3697,11 +3740,6 @@ least once:
   string and offers `NULL`); and the `*` concatenation of string
   constants (`CONST H = S * CHR(13)`) is not implemented, since a `CONST`
   value is a single constant here: it is a parser error.
-- **A `CASE` label range (`1 .. 3:`) is not lowered [both].** The selector
-  itself may be any ordinal — every integer width, `CHAR`, `BOOLEAN`, an
-  enumerated type — and labels of a narrower type than the selector are
-  adapted to it, but each label must still be a single constant. Write the
-  labels out (`1, 2, 3:`) or use `IF`.
 - **`REAL` does not narrow to `REAL32` implicitly [extended].** `f := d` for
   `f: REAL32; d: REAL` is rejected by both compilers, and there is no
   narrowing conversion to write instead: keep the value in `REAL32` from the

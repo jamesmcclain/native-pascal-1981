@@ -213,6 +213,7 @@ VAR
   lowering_spliced_interface: BOOLEAN;
   lowering_host_interface_in_device: BOOLEAN;
   defining_implementation: BOOLEAN;
+  defining_program: BOOLEAN;
 
   routines: ARRAY [1..MAX_ROUTINES] OF RoutineRec;
   nroutines: INTEGER32;
@@ -316,6 +317,8 @@ VAR
   last_desig_lstring_capacity: INTEGER32;
   last_desig_lstring_is_length: ADRMEM;
   last_desig_super_upper: ADRMEM;
+  super_string_tid, super_lstring_tid: INTEGER;
+  ptr_super_string_tid, ptr_super_lstring_tid: INTEGER;
   last_desig_shadow: ADRMEM;
   last_value_shadow: ADRMEM;
 

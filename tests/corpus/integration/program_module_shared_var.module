@@ -1,0 +1,12 @@
+MODULE modsharedvar;
+VAR
+  v: INTEGER;
+PROCEDURE BumpMod(delta: INTEGER);
+BEGIN
+  v := v + delta;
+END;
+FUNCTION GetMod: INTEGER;
+BEGIN
+  GetMod := v;
+END;
+END.

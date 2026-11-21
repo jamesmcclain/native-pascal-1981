@@ -1,0 +1,16 @@
+bounds 0..10 1..5 0..0
+lstr [abcd] len 4 4
+str [hello]
+eq TRUE upper 10
+holder 10 5
+L<abcd> 0..10 len 4
+S[abcd] 1..4
+S[hello] 1..5
+L<hi!> 0..10 len 3
+cmp TRUE TRUE TRUE
+S[xy   ] 1..5
+copied [hi!] [xy   ]
+positn 2 2
+read [42] len 2 [abc  ]
+decode TRUE 42
+empty []

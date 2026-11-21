@@ -545,6 +545,8 @@ BEGIN
       IF RoutineIsFunc(symi) THEN tid := routines[symi].ret_tk;
     END;
   END
+  ELSE IF nt = 'PostfixExpr' THEN
+    tid := StaticDesignatorType(node)
   ELSE IF nt = 'FuncCall' THEN
   BEGIN
     nm := UpperStr(GetStr(node, 'name'));
@@ -1201,29 +1203,36 @@ BEGIN
       last_val_tk := ltk;
     END;
   END
-  ELSE IF (op = 'AND') OR (op = 'OR') THEN
+  ELSE IF (op = 'AND') OR (op = 'OR') OR (op = 'XOR') THEN
   BEGIN
     IF (ltk <> TK_BOOLEAN) OR (rtk <> TK_BOOLEAN) THEN
-      AbortWith('codegen: AND/OR require BOOLEAN operands');
+      AbortWith('codegen: AND/OR/XOR require BOOLEAN operands');
     IF op = 'AND' THEN res := LLVMBuildAnd(builder, lval, rval, MakeCStr(''))
-    ELSE res := LLVMBuildOr(builder, lval, rval, MakeCStr(''));
+    ELSE IF op = 'OR' THEN res := LLVMBuildOr(builder, lval, rval, MakeCStr(''))
+    ELSE res := LLVMBuildXor(builder, lval, rval, MakeCStr(''));
     last_val_tk := TK_BOOLEAN;
   END
   ELSE IF op = 'IN' THEN
   BEGIN
-    { Zero-extend so a BOOLEAN TRUE (i1) is ordinal 1, not -1. }
-    IF (ltk = TK_CHAR) OR (ltk = TK_BOOLEAN) THEN
-      lval := LLVMBuildZExt(builder, lval, i16ty, MakeCStr(''))
-    ELSE IF TypeKind(ltk) = TK_ENUM THEN
-      lval := LLVMBuildTrunc(builder, lval, i16ty, MakeCStr(''))
-    ELSE IF ltk <> TK_INTEGER THEN
-      AbortWith('codegen: IN requires an INTEGER, CHAR, BOOLEAN or enum left operand');
+    { Zero-extend CHAR, BOOLEAN, and unsigned WORD so BOOLEAN TRUE is 1
+      and WORD 40000 is 40000 (not -25536). Sign-extend INTEGER and enum
+      so negative INTEGER values stay negative and fail the unsigned < 256
+      range test in CodegenSetMember (NEW-39). }
+    IF (ltk = TK_CHAR) OR (ltk = TK_BOOLEAN) OR (SubrangeBaseTid(ltk) = TK_WORD) THEN
+      lval := LLVMBuildZExt(builder, lval, i64ty, MakeCStr(''))
+    ELSE IF (TypeKind(ltk) = TK_ENUM) OR (SubrangeBaseTid(ltk) = TK_INTEGER) THEN
+      lval := LLVMBuildSExt(builder, lval, i64ty, MakeCStr(''))
+    ELSE
+      AbortWith('codegen: IN requires an INTEGER, WORD, CHAR, BOOLEAN or enum left operand');
     IF TypeKind(rtk) <> TK_SET THEN
       AbortWith('codegen: IN requires a SET right operand');
     { A declared SET exposes its representation base. Anonymous sets carry
-      only a generic tid; their semantic host was checked before codegen. }
+      only a generic tid; their semantic host was checked before codegen.
+      INTEGER and WORD share the 0..255 numeric set domain (NEW-39). }
     IF rtk <> generic_set_tid THEN
-      IF types[rtk].elem_tid <> SubrangeBaseTid(ltk) THEN
+      IF (types[rtk].elem_tid <> SubrangeBaseTid(ltk)) AND
+         NOT (((types[rtk].elem_tid = TK_INTEGER) AND (SubrangeBaseTid(ltk) = TK_WORD)) OR
+              ((types[rtk].elem_tid = TK_WORD) AND (SubrangeBaseTid(ltk) = TK_INTEGER))) THEN
         AbortWith('codegen: incompatible declared SET base in IN');
     res := CodegenSetMember(lval, rval);
     last_val_tk := TK_BOOLEAN;
@@ -1566,7 +1575,7 @@ FUNCTION BorrowedStringActual(arg_node: ADRMEM; ftid: INTEGER; is_const: BOOLEAN
 VAR
   want_l: BOOLEAN;
   nt, s: Str255;
-  view, data, up_val, addr, shadow, gep_idx, v: ADRMEM;
+  view, data, up_val, addr, shadow, gep_idx, v, super_upper: ADRMEM;
   tid: INTEGER;
   symi: INTEGER32;
 BEGIN
@@ -1577,6 +1586,7 @@ BEGIN
   data := NIL;
   up_val := NIL;
   addr := NIL;
+  super_upper := NIL;
   tid := TK_UNKNOWN;
   IF (nt = 'StringLiteral') OR (nt = 'CharLiteral') THEN
   BEGIN
@@ -1600,6 +1610,7 @@ BEGIN
       addr := ComputeDesignatorAddress(arg_node);
       tid := last_val_tk;
       shadow := last_desig_shadow;
+      super_upper := last_desig_super_upper;
       IF last_desig_lstring_capacity >= 0 THEN
       BEGIN
         len_addr := addr;
@@ -1667,6 +1678,12 @@ BEGIN
       data := addr;
       IF IsBorrowedString(tid) THEN
         up_val := LLVMBuildLoad2(builder, i16ty, BorrowedUpperSlot(addr), MakeCStr('super.upper'))
+      ELSE IF types[tid].is_super THEN
+      BEGIN
+        IF super_upper = NIL THEN
+          AbortWith2('codegen: super-array STRING/LSTRING referent has no descriptor bound calling: ', rname);
+        up_val := LLVMBuildTrunc(builder, super_upper, i16ty, MakeCStr('super.upper'));
+      END
       ELSE
       BEGIN
         IF types[tid].hi > 32767 THEN
@@ -1732,6 +1749,7 @@ VAR
   arg_state: ARRAY [1..MAX_PARAMS] OF ADRMEM; { INITCK state temps of
     tracked value actuals, published just before the call }
   transports, track_arg, track_ret, track_agg, agg_taint: BOOLEAN;
+  nvptx_large_param: BOOLEAN;
   saved_taint, agg_shadow, saved_source, var_shadow: ADRMEM;
   publishes: BOOLEAN;
   ack, acked, returned: ADRMEM;
@@ -1917,7 +1935,10 @@ BEGIN
       END
       ELSE IF routines[ri].param_needs_copy[i + 1] THEN
       BEGIN
-        IF is_nvptx_device THEN
+        nvptx_large_param := is_nvptx_device AND
+          (NOT routines[ri].is_nvptx_kernel) AND
+          LargeAggregateTy(LLVMTypeForTk(routines[ri].param_tk[i + 1]));
+        IF is_nvptx_device AND (NOT nvptx_large_param) THEN
         BEGIN
           { Device value aggregates travel as one LLVM aggregate value. }
           v := CodegenExpr(arg_node);
@@ -1928,7 +1949,8 @@ BEGIN
           { A tracked aggregate actual is a whole-value read: checked before
             its bytes are copied, or (unchecked) a snapshot of its leaf
             states travels to a transporting callee. }
-          track_agg := InitckShadowSize(routines[ri].param_tk[i + 1]) > 0;
+          track_agg := (NOT is_nvptx_device) AND
+                       (InitckShadowSize(routines[ri].param_tk[i + 1]) > 0);
           agg_shadow := NIL;
           IF track_agg THEN
           BEGIN
@@ -1966,32 +1988,52 @@ BEGIN
           BEGIN
             IF symi = 0 THEN
               AbortWith2('codegen: undefined variable: ', arg_nm);
-            { See AggStringTypesInterchangeable -- equal-capacity string types. }
-            IF (symbols[symi].tk <> routines[ri].param_tk[i + 1])
-               AND NOT AggStringTypesInterchangeable(symbols[symi].tk,
-                         routines[ri].param_tk[i + 1]) THEN
-              AbortWith2('codegen: value-aggregate argument type mismatch calling: ', name);
-            v := symbols[symi].llvm_val;
-            IF track_agg AND InitckTracked(symi) THEN
+            IF (symbols[symi].tk = TK_CHAR) AND (TypeKind(routines[ri].param_tk[i + 1]) = TK_LSTRING) THEN
             BEGIN
-              agg_shadow := symbols[symi].init_state;
-              GuardInitckRead(arg_node, symi);
+              { CHAR actual converts automatically to a length-1 LSTRING (NEW-33). }
+              v_tmp := CodegenExpr(arg_node);
+              v_tmp := CoerceForAssign(v_tmp, last_val_tk, routines[ri].param_tk[i + 1], arg_node, name);
+              v := EntryAlloca(LLVMTypeForTk(routines[ri].param_tk[i + 1]), '');
+              LLVMBuildStore(builder, v_tmp, v);
+            END
+            ELSE BEGIN
+              { See AggStringTypesInterchangeable -- equal-capacity string types. }
+              IF (symbols[symi].tk <> routines[ri].param_tk[i + 1])
+                 AND NOT AggStringTypesInterchangeable(symbols[symi].tk,
+                           routines[ri].param_tk[i + 1]) THEN
+                AbortWith2('codegen: value-aggregate argument type mismatch calling: ', name);
+              v := symbols[symi].llvm_val;
+              IF track_agg AND InitckTracked(symi) THEN
+              BEGIN
+                agg_shadow := symbols[symi].init_state;
+                GuardInitckRead(arg_node, symi);
+              END;
             END;
           END;
         END
         ELSE IF NodeType(arg_node) = 'Designator' THEN
         BEGIN
           v := ComputeDesignatorAddress(arg_node);
-          IF track_agg AND (last_desig_shadow <> NIL) THEN
+          IF (last_val_tk = TK_CHAR) AND (TypeKind(routines[ri].param_tk[i + 1]) = TK_LSTRING) THEN
           BEGIN
-            agg_shadow := last_desig_shadow;
-            GuardInitckComponent(arg_node, agg_shadow, routines[ri].param_tk[i + 1]);
+            { CHAR designator actual converts to a length-1 LSTRING (NEW-33). }
+            v_tmp := CodegenExpr(arg_node);
+            v_tmp := CoerceForAssign(v_tmp, last_val_tk, routines[ri].param_tk[i + 1], arg_node, name);
+            v := EntryAlloca(LLVMTypeForTk(routines[ri].param_tk[i + 1]), '');
+            LLVMBuildStore(builder, v_tmp, v);
+          END
+          ELSE BEGIN
+            IF track_agg AND (last_desig_shadow <> NIL) THEN
+            BEGIN
+              agg_shadow := last_desig_shadow;
+              GuardInitckComponent(arg_node, agg_shadow, routines[ri].param_tk[i + 1]);
+            END;
+            { See AggStringTypesInterchangeable -- equal-capacity string types. }
+            IF (last_val_tk <> routines[ri].param_tk[i + 1])
+               AND NOT AggStringTypesInterchangeable(last_val_tk,
+                         routines[ri].param_tk[i + 1]) THEN
+              AbortWith2('codegen: value-aggregate argument type mismatch calling: ', name);
           END;
-          { See AggStringTypesInterchangeable -- equal-capacity string types. }
-          IF (last_val_tk <> routines[ri].param_tk[i + 1])
-             AND NOT AggStringTypesInterchangeable(last_val_tk,
-                       routines[ri].param_tk[i + 1]) THEN
-            AbortWith2('codegen: value-aggregate argument type mismatch calling: ', name);
         END
         ELSE IF (NodeType(arg_node) = 'StringLiteral')
             AND ((TypeKind(routines[ri].param_tk[i + 1]) = TK_LSTRING) OR (TypeKind(routines[ri].param_tk[i + 1]) = TK_STRING)) THEN
@@ -2034,6 +2076,24 @@ BEGIN
           END
           ELSE initck_taint := saved_taint;
         END;
+        IF nvptx_large_param THEN
+        BEGIN
+          { Large NVPTX non-kernel value aggregate parameter (NEW-35r):
+            copy into a fresh per-call temp with llvm.memcpy and pass its
+            pointer (no byval), avoiding a huge PTX .param buffer and
+            first-class aggregate value. }
+          bv_temp := EntryAlloca(LLVMTypeForTk(routines[ri].param_tk[i + 1]), '');
+          LLVMSetAlignment(bv_temp, TypeAlignBytes(routines[ri].param_tk[i + 1]));
+          v_tmp := LLVMBuildMemCpy(builder, bv_temp,
+            TypeAlignBytes(routines[ri].param_tk[i + 1]), v,
+            TypeAlignBytes(routines[ri].param_tk[i + 1]),
+            LLVMConstInt(i64ty,
+              LLVMABISizeOfType(LLVMGetModuleDataLayout(modl),
+                LLVMTypeForTk(routines[ri].param_tk[i + 1])), 0));
+          v := bv_temp;
+        END
+        ELSE
+        BEGIN
         ClassifyParamAt(routines[ri].param_tk, routines[ri].param_is_var,
                         routines[ri].param_needs_copy, i + 1, ret_class = SYSV_CLASS_MEMORY,
                         agg_class, n_pieces, piece_kind, piece_bytes);
@@ -2074,6 +2134,7 @@ BEGIN
             llvm_ai := llvm_ai + 1;
           END;
           pieces_emitted := TRUE;
+        END;
         END;
         END;
       END
@@ -2240,7 +2301,21 @@ BEGIN
       ELSE IF routines[ri].param_needs_copy[i + 1] THEN
       BEGIN
         IF is_nvptx_device THEN
-          llvm_ai := llvm_ai + 1
+        BEGIN
+          IF (NOT routines[ri].is_nvptx_kernel) AND
+             LargeAggregateTy(LLVMTypeForTk(routines[ri].param_tk[i + 1])) THEN
+          BEGIN
+            align_attr := LLVMCreateEnumAttribute(ctx, align_kind_id,
+              TypeAlignBytes(routines[ri].param_tk[i + 1]));
+            LLVMAddCallSiteAttribute(res, llvm_ai + 1, align_attr);
+            IF noalias_kind_id <> 0 THEN
+            BEGIN
+              noalias_attr := LLVMCreateEnumAttribute(ctx, noalias_kind_id, 0);
+              LLVMAddCallSiteAttribute(res, llvm_ai + 1, noalias_attr);
+            END;
+          END;
+          llvm_ai := llvm_ai + 1;
+        END
         ELSE
         BEGIN
           ClassifyParamAt(routines[ri].param_tk, routines[ri].param_is_var,
@@ -2408,7 +2483,7 @@ VAR
   idx128, i128ty, in_bounds, upper_ok, bad_bb, ok_bb: ADRMEM;
   nil_bad, nil_ok, nil_fnty, nil_fn, is_nil: ADRMEM;
   discard_call: ADRMEM;
-  selected_upper, descriptor: ADRMEM;
+  selected_upper, len_upper, descriptor: ADRMEM;
   deref_ptr_tid: INTEGER; { committed to last_desig_deref_ptr_tid only at
     the end, since index expressions below recurse through here }
   shadow: ADRMEM; { INITCK shadow of the storage selected so far, or NIL;
@@ -2429,6 +2504,7 @@ VAR
   borrowed_root: ADRMEM; { the data pointer of a conformant STRING/LSTRING
     formal at the root, whose INDEX selector is bounded by its actual's
     UPPER; else NIL }
+  unm, ufn: Str255;
 BEGIN
   lstring_capacity := -1;
   lstring_is_length := NIL;
@@ -2442,6 +2518,8 @@ BEGIN
   selected_upper := NIL;
   shadow := NIL;
   nm := GetStr(node, 'name');
+  unm := UpperStr(nm);
+  ufn := UpperStr(cur_func_name);
   symi := LookupSym(nm);
   selectors := GetObj(node, 'selectors');
   nsel := ArrSize(selectors);
@@ -2457,7 +2535,7 @@ BEGIN
     LLVMBuildStore(builder, file_handle, base_ptr);
   END
   ELSE IF (symi = 0) AND (nsel > 0) AND (cur_func_name <> '') AND
-          (nm = cur_func_name) AND (cur_func_ret_state = NIL) THEN
+          (unm = ufn) AND (cur_func_ret_state = NIL) THEN
   BEGIN
     { `F.f` / `F[i]` inside F's own body selects from F's result variable
       (the return-value slot, see cur_func_name), for both stores and
@@ -2514,7 +2592,8 @@ BEGIN
       indexck := TRUE;
       IF HasKey(sel, 'indexck') THEN indexck := GetBool(sel, 'indexck');
       idx_expr := GetObj(sel, 'index_or_field');
-      IF (TypeKind(cur_tid) = TK_ARRAY) AND NOT is_device_compiland THEN
+      IF ((TypeKind(cur_tid) = TK_ARRAY) OR (TypeKind(cur_tid) = TK_STRING) OR
+          (TypeKind(cur_tid) = TK_LSTRING)) AND NOT is_device_compiland THEN
         IF types[cur_tid].is_super AND (selected_upper = NIL) THEN
           AbortWith('codegen: borrowed SUPER ARRAY subscript has no descriptor bound');
       { A vector lane index is 0-based (types[].lo = 0). A constant lane
@@ -2626,7 +2705,8 @@ BEGIN
         $INDEXCK- suppresses this guard exactly like the fixed-array one. }
       super_checked := FALSE;
       IF indexck AND (NOT is_device_compiland) AND
-         (TypeKind(cur_tid) = TK_ARRAY) AND types[cur_tid].is_super AND
+         ((TypeKind(cur_tid) = TK_ARRAY) OR (TypeKind(cur_tid) = TK_STRING) OR
+          (TypeKind(cur_tid) = TK_LSTRING)) AND types[cur_tid].is_super AND
          (selected_upper <> NIL) THEN
       BEGIN
         { A NIL descriptor fails deterministically before any bound
@@ -2684,7 +2764,9 @@ BEGIN
         lower bound using a constant of the index's own LLVM type and lets
         GEP take an index of whatever width it is, not just a plain
         16-bit INTEGER. Match that here instead of requiring TK_INTEGER. }
-      IF (NOT is_device_compiland) AND (TypeKind(cur_tid) = TK_ARRAY) AND types[cur_tid].is_super THEN
+      IF (NOT is_device_compiland) AND
+         ((TypeKind(cur_tid) = TK_ARRAY) OR (TypeKind(cur_tid) = TK_STRING) OR
+          (TypeKind(cur_tid) = TK_LSTRING)) AND types[cur_tid].is_super THEN
       BEGIN
         IF NOT super_checked THEN
         BEGIN
@@ -2747,9 +2829,12 @@ BEGIN
         lstring_capacity := types[cur_tid].hi;
         IF lstring_capacity > 255 THEN lstring_capacity := 255;
         IF (borrowed_root <> NIL) AND IsBorrowedString(cur_tid) THEN
-          lstring_dyncap := LStringLengthCap(cur_tid, borrowed_root);
-        IF (last_val_tk = TK_CHAR) OR (last_val_tk = TK_BOOLEAN) OR
-           (TypeKind(last_val_tk) = TK_ENUM) THEN offset_ty := i32ty
+          lstring_dyncap := LStringLengthCap(cur_tid, borrowed_root)
+        ELSE IF types[cur_tid].is_super AND (selected_upper <> NIL) THEN
+          lstring_dyncap := SuperLStringLengthCap(selected_upper);
+        IF (NOT types[cur_tid].is_super) AND
+           ((last_val_tk = TK_CHAR) OR (last_val_tk = TK_BOOLEAN) OR
+            (TypeKind(last_val_tk) = TK_ENUM)) THEN offset_ty := i32ty
         ELSE offset_ty := i64ty;
         lstring_is_length := LLVMBuildICmp(builder, LLVMIntEQ, offset,
           LLVMConstInt(offset_ty, 0, 0), MakeCStr('lstring.islength'));
@@ -2847,6 +2932,7 @@ BEGIN
     END
     ELSE IF kind = 'FIELD' THEN
     BEGIN
+      len_upper := selected_upper;
       selected_upper := NIL;
       IF TypeKind(cur_tid) = TK_LSTRING THEN
       BEGIN
@@ -2860,6 +2946,7 @@ BEGIN
           AbortWith2('codegen: an LSTRING has no field: ', GetStr(sel, 'index_or_field'));
         IF types[cur_tid].is_super THEN
         BEGIN
+          GuardNilckPointer(base_ptr, i8ptrty, sel);
           gep_idx := AllocPtrArray(1);
           SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 0, 0));
           base_ptr := LLVMBuildGEP2(builder, LLVMTypeForTk(cur_tid), base_ptr, gep_idx, 1, MakeCStr(''));
@@ -2874,7 +2961,9 @@ BEGIN
         lstring_capacity := types[cur_tid].hi;
         IF lstring_capacity > 255 THEN lstring_capacity := 255;
         IF (borrowed_root <> NIL) AND IsBorrowedString(cur_tid) THEN
-          lstring_dyncap := LStringLengthCap(cur_tid, borrowed_root);
+          lstring_dyncap := LStringLengthCap(cur_tid, borrowed_root)
+        ELSE IF types[cur_tid].is_super AND (len_upper <> NIL) THEN
+          lstring_dyncap := SuperLStringLengthCap(len_upper);
         lstring_is_length := LLVMConstInt(i1ty, 1, 0);
         cur_tid := types[cur_tid].elem_tid;
       END
@@ -3892,8 +3981,10 @@ BEGIN
       ELSE IF GetBool(GetObj(node, 'read_flags'), 'INITCK') THEN
         InitckBoundaryAt('selected storage', node);
     END;
-    IF IsBorrowedString(result_tid) THEN
-      AbortWith2('codegen: a super-array STRING/LSTRING formal has no value as a whole: ',
+    IF IsBorrowedString(result_tid) OR
+       (((TypeKind(result_tid) = TK_STRING) OR (TypeKind(result_tid) = TK_LSTRING)) AND
+        types[result_tid].is_super) THEN
+      AbortWith2('codegen: a super-array STRING/LSTRING has no value as a whole: ',
         GetStr(node, 'name'));
     res := LLVMBuildLoad2(builder, LLVMTypeForTk(result_tid), addr, MakeCStr(''));
     last_val_tk := result_tid;
@@ -3956,7 +4047,8 @@ BEGIN
       nm := '';
     IF nm = 'DEREF' THEN
     BEGIN
-      IF (TypeKind(result_tid) <> TK_ARRAY) OR (NOT types[result_tid].is_super) THEN
+      IF ((TypeKind(result_tid) <> TK_ARRAY) AND (TypeKind(result_tid) <> TK_STRING) AND
+          (TypeKind(result_tid) <> TK_LSTRING)) OR (NOT types[result_tid].is_super) THEN
         AbortWith('codegen: UPPER/LOWER dereference requires a SUPER ARRAY pointer');
       IF nt = 'LowerExpr' THEN
         res := LLVMConstInt(i64ty, types[result_tid].lo, 1)
@@ -4327,7 +4419,7 @@ BEGIN
     addr := EntryAlloca(LLVMTypeForTk(tid), '');
     LLVMBuildStore(builder, CodegenCallCommon(GetStr(expr, 'name'), GetObj(expr, 'args')), addr);
   END
-  ELSE IF NodeType(expr) = 'Designator' THEN
+  ELSE IF (NodeType(expr) = 'Designator') OR (NodeType(expr) = 'PostfixExpr') THEN
   BEGIN
     addr := ComputeDesignatorAddress(expr);
     tid := last_val_tk;
@@ -4336,6 +4428,24 @@ BEGIN
   BEGIN
     AbortWith('codegen: unsupported string expression (only literals and bare variables are supported)');
     chars_ptr := NIL;
+    RETURN;
+  END;
+  IF ((TypeKind(tid) = TK_LSTRING) OR (TypeKind(tid) = TK_STRING)) AND
+     types[tid].is_super THEN
+  BEGIN
+    IF TypeKind(tid) = TK_LSTRING THEN
+    BEGIN
+      len_ptr := addr;
+      gep_idx := AllocPtrArray(1);
+      SetPtrArrayElem(gep_idx, 0, LLVMConstInt(i32ty, 1, 0));
+      chars_ptr := LLVMBuildGEP2(builder, i8ty, addr, gep_idx, 1, MakeCStr(''));
+    END
+    ELSE
+    BEGIN
+      fixed_len := SUPER_LEN_MARK;
+      len_ptr := last_desig_super_upper;
+      chars_ptr := addr;
+    END;
     RETURN;
   END;
   gep_idx := AllocPtrArray(2);
@@ -4378,6 +4488,8 @@ BEGIN
     len_val := LLVMBuildLoad2(builder, i16ty, len_ptr, MakeCStr('super.upper'));
     ResolvedStringLength := LLVMBuildZExt(builder, len_val, i32ty, MakeCStr(''));
   END
+  ELSE IF fixed_len = SUPER_LEN_MARK THEN
+    ResolvedStringLength := LLVMBuildTrunc(builder, len_ptr, i32ty, MakeCStr('super.len'))
   ELSE
   BEGIN
     len_val := LLVMBuildLoad2(builder, i8ty, len_ptr, MakeCStr(''));

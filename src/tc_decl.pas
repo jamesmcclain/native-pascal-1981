@@ -72,6 +72,8 @@ IMPLEMENTATION OF tc_decl;
 FUNCTION cJSON_GetArraySize(arr: ADRMEM): CINT [C]; EXTERN;
 FUNCTION cJSON_GetArrayItem(arr: ADRMEM; index: CINT): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_GetStringValue(item: ADRMEM): ADRMEM [C]; EXTERN;
+FUNCTION cJSON_IsNumber(item: ADRMEM): CINT [C]; EXTERN;
+FUNCTION cJSON_GetNumberValue(item: ADRMEM): REAL [C]; EXTERN;
 FUNCTION cJSON_CreateBool(b: CINT): ADRMEM [C]; EXTERN;
 FUNCTION cJSON_ReplaceItemInObject(obj: ADRMEM; key: ADRMEM; newitem: ADRMEM): CINT [C]; EXTERN;
 
@@ -81,6 +83,14 @@ FUNCTION IsForeignRoutineDecl(decl: ADRMEM): BOOLEAN; FORWARD;
 VAR
   device_export_names: ARRAY [1..MAX_SYMBOLS] OF Str255;
   ndevice_exports: INTEGER32;
+  { TRUE while checking a USES'd INTERFACE (other than an IMPLEMENTATION's
+    own INTERFACE): routine headings there are imported declarations, not
+    forward declarations the importing unit may complete (NEW-7r). }
+  in_uses_iface: BOOLEAN;
+  { Symbol-table range [own_iface_sym_start..own_iface_sym_end] populated by
+    an IMPLEMENTATION's own spliced INTERFACE, so restated CONSTs in the
+    IMPLEMENTATION can be checked for conflicts (NEW-34). }
+  own_iface_sym_start, own_iface_sym_end: INTEGER32;
 
 FUNCTION IsDeviceExport(name: Str255): BOOLEAN;
 VAR
@@ -287,12 +297,19 @@ END;
 
 FUNCTION HasExtendedConstIntrinsic(node: ADRMEM): BOOLEAN;
 VAR
-  nm: Str255;
+  nt, nm: Str255;
   args: ADRMEM;
   i, n: INTEGER32;
 BEGIN
   HasExtendedConstIntrinsic := FALSE;
-  IF NodeType(node) = 'FuncCall' THEN
+  IF node = NIL THEN RETURN;
+  nt := NodeType(node);
+  IF nt = 'UnaryOp' THEN
+    HasExtendedConstIntrinsic := HasExtendedConstIntrinsic(GetObj(node, 'operand'))
+  ELSE IF nt = 'BinOp' THEN
+    HasExtendedConstIntrinsic := HasExtendedConstIntrinsic(GetObj(node, 'left')) OR
+      HasExtendedConstIntrinsic(GetObj(node, 'right'))
+  ELSE IF nt = 'FuncCall' THEN
   BEGIN
     nm := UpperStr(GetStr(node, 'name'));
     IF (nm = 'ORD') OR (nm = 'CHR') OR (nm = 'SUCC') OR (nm = 'PRED') THEN
@@ -310,15 +327,27 @@ END;
 
 PROCEDURE CheckConstOrdinalBounds(node: ADRMEM);
 VAR
-  nm: Str255;
+  nt, nm: Str255;
   args: ADRMEM;
   folded_value: INTEGER64;
   arg_tk: INTEGER;
+  i: INTEGER32;
 BEGIN
-  IF NodeType(node) = 'FuncCall' THEN
+  IF node = NIL THEN RETURN;
+  nt := NodeType(node);
+  IF nt = 'UnaryOp' THEN
+    CheckConstOrdinalBounds(GetObj(node, 'operand'))
+  ELSE IF nt = 'BinOp' THEN
+  BEGIN
+    CheckConstOrdinalBounds(GetObj(node, 'left'));
+    CheckConstOrdinalBounds(GetObj(node, 'right'));
+  END
+  ELSE IF nt = 'FuncCall' THEN
   BEGIN
     nm := UpperStr(GetStr(node, 'name'));
     args := GetObj(node, 'args');
+    FOR i := 0 TO cJSON_GetArraySize(args) - 1 DO
+      CheckConstOrdinalBounds(cJSON_GetArrayItem(args, i));
     IF ((nm = 'SUCC') OR (nm = 'PRED')) AND (cJSON_GetArraySize(args) = 1) THEN
     BEGIN
       arg_tk := CheckExpr(cJSON_GetArrayItem(args, 0));
@@ -373,6 +402,108 @@ BEGIN
   END;
 END;
 
+FUNCTION SameRealBits(a, b: REAL): BOOLEAN;
+{ a and b are the same REAL CONST value: equal, and a zero has the same
+  sign (-0.0 = 0.0 compares TRUE, but 1.0 / -0.0 is -INF). Matches
+  cg_decl.pas SameRealBits. }
+BEGIN
+  IF a <> b THEN SameRealBits := FALSE
+  ELSE IF a <> 0.0 THEN SameRealBits := TRUE
+  ELSE SameRealBits := (1.0 / a < 0.0) = (1.0 / b < 0.0);
+END;
+
+FUNCTION FoldConstReal(node: ADRMEM; VAR r: REAL): BOOLEAN;
+{ Evaluate a REAL CONST expression: a REAL literal, a REAL CONST identifier,
+  or a unary +/- of one. }
+VAR
+  nt, op: Str255;
+  si: INTEGER32;
+BEGIN
+  FoldConstReal := FALSE;
+  IF node = NIL THEN RETURN;
+  nt := NodeType(node);
+  IF nt = 'RealLiteral' THEN
+  BEGIN
+    r := GetReal(node, 'value');
+    FoldConstReal := TRUE;
+  END
+  ELSE IF (nt = 'Identifier') OR
+          ((nt = 'Designator') AND (cJSON_GetArraySize(GetObj(node, 'selectors')) = 0)) THEN
+  BEGIN
+    si := LookupSymbol(GetStr(node, 'name'));
+    IF si <> 0 THEN
+      IF symbols[si].has_const_real THEN
+      BEGIN
+        r := symbols[si].const_real;
+        FoldConstReal := TRUE;
+      END;
+  END
+  ELSE IF nt = 'UnaryOp' THEN
+  BEGIN
+    op := GetStr(node, 'op');
+    IF ((op = 'PLUS') OR (op = 'MINUS')) AND FoldConstReal(GetObj(node, 'operand'), r) THEN
+    BEGIN
+      IF op = 'MINUS' THEN r := -r;
+      FoldConstReal := TRUE;
+    END;
+  END;
+END;
+
+PROCEDURE CheckImplConstMatchesIface(dname: Str255; si: INTEGER32);
+{ When an IMPLEMENTATION restates a CONST from its own INTERFACE, verify that
+  the type and value agree (NEW-34). }
+VAR
+  uname, old_text, new_text: Str255;
+  k, prior: INTEGER32;
+  conflict: BOOLEAN;
+BEGIN
+  uname := UpperStr(dname);
+  prior := 0;
+  FOR k := own_iface_sym_start TO own_iface_sym_end DO
+    IF (symbols[k].kind = 'CONST') AND (UpperStr(symbols[k].name) = uname) THEN
+      prior := k;
+  IF prior = 0 THEN RETURN;
+  conflict := FALSE;
+  IF (symbols[prior].tk <> symbols[si].tk) OR
+     (symbols[prior].scalar_sem_base <> symbols[si].scalar_sem_base) THEN
+    conflict := TRUE
+  ELSE IF symbols[si].tk = TK_STRING THEN
+  BEGIN
+    IF (symbols[prior].const_str_node = NIL) <> (symbols[si].const_str_node = NIL) THEN
+      conflict := TRUE
+    ELSE IF symbols[si].const_str_node <> NIL THEN
+    BEGIN
+      old_text := GetStr(symbols[prior].const_str_node, 'value');
+      new_text := GetStr(symbols[si].const_str_node, 'value');
+      IF old_text <> new_text THEN
+        conflict := TRUE;
+    END;
+  END
+  ELSE IF IsReal(symbols[si].tk) THEN
+  BEGIN
+    IF symbols[prior].has_const_real <> symbols[si].has_const_real THEN
+      conflict := TRUE
+    ELSE IF symbols[si].has_const_real THEN
+      IF NOT SameRealBits(symbols[prior].const_real, symbols[si].const_real) THEN
+        conflict := TRUE;
+  END
+  ELSE IF symbols[si].tk = TK_ENUM THEN
+  BEGIN
+    IF symbols[prior].const_enum_ord <> symbols[si].const_enum_ord THEN
+      conflict := TRUE;
+  END
+  ELSE
+  BEGIN
+    IF symbols[prior].has_const_int <> symbols[si].has_const_int THEN
+      conflict := TRUE
+    ELSE IF symbols[si].has_const_int THEN
+      IF symbols[prior].const_int <> symbols[si].const_int THEN
+        conflict := TRUE;
+  END;
+  IF conflict THEN
+    AddError2('Conflicting CONST declaration: ', dname);
+END;
+
 FUNCTION ParamModeOf(param: ADRMEM): INTEGER;
 { PARAM_VAR for a VAR/VARS formal, PARAM_CONST for CONST/CONSTS, else
   PARAM_VALUE. }
@@ -399,6 +530,7 @@ VAR
   pn, pj: INTEGER32;
   saved_func_name: Str255;
   saved_func_ret_tk, saved_func_aux, saved_func_aux2, saved_func_set_sem_base: INTEGER;
+  saved_func_frame_top: INTEGER;
   attrs_arr, attr_item: ADRMEM;
   nattrs, ai: INTEGER32;
   is_vararg, has_c: BOOLEAN;
@@ -406,6 +538,10 @@ VAR
   has_block_body: BOOLEAN;
   prior: INTEGER32;
   const_value: INTEGER64;
+  const_real_val: REAL;
+  has_const_real_val: BOOLEAN;
+  const_enum_val: INTEGER32;
+  val_node: ADRMEM;
 BEGIN
   nt := NodeType(decl);
   IF nt = 'VarDecl' THEN
@@ -433,27 +569,50 @@ BEGIN
     { A CONST value is a constant expression: a call in it is the
       intrinsic (UserDeclarationShadows). }
     const_expr_level := const_expr_level + 1;
-    IF HasExtendedConstIntrinsic(GetObj(decl, 'value')) AND
+    val_node := GetObj(decl, 'value');
+    IF HasExtendedConstIntrinsic(val_node) AND
        NOT active_features.extended_const_intrinsics THEN
       AddError('CONST intrinsic calls require the extended-const-intrinsics feature');
-    tk := CheckExpr(GetObj(decl, 'value'));
-    CheckConstValueNames(GetObj(decl, 'value'));
-    CheckConstOrdinalBounds(GetObj(decl, 'value'));
-    CheckConstByteDomain(GetObj(decl, 'value'));
+    tk := CheckExpr(val_node);
+    CheckConstValueNames(val_node);
+    CheckConstOrdinalBounds(val_node);
+    CheckConstByteDomain(val_node);
+    has_const_real_val := FALSE;
+    const_real_val := 0.0;
+    IF IsReal(tk) THEN
+      has_const_real_val := FoldConstReal(val_node, const_real_val);
+    const_enum_val := -1;
+    IF tk = TK_ENUM THEN
+      IF (NodeType(val_node) = 'Identifier') OR
+         ((NodeType(val_node) = 'Designator') AND
+          (cJSON_GetArraySize(GetObj(val_node, 'selectors')) = 0)) THEN
+      BEGIN
+        prior := LookupSymbol(GetStr(val_node, 'name'));
+        IF prior <> 0 THEN
+          const_enum_val := symbols[prior].const_enum_ord;
+      END;
     si := DefineSymbol(dname, 'CONST', tk, 0, 0, 0, 0);
     { A multi-character string CONST, or an alias of one (whose Identifier
       CheckExpr has already rewritten to the literal): references to it
       become that literal (InlineStringConst). }
     IF (tk = TK_STRING) AND
-       (NodeType(GetObj(decl, 'value')) = 'StringLiteral') THEN
-      symbols[si].const_str_node := GetObj(decl, 'value');
+       (NodeType(val_node) = 'StringLiteral') THEN
+      symbols[si].const_str_node := val_node;
     IF tk = TK_SET THEN symbols[si].set_sem_base := last_sem_set_base;
     IF IsOrdinal(tk) THEN symbols[si].scalar_sem_base := last_sem_scalar_base;
-    IF FoldConstInt(GetObj(decl, 'value'), const_value) THEN
+    IF FoldConstInt(val_node, const_value) THEN
     BEGIN
       symbols[si].has_const_int := TRUE;
       symbols[si].const_int := const_value;
     END;
+    IF has_const_real_val THEN
+    BEGIN
+      symbols[si].has_const_real := TRUE;
+      symbols[si].const_real := const_real_val;
+    END;
+    symbols[si].const_enum_ord := const_enum_val;
+    IF (scope_top = 0) AND (own_iface_sym_end >= own_iface_sym_start) THEN
+      CheckImplConstMatchesIface(dname, si);
     const_expr_level := const_expr_level - 1;
   END
   ELSE IF nt = 'TypeDecl' THEN
@@ -528,7 +687,8 @@ BEGIN
       IF symbols[prior].is_extern THEN
         IF has_block_body THEN
           AddError2('EXTERN routine cannot be defined here (use FORWARD): ', dname);
-    IF has_block_body THEN DeclareName(dname, DECL_ROUTINE_BODY)
+    IF in_uses_iface THEN DeclareName(dname, DECL_OTHER)
+    ELSE IF has_block_body THEN DeclareName(dname, DECL_ROUTINE_BODY)
     ELSE DeclareName(dname, DECL_ROUTINE_HEADING);
 
     si := DefineSymbol(dname, nt, TK_UNKNOWN, 0, 0, 0, 0);
@@ -565,6 +725,7 @@ BEGIN
         IF ppi <= MAX_PARAMS THEN
         BEGIN
           symbols[si].param_tk[ppi] := ptk;
+          symbols[si].param_is_lstring[ppi] := (ptk = TK_STRING) AND (paux2 = 1);
           symbols[si].param_mode[ppi] := ParamModeOf(param);
           symbols[si].param_super_str[ppi] := 0;
           IF symbols[si].param_mode[ppi] <> PARAM_VALUE THEN
@@ -635,6 +796,7 @@ BEGIN
       saved_func_aux := cur_func_aux;
       saved_func_aux2 := cur_func_aux2;
       saved_func_set_sem_base := cur_func_set_sem_base;
+      saved_func_frame_top := func_frame_top;
       IF nt = 'FuncDecl' THEN
       BEGIN
         cur_func_name := dname;
@@ -642,6 +804,17 @@ BEGIN
         cur_func_aux := aux;
         cur_func_aux2 := aux2;
         cur_func_set_sem_base := symbols[si].ret_set_sem_base;
+        IF func_frame_top < 64 THEN
+        BEGIN
+          func_frame_top := func_frame_top + 1;
+          func_frames[func_frame_top].name := dname;
+          func_frames[func_frame_top].sym_base := nsymbols;
+          func_frames[func_frame_top].ret_tk := ret_tk;
+          func_frames[func_frame_top].aux := aux;
+          func_frames[func_frame_top].aux2 := aux2;
+          func_frames[func_frame_top].set_sem_base := symbols[si].ret_set_sem_base;
+          func_frames[func_frame_top].scalar_sem_base := symbols[si].ret_scalar_sem_base;
+        END;
       END
       ELSE
         cur_func_name := '';
@@ -678,6 +851,7 @@ BEGIN
       cur_func_aux := saved_func_aux;
       cur_func_aux2 := saved_func_aux2;
       cur_func_set_sem_base := saved_func_set_sem_base;
+      func_frame_top := saved_func_frame_top;
       EndDeclScope;
       PopScope;
     END;
@@ -685,13 +859,22 @@ BEGIN
   ELSE IF nt = 'LabelDecl' THEN
   BEGIN
     { An identifier label shares the block's name space; a numeric label
-      (a JSON number, read here as '') does not. }
+      (a JSON number, carrying the 16-bit key from CurLabelKey) shares a
+      disjoint numeric label space in the same block (NEW-7r). }
     names_arr := GetObj(decl, 'labels');
     n := cJSON_GetArraySize(names_arr);
     FOR i := 0 TO n - 1 DO
     BEGIN
-      nm := CStrToStr255(cJSON_GetStringValue(cJSON_GetArrayItem(names_arr, i)));
-      IF nm <> '' THEN DeclareName(nm, DECL_OTHER);
+      attr_item := cJSON_GetArrayItem(names_arr, i);
+      nm := CStrToStr255(cJSON_GetStringValue(attr_item));
+      IF nm <> '' THEN
+        DeclareName(nm, DECL_OTHER)
+      ELSE IF cJSON_IsNumber(attr_item) <> 0 THEN
+      BEGIN
+        const_value := TRUNC(cJSON_GetNumberValue(attr_item));
+        IF const_value < 0 THEN const_value := const_value + 65536;
+        DeclareName(Int64Text(const_value), DECL_NUMERIC_LABEL);
+      END;
     END;
   END;
 END;
@@ -785,7 +968,7 @@ VAR
 BEGIN
   CheckDeclList(GetObj(block, 'decls'));
   body_arr := GetObj(block, 'body');
-  CheckStmtList(body_arr);
+  CheckRoutineBody(body_arr);
 END;
 
 FUNCTION SameIdentifier(a, b: Str255): BOOLEAN;
@@ -1179,7 +1362,6 @@ BEGIN
   saved_device := is_device_compiland;
   is_device_compiland := GetBool(root, 'is_device');
   nt := NodeType(root);
-  BeginDeclScope;
   IF nt = 'ProgramUnit' THEN
   BEGIN
     IF NOT is_device_compiland THEN DeclarePredeclaredFiles;
@@ -1192,10 +1374,9 @@ BEGIN
       ValidateImplementationContract(root,
         FindUnitIface(GetObj(root, 'local_interfaces'), GetStr(root, 'name')));
       init_body := GetObj(root, 'init_body');
-      IF init_body <> NIL THEN CheckStmtList(init_body);
+      IF init_body <> NIL THEN CheckRoutineBody(init_body);
     END;
   END;
-  EndDeclScope;
   is_device_compiland := saved_device;
 END;
 
@@ -1218,6 +1399,8 @@ BEGIN
     AddError('USES import renames an export with no matching declaration')
   ELSE
   BEGIN
+    IF NOT SameIdentifier(alias, ename) THEN
+      DeclareName(alias, DECL_OTHER);
     ai := DefineSymbol(alias, symbols[si].kind, symbols[si].tk,
       symbols[si].aux, symbols[si].aux2, symbols[si].aux3, symbols[si].idx_tk);
     symbols[ai].nparams := symbols[si].nparams;
@@ -1230,6 +1413,7 @@ BEGIN
       symbols[ai].param_tk[pi] := symbols[si].param_tk[pi];
       symbols[ai].param_set_sem_base[pi] := symbols[si].param_set_sem_base[pi];
       symbols[ai].param_mode[pi] := symbols[si].param_mode[pi];
+      symbols[ai].param_is_lstring[pi] := symbols[si].param_is_lstring[pi];
       symbols[ai].param_super_str[pi] := symbols[si].param_super_str[pi];
     END;
     symbols[ai].ret_tk := symbols[si].ret_tk;
@@ -1308,9 +1492,26 @@ BEGIN
       iface := cJSON_GetArrayItem(ifaces, ni);
       saved_device := is_device_compiland;
       is_device_compiland := GetBool(iface, 'is_device');
-      BeginDeclScope;
-      CheckDeclList(GetObj(iface, 'decls'));
-      EndDeclScope;
+      IF (NodeType(root) = 'ImplementationUnit') AND
+         SameIdentifier(GetStr(iface, 'name'), GetStr(root, 'name')) THEN
+      BEGIN
+        { An IMPLEMENTATION's own INTERFACE is checked in an isolated
+          declaration scope so the IMPLEMENTATION can supply the matching
+          VAR/PROC/FUNC (and repeated CONST/TYPE) declarations. }
+        own_iface_sym_start := nsymbols + 1;
+        BeginDeclScope;
+        CheckDeclList(GetObj(iface, 'decls'));
+        EndDeclScope;
+        own_iface_sym_end := nsymbols;
+      END
+      ELSE BEGIN
+        { Every USES'd INTERFACE shares the importing unit's top-level
+          declaration scope so redeclaring an imported name or colliding
+          across USES interfaces is diagnosed (NEW-7r). }
+        in_uses_iface := TRUE;
+        CheckDeclList(GetObj(iface, 'decls'));
+        in_uses_iface := FALSE;
+      END;
       is_device_compiland := saved_device;
     END;
   END;
@@ -1318,11 +1519,16 @@ END;
 
 PROCEDURE CheckRoot(root: ADRMEM);
 BEGIN
+  in_uses_iface := FALSE;
+  own_iface_sym_start := 1;
+  own_iface_sym_end := 0;
   LoadDeviceExports(root);
+  BeginDeclScope;
   CheckLocalInterfaces(root);
   CheckLocalInterfaceUses(root, GetObj(root, 'local_interfaces'));
   MarkDeviceExports(root);
   CheckUnit(root);
+  EndDeclScope;
 END;
 
 BEGIN

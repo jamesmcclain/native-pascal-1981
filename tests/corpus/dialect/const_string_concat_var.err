@@ -1,0 +1,2 @@
+Type checking failed:
+String concatenation (*) requires string or CHAR constants at line 9 column 13

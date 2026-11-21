@@ -12,7 +12,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib/harness.sh"
 require bin/pretty81 bin/lexer bin/parser bin/astcompare bin/pascal1981
 ignore=()
 for key in location read_location op_location meta_flags read_flags rangeck \
-  indexck mathck stackck leading_comments trailing_comment; do
+  indexck mathck stackck leading_comments trailing_comment end_comments eof_comments; do
   ignore+=(--ignore-key "$key")
 done
 

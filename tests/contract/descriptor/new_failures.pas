@@ -2,7 +2,9 @@
 PROGRAM NewFailures(input, output);
 {$INDEXCK-}
 TYPE Cells = SUPER ARRAY [2..*] OF INTEGER; P = ^Cells;
-VAR slots: ARRAY [0..1] OF P; evaluations, selections, testmode: INTEGER32;
+VAR [PUBLIC] slots: ARRAY [0..1] OF P;
+VAR [PUBLIC] evaluations, selections: INTEGER32;
+VAR testmode: INTEGER32;
 PROCEDURE Arm(m: INTEGER32) [C]; EXTERN;
 FUNCTION Pick: INTEGER;
 BEGIN selections := selections + 1; Pick := 0 END;
